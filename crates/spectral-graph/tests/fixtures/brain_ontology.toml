@@ -1,0 +1,51 @@
+version = 1
+
+[[entity]]
+type = "person"
+canonical = "mark-smith"
+aliases = ["Mark", "Mark Smith"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "carol-doe"
+aliases = ["Carol", "Carol Doe"]
+visibility = "private"
+
+[[entity]]
+type = "topic"
+canonical = "library-science"
+aliases = ["Library Science", "Library"]
+visibility = "public"
+
+[[entity]]
+type = "topic"
+canonical = "final-exam"
+aliases = ["Final Exam", "Exam"]
+visibility = "public"
+
+[[entity]]
+type = "project"
+canonical = "spectral"
+aliases = ["Spectral"]
+visibility = "public"
+
+[[predicate]]
+name = "studies"
+domain = ["person"]
+range = ["topic"]
+
+[[predicate]]
+name = "prepares_for"
+domain = ["person"]
+range = ["topic"]
+
+[[predicate]]
+name = "works_on"
+domain = ["person"]
+range = ["project"]
+
+[[predicate]]
+name = "knows"
+domain = ["person"]
+range = ["person"]
