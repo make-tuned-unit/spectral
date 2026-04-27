@@ -1,9 +1,8 @@
 //! High-level Brain API for Spectral.
 //!
-//! A [`Brain`] is the primary interface for knowledge graph operations:
-//! asserting facts, recalling related information, and ingesting documents.
-//! It composes identity, ontology, canonicalization, and storage into a
-//! cohesive API.
+//! A [`Brain`] is the primary interface: asserting facts in the knowledge
+//! graph, remembering free-text observations via TACT ingestion, and
+//! recalling relevant context from both stores.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -13,6 +12,9 @@ use chrono::Utc;
 use spectral_core::entity_id::EntityId;
 use spectral_core::identity::{BrainId, BrainIdentity};
 use spectral_core::visibility::Visibility;
+use spectral_ingest::sqlite_store::SqliteStore;
+use spectral_ingest::{MemoryHit, MemoryStore};
+use spectral_tact::{LlmClient, TactConfig, TactResult};
 
 use crate::canonicalize::{Canonicalizer, MatchedMention};
 use crate::kuzu_store::{Entity, KuzuStore, Neighborhood, Triple};
@@ -20,50 +22,64 @@ use crate::ontology::Ontology;
 use crate::Error;
 
 /// Configuration for opening a brain.
-#[derive(Debug, Clone)]
 pub struct BrainConfig {
     /// Directory for brain data (identity files, graph database).
     pub data_dir: PathBuf,
     /// Path to the ontology TOML file.
     pub ontology_path: PathBuf,
+    /// Path to the SQLite memory database (default: data_dir/memory.db).
+    pub memory_db_path: Option<PathBuf>,
+    /// Optional LLM client for TACT classification.
+    pub llm_client: Option<Box<dyn LlmClient>>,
 }
 
 /// Result of a successful assertion.
 #[derive(Debug)]
 pub struct AssertResult {
-    /// Whether the triple was written (always true on success).
     pub triple_written: bool,
-    /// The resolved subject.
     pub subject: MatchedMention,
-    /// The predicate name.
     pub predicate: String,
-    /// The resolved object.
     pub object: MatchedMention,
 }
 
-/// Result of a recall query.
+/// Result of a graph-only recall query.
 #[derive(Debug)]
 pub struct RecallResult {
-    /// Seed entities found from the query text.
     pub seed_entities: Vec<EntityId>,
-    /// All triples in the neighborhood.
     pub triples: Vec<Triple>,
-    /// Full neighborhood traversal result.
     pub neighborhood: Neighborhood,
+}
+
+/// Result of hybrid recall (memory + graph).
+#[derive(Debug)]
+pub struct HybridRecallResult {
+    /// TACT memory hits.
+    pub memory_hits: Vec<MemoryHit>,
+    /// TACT retrieval result.
+    pub tact: TactResult,
+    /// Graph neighborhood result.
+    pub graph: RecallResult,
 }
 
 /// Result of document ingestion.
 #[derive(Debug)]
 pub struct IngestResult {
-    /// Blake3 hash of the document content.
     pub document_id: [u8; 32],
-    /// Entities mentioned in the document.
     pub matched: Vec<MatchedMention>,
-    /// Count of unresolved mentions.
     pub unresolved_count: usize,
 }
 
-/// A Spectral brain: identity + ontology + knowledge graph.
+/// Result of remembering a memory.
+#[derive(Debug)]
+pub struct RememberResult {
+    pub memory_id: String,
+    pub wing: Option<String>,
+    pub hall: Option<String>,
+    pub signal_score: f64,
+    pub fingerprints_created: usize,
+}
+
+/// A Spectral brain: identity + ontology + knowledge graph + memory store.
 ///
 /// # Open a brain
 ///
@@ -74,14 +90,18 @@ pub struct IngestResult {
 /// let brain = Brain::open(BrainConfig {
 ///     data_dir: PathBuf::from("/tmp/my-brain"),
 ///     ontology_path: PathBuf::from("ontology.toml"),
+///     memory_db_path: None,
+///     llm_client: None,
 /// }).unwrap();
-///
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
 pub struct Brain {
     identity: BrainIdentity,
     ontology: Ontology,
     store: KuzuStore,
+    memory_store: Box<dyn MemoryStore>,
+    tact_config: TactConfig,
+    rt: tokio::runtime::Runtime,
 }
 
 impl std::fmt::Debug for Brain {
@@ -96,7 +116,7 @@ impl Brain {
     /// Open or create a brain.
     ///
     /// Creates `data_dir` if missing, generates identity on first run,
-    /// opens the graph database, and validates the ontology.
+    /// opens both the graph database and memory store.
     pub fn open(config: BrainConfig) -> Result<Self, Error> {
         std::fs::create_dir_all(&config.data_dir)?;
 
@@ -104,10 +124,21 @@ impl Brain {
         let ontology = Ontology::load(&config.ontology_path)?;
         let store = KuzuStore::open(&config.data_dir.join("graph.kz"))?;
 
+        let memory_db_path = config
+            .memory_db_path
+            .unwrap_or_else(|| config.data_dir.join("memory.db"));
+        let memory_store: Box<dyn MemoryStore> =
+            Box::new(SqliteStore::open(&memory_db_path).map_err(|e| Error::Schema(e.to_string()))?);
+
+        let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Schema(e.to_string()))?;
+
         Ok(Self {
             identity,
             ontology,
             store,
+            memory_store,
+            tact_config: TactConfig::default(),
+            rt,
         })
     }
 
@@ -120,11 +151,6 @@ impl Brain {
     ///
     /// Both subject and object are canonicalized through the ontology.
     /// The predicate is validated against ontology domain/range constraints.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::UnresolvedMention`] if subject or object can't be resolved
-    /// - [`Error::InvalidPredicate`] if the predicate doesn't fit the types
     pub fn assert(
         &self,
         subject: &str,
@@ -151,7 +177,6 @@ impl Brain {
             }
         })?;
 
-        // Validate predicate against ontology
         self.ontology
             .validate_triple(
                 predicate,
@@ -166,7 +191,6 @@ impl Brain {
 
         let now = Utc::now();
 
-        // Upsert both entities
         self.store.upsert_entity(&Entity {
             id: subject_match.entity_id,
             entity_type: subject_match.entity_type.clone(),
@@ -187,7 +211,6 @@ impl Brain {
             weight: 1.0,
         })?;
 
-        // Insert the triple
         self.store.insert_triple(&Triple {
             from: subject_match.entity_id,
             to: object_match.entity_id,
@@ -208,9 +231,66 @@ impl Brain {
         })
     }
 
-    /// Recall: find entities matching the query text, then return their
-    /// 2-hop neighborhood.
-    pub fn recall(&self, query: &str) -> Result<RecallResult, Error> {
+    /// Ingest free text: classify, score, fingerprint, store in memory DB.
+    pub fn remember(&self, key: &str, content: &str) -> Result<RememberResult, Error> {
+        let memory_id = format!(
+            "{:016x}",
+            u64::from_be_bytes(
+                blake3::hash(key.as_bytes()).as_bytes()[..8]
+                    .try_into()
+                    .unwrap()
+            )
+        );
+
+        let config = spectral_ingest::ingest::IngestConfig::default();
+        let result = self
+            .rt
+            .block_on(spectral_ingest::ingest::ingest(
+                &memory_id,
+                key,
+                content,
+                "core",
+                Utc::now().timestamp() as f64,
+                &config,
+                self.memory_store.as_ref(),
+            ))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
+        Ok(RememberResult {
+            memory_id: result.memory.id,
+            wing: result.memory.wing,
+            hall: result.memory.hall,
+            signal_score: result.memory.signal_score,
+            fingerprints_created: result.fingerprints.len(),
+        })
+    }
+
+    /// Hybrid recall: TACT memory search + graph 2-hop neighborhood.
+    pub fn recall(&self, query: &str) -> Result<HybridRecallResult, Error> {
+        // TACT retrieval
+        let tact = self
+            .rt
+            .block_on(spectral_tact::retrieve(
+                query,
+                &self.tact_config,
+                self.memory_store.as_ref(),
+            ))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
+        let memory_hits = tact.memories.clone();
+
+        // Graph retrieval
+        let graph = self.recall_graph(query)?;
+
+        Ok(HybridRecallResult {
+            memory_hits,
+            tact,
+            graph,
+        })
+    }
+
+    /// Graph-only recall: find entities matching query text, return 2-hop neighborhood.
+    pub fn recall_graph(&self, query: &str) -> Result<RecallResult, Error> {
         let canonicalizer = Canonicalizer::new(&self.ontology);
         let result = canonicalizer.canonicalize(query);
 
@@ -227,7 +307,6 @@ impl Brain {
             });
         }
 
-        // Collect neighborhoods for all seeds, deduplicating
         let mut all_entity_ids = HashSet::new();
         let mut all_entities = Vec::new();
         let mut all_triples = Vec::new();
@@ -269,15 +348,12 @@ impl Brain {
     ) -> Result<IngestResult, Error> {
         let document_id = *blake3::hash(content.as_bytes()).as_bytes();
 
-        // Upsert document node
         self.store
             .upsert_document(&document_id, source, visibility)?;
 
-        // Canonicalize content
         let canonicalizer = Canonicalizer::new(&self.ontology);
         let canon_result = canonicalizer.canonicalize(content);
 
-        // Upsert matched entities and create Mentions edges
         let now = Utc::now();
         for mention in &canon_result.matched {
             self.store.upsert_entity(&Entity {
@@ -307,7 +383,7 @@ impl Brain {
         })
     }
 
-    /// Direct access to the underlying store.
+    /// Direct access to the underlying graph store.
     pub fn store(&self) -> &KuzuStore {
         &self.store
     }

@@ -10,6 +10,7 @@ readme = "../../README.md"
 
 [dependencies]
 spectral-core = { path = "../spectral-core" }
+spectral-ingest = { path = "../spectral-ingest" }
 spectral-graph = { path = "../spectral-graph" }
 spectral-tact = { path = "../spectral-tact" }
 spectral-constellation = { path = "../spectral-constellation" }
