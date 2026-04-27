@@ -1038,6 +1038,7 @@ dependencies = [
  "blake3",
  "chrono",
  "kuzu",
+ "regex",
  "serde",
  "spectral-core",
  "spectral-ingest",

@@ -10,6 +10,8 @@ fn brain_config(tmp: &TempDir) -> BrainConfig {
         ontology_path: PathBuf::from("tests/fixtures/brain_ontology.toml"),
         memory_db_path: None,
         llm_client: None,
+        wing_rules: None,
+        hall_rules: None,
     }
 }
 
@@ -236,4 +238,28 @@ fn open_creates_memory_db() {
     let _brain = Brain::open(brain_config(&tmp)).unwrap();
 
     assert!(tmp.path().join("memory.db").exists());
+}
+
+#[test]
+fn recall_returns_memory_hits_for_matching_wing() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Remember polybot observations
+    brain
+        .remember(
+            "polybot-decision",
+            "Decided to use Polybot for the weather prediction strategy",
+        )
+        .unwrap();
+    brain
+        .remember("polybot-bug", "Polybot had a bug in the weather engine")
+        .unwrap();
+
+    // Recall with a query that matches the "polybot" wing
+    let result = brain.recall("polybot weather strategy").unwrap();
+    assert!(
+        !result.memory_hits.is_empty(),
+        "expected memory hits for polybot wing query, got 0"
+    );
 }

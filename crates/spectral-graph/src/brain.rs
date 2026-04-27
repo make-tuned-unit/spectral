@@ -31,6 +31,12 @@ pub struct BrainConfig {
     pub memory_db_path: Option<PathBuf>,
     /// Optional LLM client for TACT classification.
     pub llm_client: Option<Box<dyn LlmClient>>,
+    /// Wing detection rules as `(regex_pattern, wing_name)` pairs.
+    /// `None` uses the defaults from `spectral_ingest::default_wing_rule_strings()`.
+    pub wing_rules: Option<Vec<(String, String)>>,
+    /// Hall detection rules as `(regex_pattern, hall_name)` pairs.
+    /// `None` uses the defaults from `spectral_ingest::default_hall_rule_strings()`.
+    pub hall_rules: Option<Vec<(String, String)>>,
 }
 
 /// Result of a successful assertion.
@@ -92,6 +98,8 @@ pub struct RememberResult {
 ///     ontology_path: PathBuf::from("ontology.toml"),
 ///     memory_db_path: None,
 ///     llm_client: None,
+///     wing_rules: None,
+///     hall_rules: None,
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
@@ -101,6 +109,7 @@ pub struct Brain {
     store: KuzuStore,
     memory_store: Box<dyn MemoryStore>,
     tact_config: TactConfig,
+    ingest_config: spectral_ingest::ingest::IngestConfig,
     rt: tokio::runtime::Runtime,
 }
 
@@ -130,6 +139,32 @@ impl Brain {
         let memory_store: Box<dyn MemoryStore> =
             Box::new(SqliteStore::open(&memory_db_path).map_err(|e| Error::Schema(e.to_string()))?);
 
+        // Resolve wing/hall rules — shared between ingest and TACT retrieval.
+        let wing_rules = config
+            .wing_rules
+            .unwrap_or_else(spectral_ingest::default_wing_rule_strings);
+        let hall_rules = config
+            .hall_rules
+            .unwrap_or_else(spectral_ingest::default_hall_rule_strings);
+
+        let tact_config = TactConfig {
+            wing_rules: wing_rules.clone(),
+            hall_rules: hall_rules.clone(),
+            ..TactConfig::default()
+        };
+
+        let ingest_config = spectral_ingest::ingest::IngestConfig {
+            wing_rules: wing_rules
+                .iter()
+                .map(|(p, w)| (regex::Regex::new(p).expect("invalid wing regex"), w.clone()))
+                .collect(),
+            hall_rules: hall_rules
+                .iter()
+                .map(|(p, h)| (regex::Regex::new(p).expect("invalid hall regex"), h.clone()))
+                .collect(),
+            ..spectral_ingest::ingest::IngestConfig::default()
+        };
+
         let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Schema(e.to_string()))?;
 
         Ok(Self {
@@ -137,7 +172,8 @@ impl Brain {
             ontology,
             store,
             memory_store,
-            tact_config: TactConfig::default(),
+            tact_config,
+            ingest_config,
             rt,
         })
     }
@@ -242,7 +278,6 @@ impl Brain {
             )
         );
 
-        let config = spectral_ingest::ingest::IngestConfig::default();
         let result = self
             .rt
             .block_on(spectral_ingest::ingest::ingest(
@@ -251,7 +286,7 @@ impl Brain {
                 content,
                 "core",
                 Utc::now().timestamp() as f64,
-                &config,
+                &self.ingest_config,
                 self.memory_store.as_ref(),
             ))
             .map_err(|e| Error::Schema(e.to_string()))?;

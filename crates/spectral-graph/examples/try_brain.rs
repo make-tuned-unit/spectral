@@ -1,4 +1,4 @@
-//! Smoke-test the Brain API: graph assertions, memory ingestion, hybrid recall.
+//! Smoke-test the Brain API: graph + memory + hybrid recall.
 //! Run with: cargo run --example try_brain -p spectral-graph
 
 use spectral_core::visibility::Visibility;
@@ -16,56 +16,76 @@ fn main() -> anyhow::Result<()> {
         ontology_path,
         memory_db_path: None,
         llm_client: None,
+        wing_rules: None,
+        hall_rules: None,
     })?;
     println!("Brain ID: {}", brain.brain_id());
     println!();
 
-    // ── Graph assertions ──
     println!("=== Asserting facts (graph) ===");
-    let r = brain.assert("Alice", "knows", "Bob", 1.0, Visibility::Private)?;
-    println!(
-        "  {} -> {} -> {}",
-        r.subject.canonical, r.predicate, r.object.canonical
-    );
+    for (s, p, o) in &[
+        ("Alice", "knows", "Bob"),
+        ("Bob", "knows", "Carol"),
+        ("Carol", "studies", "Math"),
+    ] {
+        let r = brain.assert(s, p, o, 1.0, Visibility::Private)?;
+        println!(
+            "  {} -> {} -> {}",
+            r.subject.canonical, r.predicate, r.object.canonical
+        );
+    }
+    println!();
 
-    let r = brain.assert("Bob", "knows", "Carol", 1.0, Visibility::Private)?;
-    println!(
-        "  {} -> {} -> {}",
-        r.subject.canonical, r.predicate, r.object.canonical
-    );
+    println!("=== Remembering observations (memory) ===");
+    for (key, content) in &[
+        (
+            "polybot-decision",
+            "Decided to use Polybot for the weather prediction strategy",
+        ),
+        (
+            "polybot-bug",
+            "Polybot had a bug in the weather engine that caused real losses",
+        ),
+        (
+            "polybot-fix",
+            "Discovered the polybot weather strategy needs paper-trading first",
+        ),
+    ] {
+        let r = brain.remember(key, content)?;
+        println!(
+            "  '{}' -> wing={:?} hall={:?} signal={:.2} fingerprints={}",
+            key,
+            r.wing.as_deref(),
+            r.hall.as_deref(),
+            r.signal_score,
+            r.fingerprints_created
+        );
+    }
+    println!();
 
-    let r = brain.assert("Carol", "studies", "Math", 1.0, Visibility::Private)?;
+    println!("=== Hybrid recall: 'polybot weather strategy' ===");
+    let recall = brain.recall("polybot weather strategy")?;
     println!(
-        "  {} -> {} -> {}",
-        r.subject.canonical, r.predicate, r.object.canonical
+        "Graph: {} entities, {} triples",
+        recall.graph.neighborhood.entities.len(),
+        recall.graph.triples.len()
+    );
+    println!("Memory hits: {}", recall.memory_hits.len());
+    for hit in &recall.memory_hits {
+        println!(
+            "  [{}/{}] {}: {}",
+            hit.wing.as_deref().unwrap_or("?"),
+            hit.hall.as_deref().unwrap_or("?"),
+            hit.key,
+            hit.content.chars().take(60).collect::<String>()
+        );
+    }
+    assert!(
+        !recall.memory_hits.is_empty(),
+        "BUG: polybot observations were remembered but recall returned 0 memory hits"
     );
     println!();
 
-    // ── Memory ingestion ──
-    println!("=== Remembering observations ===");
-    let r = brain.remember("alice_pref", "Alice prefers morning meetings")?;
-    println!(
-        "  remembered: wing={:?} hall={:?} signal={:.2}",
-        r.wing, r.hall, r.signal_score
-    );
-
-    let r = brain.remember("bob_decision", "Bob decided to use Rust for the rewrite")?;
-    println!(
-        "  remembered: wing={:?} hall={:?} signal={:.2}",
-        r.wing, r.hall, r.signal_score
-    );
-
-    let r = brain.remember(
-        "carol_insight",
-        "Carol learned that async Rust needs careful testing",
-    )?;
-    println!(
-        "  remembered: wing={:?} hall={:?} signal={:.2}",
-        r.wing, r.hall, r.signal_score
-    );
-    println!();
-
-    // ── Hybrid recall ──
     println!("=== Hybrid recall: 'Alice' ===");
     let recall = brain.recall("Alice")?;
     println!(
@@ -73,32 +93,14 @@ fn main() -> anyhow::Result<()> {
         recall.graph.neighborhood.entities.len(),
         recall.graph.triples.len()
     );
-    println!("Memory hits: {}", recall.memory_hits.len());
-
+    println!(
+        "Memory hits: {} (expected 0 — no memory wing matches 'Alice')",
+        recall.memory_hits.len()
+    );
     for t in &recall.graph.triples {
-        let from_short = &t.from.to_string()[..8];
-        let to_short = &t.to.to_string()[..8];
-        println!(
-            "  {} --{}--> {} (conf={})",
-            from_short, t.predicate, to_short, t.confidence
-        );
-    }
-    for m in &recall.memory_hits {
-        println!("  [memory] {}: {:.60}", m.key, m.content);
-    }
-    println!();
-
-    // ── Error cases ──
-    println!("=== Error: unknown mention ===");
-    match brain.assert("Eve", "knows", "Bob", 1.0, Visibility::Private) {
-        Ok(_) => println!("  unexpected success"),
-        Err(e) => println!("  got error (good): {:?}", e),
-    }
-
-    println!("=== Error: predicate mismatch ===");
-    match brain.assert("Alice", "studies", "Bob", 1.0, Visibility::Private) {
-        Ok(_) => println!("  unexpected success"),
-        Err(e) => println!("  got error (good): {:?}", e),
+        let from = &t.from.to_string()[..8];
+        let to = &t.to.to_string()[..8];
+        println!("  {} --{}--> {}", from, t.predicate, to);
     }
 
     Ok(())
