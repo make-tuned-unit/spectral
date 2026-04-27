@@ -207,14 +207,14 @@ impl KuzuStore {
              SET e.entity_type = $type,
                  e.canonical = $canon,
                  e.visibility = $vis,
-                 e.created_at = $created,
-                 e.updated_at = $updated,
+                 e.created_at = cast($created, 'TIMESTAMP'),
+                 e.updated_at = cast($updated, 'TIMESTAMP'),
                  e.weight = $weight",
         )?;
         conn.execute(
             &mut stmt,
             vec![
-                ("id", kuzu::Value::String(entity.id.to_string())),
+                ("id", kuzu::Value::Blob(entity.id.as_bytes().to_vec())),
                 ("type", kuzu::Value::String(entity.entity_type.clone())),
                 ("canon", kuzu::Value::String(entity.canonical.clone())),
                 (
@@ -223,11 +223,11 @@ impl KuzuStore {
                 ),
                 (
                     "created",
-                    kuzu::Value::String(entity.created_at.to_rfc3339()),
+                    kuzu::Value::String(datetime_to_kuzu_str(&entity.created_at)),
                 ),
                 (
                     "updated",
-                    kuzu::Value::String(entity.updated_at.to_rfc3339()),
+                    kuzu::Value::String(datetime_to_kuzu_str(&entity.updated_at)),
                 ),
                 ("weight", kuzu::Value::Double(entity.weight)),
             ],
@@ -252,30 +252,33 @@ impl KuzuStore {
                  confidence: $conf,
                  source_doc_id: $doc_id,
                  source_brain_id: $brain_id,
-                 asserted_at: $asserted,
+                 asserted_at: cast($asserted, 'TIMESTAMP'),
                  visibility: $vis,
                  weight: $weight
              }]->(b)",
         )?;
-        let doc_id_str = triple
-            .source_doc_id
-            .map(|b| bytes_to_hex(&b))
-            .unwrap_or_default();
+        let doc_id_val = match triple.source_doc_id {
+            Some(bytes) => kuzu::Value::Blob(bytes.to_vec()),
+            None => kuzu::Value::Null(kuzu::LogicalType::Blob),
+        };
         conn.execute(
             &mut stmt,
             vec![
-                ("from_id", kuzu::Value::String(triple.from.to_string())),
-                ("to_id", kuzu::Value::String(triple.to.to_string())),
+                (
+                    "from_id",
+                    kuzu::Value::Blob(triple.from.as_bytes().to_vec()),
+                ),
+                ("to_id", kuzu::Value::Blob(triple.to.as_bytes().to_vec())),
                 ("pred", kuzu::Value::String(triple.predicate.clone())),
                 ("conf", kuzu::Value::Double(triple.confidence)),
-                ("doc_id", kuzu::Value::String(doc_id_str)),
+                ("doc_id", doc_id_val),
                 (
                     "brain_id",
-                    kuzu::Value::String(triple.source_brain_id.to_string()),
+                    kuzu::Value::Blob(triple.source_brain_id.as_bytes().to_vec()),
                 ),
                 (
                     "asserted",
-                    kuzu::Value::String(triple.asserted_at.to_rfc3339()),
+                    kuzu::Value::String(datetime_to_kuzu_str(&triple.asserted_at)),
                 ),
                 (
                     "vis",
@@ -301,11 +304,11 @@ impl KuzuStore {
 
         if let Some(f) = from {
             conditions.push("a.id = $from_id");
-            params.push(("from_id", kuzu::Value::String(f.to_string())));
+            params.push(("from_id", kuzu::Value::Blob(f.as_bytes().to_vec())));
         }
         if let Some(t) = to {
             conditions.push("b.id = $to_id");
-            params.push(("to_id", kuzu::Value::String(t.to_string())));
+            params.push(("to_id", kuzu::Value::Blob(t.as_bytes().to_vec())));
         }
         if let Some(p) = predicate {
             conditions.push("t.predicate = $predicate");
@@ -407,8 +410,10 @@ impl KuzuStore {
              RETURN e.id, e.entity_type, e.canonical, e.visibility,
                     e.created_at, e.updated_at, e.weight",
         )?;
-        let mut result =
-            conn.execute(&mut stmt, vec![("id", kuzu::Value::String(id.to_string()))])?;
+        let mut result = conn.execute(
+            &mut stmt,
+            vec![("id", kuzu::Value::Blob(id.as_bytes().to_vec()))],
+        )?;
         match result.next() {
             Some(row) => Ok(Some(parse_entity_row(&row)?)),
             None => Ok(None),
@@ -433,7 +438,10 @@ impl KuzuStore {
                     t.visibility, t.weight"
         };
         let mut stmt = conn.prepare(query)?;
-        let result = conn.execute(&mut stmt, vec![("id", kuzu::Value::String(id.to_string()))])?;
+        let result = conn.execute(
+            &mut stmt,
+            vec![("id", kuzu::Value::Blob(id.as_bytes().to_vec()))],
+        )?;
         let mut triples = Vec::new();
         for row in result {
             triples.push(parse_triple_row(&row)?);
@@ -464,29 +472,67 @@ fn str_to_visibility(s: &str) -> Result<Visibility, Error> {
     }
 }
 
-fn str_to_datetime(s: &str) -> Result<DateTime<Utc>, Error> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| Error::Schema(format!("invalid timestamp: {e}")))
+/// Format a chrono DateTime for Kuzu's `cast(str, 'TIMESTAMP')`.
+fn datetime_to_kuzu_str(dt: &DateTime<Utc>) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
 }
 
-fn bytes_to_hex(bytes: &[u8; 32]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+/// Extract a chrono DateTime from a Kuzu TIMESTAMP value.
+fn extract_timestamp(val: &kuzu::Value) -> Result<DateTime<Utc>, Error> {
+    match val {
+        kuzu::Value::Timestamp(odt) => {
+            let secs = odt.unix_timestamp();
+            let nanos = odt.nanosecond();
+            chrono::DateTime::from_timestamp(secs, nanos)
+                .ok_or_else(|| Error::Schema("invalid timestamp value".into()))
+        }
+        _ => Err(Error::Schema(format!("expected timestamp, got {:?}", val))),
+    }
 }
 
-fn hex_to_bytes(hex: &str) -> Result<[u8; 32], Error> {
-    if hex.len() != 64 {
-        return Err(Error::Schema(format!(
-            "expected 64 hex chars, got {}",
-            hex.len()
-        )));
+/// Extract an EntityId from a BLOB value.
+fn extract_entity_id(val: &kuzu::Value) -> Result<EntityId, Error> {
+    match val {
+        kuzu::Value::Blob(v) => {
+            let bytes: [u8; 32] = v.as_slice().try_into().map_err(|_| {
+                Error::Schema(format!("expected 32-byte blob, got {} bytes", v.len()))
+            })?;
+            // Reconstruct EntityId from raw bytes via hex round-trip
+            let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            hex.parse().map_err(Error::Core)
+        }
+        _ => Err(Error::Schema(format!("expected blob, got {:?}", val))),
     }
-    let mut bytes = [0u8; 32];
-    for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
-            .map_err(|_| Error::Schema(format!("invalid hex at position {}", i * 2)))?;
+}
+
+/// Extract a BrainId from a BLOB value.
+fn extract_brain_id(val: &kuzu::Value) -> Result<BrainId, Error> {
+    match val {
+        kuzu::Value::Blob(v) => {
+            let bytes: [u8; 32] = v.as_slice().try_into().map_err(|_| {
+                Error::Schema(format!("expected 32-byte blob, got {} bytes", v.len()))
+            })?;
+            Ok(BrainId::from_bytes(bytes))
+        }
+        _ => Err(Error::Schema(format!("expected blob, got {:?}", val))),
     }
-    Ok(bytes)
+}
+
+/// Extract an optional doc ID from a BLOB value (NULL → None).
+fn extract_optional_doc_id(val: &kuzu::Value) -> Result<Option<[u8; 32]>, Error> {
+    match val {
+        kuzu::Value::Null(_) => Ok(None),
+        kuzu::Value::Blob(v) => {
+            let bytes: [u8; 32] = v.as_slice().try_into().map_err(|_| {
+                Error::Schema(format!("expected 32-byte blob, got {} bytes", v.len()))
+            })?;
+            Ok(Some(bytes))
+        }
+        _ => Err(Error::Schema(format!(
+            "expected blob or null, got {:?}",
+            val
+        ))),
+    }
 }
 
 fn extract_string(val: &kuzu::Value) -> Result<String, Error> {
@@ -503,39 +549,27 @@ fn extract_double(val: &kuzu::Value) -> Result<f64, Error> {
     }
 }
 
-fn extract_optional_doc_id(val: &kuzu::Value) -> Result<Option<[u8; 32]>, Error> {
-    match val {
-        kuzu::Value::Null(_) => Ok(None),
-        kuzu::Value::String(s) if s.is_empty() => Ok(None),
-        kuzu::Value::String(s) => Ok(Some(hex_to_bytes(s)?)),
-        _ => Err(Error::Schema(format!(
-            "expected string or null, got {:?}",
-            val
-        ))),
-    }
-}
-
 fn parse_entity_row(row: &[kuzu::Value]) -> Result<Entity, Error> {
     Ok(Entity {
-        id: extract_string(&row[0])?.parse()?,
+        id: extract_entity_id(&row[0])?,
         entity_type: extract_string(&row[1])?,
         canonical: extract_string(&row[2])?,
         visibility: str_to_visibility(&extract_string(&row[3])?)?,
-        created_at: str_to_datetime(&extract_string(&row[4])?)?,
-        updated_at: str_to_datetime(&extract_string(&row[5])?)?,
+        created_at: extract_timestamp(&row[4])?,
+        updated_at: extract_timestamp(&row[5])?,
         weight: extract_double(&row[6])?,
     })
 }
 
 fn parse_triple_row(row: &[kuzu::Value]) -> Result<Triple, Error> {
     Ok(Triple {
-        from: extract_string(&row[0])?.parse()?,
-        to: extract_string(&row[1])?.parse()?,
+        from: extract_entity_id(&row[0])?,
+        to: extract_entity_id(&row[1])?,
         predicate: extract_string(&row[2])?,
         confidence: extract_double(&row[3])?,
         source_doc_id: extract_optional_doc_id(&row[4])?,
-        source_brain_id: BrainId::from_bytes(hex_to_bytes(&extract_string(&row[5])?)?),
-        asserted_at: str_to_datetime(&extract_string(&row[6])?)?,
+        source_brain_id: extract_brain_id(&row[5])?,
+        asserted_at: extract_timestamp(&row[6])?,
         visibility: str_to_visibility(&extract_string(&row[7])?)?,
         weight: extract_double(&row[8])?,
     })

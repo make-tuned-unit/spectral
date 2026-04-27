@@ -1,15 +1,15 @@
 //! Kuzu schema definitions and migration runner.
 //!
 //! Defines the node and relationship tables that form the Spectral graph.
+//! ID columns use `BLOB` (raw 32-byte hashes) and time columns use `TIMESTAMP`.
 //!
 //! # Deviations from spec
 //!
-//! - ID columns use `STRING` (hex-encoded blake3) instead of `BLOB` to avoid
-//!   potential primary-key restrictions on binary types.
-//! - Timestamp columns use `STRING` (RFC 3339) instead of `TIMESTAMP` because
-//!   the `time` crate is not a direct dependency.
 //! - `Triple` has no user-defined compound `PRIMARY KEY` — Kuzu rel tables
 //!   don't support custom primary keys.
+//! - Timestamps are written via `cast($string_param, 'TIMESTAMP')` in Cypher
+//!   because the `time` crate is not a direct dependency (Kuzu returns
+//!   `time::OffsetDateTime` on read, which we convert to `chrono`).
 
 use kuzu::Connection;
 
@@ -76,21 +76,21 @@ pub fn schema_version() -> u32 {
 pub fn create_schema(conn: &Connection) -> Result<(), Error> {
     conn.query(
         "CREATE NODE TABLE IF NOT EXISTS Entity(
-            id STRING PRIMARY KEY,
+            id BLOB PRIMARY KEY,
             entity_type STRING,
             canonical STRING,
             visibility STRING,
-            created_at STRING,
-            updated_at STRING,
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP,
             weight DOUBLE DEFAULT 1.0
         )",
     )?;
 
     conn.query(
         "CREATE NODE TABLE IF NOT EXISTS Document(
-            id STRING PRIMARY KEY,
+            id BLOB PRIMARY KEY,
             source STRING,
-            ingested_at STRING,
+            ingested_at TIMESTAMP,
             visibility STRING
         )",
     )?;
@@ -100,9 +100,9 @@ pub fn create_schema(conn: &Connection) -> Result<(), Error> {
             FROM Entity TO Entity,
             predicate STRING,
             confidence DOUBLE,
-            source_doc_id STRING,
-            source_brain_id STRING,
-            asserted_at STRING,
+            source_doc_id BLOB,
+            source_brain_id BLOB,
+            asserted_at TIMESTAMP,
             visibility STRING,
             weight DOUBLE
         )",
@@ -113,7 +113,7 @@ pub fn create_schema(conn: &Connection) -> Result<(), Error> {
             FROM Document TO Entity,
             span_start INT64,
             span_end INT64,
-            extracted_at STRING
+            extracted_at TIMESTAMP
         )",
     )?;
 
