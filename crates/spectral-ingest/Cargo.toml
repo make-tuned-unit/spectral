@@ -1,14 +1,13 @@
 [package]
-name = "spectral-tact"
+name = "spectral-ingest"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "TACT (Topic-Aware Context Triage): fingerprint-based memory retrieval."
+description = "Memory ingestion pipeline: classify, score, fingerprint, and store memories for TACT retrieval."
 
 [dependencies]
-spectral-ingest = { path = "../spectral-ingest" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -16,6 +15,11 @@ regex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+rusqlite = { workspace = true, optional = true }
+
+[features]
+default = ["sqlite"]
+sqlite = ["dep:rusqlite"]
 
 [dev-dependencies]
 tokio = { workspace = true }

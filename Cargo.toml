@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/spectral-core",
+    "crates/spectral-ingest",
     "crates/spectral-graph",
     "crates/spectral-tact",
     "crates/spectral-constellation",
@@ -32,6 +33,10 @@ toml = "0.8"
 
 # String matching
 strsim = "0.11"
+
+# TACT / memory ingestion
+sha2 = "0.10"
+regex = "1"
 
 # Errors + logging
 thiserror = "2"

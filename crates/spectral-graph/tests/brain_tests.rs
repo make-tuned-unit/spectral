@@ -8,6 +8,8 @@ fn brain_config(tmp: &TempDir) -> BrainConfig {
     BrainConfig {
         data_dir: tmp.path().to_path_buf(),
         ontology_path: PathBuf::from("tests/fixtures/brain_ontology.toml"),
+        memory_db_path: None,
+        llm_client: None,
     }
 }
 
@@ -101,9 +103,9 @@ fn recall_returns_asserted_facts() {
         .unwrap();
 
     let result = brain.recall("Mark").unwrap();
-    assert!(!result.seed_entities.is_empty());
-    assert!(!result.triples.is_empty());
-    assert_eq!(result.triples[0].predicate, "studies");
+    assert!(!result.graph.seed_entities.is_empty());
+    assert!(!result.graph.triples.is_empty());
+    assert_eq!(result.graph.triples[0].predicate, "studies");
 }
 
 #[test]
@@ -122,11 +124,12 @@ fn recall_multi_hop_cognee_example() {
 
     // Recall "Library" should find Library → Mark → Exam (2-hop)
     let result = brain.recall("Library").unwrap();
-    assert!(result.neighborhood.entities.len() >= 3);
-    assert!(result.neighborhood.triples.len() >= 2);
+    assert!(result.graph.neighborhood.entities.len() >= 3);
+    assert!(result.graph.neighborhood.triples.len() >= 2);
 
     // Verify we can find both the "studies" and "prepares_for" triples
     let predicates: Vec<&str> = result
+        .graph
         .neighborhood
         .triples
         .iter()
@@ -142,8 +145,8 @@ fn recall_unknown_query_empty() {
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
     let result = brain.recall("xyznonexistent").unwrap();
-    assert!(result.seed_entities.is_empty());
-    assert!(result.triples.is_empty());
+    assert!(result.graph.seed_entities.is_empty());
+    assert!(result.graph.triples.is_empty());
 }
 
 #[test]
@@ -185,4 +188,52 @@ fn ingest_document_idempotent() {
 
     // Same content produces same document_id
     assert_eq!(r1.document_id, r2.document_id);
+}
+
+#[test]
+fn remember_and_recall_roundtrip() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember("auth_decision", "Alice decided to use Clerk for auth")
+        .unwrap();
+
+    // recall with enough words to pass TACT's min_words gate
+    let result = brain.recall("what was the auth decision").unwrap();
+    // Should find memory via FTS fallback
+    assert!(!result.memory_hits.is_empty() || !result.graph.seed_entities.is_empty());
+}
+
+#[test]
+fn remember_idempotent() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let r1 = brain.remember("same_key", "some content here").unwrap();
+    let r2 = brain.remember("same_key", "updated content here").unwrap();
+
+    // Same key produces same memory ID (deterministic from key)
+    assert_eq!(r1.memory_id, r2.memory_id);
+}
+
+#[test]
+fn remember_classifies_correctly() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let result = brain
+        .remember("auth_decision", "Alice decided to use Clerk for auth")
+        .unwrap();
+
+    assert_eq!(result.hall.as_deref(), Some("fact"));
+    assert!(result.signal_score >= 0.7);
+}
+
+#[test]
+fn open_creates_memory_db() {
+    let tmp = TempDir::new().unwrap();
+    let _brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    assert!(tmp.path().join("memory.db").exists());
 }
