@@ -837,6 +837,7 @@ dependencies = [
  "kuzu",
  "serde",
  "spectral-core",
+ "strsim",
  "tempfile",
  "thiserror",
  "toml",

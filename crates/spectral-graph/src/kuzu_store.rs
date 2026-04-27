@@ -398,6 +398,72 @@ impl KuzuStore {
         })
     }
 
+    /// Upsert a document node.
+    pub fn upsert_document(
+        &self,
+        id: &[u8; 32],
+        source: &str,
+        visibility: Visibility,
+    ) -> Result<(), Error> {
+        let conn = self.connection()?;
+        let mut stmt = conn.prepare(
+            "MERGE (d:Document {id: $id})
+             SET d.source = $source,
+                 d.ingested_at = cast($ingested, 'TIMESTAMP'),
+                 d.visibility = $vis",
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", kuzu::Value::Blob(id.to_vec())),
+                ("source", kuzu::Value::String(source.to_string())),
+                (
+                    "ingested",
+                    kuzu::Value::String(datetime_to_kuzu_str(&Utc::now())),
+                ),
+                ("vis", kuzu::Value::String(visibility_to_str(visibility))),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Insert a Mentions edge from a document to an entity.
+    pub fn insert_mention(
+        &self,
+        doc_id: &[u8; 32],
+        entity_id: &EntityId,
+        span_start: i64,
+        span_end: i64,
+    ) -> Result<(), Error> {
+        let conn = self.connection()?;
+        let mut stmt = conn.prepare(
+            "MATCH (d:Document), (e:Entity)
+             WHERE d.id = $doc_id AND e.id = $entity_id
+             CREATE (d)-[:Mentions {
+                 span_start: $span_start,
+                 span_end: $span_end,
+                 extracted_at: cast($extracted, 'TIMESTAMP')
+             }]->(e)",
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("doc_id", kuzu::Value::Blob(doc_id.to_vec())),
+                (
+                    "entity_id",
+                    kuzu::Value::Blob(entity_id.as_bytes().to_vec()),
+                ),
+                ("span_start", kuzu::Value::Int64(span_start)),
+                ("span_end", kuzu::Value::Int64(span_end)),
+                (
+                    "extracted",
+                    kuzu::Value::String(datetime_to_kuzu_str(&Utc::now())),
+                ),
+            ],
+        )?;
+        Ok(())
+    }
+
     // --- Private helpers ---
 
     fn get_entity_with_conn(
