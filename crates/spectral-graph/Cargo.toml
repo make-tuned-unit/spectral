@@ -1,0 +1,18 @@
+[package]
+name = "spectral-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Graph layer for Spectral: Kuzu storage, ontology canonicalization, provenance."
+
+[dependencies]
+spectral-core = { path = "../spectral-core" }
+kuzu = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
