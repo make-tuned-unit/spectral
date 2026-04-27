@@ -5,7 +5,10 @@
 
 pub mod brain;
 pub mod canonicalize;
+pub mod error;
 pub mod kuzu_store;
 pub mod ontology;
 pub mod provenance;
 pub mod schema;
+
+pub use error::Error;
