@@ -32,6 +32,11 @@ impl BrainId {
         Self(*blake3::hash(vk.as_bytes()).as_bytes())
     }
 
+    /// Construct a BrainId from raw bytes (e.g. loaded from storage).
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Returns the raw 32-byte hash.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0

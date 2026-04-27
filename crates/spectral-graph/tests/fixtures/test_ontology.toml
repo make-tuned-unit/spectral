@@ -1,0 +1,19 @@
+version = 1
+
+[[entity]]
+type = "person"
+canonical = "sophie-sharratt"
+aliases = ["Sophie", "Sophie Sharratt"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "spectral"
+aliases = ["Spectral"]
+visibility = "public"
+
+[[predicate]]
+name = "works_on"
+domain = ["person"]
+range = ["project"]
+symmetric = false
