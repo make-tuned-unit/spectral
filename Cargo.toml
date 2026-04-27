@@ -15,8 +15,8 @@ edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
 authors = ["Jesse Sharratt"]
-repository = "https://github.com/REPLACE_WITH_ORG/spectral"
-homepage = "https://github.com/REPLACE_WITH_ORG/spectral"
+repository = "https://github.com/make-tuned-unit/spectral"
+homepage = "https://github.com/make-tuned-unit/spectral"
 readme = "README.md"
 
 [workspace.dependencies]
