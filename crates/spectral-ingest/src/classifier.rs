@@ -36,9 +36,26 @@ pub fn classify_hall(content: &str, rules: &[(Regex, String)]) -> String {
     "event".to_string()
 }
 
-/// Build default wing rules matching production `memory_tagger.py`.
-pub fn default_wing_rules() -> Vec<(Regex, String)> {
-    let rules: Vec<(&str, &str)> = vec![
+/// Default wing rule patterns as `(regex_pattern, wing_name)` string pairs.
+///
+/// Shared between ingest (compiled to `Regex`) and TACT retrieval (used as strings).
+pub fn default_wing_rule_strings() -> Vec<(String, String)> {
+    default_wing_rule_pairs()
+        .into_iter()
+        .map(|(p, w)| (p.to_string(), w.to_string()))
+        .collect()
+}
+
+/// Default hall rule patterns as `(regex_pattern, hall_name)` string pairs.
+pub fn default_hall_rule_strings() -> Vec<(String, String)> {
+    default_hall_rule_pairs()
+        .into_iter()
+        .map(|(p, h)| (p.to_string(), h.to_string()))
+        .collect()
+}
+
+fn default_wing_rule_pairs() -> Vec<(&'static str, &'static str)> {
+    vec![
         (
             r"jesse|coffee|anniversary|colou?r|favourit|favorit|sons|rowan|jude|sophie.sharratt",
             "jesse",
@@ -59,21 +76,11 @@ pub fn default_wing_rules() -> Vec<(Regex, String)> {
             r"task.runner|litellm|zeroclaw|infrastructure|ollama|gemma|model.ladder",
             "henry-infra",
         ),
-    ];
-    rules
-        .into_iter()
-        .map(|(pat, wing)| {
-            (
-                Regex::new(pat).expect("invalid wing regex"),
-                wing.to_string(),
-            )
-        })
-        .collect()
+    ]
 }
 
-/// Build default hall rules matching production `memory_tagger.py`.
-pub fn default_hall_rules() -> Vec<(Regex, String)> {
-    let rules: Vec<(&str, &str)> = vec![
+fn default_hall_rule_pairs() -> Vec<(&'static str, &'static str)> {
+    vec![
         (
             r"decided|chose|switching to|using|will use|agreed|locked in",
             "fact",
@@ -87,8 +94,25 @@ pub fn default_hall_rules() -> Vec<(Regex, String)> {
             "discovery",
         ),
         (r"recommend|should|advice|suggest|try using", "advice"),
-    ];
-    rules
+    ]
+}
+
+/// Build default wing rules as compiled `Regex` (for ingestion classifier).
+pub fn default_wing_rules() -> Vec<(Regex, String)> {
+    default_wing_rule_pairs()
+        .into_iter()
+        .map(|(pat, wing)| {
+            (
+                Regex::new(pat).expect("invalid wing regex"),
+                wing.to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Build default hall rules as compiled `Regex` (for ingestion classifier).
+pub fn default_hall_rules() -> Vec<(Regex, String)> {
+    default_hall_rule_pairs()
         .into_iter()
         .map(|(pat, hall)| {
             (

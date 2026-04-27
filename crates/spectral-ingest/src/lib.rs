@@ -12,6 +12,8 @@ pub mod signal;
 #[cfg(feature = "sqlite")]
 pub mod sqlite_store;
 
+pub use classifier::{default_hall_rule_strings, default_wing_rule_strings};
+
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
