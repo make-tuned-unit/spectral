@@ -9,6 +9,9 @@ description = "Graph layer for Spectral: Kuzu storage, ontology canonicalization
 
 [dependencies]
 spectral-core = { path = "../spectral-core" }
+spectral-ingest = { path = "../spectral-ingest" }
+spectral-tact = { path = "../spectral-tact" }
+tokio = { workspace = true }
 kuzu = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }
