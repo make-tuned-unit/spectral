@@ -23,13 +23,27 @@ use serde::{Deserialize, Serialize};
 ///
 /// # The `allows` method
 ///
+/// `content.allows(context)` returns `true` if content at this visibility
+/// level can be shared into a federation or query context with the given
+/// clearance. Content is shareable when its visibility is at least as
+/// permissive as the context requires.
+///
 /// ```
 /// use spectral_core::visibility::Visibility;
 ///
-/// // Org-level content is visible to Org and Public consumers
-/// assert!(Visibility::Org.allows(Visibility::Org));
+/// // Public content can be shared into any context
 /// assert!(Visibility::Public.allows(Visibility::Org));
+/// assert!(Visibility::Public.allows(Visibility::Private));
+///
+/// // Org content can be shared into Org or stricter-but-broader contexts
+/// assert!(Visibility::Org.allows(Visibility::Org));
+///
+/// // Team content cannot be shared into an Org-clearance context
 /// assert!(!Visibility::Team.allows(Visibility::Org));
+///
+/// // Private content stays private
+/// assert!(Visibility::Private.allows(Visibility::Private));
+/// assert!(!Visibility::Private.allows(Visibility::Public));
 /// ```
 ///
 /// # Serde as lowercase strings
@@ -63,11 +77,13 @@ pub enum Visibility {
 }
 
 impl Visibility {
-    /// Returns `true` if a consumer at this visibility level can access
-    /// content at the `target` visibility level.
+    /// Returns `true` if content at this visibility level can be shared
+    /// into a context with the given clearance.
     ///
-    /// A consumer can access content when their level is at least as
-    /// permissive as the content's level (`self >= target`).
+    /// Content is shareable when its visibility is at least as permissive
+    /// as the context requires (`self >= context`). Public content is
+    /// shareable everywhere; Private content is shareable only into
+    /// Private contexts.
     pub fn allows(&self, target: Visibility) -> bool {
         *self >= target
     }
