@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/spectral-core",
+    "crates/spectral-graph",
+    "crates/spectral-tact",
+    "crates/spectral-constellation",
+    "crates/spectral-spectrogram",
+    "crates/spectral",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+authors = ["Alice Doe"]
+repository = "https://github.com/REPLACE_WITH_ORG/spectral"
+homepage = "https://github.com/REPLACE_WITH_ORG/spectral"
+readme = "README.md"
+
+[workspace.dependencies]
+# Crypto + identity
+blake3 = "1.5"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Errors + logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Storage
+kuzu = "0.11"
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Async (used by some crates)
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
