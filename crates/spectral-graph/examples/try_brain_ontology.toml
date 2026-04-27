@@ -1,0 +1,36 @@
+version = 1
+
+[[entity]]
+type = "person"
+canonical = "alice"
+aliases = ["Alice"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "bob"
+aliases = ["Bob"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "carol"
+aliases = ["Carol"]
+visibility = "private"
+
+[[entity]]
+type = "subject"
+canonical = "math"
+aliases = ["Math", "Mathematics"]
+visibility = "private"
+
+[[predicate]]
+name = "knows"
+domain = ["person"]
+range = ["person"]
+symmetric = true
+
+[[predicate]]
+name = "studies"
+domain = ["person"]
+range = ["subject"]
