@@ -63,6 +63,28 @@ See [benches/RESULTS.md](benches/RESULTS.md) for current numbers and
 cargo bench --bench retrieval -p spectral
 ```
 
+### Compared to vector search
+
+Spectral is **6.8x faster** than neural vector search (BGE-small-en-v1.5)
+on cold queries (where the query must be encoded). Vector search is 1.6x
+faster when queries are pre-encoded.
+
+On retrieval quality, vector search wins on **paraphrase queries** where
+the query uses completely different vocabulary than the corpus (1.00 vs
+0.60 P@5). Both systems tie on keyword, multi-hop, and vocabulary-bridge
+queries.
+
+Spectral requires no embedding model (~0 MB baseline vs ~330 MB for
+model + ONNX Runtime), no GPU, and no per-query encoding cost (~5 ms
+saved per query).
+
+```bash
+cargo bench --bench vector_comparison -p spectral  # downloads ~330 MB on first run
+```
+
+See the [neural vector comparison](benches/RESULTS.md#spectral-vs-neural-vector-embeddings-bge-small-en-v15)
+section for the full breakdown.
+
 ## Operational considerations
 
 See [docs/operational-considerations.md](docs/operational-considerations.md)
