@@ -244,6 +244,22 @@ fn decay_applies_to_old_memories() {
         "old memory should have decayed: score={}",
         hit.signal_score
     );
+
+    // Verify decay is READ-ONLY: the stored signal_score in SQLite must be unchanged.
+    let stored_score: f64 = {
+        let db_path = tmp.path().join("memory.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row(
+            "SELECT signal_score FROM memories WHERE key = 'old-key'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert!(
+        (stored_score - 0.85).abs() < 0.02,
+        "stored signal_score should be unchanged after recall, got {stored_score}"
+    );
 }
 
 #[test]

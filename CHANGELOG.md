@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Time-based signal decay in `Brain::recall()` (1% per week, capped at 50%, read-only)
 - `last_reinforced_at` field on `Memory` and `MemoryHit` for tracking reinforcement history
 - `MemoryStore::reinforce_memory()` trait method with SQLite implementation
+- Triple reinforcement is deferred pending Kuzu schema work for primary keys on rel tables
 
 ### Performance
 - Wing result LRU cache (32 entries) in `SqliteStore` — serves repeated `wing_search()` from memory, invalidated on `write()`
