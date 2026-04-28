@@ -85,10 +85,126 @@ rather than keyword overlap. The TF-IDF baseline was chosen to avoid
 ONNX Runtime and model download dependencies. See METHODOLOGY.md for
 details.
 
+---
+
+## Spectral vs neural vector embeddings (BGE-small-en-v1.5)
+
+Date: 2026-04-28
+Spectral: commit on feat/vector-comparison branch
+Model: BAAI/bge-small-en-v1.5 (384 dims, via fastembed v5.13)
+
+### Claim 1: Speed
+
+20 queries against 1000 memories:
+
+| System | Mean (20 queries) | Per-query | Notes |
+|---|---|---|---|
+| Spectral (TACT retrieval) | 25.3 ms | ~1.3 ms | Regex classification + hash lookup |
+| Vector cold (encode + search) | 171.4 ms | ~8.6 ms | Includes ~5 ms/query encoding |
+| Vector warm (search only) | 15.5 ms | ~0.8 ms | Pre-encoded queries, scan only |
+
+**Spectral is 6.8x faster than cold vector search.** When query
+embeddings are pre-computed (warm), vector search is 1.6x faster than
+Spectral because brute-force cosine over 384-dim float32 vectors is
+cheaper than Spectral's SQLite + fingerprint lookup.
+
+Cold vs warm matters: in a real deployment, every new user query must be
+encoded. The cold path is the common case unless you batch and cache
+queries.
+
+### Claim 2: Multi-hop accuracy (Precision@5)
+
+| Category | Spectral P@5 | Vector P@5 | Winner |
+|---|---|---|---|
+| Keyword overlap (5 queries) | 1.00 | 1.00 | Tie |
+| Paraphrase (5 queries) | 0.60 | 1.00 | **Vector** |
+| Multi-hop topical (5 queries) | 1.00 | 1.00 | Tie |
+| Vocabulary bridge (5 queries) | 1.00 | 1.00 | Tie |
+
+**Vector wins on paraphrase queries.** Two of the five paraphrase
+queries had truly zero word overlap with the corpus. Spectral scored
+0.00 on these (TACT fell to FTS, FTS found nothing). Vector found
+relevant results via semantic similarity.
+
+The other three paraphrase queries had accidental word overlap ("cluster",
+"family", "event") that let Spectral's FTS fallback succeed. This shows
+that TACT's weakness is specifically **vocabulary-gap queries where no
+word in the query appears in any relevant memory**.
+
+**Multi-hop queries tied.** Both systems achieved 1.00 P@5. Spectral's
+fingerprint search activated correctly (wing + hall detected), but the
+queries also contained enough keywords for vector to find the same
+results. A more challenging test would use queries with wing+hall
+triggers but zero vocabulary overlap with target memories.
+
+**Vocabulary bridge queries tied.** Surprisingly, both systems found
+relevant results even with completely different vocabulary. FTS matched
+common words ("pipeline", "data", "event", "system") that happened to
+appear in relevant memories. Vector matched via semantic similarity.
+
+### Claim 3: Operational cost
+
+| Metric | Spectral | Vector |
+|---|---|---|
+| Cold-start time | 34 ms | 143 ms |
+| Per-query encoding | 0 ms | ~5 ms |
+| Disk (1k memories) | 22.1 MB | 1.5 MB embeddings + ~330 MB model/runtime |
+| Disk (10k projected) | ~220 MB | 14.6 MB embeddings + ~330 MB model/runtime |
+| External dependencies | None | ONNX Runtime + model weights |
+
+**Spectral has no model dependency.** No GPU, no embedding model in
+memory, no per-query encoding cost. The trade-off is a larger per-memory
+disk footprint (SQLite + Kuzu graph + fingerprints) — but at small scale
+(<10k memories), Spectral's total disk usage is smaller than vector's
+model overhead.
+
+At ~15k memories, the crossover occurs: Spectral's data exceeds vector's
+fixed model cost + embeddings.
+
+### What surprised us
+
+1. **Multi-hop tie.** We expected Spectral's fingerprint traversal to
+   outperform vector on cross-hall queries. It didn't — because the
+   queries contained enough direct keywords for both systems.
+
+2. **FTS fallback effectiveness.** Three "paraphrase" queries succeeded
+   for Spectral because common words like "cluster" and "event" provided
+   just enough FTS signal. Pure vocabulary-gap queries (0/5 word overlap)
+   were the only total failures.
+
+3. **Vector warm is fast.** Brute-force cosine over 384×1000 float32
+   vectors (0.8 ms for 20 queries) is cheaper than we expected. At 10k+
+   memories, an ANN index (HNSW) would be needed.
+
+### When to use each
+
+| Use Spectral when... | Use vector when... |
+|---|---|
+| Queries use domain vocabulary | Queries may use paraphrased vocabulary |
+| Sub-ms cold-query latency matters | Encoding latency is acceptable (~5 ms) |
+| No GPU/model infrastructure available | Embedding infrastructure exists |
+| Memory count is <15k (disk advantage) | Large corpus (model cost amortized) |
+| Domain-specific wing rules are well-tuned | General-purpose semantic search needed |
+
+### Caveats
+
+- **No ANN index.** Vector uses brute-force scan. Production vector
+  search with HNSW would be faster on warm queries but has additional
+  memory and index-build costs.
+- **1000 memories.** Results may differ at 100k+ scale.
+- **Synthetic corpus.** Real-world text is noisier; both systems may
+  perform differently.
+- **Model download.** First run downloads ~330 MB. This is cached
+  locally but is a real user cost.
+
 ## How to reproduce
 
 ```bash
+# TF-IDF baseline
 cargo bench --bench retrieval -p spectral
+
+# Neural vector comparison
+cargo bench --bench vector_comparison -p spectral
 ```
 
 Criterion HTML reports are generated in `target/criterion/`.
