@@ -15,4 +15,7 @@ pub enum Error {
 
     #[error("invalid brain ID: {0}")]
     InvalidBrainId(String),
+
+    #[error("invalid device ID: {0}")]
+    InvalidDeviceId(String),
 }

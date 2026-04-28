@@ -186,6 +186,9 @@ mod tests {
                 hall: Some("fact".into()),
                 signal_score: 0.9,
                 visibility: "private".into(),
+                source: None,
+                device_id: None,
+                confidence: 1.0,
                 hits: 3,
             },
             MemoryHit {
@@ -196,6 +199,9 @@ mod tests {
                 hall: Some("discovery".into()),
                 signal_score: 0.7,
                 visibility: "private".into(),
+                source: None,
+                device_id: None,
+                confidence: 1.0,
                 hits: 1,
             },
         ];

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 
+use spectral_core::device_id::DeviceId;
 use spectral_core::entity_id::EntityId;
 use spectral_core::identity::{BrainId, BrainIdentity};
 use spectral_core::visibility::Visibility;
@@ -37,6 +38,8 @@ pub struct BrainConfig {
     /// Hall detection rules as `(regex_pattern, hall_name)` pairs.
     /// `None` uses the defaults from `spectral_ingest::default_hall_rule_strings()`.
     pub hall_rules: Option<Vec<(String, String)>>,
+    /// Optional device identifier. `None` = derive from hostname.
+    pub device_id: Option<DeviceId>,
 }
 
 /// Result of a successful assertion.
@@ -75,6 +78,16 @@ pub struct IngestResult {
     pub unresolved_count: usize,
 }
 
+/// Options for `Brain::remember_with()`.
+#[derive(Debug, Default)]
+pub struct RememberOpts {
+    pub source: Option<String>,
+    pub device_id: Option<DeviceId>,
+    /// Classification confidence override. `None` = default 1.0.
+    pub confidence: Option<f64>,
+    pub visibility: Visibility,
+}
+
 /// Result of remembering a memory.
 #[derive(Debug)]
 pub struct RememberResult {
@@ -83,6 +96,9 @@ pub struct RememberResult {
     pub hall: Option<String>,
     pub signal_score: f64,
     pub fingerprints_created: usize,
+    pub source: Option<String>,
+    pub device_id: Option<DeviceId>,
+    pub confidence: f64,
 }
 
 /// A Spectral brain: identity + ontology + knowledge graph + memory store.
@@ -100,11 +116,13 @@ pub struct RememberResult {
 ///     llm_client: None,
 ///     wing_rules: None,
 ///     hall_rules: None,
+///     device_id: None,
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
 pub struct Brain {
     identity: BrainIdentity,
+    device_id: DeviceId,
     ontology: Ontology,
     store: KuzuStore,
     memory_store: Box<dyn MemoryStore>,
@@ -167,8 +185,16 @@ impl Brain {
 
         let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Schema(e.to_string()))?;
 
+        let device_id = config.device_id.unwrap_or_else(|| {
+            let hostname = hostname::get()
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "unknown-device".to_string());
+            DeviceId::from_descriptor(&hostname)
+        });
+
         Ok(Self {
             identity,
+            device_id,
             ontology,
             store,
             memory_store,
@@ -181,6 +207,11 @@ impl Brain {
     /// Returns this brain's stable identifier.
     pub fn brain_id(&self) -> &BrainId {
         self.identity.brain_id()
+    }
+
+    /// Returns the device ID associated with this brain instance.
+    pub fn device_id(&self) -> &DeviceId {
+        &self.device_id
     }
 
     /// Assert a fact: subject text, predicate name, object text.
@@ -270,11 +301,29 @@ impl Brain {
     /// Ingest free text: classify, score, fingerprint, store in memory DB.
     ///
     /// The `visibility` parameter controls who can see this memory during recall.
+    /// Equivalent to `remember_with(key, content, RememberOpts { visibility, ..Default::default() })`.
     pub fn remember(
         &self,
         key: &str,
         content: &str,
         visibility: Visibility,
+    ) -> Result<RememberResult, Error> {
+        self.remember_with(
+            key,
+            content,
+            RememberOpts {
+                visibility,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Ingest free text with full metadata control.
+    pub fn remember_with(
+        &self,
+        key: &str,
+        content: &str,
+        opts: RememberOpts,
     ) -> Result<RememberResult, Error> {
         let memory_id = format!(
             "{:016x}",
@@ -285,10 +334,15 @@ impl Brain {
             )
         );
 
-        let vis_str = visibility_to_str(visibility);
+        let vis_str = visibility_to_str(opts.visibility);
+        let ingest_opts = spectral_ingest::ingest::IngestOpts {
+            source: opts.source,
+            device_id: opts.device_id,
+            confidence: opts.confidence,
+        };
         let result = self
             .rt
-            .block_on(spectral_ingest::ingest::ingest(
+            .block_on(spectral_ingest::ingest::ingest_with(
                 &memory_id,
                 key,
                 content,
@@ -297,6 +351,7 @@ impl Brain {
                 &vis_str,
                 &self.ingest_config,
                 self.memory_store.as_ref(),
+                ingest_opts,
             ))
             .map_err(|e| Error::Schema(e.to_string()))?;
 
@@ -306,6 +361,9 @@ impl Brain {
             hall: result.memory.hall,
             signal_score: result.memory.signal_score,
             fingerprints_created: result.fingerprints.len(),
+            source: result.memory.source,
+            device_id: result.memory.device_id.map(DeviceId::from_bytes),
+            confidence: result.memory.confidence,
         })
     }
 

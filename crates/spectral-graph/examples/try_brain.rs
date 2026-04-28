@@ -1,8 +1,9 @@
 //! Smoke-test the Brain API: graph + memory + hybrid recall + visibility filtering.
 //! Run with: cargo run --example try_brain -p spectral-graph
 
+use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
-use spectral_graph::brain::{Brain, BrainConfig};
+use spectral_graph::brain::{Brain, BrainConfig, RememberOpts};
 
 fn main() -> anyhow::Result<()> {
     let tmpdir = tempfile::tempdir()?;
@@ -17,6 +18,7 @@ fn main() -> anyhow::Result<()> {
         llm_client: None,
         wing_rules: None,
         hall_rules: None,
+        device_id: None,
     })?;
     println!("Brain ID: {}", brain.brain_id());
 
@@ -65,5 +67,31 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!("\nVisibility enforcement verified.");
+
+    // Provenance metadata demonstration
+    let device = DeviceId::from_descriptor("smoke-test-host");
+    brain.remember_with(
+        "polybot-provenance",
+        "Decided to use Polybot for weather prediction with provenance",
+        RememberOpts {
+            source: Some("native".into()),
+            device_id: Some(device),
+            confidence: Some(0.95),
+            visibility: Visibility::Private,
+        },
+    )?;
+
+    let recall = brain.recall("polybot weather prediction provenance", Visibility::Private)?;
+    println!("\nProvenance metadata ({} hits):", recall.memory_hits.len());
+    for hit in &recall.memory_hits {
+        println!(
+            "  source={:?} device={:?} confidence={:.2}: {}",
+            hit.source.as_deref(),
+            hit.device_id.map(DeviceId::from_bytes),
+            hit.confidence,
+            &hit.content[..hit.content.len().min(60)],
+        );
+    }
+
     Ok(())
 }
