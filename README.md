@@ -53,6 +53,16 @@ Both are accessible through a single `Brain` handle.
 > zeroclaw codebase) lives in `spectral-ingest::fingerprint`. There is no
 > separate `spectral-constellation` crate.
 
+## Performance
+
+Sub-millisecond recall at 1000 memories. ~2,500 ingests/sec on empty brain.
+See [benches/RESULTS.md](benches/RESULTS.md) for current numbers and
+[benches/METHODOLOGY.md](benches/METHODOLOGY.md) for how they were measured.
+
+```bash
+cargo bench --bench retrieval -p spectral
+```
+
 ## Operational considerations
 
 See [docs/operational-considerations.md](docs/operational-considerations.md)
