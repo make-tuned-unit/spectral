@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/logo/lockup_primary_teal.svg" alt="Spectral" width="400">
+  <img src="assets/logo/mark_primary_128px.svg" alt="Spectral logo" width="80">
 </p>
+
+<h1 align="center">Spectral</h1>
 
 <p align="center">
   A frequency-domain memory system for AI agents, designed for federation.
