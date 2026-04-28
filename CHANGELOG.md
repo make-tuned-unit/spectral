@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `IngestTextOpts`, `IngestTextResult`, `RejectedTriple`, `RejectionReason` types for controlling and inspecting text ingestion
 - `ExtractionPrompt` in `spectral-graph::extract` for building LLM prompts and parsing responses
 - `Error::MissingLlmClient` and `Error::Llm` variants for LLM-related errors
+- `Brain::reinforce()` — Memify feedback loop: increase signal_score on useful memories, reset decay clock
+- `ReinforceOpts`, `ReinforceResult` types for controlling reinforcement
+- Time-based signal decay in `Brain::recall()` (1% per week, capped at 50%, read-only)
+- `last_reinforced_at` field on `Memory` and `MemoryHit` for tracking reinforcement history
+- `MemoryStore::reinforce_memory()` trait method with SQLite implementation
 
 ### Performance
 - Wing result LRU cache (32 entries) in `SqliteStore` — serves repeated `wing_search()` from memory, invalidated on `write()`

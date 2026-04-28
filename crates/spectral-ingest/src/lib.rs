@@ -41,6 +41,12 @@ pub struct Memory {
     /// Classification confidence, 0.0–1.0. Defaults to 1.0.
     #[serde(default = "default_confidence")]
     pub confidence: f64,
+    /// When this memory was created (ISO-8601 string from SQLite).
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// When this memory was last reinforced via the Memify feedback loop.
+    #[serde(default)]
+    pub last_reinforced_at: Option<String>,
 }
 
 fn default_confidence() -> f64 {
@@ -91,6 +97,12 @@ pub struct MemoryHit {
     /// Classification confidence, 0.0–1.0.
     #[serde(default = "default_confidence")]
     pub confidence: f64,
+    /// When this memory was created.
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// When this memory was last reinforced.
+    #[serde(default)]
+    pub last_reinforced_at: Option<String>,
 }
 
 // ── MemoryStore trait ───────────────────────────────────────────────
@@ -147,6 +159,17 @@ pub trait MemoryStore: Send + Sync {
         &self,
         ids: &[String],
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>>;
+
+    // ── Feedback ──
+
+    /// Reinforce a memory by key: add `strength` to its signal_score (clamped to 1.0)
+    /// and set last_reinforced_at to now. Returns the memory's wing (for cache invalidation)
+    /// or None if the key was not found.
+    fn reinforce_memory(
+        &self,
+        key: &str,
+        strength: f64,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>>;
 }
 
 // ── TimeBucket ──────────────────────────────────────────────────────

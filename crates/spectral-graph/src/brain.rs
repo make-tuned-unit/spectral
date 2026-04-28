@@ -151,6 +151,32 @@ pub enum RejectionReason {
     InvalidPredicate(String),
 }
 
+/// Options for `Brain::reinforce()`.
+#[derive(Debug)]
+pub struct ReinforceOpts {
+    /// Memory keys to reinforce (matched against recall result memory_hits).
+    pub memory_keys: Vec<String>,
+    /// Reinforcement strength, 0.0 to 1.0. Default 0.1.
+    /// Each call adds this to signal_score (clamped to 1.0).
+    pub strength: f64,
+}
+
+impl Default for ReinforceOpts {
+    fn default() -> Self {
+        Self {
+            memory_keys: Vec::new(),
+            strength: 0.1,
+        }
+    }
+}
+
+/// Result of `Brain::reinforce()`.
+#[derive(Debug)]
+pub struct ReinforceResult {
+    pub memories_reinforced: usize,
+    pub memories_not_found: Vec<String>,
+}
+
 /// A Spectral brain: identity + ontology + knowledge graph + memory store.
 ///
 /// # Open a brain
@@ -424,6 +450,11 @@ impl Brain {
     /// Returns only content where `content.visibility.allows(context_visibility)`
     /// is true. A `Private` context sees everything; a `Public` context sees
     /// only `Public` content.
+    ///
+    /// Recall results are scored using time-decayed signal scores. Memories that
+    /// have not been reinforced recently receive a gentle penalty (1% per week,
+    /// capped at 50% of the original score). Reinforce useful results via
+    /// `Brain::reinforce()` to lift them back up.
     pub fn recall(
         &self,
         query: &str,
@@ -438,12 +469,22 @@ impl Brain {
             ))
             .map_err(|e| Error::Schema(e.to_string()))?;
 
-        // Filter memory hits by visibility
+        // Filter by visibility, then apply time-based decay to signal scores
+        let now = Utc::now();
         let memory_hits: Vec<_> = tact
             .memories
             .iter()
             .filter(|m| str_to_vis(&m.visibility).allows(context_visibility))
             .cloned()
+            .map(|mut hit| {
+                hit.signal_score = decayed_signal_score(
+                    hit.signal_score,
+                    &hit.created_at,
+                    &hit.last_reinforced_at,
+                    &now,
+                );
+                hit
+            })
             .collect();
 
         let graph = self.recall_graph(query, context_visibility)?;
@@ -579,6 +620,33 @@ impl Brain {
         &self.ontology
     }
 
+    /// Reinforce memories that the caller found useful from a recall result.
+    ///
+    /// Increases signal_score by `strength` (clamped to 1.0) and updates
+    /// `last_reinforced_at` to now. This resets the decay clock for those
+    /// memories, causing them to rank higher in future recalls.
+    pub fn reinforce(&self, opts: ReinforceOpts) -> Result<ReinforceResult, Error> {
+        let mut memories_reinforced = 0;
+        let mut memories_not_found = Vec::new();
+
+        for key in &opts.memory_keys {
+            let wing = self
+                .rt
+                .block_on(self.memory_store.reinforce_memory(key, opts.strength))
+                .map_err(|e| Error::Schema(e.to_string()))?;
+
+            match wing {
+                Some(_) => memories_reinforced += 1,
+                None => memories_not_found.push(key.clone()),
+            }
+        }
+
+        Ok(ReinforceResult {
+            memories_reinforced,
+            memories_not_found,
+        })
+    }
+
     /// Extract triples from natural-language text, validate against ontology,
     /// assert valid triples, and store the original text as a memory.
     ///
@@ -699,4 +767,36 @@ fn str_to_vis(s: &str) -> Visibility {
         "public" => Visibility::Public,
         _ => Visibility::Private,
     }
+}
+
+/// Apply time-based decay to a signal score.
+///
+/// Uses `last_reinforced_at` if present, otherwise `created_at`.
+/// Decay rate: 1% per week, maximum decay of 50% (old memories never fully fade).
+/// This is applied to the in-memory representation only — the stored score is unchanged.
+fn decayed_signal_score(
+    raw_score: f64,
+    created_at: &Option<String>,
+    last_reinforced_at: &Option<String>,
+    now: &chrono::DateTime<Utc>,
+) -> f64 {
+    let last_touch = last_reinforced_at
+        .as_deref()
+        .or(created_at.as_deref())
+        .and_then(|s| {
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|dt| dt.and_utc())
+        });
+
+    let last_touch = match last_touch {
+        Some(t) => t,
+        None => return raw_score, // No timestamp available, no decay
+    };
+
+    let days_since = (*now - last_touch).num_days().max(0) as f64;
+    let decay = (days_since / 7.0) * 0.01;
+    let decay_factor = (1.0 - decay).max(0.5);
+
+    raw_score * decay_factor
 }
