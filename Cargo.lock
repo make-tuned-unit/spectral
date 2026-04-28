@@ -1163,6 +1163,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec9d92d097f4749b64e8cc33d924d9f40a2d4eb91402b458014b781f5733d60f"
 
 [[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2681,8 +2692,10 @@ dependencies = [
  "anyhow",
  "blake3",
  "chrono",
+ "hostname",
  "kuzu",
  "regex",
+ "rusqlite",
  "serde",
  "spectral-core",
  "spectral-ingest",
@@ -2705,6 +2718,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spectral-core",
  "thiserror",
  "tokio",
  "tracing",

@@ -62,9 +62,10 @@ use std::path::{Path, PathBuf};
 
 // ── Re-exports ──────────────────────────────────────────────────────
 
+pub use spectral_core::device_id::DeviceId;
 pub use spectral_core::visibility::Visibility;
 pub use spectral_graph::brain::{
-    AssertResult, HybridRecallResult, IngestResult, RecallResult, RememberResult,
+    AssertResult, HybridRecallResult, IngestResult, RecallResult, RememberOpts, RememberResult,
 };
 pub use spectral_graph::Error;
 pub use spectral_tact::LlmClient;
@@ -148,6 +149,11 @@ impl Brain {
             .assert(subject, predicate, object, confidence, visibility)
     }
 
+    /// Returns the device ID associated with this brain instance.
+    pub fn device_id(&self) -> &DeviceId {
+        self.inner.device_id()
+    }
+
     /// Remember free-text content: classify, score, fingerprint, store.
     ///
     /// The `visibility` parameter controls who can see this memory during recall.
@@ -158,6 +164,16 @@ impl Brain {
         visibility: Visibility,
     ) -> Result<RememberResult, Error> {
         self.inner.remember(key, content, visibility)
+    }
+
+    /// Remember free-text content with full metadata control.
+    pub fn remember_with(
+        &self,
+        key: &str,
+        content: &str,
+        opts: RememberOpts,
+    ) -> Result<RememberResult, Error> {
+        self.inner.remember_with(key, content, opts)
     }
 
     /// Hybrid recall filtered by visibility context.
@@ -226,6 +242,7 @@ pub struct BrainBuilder {
     llm_client: Option<Box<dyn LlmClient>>,
     wing_rules: Option<Vec<(String, String)>>,
     hall_rules: Option<Vec<(String, String)>>,
+    device_id: Option<DeviceId>,
     auto_ontology: bool,
 }
 
@@ -280,6 +297,12 @@ impl BrainBuilder {
         self
     }
 
+    /// Set a device identifier for this brain instance.
+    pub fn device_id(mut self, id: DeviceId) -> Self {
+        self.device_id = Some(id);
+        self
+    }
+
     /// Use `<data_dir>/ontology.toml` if it exists, or an empty ontology.
     fn auto_ontology(mut self) -> Self {
         self.auto_ontology = true;
@@ -314,6 +337,7 @@ impl BrainBuilder {
             llm_client: self.llm_client,
             wing_rules: self.wing_rules,
             hall_rules: self.hall_rules,
+            device_id: self.device_id,
         };
 
         let inner = spectral_graph::brain::Brain::open(config)?;

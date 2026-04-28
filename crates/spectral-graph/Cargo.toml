@@ -19,9 +19,11 @@ toml = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 strsim = { workspace = true }
+hostname = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 anyhow.workspace = true
+rusqlite = { workspace = true }
 tempfile = "3"

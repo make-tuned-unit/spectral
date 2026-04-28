@@ -3,6 +3,7 @@
 //! This crate is intentionally minimal. It defines the types that every
 //! other Spectral crate (and every brain that ever federates) must agree on.
 
+pub mod device_id;
 pub mod entity_id;
 pub mod error;
 pub mod identity;

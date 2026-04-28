@@ -134,6 +134,9 @@ mod tests {
                 hall: None,
                 signal_score: 0.9,
                 visibility: "private".into(),
+                source: None,
+                device_id: None,
+                confidence: 1.0,
                 hits: 3,
             },
             MemoryHit {
@@ -144,6 +147,9 @@ mod tests {
                 hall: None,
                 signal_score: 0.8,
                 visibility: "private".into(),
+                source: None,
+                device_id: None,
+                confidence: 1.0,
                 hits: 2,
             },
         ];
@@ -156,6 +162,9 @@ mod tests {
                 hall: None,
                 signal_score: 0.8,
                 visibility: "private".into(),
+                source: None,
+                device_id: None,
+                confidence: 1.0,
                 hits: 1,
             },
             MemoryHit {
@@ -166,6 +175,9 @@ mod tests {
                 hall: None,
                 signal_score: 0.7,
                 visibility: "private".into(),
+                source: None,
+                device_id: None,
+                confidence: 1.0,
                 hits: 1,
             },
         ];
