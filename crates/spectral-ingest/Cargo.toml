@@ -16,11 +16,12 @@ regex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+lru = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 
 [features]
 default = ["sqlite"]
-sqlite = ["dep:rusqlite"]
+sqlite = ["dep:rusqlite", "dep:lru"]
 
 [dev-dependencies]
 tokio = { workspace = true }

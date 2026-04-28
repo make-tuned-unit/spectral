@@ -1,16 +1,25 @@
 //! Concrete `MemoryStore` implementation using rusqlite with FTS5.
 
 use crate::{Fingerprint, Memory, MemoryHit, MemoryStore};
+use lru::LruCache;
 use rusqlite::{params, Connection};
-use std::collections::HashMap;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+const WING_CACHE_CAPACITY: usize = 32;
+
 /// SQLite-backed memory store with FTS5 search.
+///
+/// Includes an LRU cache for wing-scoped memory queries. The cache is
+/// invalidated on writes that affect the cached wing.
 pub struct SqliteStore {
     conn: Arc<Mutex<Connection>>,
+    /// LRU cache: wing name -> memories for that wing.
+    /// Invalidated by `write()` when the written memory's wing matches a cached entry.
+    wing_cache: Arc<Mutex<LruCache<String, Vec<MemoryHit>>>>,
 }
 
 impl std::fmt::Debug for SqliteStore {
@@ -32,6 +41,9 @@ impl SqliteStore {
         Self::migrate_provenance_columns(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            wing_cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(WING_CACHE_CAPACITY).unwrap(),
+            ))),
         })
     }
 
@@ -42,6 +54,9 @@ impl SqliteStore {
         Self::migrate_provenance_columns(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            wing_cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(WING_CACHE_CAPACITY).unwrap(),
+            ))),
         })
     }
 
@@ -100,7 +115,11 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_fp_hash ON constellation_fingerprints(fingerprint_hash);
             CREATE INDEX IF NOT EXISTS idx_fp_wing_hash
-                ON constellation_fingerprints(wing, fingerprint_hash);",
+                ON constellation_fingerprints(wing, fingerprint_hash);
+            CREATE INDEX IF NOT EXISTS idx_fp_wing_anchor_hall
+                ON constellation_fingerprints(wing, anchor_hall);
+            CREATE INDEX IF NOT EXISTS idx_fp_wing_target_hall
+                ON constellation_fingerprints(wing, target_hall);",
         )?;
         Ok(())
     }
@@ -191,11 +210,15 @@ impl MemoryStore for SqliteStore {
         let memory = memory.clone();
         let fingerprints = fingerprints.to_vec();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
 
         Box::pin(async move {
-            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
-            conn.execute(
+            // Wrap memory + all fingerprints in a single transaction for atomicity and performance.
+            let tx = conn.transaction()?;
+
+            tx.execute(
                 "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
                                        source, device_id, confidence)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -224,7 +247,7 @@ impl MemoryStore for SqliteStore {
             )?;
 
             for fp in &fingerprints {
-                conn.execute(
+                tx.execute(
                     "INSERT OR IGNORE INTO constellation_fingerprints
                      (id, fingerprint_hash, anchor_memory_id, target_memory_id,
                       wing, anchor_hall, target_hall, time_delta_bucket, created_at)
@@ -240,6 +263,15 @@ impl MemoryStore for SqliteStore {
                         fp.time_delta_bucket,
                     ],
                 )?;
+            }
+
+            tx.commit()?;
+
+            // Invalidate wing cache for the written memory's wing.
+            if let Some(ref wing) = memory.wing {
+                if let Ok(mut cache) = wing_cache.lock() {
+                    cache.pop(wing);
+                }
             }
 
             Ok(())
@@ -273,11 +305,12 @@ impl MemoryStore for SqliteStore {
     fn fingerprint_search(
         &self,
         wing: &str,
-        _hall: &str,
+        hall: &str,
         hashes: &[String],
         max_results: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>> {
         let wing = wing.to_string();
+        let hall = hall.to_string();
         let hashes = hashes.to_vec();
         let conn = self.conn.clone();
 
@@ -288,53 +321,65 @@ impl MemoryStore for SqliteStore {
                 return Ok(Vec::new());
             }
 
-            let mut id_hits: HashMap<String, usize> = HashMap::new();
-            let mut stmt = conn.prepare(
-                "SELECT anchor_memory_id, target_memory_id
-                 FROM constellation_fingerprints
-                 WHERE wing = ?1 AND fingerprint_hash = ?2",
-            )?;
+            // Unified CTE: hash match + hall match in one query, scored server-side.
+            let hash_placeholders: String = hashes
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 3))
+                .collect::<Vec<_>>()
+                .join(",");
 
-            for hash in &hashes {
-                let rows = stmt.query_map(params![wing, hash], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                for row in rows {
-                    let (anchor, target) = row?;
-                    *id_hits.entry(anchor).or_insert(0) += 1;
-                    *id_hits.entry(target).or_insert(0) += 1;
-                }
+            let sql = format!(
+                "WITH matched_pairs AS (
+                    SELECT DISTINCT anchor_memory_id, target_memory_id
+                    FROM constellation_fingerprints
+                    WHERE wing = ?1 AND fingerprint_hash IN ({hash_placeholders})
+                    UNION
+                    SELECT DISTINCT anchor_memory_id, target_memory_id
+                    FROM constellation_fingerprints
+                    WHERE wing = ?1 AND (anchor_hall = ?2 OR target_hall = ?2)
+                ),
+                memory_scores AS (
+                    SELECT memory_id, COUNT(*) AS hits FROM (
+                        SELECT anchor_memory_id AS memory_id FROM matched_pairs
+                        UNION ALL
+                        SELECT target_memory_id AS memory_id FROM matched_pairs
+                    )
+                    GROUP BY memory_id
+                    ORDER BY hits DESC
+                    LIMIT ?{limit_param}
+                )
+                SELECT m.id, m.key, m.content, m.wing, m.hall, m.signal_score,
+                       m.visibility, m.source, m.device_id, m.confidence, ms.hits
+                FROM memory_scores ms
+                JOIN memories m ON m.id = ms.memory_id
+                ORDER BY ms.hits DESC",
+                hash_placeholders = hash_placeholders,
+                limit_param = hashes.len() + 3,
+            );
+
+            let mut stmt = conn.prepare_cached(&sql)?;
+
+            // Bind parameters: ?1 = wing, ?2 = hall, ?3..N = hashes, ?N+1 = limit
+            let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            param_values.push(Box::new(wing));
+            param_values.push(Box::new(hall));
+            for h in &hashes {
+                param_values.push(Box::new(h.clone()));
             }
+            param_values.push(Box::new(max_results as i64));
 
-            let mut entries: Vec<_> = id_hits.into_iter().collect();
-            entries.sort_by_key(|e| std::cmp::Reverse(e.1));
-            entries.truncate(max_results);
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                param_values.iter().map(|p| p.as_ref()).collect();
+
+            let rows = stmt.query_map(param_refs.as_slice(), |row| {
+                let hits: i64 = row.get(10)?;
+                memory_hit_from_row(row, hits as usize)
+            })?;
 
             let mut results = Vec::new();
-            for (id, hits) in entries {
-                let mem: Option<Memory> = conn
-                    .query_row(
-                        "SELECT id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence
-                         FROM memories WHERE id = ?1",
-                        params![id],
-                        memory_from_row,
-                    )
-                    .ok();
-                if let Some(m) = mem {
-                    results.push(MemoryHit {
-                        id: m.id,
-                        key: m.key,
-                        content: m.content,
-                        wing: m.wing,
-                        hall: m.hall,
-                        signal_score: m.signal_score,
-                        visibility: m.visibility,
-                        hits,
-                        source: m.source,
-                        device_id: m.device_id,
-                        confidence: m.confidence,
-                    });
-                }
+            for row in rows {
+                results.push(row?);
             }
 
             Ok(results)
@@ -349,22 +394,37 @@ impl MemoryStore for SqliteStore {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>> {
         let wing = wing.to_string();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
 
         Box::pin(async move {
+            // Check cache first
+            if let Ok(mut cache) = wing_cache.lock() {
+                if let Some(cached) = cache.get(&wing) {
+                    let results: Vec<MemoryHit> =
+                        cached.iter().take(max_results).cloned().collect();
+                    return Ok(results);
+                }
+            }
+
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
                 "SELECT id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence
                  FROM memories WHERE wing = ?1
-                 ORDER BY signal_score DESC LIMIT ?2",
+                 ORDER BY signal_score DESC",
             )?;
-            let rows = stmt.query_map(params![wing, max_results as i64], |row| {
-                memory_hit_from_row(row, 0)
-            })?;
-            let mut results = Vec::new();
+            let rows = stmt.query_map(params![wing], |row| memory_hit_from_row(row, 0))?;
+            let mut all_results = Vec::new();
             for row in rows {
-                results.push(row?);
+                all_results.push(row?);
             }
-            Ok(results)
+
+            // Cache the full result set (not truncated) so different max_results can reuse
+            if let Ok(mut cache) = wing_cache.lock() {
+                cache.put(wing, all_results.clone());
+            }
+
+            all_results.truncate(max_results);
+            Ok(all_results)
         })
     }
 
@@ -615,5 +675,197 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    // ── Wing cache tests ─────────────────────────────────────────────
+
+    fn make_mem(id: &str, key: &str, wing: &str) -> Memory {
+        Memory {
+            id: id.into(),
+            key: key.into(),
+            content: format!("content for {key}"),
+            wing: Some(wing.into()),
+            hall: Some("fact".into()),
+            signal_score: 0.8,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn wing_cache_serves_repeated_queries() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "polybot"), &[])
+            .await
+            .unwrap();
+
+        // First call — cache miss, queries SQLite
+        let r1 = store.wing_search("polybot", &[], 10).await.unwrap();
+        assert_eq!(r1.len(), 1);
+
+        // Second call — should hit cache (same result)
+        let r2 = store.wing_search("polybot", &[], 10).await.unwrap();
+        assert_eq!(r2.len(), 1);
+        assert_eq!(r2[0].id, r1[0].id);
+
+        // Verify cache is populated
+        let cache = store.wing_cache.lock().unwrap();
+        assert!(cache.peek(&"polybot".to_string()).is_some());
+    }
+
+    #[tokio::test]
+    async fn wing_cache_invalidated_on_write() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "polybot"), &[])
+            .await
+            .unwrap();
+
+        // Populate cache
+        let r1 = store.wing_search("polybot", &[], 10).await.unwrap();
+        assert_eq!(r1.len(), 1);
+
+        // Write to same wing — should invalidate cache
+        store
+            .write(&make_mem("m2", "k2", "polybot"), &[])
+            .await
+            .unwrap();
+
+        // Cache entry should be gone
+        {
+            let cache = store.wing_cache.lock().unwrap();
+            assert!(cache.peek(&"polybot".to_string()).is_none());
+        }
+
+        // Next query should see the new memory
+        let r2 = store.wing_search("polybot", &[], 10).await.unwrap();
+        assert_eq!(r2.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn wing_cache_size_bounded() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        // Write memories for 33 different wings
+        for i in 0..33 {
+            let wing = format!("wing-{i}");
+            store
+                .write(&make_mem(&format!("m{i}"), &format!("k{i}"), &wing), &[])
+                .await
+                .unwrap();
+            // Populate cache for this wing
+            store.wing_search(&wing, &[], 10).await.unwrap();
+        }
+
+        // Cache should have at most WING_CACHE_CAPACITY entries
+        let cache = store.wing_cache.lock().unwrap();
+        assert!(cache.len() <= WING_CACHE_CAPACITY);
+        // The oldest entry (wing-0) should have been evicted
+        assert!(cache.peek(&"wing-0".to_string()).is_none());
+        // The newest entry should still be present
+        assert!(cache.peek(&"wing-32".to_string()).is_some());
+    }
+
+    #[tokio::test]
+    async fn wing_cache_thread_safe() {
+        use std::sync::Arc;
+
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+
+        // Write memories for 4 wings
+        for i in 0..4 {
+            let wing = format!("wing-{i}");
+            store
+                .write(&make_mem(&format!("m{i}"), &format!("k{i}"), &wing), &[])
+                .await
+                .unwrap();
+        }
+
+        // Spawn 4 threads each querying a different wing
+        let mut handles = Vec::new();
+        for i in 0..4 {
+            let store = Arc::clone(&store);
+            let wing = format!("wing-{i}");
+            handles.push(std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                for _ in 0..100 {
+                    let result = rt.block_on(store.wing_search(&wing, &[], 10)).unwrap();
+                    assert_eq!(result.len(), 1);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+    }
+
+    // ── Compound index test ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn compound_hall_indexes_exist() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let conn = store.conn();
+
+        let mut stmt = conn
+            .prepare("PRAGMA index_list(constellation_fingerprints)")
+            .unwrap();
+        let indexes: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            indexes.contains(&"idx_fp_wing_anchor_hall".to_string()),
+            "missing idx_fp_wing_anchor_hall; found: {indexes:?}"
+        );
+        assert!(
+            indexes.contains(&"idx_fp_wing_target_hall".to_string()),
+            "missing idx_fp_wing_target_hall; found: {indexes:?}"
+        );
+    }
+
+    // ── Transaction atomicity test ───────────────────────────────────
+
+    #[tokio::test]
+    async fn remember_writes_atomically() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        let m0 = make_mem("m0", "k0", "w");
+        store.write(&m0, &[]).await.unwrap();
+
+        let mem = make_mem("m1", "k1", "w");
+        let fps: Vec<Fingerprint> = (0..5)
+            .map(|i| Fingerprint {
+                id: format!("fp{i}"),
+                hash: format!("hash{i}"),
+                anchor_memory_id: "m0".into(),
+                target_memory_id: "m1".into(),
+                wing: "w".into(),
+                anchor_hall: "event".into(),
+                target_hall: "fact".into(),
+                time_delta_bucket: "same_day".into(),
+            })
+            .collect();
+        store.write(&mem, &fps).await.unwrap();
+
+        // Verify all fingerprints + memory committed together
+        let conn = store.conn();
+        let mem_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+            .unwrap();
+        let fp_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM constellation_fingerprints",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mem_count, 2); // m0 + m1
+        assert_eq!(fp_count, 5); // all 5 fingerprints
     }
 }

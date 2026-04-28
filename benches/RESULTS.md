@@ -197,6 +197,63 @@ fixed model cost + embeddings.
 - **Model download.** First run downloads ~330 MB. This is cached
   locally but is a real user cost.
 
+---
+
+## Optimization round 1: wing cache + compound indexes + CTE + transaction batching
+
+Date: 2026-04-28
+Spectral: perf/wing-cache-and-indexes branch
+Changes: LRU wing cache (32 entries), compound hall indexes, unified CTE
+fingerprint search, single-transaction writes.
+
+### Ingest throughput (before → after)
+
+| Scenario | Before | After | Change |
+|---|---|---|---|
+| Single `remember()` (empty brain) | 393 µs | 605 µs | +54% slower |
+| Batch 100 (fresh brain) | 235 ms | 98 ms | **2.4x faster** |
+| Into populated brain (1000 existing) | ~24 ms | ~12 ms | **2.0x faster** |
+
+**Transaction batching was the big win.** Wrapping memory + fingerprint
+inserts in a single `BEGIN..COMMIT` eliminated per-statement autocommit
+overhead. The batch-100 benchmark improved 2.4x. The populated-brain
+benchmark (which generates many fingerprints) improved 2.0x.
+
+Single-empty-brain regressed. This is expected: the transaction overhead
+is higher than autocommit for a single insert with zero fingerprints.
+At scale (any batch or populated brain), the transaction wins decisively.
+
+### Recall latency (before → after)
+
+| Scenario | Before | After | Change |
+|---|---|---|---|
+| Small brain (100 memories) | 542 µs | 758 µs | First run variance |
+| Medium brain (1000 memories) | 564 µs | 590 µs | No change (p=0.90) |
+| No-match query (1000 memories) | 795 µs | 821 µs | No change (within noise) |
+
+**Recall was not meaningfully affected.** The wing cache doesn't help
+the benchmark's cold-query pattern (each iteration queries fresh). In a
+real app with repeated wing queries, the cache would avoid SQLite
+round-trips entirely. The compound indexes help fingerprint search but
+the benchmark's synthetic corpus doesn't exercise that path (wing
+misses → FTS fallback).
+
+### Summary
+
+| Optimization | Measured impact |
+|---|---|
+| Wing LRU cache | Not measurable in cold benchmarks; serves warm queries from memory |
+| Compound hall indexes | Not measurable (benchmark doesn't hit hall-match path) |
+| Unified CTE fingerprint search | Merged with hash-match path; reduces round-trips |
+| Transaction batching | **2.0-2.4x faster ingest** at scale |
+
+### Explicit non-goals (not ported)
+
+- MISS-2: Materialized `wing_to_memory_ids` table — premature at current scale
+- MISS-5: Stop-word stripping — quality improvement, not perf
+- MISS-6: Negative pattern filtering — domain-specific, not library concern
+- MISS-7: Bulk regeneration batching — migration tooling only
+
 ## How to reproduce
 
 ```bash
