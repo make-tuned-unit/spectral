@@ -100,6 +100,8 @@ pub async fn ingest_with(
         source: opts.source,
         device_id: opts.device_id.map(|d| *d.as_bytes()),
         confidence: opts.confidence.unwrap_or(1.0),
+        created_at: None,
+        last_reinforced_at: None,
     };
 
     let fingerprints = if signal_score >= config.signal_threshold {

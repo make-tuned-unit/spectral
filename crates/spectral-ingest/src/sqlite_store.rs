@@ -154,6 +154,21 @@ impl SqliteStore {
             )?;
         }
 
+        // Check for last_reinforced_at column (added for Memify feedback loop)
+        let mut has_last_reinforced = false;
+        let mut stmt2 = conn.prepare("PRAGMA table_info(memories)")?;
+        let rows2 = stmt2.query_map([], |row| row.get::<_, String>(1))?;
+        for name in rows2 {
+            if name?.as_str() == "last_reinforced_at" {
+                has_last_reinforced = true;
+            }
+        }
+        if !has_last_reinforced {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN last_reinforced_at TEXT DEFAULT NULL",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -163,9 +178,13 @@ impl SqliteStore {
     }
 }
 
-/// Parse a Memory from a row with columns:
-/// id(0), key(1), content(2), wing(3), hall(4), signal_score(5), visibility(6),
-/// source(7), device_id(8), confidence(9)
+/// Standard column list for memory queries.
+const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at";
+
+/// Parse a Memory from a row with the standard column order.
+/// Columns: id(0), key(1), content(2), wing(3), hall(4), signal_score(5),
+/// visibility(6), source(7), device_id(8), confidence(9), created_at(10),
+/// last_reinforced_at(11)
 fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
     let device_blob: Option<Vec<u8>> = row.get(8)?;
     let device_id = device_blob.and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
@@ -180,6 +199,8 @@ fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         source: row.get(7)?,
         device_id,
         confidence: row.get::<_, f64>(9).unwrap_or(1.0),
+        created_at: row.get(10).ok(),
+        last_reinforced_at: row.get(11).ok(),
     })
 }
 
@@ -198,6 +219,8 @@ fn memory_hit_from_row(row: &rusqlite::Row, hits: usize) -> rusqlite::Result<Mem
         source: row.get(7)?,
         device_id,
         confidence: row.get::<_, f64>(9).unwrap_or(1.0),
+        created_at: row.get(10).ok(),
+        last_reinforced_at: row.get(11).ok(),
     })
 }
 
@@ -288,11 +311,11 @@ impl MemoryStore for SqliteStore {
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let mut stmt = conn.prepare(
-                "SELECT id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence
-                 FROM memories WHERE wing = ?1 AND signal_score >= ?2
-                 ORDER BY signal_score DESC",
-            )?;
+            let sql = format!(
+                "SELECT {MEMORY_COLUMNS} FROM memories WHERE wing = ?1 AND signal_score >= ?2
+                 ORDER BY signal_score DESC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![wing, min_signal], memory_from_row)?;
             let mut memories = Vec::new();
             for row in rows {
@@ -350,7 +373,8 @@ impl MemoryStore for SqliteStore {
                     LIMIT ?{limit_param}
                 )
                 SELECT m.id, m.key, m.content, m.wing, m.hall, m.signal_score,
-                       m.visibility, m.source, m.device_id, m.confidence, ms.hits
+                       m.visibility, m.source, m.device_id, m.confidence,
+                       m.created_at, m.last_reinforced_at, ms.hits
                 FROM memory_scores ms
                 JOIN memories m ON m.id = ms.memory_id
                 ORDER BY ms.hits DESC",
@@ -373,7 +397,7 @@ impl MemoryStore for SqliteStore {
                 param_values.iter().map(|p| p.as_ref()).collect();
 
             let rows = stmt.query_map(param_refs.as_slice(), |row| {
-                let hits: i64 = row.get(10)?;
+                let hits: i64 = row.get(12)?;
                 memory_hit_from_row(row, hits as usize)
             })?;
 
@@ -407,11 +431,11 @@ impl MemoryStore for SqliteStore {
             }
 
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let mut stmt = conn.prepare(
-                "SELECT id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence
-                 FROM memories WHERE wing = ?1
-                 ORDER BY signal_score DESC",
-            )?;
+            let sql = format!(
+                "SELECT {MEMORY_COLUMNS} FROM memories WHERE wing = ?1
+                 ORDER BY signal_score DESC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![wing], |row| memory_hit_from_row(row, 0))?;
             let mut all_results = Vec::new();
             for row in rows {
@@ -441,13 +465,15 @@ impl MemoryStore for SqliteStore {
                 return Ok(Vec::new());
             }
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let mut stmt = conn.prepare(
-                "SELECT m.id, m.key, m.content, m.wing, m.hall, m.signal_score, m.visibility, m.source, m.device_id, m.confidence
+            let sql = format!(
+                "SELECT m.{cols}
                  FROM memories_fts fts
                  JOIN memories m ON m.rowid = fts.rowid
                  WHERE memories_fts MATCH ?1
                  ORDER BY rank LIMIT ?2",
-            )?;
+                cols = MEMORY_COLUMNS.replace(", ", ", m."),
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![query, max_results as i64], |row| {
                 memory_hit_from_row(row, 0)
             })?;
@@ -470,16 +496,58 @@ impl MemoryStore for SqliteStore {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut results = Vec::new();
             for id in &ids {
-                if let Ok(mem) = conn.query_row(
-                    "SELECT id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence
-                     FROM memories WHERE id = ?1",
-                    params![id],
-                    memory_from_row,
-                ) {
+                let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories WHERE id = ?1");
+                if let Ok(mem) = conn.query_row(&sql, params![id], memory_from_row) {
                     results.push(mem);
                 }
             }
             Ok(results)
+        })
+    }
+
+    fn reinforce_memory(
+        &self,
+        key: &str,
+        strength: f64,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
+        let key = key.to_string();
+        let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+
+            // Read current wing before update (for cache invalidation)
+            let wing: Option<String> = conn
+                .query_row(
+                    "SELECT wing FROM memories WHERE key = ?1",
+                    params![key],
+                    |row| row.get(0),
+                )
+                .ok()
+                .flatten();
+
+            let updated = conn.execute(
+                "UPDATE memories SET
+                    signal_score = MIN(signal_score + ?1, 1.0),
+                    last_reinforced_at = datetime('now'),
+                    updated_at = datetime('now')
+                 WHERE key = ?2",
+                params![strength, key],
+            )?;
+
+            if updated == 0 {
+                return Ok(None);
+            }
+
+            // Invalidate wing cache for the reinforced memory's wing
+            if let Some(ref w) = wing {
+                if let Ok(mut cache) = wing_cache.lock() {
+                    cache.pop(w);
+                }
+            }
+
+            Ok(wing)
         })
     }
 }
@@ -502,6 +570,8 @@ mod tests {
             source: None,
             device_id: None,
             confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -524,6 +594,8 @@ mod tests {
             source: None,
             device_id: None,
             confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
         };
         store.write(&mem1, &[]).await.unwrap();
 
@@ -538,6 +610,8 @@ mod tests {
             source: None,
             device_id: None,
             confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
         };
         store.write(&mem2, &[]).await.unwrap();
 
@@ -560,6 +634,8 @@ mod tests {
             source: None,
             device_id: None,
             confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -588,6 +664,8 @@ mod tests {
             source: None,
             device_id: None,
             confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -601,6 +679,8 @@ mod tests {
             source: None,
             device_id: None,
             confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -639,6 +719,8 @@ mod tests {
             source: None,
             device_id: None,
             confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -652,6 +734,8 @@ mod tests {
             source: None,
             device_id: None,
             confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -691,6 +775,8 @@ mod tests {
             source: None,
             device_id: None,
             confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
         }
     }
 
