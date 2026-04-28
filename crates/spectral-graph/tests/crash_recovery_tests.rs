@@ -42,6 +42,7 @@ fn brain_config(tmp: &TempDir) -> BrainConfig {
         wing_rules: None,
         hall_rules: None,
         device_id: None,
+        enable_spectrogram: false,
     }
 }
 

@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `last_reinforced_at` field on `Memory` and `MemoryHit` for tracking reinforcement history
 - `MemoryStore::reinforce_memory()` trait method with SQLite implementation
 - Triple reinforcement is deferred pending Kuzu schema work for primary keys on rel tables
+- Cognitive Spectrogram: cross-wing fingerprint matching in `spectral-spectrogram` crate
+- `Brain::recall_cross_wing()` — find memories across wings with similar cognitive structure
+- `Brain::backfill_spectrograms()` — compute spectrograms for existing memories
+- `BrainConfig::enable_spectrogram` — opt-in spectrogram computation on ingest
+- `SpectrogramAnalyzer` with 7 cognitive dimensions: entity_density, action_type, decision_polarity, causal_depth, emotional_valence, temporal_specificity, novelty
+- `memory_spectrogram` SQLite table with idempotent migration
+- `MemoryStore` spectrogram trait methods: write_spectrogram, load_spectrogram, load_spectrograms, memories_without_spectrogram
 
 ### Performance
 - Wing result LRU cache (32 entries) in `SqliteStore` — serves repeated `wing_search()` from memory, invalidated on `write()`

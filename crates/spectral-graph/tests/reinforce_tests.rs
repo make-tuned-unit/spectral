@@ -13,6 +13,7 @@ fn open_brain(tmp: &TempDir) -> Brain {
         wing_rules: None,
         hall_rules: None,
         device_id: None,
+        enable_spectrogram: false,
     })
     .unwrap()
 }

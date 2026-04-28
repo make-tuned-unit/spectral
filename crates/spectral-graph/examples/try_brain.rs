@@ -19,6 +19,7 @@ fn main() -> anyhow::Result<()> {
         wing_rules: None,
         hall_rules: None,
         device_id: None,
+        enable_spectrogram: false,
     })?;
     println!("Brain ID: {}", brain.brain_id());
 

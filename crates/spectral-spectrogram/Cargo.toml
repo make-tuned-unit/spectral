@@ -9,6 +9,10 @@ description = "Spectrogram: frequency-domain temporal analysis for Spectral."
 
 [dependencies]
 spectral-core = { path = "../spectral-core" }
+spectral-ingest = { path = "../spectral-ingest" }
+chrono = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

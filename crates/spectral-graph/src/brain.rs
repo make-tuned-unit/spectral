@@ -17,6 +17,8 @@ use spectral_ingest::sqlite_store::SqliteStore;
 use spectral_ingest::{MemoryHit, MemoryStore};
 use spectral_tact::{LlmClient, TactConfig, TactResult};
 
+use spectral_spectrogram::{AnalysisContext, SpectrogramAnalyzer};
+
 use crate::canonicalize::{Canonicalizer, MatchedMention};
 use crate::extract::{ExtractedTriple, ExtractionPrompt};
 use crate::kuzu_store::{Entity, KuzuStore, Neighborhood, Triple};
@@ -41,6 +43,8 @@ pub struct BrainConfig {
     pub hall_rules: Option<Vec<(String, String)>>,
     /// Optional device identifier. `None` = derive from hostname.
     pub device_id: Option<DeviceId>,
+    /// Enable cognitive spectrogram computation on ingest. Default false.
+    pub enable_spectrogram: bool,
 }
 
 /// Result of a successful assertion.
@@ -151,6 +155,23 @@ pub enum RejectionReason {
     InvalidPredicate(String),
 }
 
+/// Result of cross-wing recall.
+#[derive(Debug)]
+pub struct CrossWingRecallResult {
+    /// Best match for the seed query in its own wing.
+    pub seed_memory: Option<MemoryHit>,
+    /// Memories from other wings that resonate with the seed.
+    pub resonant_memories: Vec<ResonantMemoryHit>,
+}
+
+/// A memory from another wing that resonates with the seed.
+#[derive(Debug)]
+pub struct ResonantMemoryHit {
+    pub memory: MemoryHit,
+    pub resonance_score: f64,
+    pub matched_dimensions: Vec<String>,
+}
+
 /// Options for `Brain::reinforce()`.
 #[derive(Debug)]
 pub struct ReinforceOpts {
@@ -203,6 +224,8 @@ pub struct Brain {
     store: KuzuStore,
     memory_store: Box<dyn MemoryStore>,
     llm_client: Option<Box<dyn LlmClient>>,
+    enable_spectrogram: bool,
+    spectrogram_analyzer: SpectrogramAnalyzer,
     tact_config: TactConfig,
     ingest_config: spectral_ingest::ingest::IngestConfig,
     rt: tokio::runtime::Runtime,
@@ -276,6 +299,8 @@ impl Brain {
             store,
             memory_store,
             llm_client: config.llm_client,
+            enable_spectrogram: config.enable_spectrogram,
+            spectrogram_analyzer: SpectrogramAnalyzer::default(),
             tact_config,
             ingest_config,
             rt,
@@ -432,6 +457,24 @@ impl Brain {
                 ingest_opts,
             ))
             .map_err(|e| Error::Schema(e.to_string()))?;
+
+        // Compute and store spectrogram if enabled
+        if self.enable_spectrogram {
+            let context = AnalysisContext::default();
+            let fp = self.spectrogram_analyzer.analyze(&result.memory, &context);
+            let peak_json = serde_json::to_string(&fp.peak_dimensions).unwrap_or_default();
+            let _ = self.rt.block_on(self.memory_store.write_spectrogram(
+                &result.memory.id,
+                fp.entity_density,
+                fp.action_type.as_str(),
+                fp.decision_polarity,
+                fp.causal_depth,
+                fp.emotional_valence,
+                fp.temporal_specificity,
+                fp.novelty,
+                &peak_json,
+            ));
+        }
 
         Ok(RememberResult {
             memory_id: result.memory.id,
@@ -620,6 +663,173 @@ impl Brain {
         &self.ontology
     }
 
+    /// Find memories across wings that resonate with a query memory's cognitive fingerprint.
+    ///
+    /// Flow: recall the best memory for the seed query, compute or load its spectrogram,
+    /// load spectrograms from other wings, find resonant matches, and return seed + resonant
+    /// memories with scores. Requires `enable_spectrogram = true` in BrainConfig.
+    pub fn recall_cross_wing(
+        &self,
+        seed_query: &str,
+        visibility: Visibility,
+        max_results: usize,
+    ) -> Result<CrossWingRecallResult, Error> {
+        // Recall the best match for seed_query
+        let recall = self.recall(seed_query, visibility)?;
+        let seed_memory = recall.memory_hits.into_iter().next();
+
+        let seed = match &seed_memory {
+            Some(m) => m,
+            None => {
+                return Ok(CrossWingRecallResult {
+                    seed_memory: None,
+                    resonant_memories: vec![],
+                })
+            }
+        };
+
+        // Get or compute the seed's spectrogram
+        let seed_fp = {
+            let existing = self
+                .rt
+                .block_on(self.memory_store.load_spectrogram(&seed.id))
+                .map_err(|e| Error::Schema(e.to_string()))?;
+
+            if let Some(row) = existing {
+                row_to_fingerprint(&row)
+            } else {
+                // Compute on the fly
+                let mem = spectral_ingest::Memory {
+                    id: seed.id.clone(),
+                    key: seed.key.clone(),
+                    content: seed.content.clone(),
+                    wing: seed.wing.clone(),
+                    hall: seed.hall.clone(),
+                    signal_score: seed.signal_score,
+                    visibility: seed.visibility.clone(),
+                    source: seed.source.clone(),
+                    device_id: seed.device_id,
+                    confidence: seed.confidence,
+                    created_at: seed.created_at.clone(),
+                    last_reinforced_at: seed.last_reinforced_at.clone(),
+                };
+                self.spectrogram_analyzer
+                    .analyze(&mem, &AnalysisContext::default())
+            }
+        };
+
+        // Load spectrograms from OTHER wings
+        let all_spectrograms = self
+            .rt
+            .block_on(self.memory_store.load_spectrograms(None, 500))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
+        let seed_wing = seed.wing.as_deref();
+        let other_wing_fps: Vec<spectral_spectrogram::SpectralFingerprint> = all_spectrograms
+            .iter()
+            .filter(|row| {
+                // Exclude same wing
+                match (row.wing.as_deref(), seed_wing) {
+                    (Some(rw), Some(sw)) => rw != sw,
+                    _ => true,
+                }
+            })
+            .map(row_to_fingerprint)
+            .collect();
+
+        // Find resonant matches
+        let tolerances = spectral_spectrogram::matching::MatchTolerances::default();
+        let resonant = spectral_spectrogram::matching::find_resonant(
+            &seed_fp,
+            &other_wing_fps,
+            max_results,
+            &tolerances,
+        );
+
+        // Fetch full memories for resonant matches
+        let resonant_ids: Vec<String> = resonant.iter().map(|r| r.memory_id.clone()).collect();
+        let resonant_mems = self
+            .rt
+            .block_on(self.memory_store.fetch_by_ids(&resonant_ids))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
+        let mut resonant_memories = Vec::new();
+        for rmatch in &resonant {
+            if let Some(mem) = resonant_mems.iter().find(|m| m.id == rmatch.memory_id) {
+                // Visibility filter
+                if !str_to_vis(&mem.visibility).allows(visibility) {
+                    continue;
+                }
+                resonant_memories.push(ResonantMemoryHit {
+                    memory: MemoryHit {
+                        id: mem.id.clone(),
+                        key: mem.key.clone(),
+                        content: mem.content.clone(),
+                        wing: mem.wing.clone(),
+                        hall: mem.hall.clone(),
+                        signal_score: mem.signal_score,
+                        visibility: mem.visibility.clone(),
+                        hits: 0,
+                        source: mem.source.clone(),
+                        device_id: mem.device_id,
+                        confidence: mem.confidence,
+                        created_at: mem.created_at.clone(),
+                        last_reinforced_at: mem.last_reinforced_at.clone(),
+                    },
+                    resonance_score: rmatch.resonance_score,
+                    matched_dimensions: rmatch.matched_dimensions.clone(),
+                });
+            }
+        }
+
+        Ok(CrossWingRecallResult {
+            seed_memory,
+            resonant_memories,
+        })
+    }
+
+    /// Compute and store spectrograms for memories that don't have one.
+    /// Returns count of spectrograms generated. Idempotent.
+    pub fn backfill_spectrograms(&self) -> Result<usize, Error> {
+        let mut total = 0;
+        loop {
+            let ids = self
+                .rt
+                .block_on(self.memory_store.memories_without_spectrogram(100))
+                .map_err(|e| Error::Schema(e.to_string()))?;
+
+            if ids.is_empty() {
+                break;
+            }
+
+            let memories = self
+                .rt
+                .block_on(self.memory_store.fetch_by_ids(&ids))
+                .map_err(|e| Error::Schema(e.to_string()))?;
+
+            for mem in &memories {
+                let context = AnalysisContext::default();
+                let fp = self.spectrogram_analyzer.analyze(mem, &context);
+                let peak_json = serde_json::to_string(&fp.peak_dimensions).unwrap_or_default();
+                self.rt
+                    .block_on(self.memory_store.write_spectrogram(
+                        &mem.id,
+                        fp.entity_density,
+                        fp.action_type.as_str(),
+                        fp.decision_polarity,
+                        fp.causal_depth,
+                        fp.emotional_valence,
+                        fp.temporal_specificity,
+                        fp.novelty,
+                        &peak_json,
+                    ))
+                    .map_err(|e| Error::Schema(e.to_string()))?;
+                total += 1;
+            }
+        }
+        Ok(total)
+    }
+
     /// Reinforce memories that the caller found useful from a recall result.
     ///
     /// Increases signal_score by `strength` (clamped to 1.0) and updates
@@ -799,4 +1009,22 @@ fn decayed_signal_score(
     let decay_factor = (1.0 - decay).max(0.5);
 
     raw_score * decay_factor
+}
+
+/// Convert a SpectrogramRow to a SpectralFingerprint.
+fn row_to_fingerprint(
+    row: &spectral_ingest::SpectrogramRow,
+) -> spectral_spectrogram::SpectralFingerprint {
+    spectral_spectrogram::SpectralFingerprint {
+        memory_id: row.memory_id.clone(),
+        entity_density: row.entity_density,
+        action_type: spectral_spectrogram::ActionType::from_str_lossy(&row.action_type),
+        decision_polarity: row.decision_polarity,
+        causal_depth: row.causal_depth,
+        emotional_valence: row.emotional_valence,
+        temporal_specificity: row.temporal_specificity,
+        novelty: row.novelty,
+        peak_dimensions: serde_json::from_str(&row.peak_dimensions).unwrap_or_default(),
+        created_at: Utc::now(),
+    }
 }
