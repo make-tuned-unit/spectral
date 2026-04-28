@@ -104,7 +104,7 @@ fn recall_returns_asserted_facts() {
         .assert("Mark", "studies", "Library", 0.9, Visibility::Private)
         .unwrap();
 
-    let result = brain.recall("Mark").unwrap();
+    let result = brain.recall("Mark", Visibility::Private).unwrap();
     assert!(!result.graph.seed_entities.is_empty());
     assert!(!result.graph.triples.is_empty());
     assert_eq!(result.graph.triples[0].predicate, "studies");
@@ -125,7 +125,7 @@ fn recall_multi_hop_cognee_example() {
         .unwrap();
 
     // Recall "Library" should find Library → Mark → Exam (2-hop)
-    let result = brain.recall("Library").unwrap();
+    let result = brain.recall("Library", Visibility::Private).unwrap();
     assert!(result.graph.neighborhood.entities.len() >= 3);
     assert!(result.graph.neighborhood.triples.len() >= 2);
 
@@ -146,7 +146,7 @@ fn recall_unknown_query_empty() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
-    let result = brain.recall("xyznonexistent").unwrap();
+    let result = brain.recall("xyznonexistent", Visibility::Private).unwrap();
     assert!(result.graph.seed_entities.is_empty());
     assert!(result.graph.triples.is_empty());
 }
@@ -198,11 +198,17 @@ fn remember_and_recall_roundtrip() {
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
     brain
-        .remember("auth_decision", "Alice decided to use Clerk for auth")
+        .remember(
+            "auth_decision",
+            "Alice decided to use Clerk for auth",
+            Visibility::Private,
+        )
         .unwrap();
 
     // recall with enough words to pass TACT's min_words gate
-    let result = brain.recall("what was the auth decision").unwrap();
+    let result = brain
+        .recall("what was the auth decision", Visibility::Private)
+        .unwrap();
     // Should find memory via FTS fallback
     assert!(!result.memory_hits.is_empty() || !result.graph.seed_entities.is_empty());
 }
@@ -212,8 +218,12 @@ fn remember_idempotent() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
-    let r1 = brain.remember("same_key", "some content here").unwrap();
-    let r2 = brain.remember("same_key", "updated content here").unwrap();
+    let r1 = brain
+        .remember("same_key", "some content here", Visibility::Private)
+        .unwrap();
+    let r2 = brain
+        .remember("same_key", "updated content here", Visibility::Private)
+        .unwrap();
 
     // Same key produces same memory ID (deterministic from key)
     assert_eq!(r1.memory_id, r2.memory_id);
@@ -225,7 +235,11 @@ fn remember_classifies_correctly() {
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
     let result = brain
-        .remember("auth_decision", "Alice decided to use Clerk for auth")
+        .remember(
+            "auth_decision",
+            "Alice decided to use Clerk for auth",
+            Visibility::Private,
+        )
         .unwrap();
 
     assert_eq!(result.hall.as_deref(), Some("fact"));
@@ -250,16 +264,118 @@ fn recall_returns_memory_hits_for_matching_wing() {
         .remember(
             "apollo-decision",
             "Decided to use Apollo for the weather prediction strategy",
+            Visibility::Private,
         )
         .unwrap();
     brain
-        .remember("apollo-bug", "Apollo had a bug in the weather engine")
+        .remember(
+            "apollo-bug",
+            "Apollo had a bug in the weather engine",
+            Visibility::Private,
+        )
         .unwrap();
 
     // Recall with a query that matches the "apollo" wing
-    let result = brain.recall("apollo weather strategy").unwrap();
+    let result = brain
+        .recall("apollo weather strategy", Visibility::Private)
+        .unwrap();
     assert!(
         !result.memory_hits.is_empty(),
         "expected memory hits for apollo wing query, got 0"
     );
+}
+
+#[test]
+fn visibility_filters_memories() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Store one Private and one Public memory
+    brain
+        .remember(
+            "private-secret",
+            "Alice chose a secret auth provider",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "public-announcement",
+            "Alice chose Clerk for the public API",
+            Visibility::Public,
+        )
+        .unwrap();
+
+    // Public context: should see only Public memory
+    let public = brain
+        .recall("what did Alice choose", Visibility::Public)
+        .unwrap();
+    assert!(
+        public.memory_hits.iter().all(|m| m.visibility == "public"),
+        "Public context should not see private memories"
+    );
+
+    // Private context: should see both
+    let private = brain
+        .recall("what did Alice choose", Visibility::Private)
+        .unwrap();
+    assert!(
+        private.memory_hits.len() >= public.memory_hits.len(),
+        "Private context should see at least as much as Public"
+    );
+}
+
+#[test]
+fn visibility_filters_graph_triples() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Assert one Private and one Org-visible fact
+    brain
+        .assert("Mark", "studies", "Library", 0.9, Visibility::Private)
+        .unwrap();
+    brain
+        .assert("Mark", "prepares_for", "Exam", 0.9, Visibility::Org)
+        .unwrap();
+
+    // Org context: should see only the Org triple
+    let org_result = brain.recall_graph("Mark", Visibility::Org).unwrap();
+    assert!(
+        org_result
+            .triples
+            .iter()
+            .all(|t| t.visibility >= Visibility::Org),
+        "Org context should not see Private triples"
+    );
+
+    // Private context: should see both
+    let private_result = brain.recall_graph("Mark", Visibility::Private).unwrap();
+    assert!(
+        private_result.triples.len() > org_result.triples.len(),
+        "Private should see more triples than Org"
+    );
+}
+
+#[test]
+fn visibility_federation_precedent() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Assert Private and Org facts
+    brain
+        .assert("Carol", "works_on", "Spectral", 0.9, Visibility::Private)
+        .unwrap();
+    brain
+        .assert("Carol", "knows", "Mark", 0.9, Visibility::Org)
+        .unwrap();
+
+    // Org-context recall: Private fact must be filtered out
+    let result = brain.recall("Carol", Visibility::Org).unwrap();
+    for t in &result.graph.triples {
+        assert!(
+            t.visibility >= Visibility::Org,
+            "federation leak: Private triple {:?} visible in Org context",
+            t.predicate
+        );
+    }
 }

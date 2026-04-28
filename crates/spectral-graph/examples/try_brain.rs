@@ -1,4 +1,4 @@
-//! Smoke-test the Brain API: graph + memory + hybrid recall.
+//! Smoke-test the Brain API: graph + memory + hybrid recall + visibility filtering.
 //! Run with: cargo run --example try_brain -p spectral-graph
 
 use spectral_core::visibility::Visibility;
@@ -33,50 +33,37 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    // Memory ingestion
-    for (key, content) in &[
-        (
-            "apollo-decision",
-            "Decided to use Apollo for the weather prediction strategy",
-        ),
-        (
-            "apollo-bug",
-            "Apollo had a bug in the weather engine that caused real losses",
-        ),
-        (
-            "apollo-fix",
-            "Discovered the apollo weather strategy needs paper-trading first",
-        ),
-    ] {
-        let r = brain.remember(key, content)?;
-        println!(
-            "remember: '{}' wing={:?} hall={:?} signal={:.2}",
-            key,
-            r.wing.as_deref(),
-            r.hall.as_deref(),
-            r.signal_score
-        );
-    }
+    // Memory ingestion at different visibility levels
+    brain.remember(
+        "apollo-decision",
+        "Decided to use Apollo for the weather prediction strategy",
+        Visibility::Private,
+    )?;
+    brain.remember(
+        "apollo-public",
+        "Apollo weather predictions are open source and publicly available",
+        Visibility::Public,
+    )?;
 
-    // Hybrid recall — memory
-    let recall = brain.recall("apollo weather strategy")?;
+    // Recall with Private context — sees everything
+    let all = brain.recall("apollo weather strategy", Visibility::Private)?;
+    println!("\nrecall(Private): {} memory hits", all.memory_hits.len());
+    assert!(!all.memory_hits.is_empty());
+
+    // Recall with Public context — sees only Public memories
+    let public_only = brain.recall("apollo weather strategy", Visibility::Public)?;
     println!(
-        "\nrecall 'apollo weather strategy': {} memory hits, {} graph triples",
-        recall.memory_hits.len(),
-        recall.graph.triples.len()
+        "recall(Public):  {} memory hits",
+        public_only.memory_hits.len()
     );
     assert!(
-        !recall.memory_hits.is_empty(),
-        "BUG: apollo recall returned 0 memory hits"
+        public_only.memory_hits.len() < all.memory_hits.len(),
+        "Public context should see fewer memories than Private"
     );
+    for hit in &public_only.memory_hits {
+        assert_eq!(hit.visibility, "public");
+    }
 
-    // Hybrid recall — graph
-    let recall = brain.recall("Alice")?;
-    println!(
-        "recall 'Alice': {} memory hits, {} graph triples",
-        recall.memory_hits.len(),
-        recall.graph.triples.len()
-    );
-
+    println!("\nVisibility enforcement verified.");
     Ok(())
 }

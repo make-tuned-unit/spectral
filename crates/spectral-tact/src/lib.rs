@@ -185,6 +185,7 @@ mod tests {
                 wing: Some("proj".into()),
                 hall: Some("fact".into()),
                 signal_score: 0.9,
+                visibility: "private".into(),
                 hits: 3,
             },
             MemoryHit {
@@ -194,6 +195,7 @@ mod tests {
                 wing: Some("proj".into()),
                 hall: Some("discovery".into()),
                 signal_score: 0.7,
+                visibility: "private".into(),
                 hits: 1,
             },
         ];

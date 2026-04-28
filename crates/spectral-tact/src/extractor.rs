@@ -133,6 +133,7 @@ mod tests {
                 wing: None,
                 hall: None,
                 signal_score: 0.9,
+                visibility: "private".into(),
                 hits: 3,
             },
             MemoryHit {
@@ -142,6 +143,7 @@ mod tests {
                 wing: None,
                 hall: None,
                 signal_score: 0.8,
+                visibility: "private".into(),
                 hits: 2,
             },
         ];
@@ -153,6 +155,7 @@ mod tests {
                 wing: None,
                 hall: None,
                 signal_score: 0.8,
+                visibility: "private".into(),
                 hits: 1,
             },
             MemoryHit {
@@ -162,6 +165,7 @@ mod tests {
                 wing: None,
                 hall: None,
                 signal_score: 0.7,
+                visibility: "private".into(),
                 hits: 1,
             },
         ];

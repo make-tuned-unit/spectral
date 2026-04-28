@@ -53,6 +53,7 @@ impl SqliteStore {
                 wing          TEXT DEFAULT NULL,
                 hall          TEXT DEFAULT NULL,
                 signal_score  REAL DEFAULT 0.5,
+                visibility    TEXT NOT NULL DEFAULT 'private',
                 created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -119,13 +120,14 @@ impl MemoryStore for SqliteStore {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
             conn.execute(
-                "INSERT INTO memories (id, key, content, wing, hall, signal_score)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(key) DO UPDATE SET
                     content = excluded.content,
                     wing = excluded.wing,
                     hall = excluded.hall,
                     signal_score = excluded.signal_score,
+                    visibility = excluded.visibility,
                     updated_at = datetime('now')",
                 params![
                     memory.id,
@@ -134,6 +136,7 @@ impl MemoryStore for SqliteStore {
                     memory.wing,
                     memory.hall,
                     memory.signal_score,
+                    memory.visibility,
                 ],
             )?;
 
@@ -171,7 +174,7 @@ impl MemoryStore for SqliteStore {
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
-                "SELECT id, key, content, wing, hall, signal_score
+                "SELECT id, key, content, wing, hall, signal_score, visibility
                  FROM memories WHERE wing = ?1 AND signal_score >= ?2
                  ORDER BY signal_score DESC",
             )?;
@@ -183,6 +186,7 @@ impl MemoryStore for SqliteStore {
                     wing: row.get(3)?,
                     hall: row.get(4)?,
                     signal_score: row.get(5)?,
+                    visibility: row.get::<_, String>(6).unwrap_or_else(|_| "private".into()),
                 })
             })?;
             let mut memories = Vec::new();
@@ -237,7 +241,7 @@ impl MemoryStore for SqliteStore {
             for (id, hits) in entries {
                 let mem: Option<Memory> = conn
                     .query_row(
-                        "SELECT id, key, content, wing, hall, signal_score
+                        "SELECT id, key, content, wing, hall, signal_score, visibility
                          FROM memories WHERE id = ?1",
                         params![id],
                         |row| {
@@ -248,6 +252,9 @@ impl MemoryStore for SqliteStore {
                                 wing: row.get(3)?,
                                 hall: row.get(4)?,
                                 signal_score: row.get(5)?,
+                                visibility: row
+                                    .get::<_, String>(6)
+                                    .unwrap_or_else(|_| "private".into()),
                             })
                         },
                     )
@@ -260,6 +267,7 @@ impl MemoryStore for SqliteStore {
                         wing: m.wing,
                         hall: m.hall,
                         signal_score: m.signal_score,
+                        visibility: m.visibility,
                         hits,
                     });
                 }
@@ -281,7 +289,7 @@ impl MemoryStore for SqliteStore {
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
-                "SELECT id, key, content, wing, hall, signal_score
+                "SELECT id, key, content, wing, hall, signal_score, visibility
                  FROM memories WHERE wing = ?1
                  ORDER BY signal_score DESC LIMIT ?2",
             )?;
@@ -293,6 +301,7 @@ impl MemoryStore for SqliteStore {
                     wing: row.get(3)?,
                     hall: row.get(4)?,
                     signal_score: row.get(5)?,
+                    visibility: row.get::<_, String>(6).unwrap_or_else(|_| "private".into()),
                     hits: 0,
                 })
             })?;
@@ -318,7 +327,7 @@ impl MemoryStore for SqliteStore {
             }
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
-                "SELECT m.id, m.key, m.content, m.wing, m.hall, m.signal_score
+                "SELECT m.id, m.key, m.content, m.wing, m.hall, m.signal_score, m.visibility
                  FROM memories_fts fts
                  JOIN memories m ON m.rowid = fts.rowid
                  WHERE memories_fts MATCH ?1
@@ -332,6 +341,7 @@ impl MemoryStore for SqliteStore {
                     wing: row.get(3)?,
                     hall: row.get(4)?,
                     signal_score: row.get(5)?,
+                    visibility: row.get::<_, String>(6).unwrap_or_else(|_| "private".into()),
                     hits: 0,
                 })
             })?;
@@ -355,7 +365,7 @@ impl MemoryStore for SqliteStore {
             let mut results = Vec::new();
             for id in &ids {
                 if let Ok(mem) = conn.query_row(
-                    "SELECT id, key, content, wing, hall, signal_score
+                    "SELECT id, key, content, wing, hall, signal_score, visibility
                      FROM memories WHERE id = ?1",
                     params![id],
                     |row| {
@@ -366,6 +376,9 @@ impl MemoryStore for SqliteStore {
                             wing: row.get(3)?,
                             hall: row.get(4)?,
                             signal_score: row.get(5)?,
+                            visibility: row
+                                .get::<_, String>(6)
+                                .unwrap_or_else(|_| "private".into()),
                         })
                     },
                 ) {
@@ -391,6 +404,7 @@ mod tests {
             wing: Some("alice".into()),
             hall: Some("fact".into()),
             signal_score: 0.85,
+            visibility: "private".into(),
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -409,6 +423,7 @@ mod tests {
             wing: Some("w".into()),
             hall: Some("fact".into()),
             signal_score: 0.6,
+            visibility: "private".into(),
         };
         store.write(&mem1, &[]).await.unwrap();
 
@@ -419,6 +434,7 @@ mod tests {
             wing: Some("w".into()),
             hall: Some("discovery".into()),
             signal_score: 0.8,
+            visibility: "private".into(),
         };
         store.write(&mem2, &[]).await.unwrap();
 
@@ -437,6 +453,7 @@ mod tests {
             wing: Some("alice".into()),
             hall: Some("fact".into()),
             signal_score: 0.85,
+            visibility: "private".into(),
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -461,6 +478,7 @@ mod tests {
             wing: Some("w".into()),
             hall: Some("event".into()),
             signal_score: 0.6,
+            visibility: "private".into(),
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -470,6 +488,7 @@ mod tests {
             wing: Some("w".into()),
             hall: Some("fact".into()),
             signal_score: 0.7,
+            visibility: "private".into(),
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -504,6 +523,7 @@ mod tests {
             wing: Some("w".into()),
             hall: Some("event".into()),
             signal_score: 0.6,
+            visibility: "private".into(),
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -513,6 +533,7 @@ mod tests {
             wing: Some("w".into()),
             hall: Some("fact".into()),
             signal_score: 0.7,
+            visibility: "private".into(),
         };
         let fp = Fingerprint {
             id: "fp1".into(),
