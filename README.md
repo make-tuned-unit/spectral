@@ -1,10 +1,18 @@
-# Spectral
+<p align="center">
+  <img src="assets/logo/mark_primary_128px.svg" alt="Spectral logo" width="80">
+</p>
 
-A frequency-domain memory system for AI agents, designed for federation.
+<h1 align="center">Spectral</h1>
 
-![CI](https://github.com/make-tuned-unit/spectral/actions/workflows/ci.yml/badge.svg)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![crates.io](https://img.shields.io/badge/crates.io-coming%20soon-orange.svg)](https://crates.io/crates/spectral)
+<p align="center">
+  A frequency-domain memory system for AI agents, designed for federation.
+</p>
+
+<p align="center">
+  <a href="https://github.com/make-tuned-unit/spectral/actions/workflows/ci.yml"><img src="https://github.com/make-tuned-unit/spectral/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="https://crates.io/crates/spectral"><img src="https://img.shields.io/badge/crates.io-coming%20soon-orange.svg" alt="crates.io"></a>
+</p>
 
 **Status:** v0.0.1, experimental. APIs will change before 1.0.
 
