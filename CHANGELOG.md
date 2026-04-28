@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `TactConfig::default().min_words` from 3 to 1. Short programmatic queries (e.g., single-word entity lookups) now reach the FTS and fingerprint search paths instead of being silently skipped. Consumers wanting the previous behavior should set `TactConfig::min_words = 3` explicitly.
+
 ### Added
 - `Brain::ingest_text()` — extract triples from natural-language text via LLM, validate against ontology, assert valid triples, and store original text as a memory
 - `IngestTextOpts`, `IngestTextResult`, `RejectedTriple`, `RejectionReason` types for controlling and inspecting text ingestion
