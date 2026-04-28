@@ -52,6 +52,9 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # HTTP
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
+
 # Async (used by some crates)
 tokio = { version = "1", features = ["full"] }
 

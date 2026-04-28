@@ -27,3 +27,8 @@ http-llm = ["dep:reqwest"]
 tempfile = "3"
 wiremock = "0.6"
 tokio = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "retrieval"
+harness = false
