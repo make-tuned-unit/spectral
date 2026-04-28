@@ -65,7 +65,8 @@ use std::path::{Path, PathBuf};
 pub use spectral_core::device_id::DeviceId;
 pub use spectral_core::visibility::Visibility;
 pub use spectral_graph::brain::{
-    AssertResult, HybridRecallResult, IngestResult, RecallResult, RememberOpts, RememberResult,
+    AssertResult, HybridRecallResult, IngestResult, IngestTextOpts, IngestTextResult, RecallResult,
+    RejectedTriple, RejectionReason, RememberOpts, RememberResult,
 };
 pub use spectral_graph::Error;
 pub use spectral_tact::LlmClient;
@@ -200,6 +201,12 @@ impl Brain {
         context_visibility: Visibility,
     ) -> Result<RecallResult, Error> {
         self.inner.recall_graph(query, context_visibility)
+    }
+
+    /// Extract triples from natural-language text via LLM, validate against
+    /// ontology, assert valid triples, and store the original text as a memory.
+    pub fn ingest_text(&self, text: &str, opts: IngestTextOpts) -> Result<IngestTextResult, Error> {
+        self.inner.ingest_text(text, opts)
     }
 
     /// Ingest a document: hash content, create document node, link mentions.

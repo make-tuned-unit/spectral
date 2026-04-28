@@ -93,5 +93,16 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    // ── LLM-based text ingestion (optional) ─────────────────────────
+    // Only runs if a real LLM is available via OPENAI_API_KEY env var.
+    if std::env::var("OPENAI_API_KEY").is_ok() {
+        println!("\n--- LLM text ingestion ---");
+        // When running with a real LLM, uncomment and configure:
+        // let llm = spectral::llm::HttpLlmClient::openai(api_key);
+        // Then build a brain with .llm_client(Box::new(llm)) and call:
+        // brain.ingest_text("Alice studies mathematics at Stanford.", opts)?;
+        println!("(Set OPENAI_API_KEY to enable live LLM extraction demo)");
+    }
+
     Ok(())
 }
