@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Memory ingestion pipeline: classify, score, fingerprint, and store memories for TACT retrieval."
 
 [dependencies]
+spectral-core = { path = "../spectral-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

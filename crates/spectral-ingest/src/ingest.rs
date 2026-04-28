@@ -2,6 +2,8 @@
 
 use regex::Regex;
 
+use spectral_core::device_id::DeviceId;
+
 use crate::classifier;
 use crate::fingerprint;
 use crate::signal;
@@ -28,6 +30,15 @@ impl Default for IngestConfig {
     }
 }
 
+/// Optional provenance metadata for ingestion.
+#[derive(Debug, Clone, Default)]
+pub struct IngestOpts {
+    pub source: Option<String>,
+    pub device_id: Option<DeviceId>,
+    /// Classification confidence override. `None` = default 1.0.
+    pub confidence: Option<f64>,
+}
+
 /// Result of the ingestion pipeline.
 #[derive(Debug)]
 pub struct IngestResult {
@@ -47,6 +58,33 @@ pub async fn ingest(
     config: &IngestConfig,
     store: &dyn MemoryStore,
 ) -> anyhow::Result<IngestResult> {
+    ingest_with(
+        id,
+        key,
+        content,
+        category,
+        _created_at_epoch,
+        visibility,
+        config,
+        store,
+        IngestOpts::default(),
+    )
+    .await
+}
+
+/// Run the ingestion pipeline with full metadata control.
+#[allow(clippy::too_many_arguments)]
+pub async fn ingest_with(
+    id: &str,
+    key: &str,
+    content: &str,
+    category: &str,
+    _created_at_epoch: f64,
+    visibility: &str,
+    config: &IngestConfig,
+    store: &dyn MemoryStore,
+    opts: IngestOpts,
+) -> anyhow::Result<IngestResult> {
     let wing = classifier::classify_wing(key, content, category, &config.wing_rules);
     let hall = classifier::classify_hall(content, &config.hall_rules);
     let signal_score = signal::score_memory(content, &hall);
@@ -59,6 +97,9 @@ pub async fn ingest(
         hall: Some(hall.clone()),
         signal_score,
         visibility: visibility.to_string(),
+        source: opts.source,
+        device_id: opts.device_id.map(|d| *d.as_bytes()),
+        confidence: opts.confidence.unwrap_or(1.0),
     };
 
     let fingerprints = if signal_score >= config.signal_threshold {

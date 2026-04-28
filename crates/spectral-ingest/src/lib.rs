@@ -32,6 +32,19 @@ pub struct Memory {
     /// Visibility level. Defaults to `"private"` for fail-safe.
     #[serde(default = "default_visibility_str")]
     pub visibility: String,
+    /// Where this memory came from (e.g. "native", "openbird_sidecar", "manual", "import").
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Which device originated this memory (raw 32-byte blake3 hash).
+    #[serde(default)]
+    pub device_id: Option<[u8; 32]>,
+    /// Classification confidence, 0.0–1.0. Defaults to 1.0.
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
+}
+
+fn default_confidence() -> f64 {
+    1.0
 }
 
 fn default_visibility_str() -> String {
@@ -69,6 +82,15 @@ pub struct MemoryHit {
     pub visibility: String,
     /// Number of fingerprint/keyword matches that produced this hit.
     pub hits: usize,
+    /// Where this memory came from.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Which device originated this memory.
+    #[serde(default)]
+    pub device_id: Option<[u8; 32]>,
+    /// Classification confidence, 0.0–1.0.
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
 }
 
 // ── MemoryStore trait ───────────────────────────────────────────────

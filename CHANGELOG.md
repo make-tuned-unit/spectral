@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `DeviceId` content-addressed identifier in spectral-core
+- `Memory.source`, `Memory.device_id`, `Memory.confidence` fields with backward-compatible defaults
+- `Brain::remember_with()` for ingestion with full metadata
+- `Brain::device_id()` accessor; `BrainConfig.device_id` optional setter
+- Idempotent SQLite schema migration adds columns to existing brains on open
+
+### Notes
+- These additions are non-breaking. Existing code calling `Brain::remember(key, content, visibility)` continues to work; new fields default to `None`/`1.0`.
+- `MemoryStore::write()` trait signature unchanged — the new fields are on the `Memory` struct it already accepts.
+
 ### Breaking changes
 - **`Brain::recall()`** now takes `context_visibility: Visibility` to filter
   results. Use `Visibility::Private` for the previous see-everything behavior.

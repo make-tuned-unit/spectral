@@ -41,6 +41,7 @@ fn brain_config(tmp: &TempDir) -> BrainConfig {
         llm_client: None,
         wing_rules: None,
         hall_rules: None,
+        device_id: None,
     }
 }
 

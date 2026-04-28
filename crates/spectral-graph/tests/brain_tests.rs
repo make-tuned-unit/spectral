@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
+use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
-use spectral_graph::brain::{Brain, BrainConfig};
+use spectral_graph::brain::{Brain, BrainConfig, RememberOpts};
 use tempfile::TempDir;
 
 fn brain_config(tmp: &TempDir) -> BrainConfig {
@@ -12,6 +13,7 @@ fn brain_config(tmp: &TempDir) -> BrainConfig {
         llm_client: None,
         wing_rules: None,
         hall_rules: None,
+        device_id: None,
     }
 }
 
@@ -378,4 +380,204 @@ fn visibility_federation_precedent() {
             t.predicate
         );
     }
+}
+
+// ── Provenance field tests ───────────────────────────────────────────
+
+#[test]
+fn remember_with_source_persists_source() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember_with(
+            "apollo-native",
+            "Decided to use Apollo for weather prediction",
+            RememberOpts {
+                source: Some("native".into()),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let result = brain
+        .recall("apollo weather prediction", Visibility::Private)
+        .unwrap();
+    assert!(!result.memory_hits.is_empty());
+    assert_eq!(result.memory_hits[0].source.as_deref(), Some("native"));
+}
+
+#[test]
+fn remember_with_device_id_persists() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let device = DeviceId::from_descriptor("test-laptop-abc");
+    brain
+        .remember_with(
+            "apollo-device",
+            "Decided to use Apollo for weather prediction via device",
+            RememberOpts {
+                device_id: Some(device),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let result = brain
+        .recall("apollo weather prediction device", Visibility::Private)
+        .unwrap();
+    assert!(!result.memory_hits.is_empty());
+    assert_eq!(
+        result.memory_hits[0].device_id.as_ref(),
+        Some(device.as_bytes())
+    );
+}
+
+#[test]
+fn remember_with_confidence_persists() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember_with(
+            "low-confidence",
+            "Decided to use Apollo for weather prediction maybe",
+            RememberOpts {
+                confidence: Some(0.5),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let result = brain
+        .recall("apollo weather prediction maybe", Visibility::Private)
+        .unwrap();
+    assert!(!result.memory_hits.is_empty());
+    assert!((result.memory_hits[0].confidence - 0.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn default_remember_uses_none_source_and_full_confidence() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let r = brain
+        .remember(
+            "default-test",
+            "Decided to use Apollo for weather prediction default",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    assert!(r.source.is_none());
+    assert!((r.confidence - 1.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn device_id_deterministic_from_descriptor() {
+    let a = DeviceId::from_descriptor("hostname-abc");
+    let b = DeviceId::from_descriptor("hostname-abc");
+    assert_eq!(a, b);
+
+    let c = DeviceId::from_descriptor("hostname-xyz");
+    assert_ne!(a, c);
+}
+
+#[test]
+fn schema_migration_adds_columns_idempotent() {
+    use spectral_ingest::sqlite_store::SqliteStore;
+
+    // Create a store with the old schema (no provenance columns)
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test_migrate.db");
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS memories (
+                id            TEXT PRIMARY KEY,
+                key           TEXT NOT NULL UNIQUE,
+                content       TEXT NOT NULL,
+                category      TEXT NOT NULL DEFAULT 'core',
+                wing          TEXT DEFAULT NULL,
+                hall          TEXT DEFAULT NULL,
+                signal_score  REAL DEFAULT 0.5,
+                visibility    TEXT NOT NULL DEFAULT 'private',
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                key, content, content=memories, content_rowid=rowid
+            );
+            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO memories_fts(rowid, key, content)
+                VALUES (new.rowid, new.key, new.content);
+            END;
+            CREATE TABLE IF NOT EXISTS constellation_fingerprints (
+                id TEXT PRIMARY KEY,
+                fingerprint_hash TEXT NOT NULL,
+                anchor_memory_id TEXT NOT NULL,
+                target_memory_id TEXT NOT NULL,
+                wing TEXT, anchor_hall TEXT, target_hall TEXT,
+                time_delta_bucket TEXT, created_at TEXT
+            );",
+        )
+        .unwrap();
+    }
+
+    // Open with SqliteStore — migration should add columns
+    let _store = SqliteStore::open(&db_path).unwrap();
+
+    // Open again — migration should be idempotent
+    let _store2 = SqliteStore::open(&db_path).unwrap();
+
+    // Verify columns exist by inserting with them
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO memories (id, key, content, source, device_id, confidence)
+         VALUES ('t1', 'k1', 'c1', 'native', X'0102030405060708091011121314151617181920212223242526272829303132', 0.75)",
+        [],
+    )
+    .unwrap();
+
+    let source: Option<String> = conn
+        .query_row("SELECT source FROM memories WHERE id = 't1'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(source.as_deref(), Some("native"));
+}
+
+#[test]
+fn recall_returns_source_and_device_and_confidence() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let device = DeviceId::from_descriptor("roundtrip-host");
+    brain
+        .remember_with(
+            "roundtrip-key",
+            "Decided to use Apollo for weather prediction roundtrip",
+            RememberOpts {
+                source: Some("openbird_sidecar".into()),
+                device_id: Some(device),
+                confidence: Some(0.95),
+                visibility: Visibility::Private,
+            },
+        )
+        .unwrap();
+
+    let result = brain
+        .recall("apollo weather prediction roundtrip", Visibility::Private)
+        .unwrap();
+    assert!(!result.memory_hits.is_empty());
+
+    let hit = &result.memory_hits[0];
+    assert_eq!(hit.source.as_deref(), Some("openbird_sidecar"));
+    assert_eq!(hit.device_id.as_ref(), Some(device.as_bytes()));
+    assert!((hit.confidence - 0.95).abs() < f64::EPSILON);
 }
