@@ -268,7 +268,14 @@ impl Brain {
     }
 
     /// Ingest free text: classify, score, fingerprint, store in memory DB.
-    pub fn remember(&self, key: &str, content: &str) -> Result<RememberResult, Error> {
+    ///
+    /// The `visibility` parameter controls who can see this memory during recall.
+    pub fn remember(
+        &self,
+        key: &str,
+        content: &str,
+        visibility: Visibility,
+    ) -> Result<RememberResult, Error> {
         let memory_id = format!(
             "{:016x}",
             u64::from_be_bytes(
@@ -278,6 +285,7 @@ impl Brain {
             )
         );
 
+        let vis_str = visibility_to_str(visibility);
         let result = self
             .rt
             .block_on(spectral_ingest::ingest::ingest(
@@ -286,6 +294,7 @@ impl Brain {
                 content,
                 "core",
                 Utc::now().timestamp() as f64,
+                &vis_str,
                 &self.ingest_config,
                 self.memory_store.as_ref(),
             ))
@@ -300,9 +309,16 @@ impl Brain {
         })
     }
 
-    /// Hybrid recall: TACT memory search + graph 2-hop neighborhood.
-    pub fn recall(&self, query: &str) -> Result<HybridRecallResult, Error> {
-        // TACT retrieval
+    /// Hybrid recall filtered by visibility context.
+    ///
+    /// Returns only content where `content.visibility.allows(context_visibility)`
+    /// is true. A `Private` context sees everything; a `Public` context sees
+    /// only `Public` content.
+    pub fn recall(
+        &self,
+        query: &str,
+        context_visibility: Visibility,
+    ) -> Result<HybridRecallResult, Error> {
         let tact = self
             .rt
             .block_on(spectral_tact::retrieve(
@@ -312,10 +328,15 @@ impl Brain {
             ))
             .map_err(|e| Error::Schema(e.to_string()))?;
 
-        let memory_hits = tact.memories.clone();
+        // Filter memory hits by visibility
+        let memory_hits: Vec<_> = tact
+            .memories
+            .iter()
+            .filter(|m| str_to_vis(&m.visibility).allows(context_visibility))
+            .cloned()
+            .collect();
 
-        // Graph retrieval
-        let graph = self.recall_graph(query)?;
+        let graph = self.recall_graph(query, context_visibility)?;
 
         Ok(HybridRecallResult {
             memory_hits,
@@ -324,8 +345,19 @@ impl Brain {
         })
     }
 
-    /// Graph-only recall: find entities matching query text, return 2-hop neighborhood.
-    pub fn recall_graph(&self, query: &str) -> Result<RecallResult, Error> {
+    /// Convenience: recall with maximally-permissive context (returns everything).
+    ///
+    /// Equivalent to `recall(query, Visibility::Private)`.
+    pub fn recall_local(&self, query: &str) -> Result<HybridRecallResult, Error> {
+        self.recall(query, Visibility::Private)
+    }
+
+    /// Graph-only recall filtered by visibility context.
+    pub fn recall_graph(
+        &self,
+        query: &str,
+        context_visibility: Visibility,
+    ) -> Result<RecallResult, Error> {
         let canonicalizer = Canonicalizer::new(&self.ontology);
         let result = canonicalizer.canonicalize(query);
 
@@ -362,6 +394,15 @@ impl Brain {
             }
         }
 
+        // Filter by visibility
+        let all_entities: Vec<_> = all_entities
+            .into_iter()
+            .filter(|e| e.visibility.allows(context_visibility))
+            .collect();
+        let all_triples: Vec<_> = all_triples
+            .into_iter()
+            .filter(|t| t.visibility.allows(context_visibility))
+            .collect();
         let triples_clone = all_triples.clone();
 
         Ok(RecallResult {
@@ -426,5 +467,24 @@ impl Brain {
     /// Direct access to the ontology.
     pub fn ontology(&self) -> &Ontology {
         &self.ontology
+    }
+}
+
+fn visibility_to_str(v: Visibility) -> String {
+    match v {
+        Visibility::Private => "private",
+        Visibility::Team => "team",
+        Visibility::Org => "org",
+        Visibility::Public => "public",
+    }
+    .to_string()
+}
+
+fn str_to_vis(s: &str) -> Visibility {
+    match s {
+        "team" => Visibility::Team,
+        "org" => Visibility::Org,
+        "public" => Visibility::Public,
+        _ => Visibility::Private,
     }
 }

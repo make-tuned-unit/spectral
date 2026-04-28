@@ -36,12 +36,14 @@ pub struct IngestResult {
 }
 
 /// Run the ingestion pipeline: classify, score, generate fingerprints, write.
+#[allow(clippy::too_many_arguments)]
 pub async fn ingest(
     id: &str,
     key: &str,
     content: &str,
     category: &str,
     _created_at_epoch: f64,
+    visibility: &str,
     config: &IngestConfig,
     store: &dyn MemoryStore,
 ) -> anyhow::Result<IngestResult> {
@@ -56,6 +58,7 @@ pub async fn ingest(
         wing: Some(wing.clone()),
         hall: Some(hall.clone()),
         signal_score,
+        visibility: visibility.to_string(),
     };
 
     let fingerprints = if signal_score >= config.signal_threshold {

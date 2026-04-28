@@ -29,6 +29,13 @@ pub struct Memory {
     pub wing: Option<String>,
     pub hall: Option<String>,
     pub signal_score: f64,
+    /// Visibility level. Defaults to `"private"` for fail-safe.
+    #[serde(default = "default_visibility_str")]
+    pub visibility: String,
+}
+
+fn default_visibility_str() -> String {
+    "private".to_string()
 }
 
 // ── Fingerprint ─────────────────────────────────────────────────────
@@ -57,6 +64,9 @@ pub struct MemoryHit {
     pub wing: Option<String>,
     pub hall: Option<String>,
     pub signal_score: f64,
+    /// Visibility level.
+    #[serde(default = "default_visibility_str")]
+    pub visibility: String,
     /// Number of fingerprint/keyword matches that produced this hit.
     pub hits: usize,
 }
