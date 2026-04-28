@@ -105,6 +105,23 @@ pub struct MemoryHit {
     pub last_reinforced_at: Option<String>,
 }
 
+// ── SpectrogramRow ─────────────────────────────────────────────────
+
+/// A row from the memory_spectrogram table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpectrogramRow {
+    pub memory_id: String,
+    pub wing: Option<String>,
+    pub entity_density: f64,
+    pub action_type: String,
+    pub decision_polarity: f64,
+    pub causal_depth: f64,
+    pub emotional_valence: f64,
+    pub temporal_specificity: f64,
+    pub novelty: f64,
+    pub peak_dimensions: String,
+}
+
 // ── MemoryStore trait ───────────────────────────────────────────────
 
 /// Unified trait abstracting the memory storage backend.
@@ -170,6 +187,42 @@ pub trait MemoryStore: Send + Sync {
         key: &str,
         strength: f64,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>>;
+
+    // ── Spectrogram ──
+
+    /// Write a spectrogram record for a memory.
+    #[allow(clippy::too_many_arguments)]
+    fn write_spectrogram(
+        &self,
+        memory_id: &str,
+        entity_density: f64,
+        action_type: &str,
+        decision_polarity: f64,
+        causal_depth: f64,
+        emotional_valence: f64,
+        temporal_specificity: f64,
+        novelty: f64,
+        peak_dimensions: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Load spectrogram for a single memory. Returns None if no spectrogram exists.
+    fn load_spectrogram(
+        &self,
+        memory_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<SpectrogramRow>>> + Send + '_>>;
+
+    /// Load spectrograms, optionally filtering by wing. Returns (memory_id, wing, spectrogram data).
+    fn load_spectrograms(
+        &self,
+        wing_filter: Option<&str>,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<SpectrogramRow>>> + Send + '_>>;
+
+    /// List memory IDs that have no spectrogram yet.
+    fn memories_without_spectrogram(
+        &self,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>>;
 }
 
 // ── TimeBucket ──────────────────────────────────────────────────────

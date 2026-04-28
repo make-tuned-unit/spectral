@@ -65,8 +65,9 @@ use std::path::{Path, PathBuf};
 pub use spectral_core::device_id::DeviceId;
 pub use spectral_core::visibility::Visibility;
 pub use spectral_graph::brain::{
-    AssertResult, HybridRecallResult, IngestResult, IngestTextOpts, IngestTextResult, RecallResult,
-    ReinforceOpts, ReinforceResult, RejectedTriple, RejectionReason, RememberOpts, RememberResult,
+    AssertResult, CrossWingRecallResult, HybridRecallResult, IngestResult, IngestTextOpts,
+    IngestTextResult, RecallResult, ReinforceOpts, ReinforceResult, RejectedTriple,
+    RejectionReason, RememberOpts, RememberResult, ResonantMemoryHit,
 };
 pub use spectral_graph::Error;
 pub use spectral_tact::LlmClient;
@@ -209,6 +210,22 @@ impl Brain {
         self.inner.ingest_text(text, opts)
     }
 
+    /// Find memories across wings that resonate with a query memory's cognitive fingerprint.
+    pub fn recall_cross_wing(
+        &self,
+        seed_query: &str,
+        visibility: Visibility,
+        max_results: usize,
+    ) -> Result<CrossWingRecallResult, Error> {
+        self.inner
+            .recall_cross_wing(seed_query, visibility, max_results)
+    }
+
+    /// Compute and store spectrograms for memories that don't have one.
+    pub fn backfill_spectrograms(&self) -> Result<usize, Error> {
+        self.inner.backfill_spectrograms()
+    }
+
     /// Reinforce memories that the caller found useful from a recall result.
     pub fn reinforce(&self, opts: ReinforceOpts) -> Result<ReinforceResult, Error> {
         self.inner.reinforce(opts)
@@ -255,6 +272,7 @@ pub struct BrainBuilder {
     wing_rules: Option<Vec<(String, String)>>,
     hall_rules: Option<Vec<(String, String)>>,
     device_id: Option<DeviceId>,
+    enable_spectrogram: bool,
     auto_ontology: bool,
 }
 
@@ -315,6 +333,12 @@ impl BrainBuilder {
         self
     }
 
+    /// Enable cognitive spectrogram computation on ingest.
+    pub fn enable_spectrogram(mut self, enabled: bool) -> Self {
+        self.enable_spectrogram = enabled;
+        self
+    }
+
     /// Use `<data_dir>/ontology.toml` if it exists, or an empty ontology.
     fn auto_ontology(mut self) -> Self {
         self.auto_ontology = true;
@@ -350,6 +374,7 @@ impl BrainBuilder {
             wing_rules: self.wing_rules,
             hall_rules: self.hall_rules,
             device_id: self.device_id,
+            enable_spectrogram: self.enable_spectrogram,
         };
 
         let inner = spectral_graph::brain::Brain::open(config)?;

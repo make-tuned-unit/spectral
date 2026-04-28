@@ -41,6 +41,7 @@ fn brain_with_llm(tmp: &TempDir, client: Box<dyn LlmClient>) -> Brain {
         wing_rules: None,
         hall_rules: None,
         device_id: None,
+        enable_spectrogram: false,
     })
     .unwrap()
 }
@@ -54,6 +55,7 @@ fn brain_without_llm(tmp: &TempDir) -> Brain {
         wing_rules: None,
         hall_rules: None,
         device_id: None,
+        enable_spectrogram: false,
     })
     .unwrap()
 }

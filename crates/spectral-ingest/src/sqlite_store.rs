@@ -1,6 +1,6 @@
 //! Concrete `MemoryStore` implementation using rusqlite with FTS5.
 
-use crate::{Fingerprint, Memory, MemoryHit, MemoryStore};
+use crate::{Fingerprint, Memory, MemoryHit, MemoryStore, SpectrogramRow};
 use lru::LruCache;
 use rusqlite::{params, Connection};
 use std::future::Future;
@@ -119,7 +119,22 @@ impl SqliteStore {
             CREATE INDEX IF NOT EXISTS idx_fp_wing_anchor_hall
                 ON constellation_fingerprints(wing, anchor_hall);
             CREATE INDEX IF NOT EXISTS idx_fp_wing_target_hall
-                ON constellation_fingerprints(wing, target_hall);",
+                ON constellation_fingerprints(wing, target_hall);
+
+            CREATE TABLE IF NOT EXISTS memory_spectrogram (
+                memory_id         TEXT PRIMARY KEY,
+                entity_density    REAL,
+                action_type       TEXT,
+                decision_polarity REAL,
+                causal_depth      REAL,
+                emotional_valence REAL,
+                temporal_specificity REAL,
+                novelty           REAL,
+                peak_dimensions   TEXT,
+                created_at        TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (memory_id) REFERENCES memories(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_spectrogram_action ON memory_spectrogram(action_type);",
         )?;
         Ok(())
     }
@@ -548,6 +563,190 @@ impl MemoryStore for SqliteStore {
             }
 
             Ok(wing)
+        })
+    }
+
+    fn write_spectrogram(
+        &self,
+        memory_id: &str,
+        entity_density: f64,
+        action_type: &str,
+        decision_polarity: f64,
+        causal_depth: f64,
+        emotional_valence: f64,
+        temporal_specificity: f64,
+        novelty: f64,
+        peak_dimensions: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let action_type = action_type.to_string();
+        let peak_dimensions = peak_dimensions.to_string();
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            conn.execute(
+                "INSERT INTO memory_spectrogram
+                     (memory_id, entity_density, action_type, decision_polarity,
+                      causal_depth, emotional_valence, temporal_specificity, novelty,
+                      peak_dimensions, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+                 ON CONFLICT(memory_id) DO UPDATE SET
+                    entity_density = excluded.entity_density,
+                    action_type = excluded.action_type,
+                    decision_polarity = excluded.decision_polarity,
+                    causal_depth = excluded.causal_depth,
+                    emotional_valence = excluded.emotional_valence,
+                    temporal_specificity = excluded.temporal_specificity,
+                    novelty = excluded.novelty,
+                    peak_dimensions = excluded.peak_dimensions",
+                params![
+                    memory_id,
+                    entity_density,
+                    action_type,
+                    decision_polarity,
+                    causal_depth,
+                    emotional_valence,
+                    temporal_specificity,
+                    novelty,
+                    peak_dimensions,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn load_spectrogram(
+        &self,
+        memory_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<SpectrogramRow>>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let result = conn.query_row(
+                "SELECT s.memory_id, m.wing, s.entity_density, s.action_type,
+                        s.decision_polarity, s.causal_depth, s.emotional_valence,
+                        s.temporal_specificity, s.novelty, s.peak_dimensions
+                 FROM memory_spectrogram s
+                 JOIN memories m ON m.id = s.memory_id
+                 WHERE s.memory_id = ?1",
+                params![memory_id],
+                |row| {
+                    Ok(SpectrogramRow {
+                        memory_id: row.get(0)?,
+                        wing: row.get(1)?,
+                        entity_density: row.get(2)?,
+                        action_type: row.get(3)?,
+                        decision_polarity: row.get(4)?,
+                        causal_depth: row.get(5)?,
+                        emotional_valence: row.get(6)?,
+                        temporal_specificity: row.get(7)?,
+                        novelty: row.get(8)?,
+                        peak_dimensions: row.get(9)?,
+                    })
+                },
+            );
+            match result {
+                Ok(row) => Ok(Some(row)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        })
+    }
+
+    fn load_spectrograms(
+        &self,
+        wing_filter: Option<&str>,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<SpectrogramRow>>> + Send + '_>> {
+        let wing_filter = wing_filter.map(String::from);
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut results = Vec::new();
+
+            if let Some(ref wing) = wing_filter {
+                let mut stmt = conn.prepare(
+                    "SELECT s.memory_id, m.wing, s.entity_density, s.action_type,
+                            s.decision_polarity, s.causal_depth, s.emotional_valence,
+                            s.temporal_specificity, s.novelty, s.peak_dimensions
+                     FROM memory_spectrogram s
+                     JOIN memories m ON m.id = s.memory_id
+                     WHERE m.wing = ?1
+                     LIMIT ?2",
+                )?;
+                let rows = stmt.query_map(params![wing, limit as i64], |row| {
+                    Ok(SpectrogramRow {
+                        memory_id: row.get(0)?,
+                        wing: row.get(1)?,
+                        entity_density: row.get(2)?,
+                        action_type: row.get(3)?,
+                        decision_polarity: row.get(4)?,
+                        causal_depth: row.get(5)?,
+                        emotional_valence: row.get(6)?,
+                        temporal_specificity: row.get(7)?,
+                        novelty: row.get(8)?,
+                        peak_dimensions: row.get(9)?,
+                    })
+                })?;
+                for row in rows {
+                    results.push(row?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT s.memory_id, m.wing, s.entity_density, s.action_type,
+                            s.decision_polarity, s.causal_depth, s.emotional_valence,
+                            s.temporal_specificity, s.novelty, s.peak_dimensions
+                     FROM memory_spectrogram s
+                     JOIN memories m ON m.id = s.memory_id
+                     LIMIT ?1",
+                )?;
+                let rows = stmt.query_map(params![limit as i64], |row| {
+                    Ok(SpectrogramRow {
+                        memory_id: row.get(0)?,
+                        wing: row.get(1)?,
+                        entity_density: row.get(2)?,
+                        action_type: row.get(3)?,
+                        decision_polarity: row.get(4)?,
+                        causal_depth: row.get(5)?,
+                        emotional_valence: row.get(6)?,
+                        temporal_specificity: row.get(7)?,
+                        novelty: row.get(8)?,
+                        peak_dimensions: row.get(9)?,
+                    })
+                })?;
+                for row in rows {
+                    results.push(row?);
+                }
+            }
+
+            Ok(results)
+        })
+    }
+
+    fn memories_without_spectrogram(
+        &self,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>> {
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT m.id FROM memories m
+                 LEFT JOIN memory_spectrogram s ON m.id = s.memory_id
+                 WHERE s.memory_id IS NULL
+                 LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |row| row.get::<_, String>(0))?;
+            let mut ids = Vec::new();
+            for row in rows {
+                ids.push(row?);
+            }
+            Ok(ids)
         })
     }
 }

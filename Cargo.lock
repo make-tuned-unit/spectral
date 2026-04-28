@@ -2711,6 +2711,7 @@ dependencies = [
  "serde_json",
  "spectral-core",
  "spectral-ingest",
+ "spectral-spectrogram",
  "spectral-tact",
  "strsim",
  "tempfile",
@@ -2741,8 +2742,12 @@ dependencies = [
 name = "spectral-spectrogram"
 version = "0.0.1"
 dependencies = [
+ "chrono",
+ "regex",
  "serde",
+ "serde_json",
  "spectral-core",
+ "spectral-ingest",
  "thiserror",
  "tracing",
 ]
