@@ -53,6 +53,11 @@ Both are accessible through a single `Brain` handle.
 > zeroclaw codebase) lives in `spectral-ingest::fingerprint`. There is no
 > separate `spectral-constellation` crate.
 
+## Operational considerations
+
+See [docs/operational-considerations.md](docs/operational-considerations.md)
+for crash recovery, concurrency, and production deployment guidance.
+
 ## Design principles
 
 - **Content-addressed entity IDs.** Same entity, same ID, every brain.
