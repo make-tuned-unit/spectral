@@ -66,7 +66,7 @@ pub use spectral_core::device_id::DeviceId;
 pub use spectral_core::visibility::Visibility;
 pub use spectral_graph::brain::{
     AssertResult, HybridRecallResult, IngestResult, IngestTextOpts, IngestTextResult, RecallResult,
-    RejectedTriple, RejectionReason, RememberOpts, RememberResult,
+    ReinforceOpts, ReinforceResult, RejectedTriple, RejectionReason, RememberOpts, RememberResult,
 };
 pub use spectral_graph::Error;
 pub use spectral_tact::LlmClient;
@@ -207,6 +207,11 @@ impl Brain {
     /// ontology, assert valid triples, and store the original text as a memory.
     pub fn ingest_text(&self, text: &str, opts: IngestTextOpts) -> Result<IngestTextResult, Error> {
         self.inner.ingest_text(text, opts)
+    }
+
+    /// Reinforce memories that the caller found useful from a recall result.
+    pub fn reinforce(&self, opts: ReinforceOpts) -> Result<ReinforceResult, Error> {
+        self.inner.reinforce(opts)
     }
 
     /// Ingest a document: hash content, create document node, link mentions.

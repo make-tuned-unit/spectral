@@ -137,6 +137,8 @@ mod tests {
                 source: None,
                 device_id: None,
                 confidence: 1.0,
+                created_at: None,
+                last_reinforced_at: None,
                 hits: 3,
             },
             MemoryHit {
@@ -150,6 +152,8 @@ mod tests {
                 source: None,
                 device_id: None,
                 confidence: 1.0,
+                created_at: None,
+                last_reinforced_at: None,
                 hits: 2,
             },
         ];
@@ -165,6 +169,8 @@ mod tests {
                 source: None,
                 device_id: None,
                 confidence: 1.0,
+                created_at: None,
+                last_reinforced_at: None,
                 hits: 1,
             },
             MemoryHit {
@@ -178,6 +184,8 @@ mod tests {
                 source: None,
                 device_id: None,
                 confidence: 1.0,
+                created_at: None,
+                last_reinforced_at: None,
                 hits: 1,
             },
         ];
