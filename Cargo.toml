@@ -45,6 +45,9 @@ tracing = "0.1"
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Caching
+lru = "0.12"
+
 # Storage
 kuzu = "0.11"
 rusqlite = { version = "0.31", features = ["bundled"] }

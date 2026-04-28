@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `IngestTextOpts`, `IngestTextResult`, `RejectedTriple`, `RejectionReason` types for controlling and inspecting text ingestion
 - `ExtractionPrompt` in `spectral-graph::extract` for building LLM prompts and parsing responses
 - `Error::MissingLlmClient` and `Error::Llm` variants for LLM-related errors
+
+### Performance
+- Wing result LRU cache (32 entries) in `SqliteStore` — serves repeated `wing_search()` from memory, invalidated on `write()`
+- Compound `(wing, anchor_hall)` and `(wing, target_hall)` indexes on `constellation_fingerprints` — accelerates hall-match path
+- Unified CTE for fingerprint search — replaces N per-hash SQLite round-trips + per-id memory fetches with a single server-side scored query
+- Single-transaction `write()` — wraps memory + all fingerprint inserts in `BEGIN..COMMIT` for atomicity and 2.0-2.4x faster batch ingest
 - `DeviceId` content-addressed identifier in spectral-core
 - `Memory.source`, `Memory.device_id`, `Memory.confidence` fields with backward-compatible defaults
 - `Brain::remember_with()` for ingestion with full metadata
