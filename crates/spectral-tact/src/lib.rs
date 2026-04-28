@@ -26,7 +26,11 @@ pub trait LlmClient: Send + Sync {
 /// TACT pipeline configuration.
 #[derive(Debug, Clone)]
 pub struct TactConfig {
-    /// Minimum word count to trigger retrieval (skip greetings).
+    /// Minimum word count for TACT classification to engage. Queries with
+    /// fewer words return `RetrievalMethod::Skipped` with zero results.
+    /// Default 1 means single-word queries are classified normally. Set
+    /// higher (e.g., 3) if consuming code wants to bypass TACT for
+    /// greeting-style short messages.
     pub min_words: usize,
     /// Maximum results to return.
     pub max_results: usize,
@@ -41,7 +45,7 @@ pub struct TactConfig {
 impl Default for TactConfig {
     fn default() -> Self {
         Self {
-            min_words: 3,
+            min_words: 1,
             max_results: 5,
             max_context_chars: 6000,
             wing_rules: Vec::new(),
