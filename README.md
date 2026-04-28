@@ -100,7 +100,9 @@ then merges and deduplicates results.
 **spectral-core** provides content-addressed entity IDs, Ed25519 brain
 identity, device IDs, and the four-level visibility system.
 
-**spectral-spectrogram** is reserved for Phase 2 cognitive cross-wing matching.
+**spectral-spectrogram** classifies memories along seven cognitive dimensions
+(entity density, action type, emotional valence, etc.) and finds resonant
+memories across wings. Opt-in via `BrainConfig::enable_spectrogram`.
 
 ## Federation primitives
 
@@ -188,7 +190,7 @@ pattern.
 - ✅ Crash recovery and concurrency tested ([#8](https://github.com/make-tuned-unit/spectral/pull/8))
 - ✅ Benchmarked vs TF-IDF and neural vectors ([#9](https://github.com/make-tuned-unit/spectral/pull/9), [#10](https://github.com/make-tuned-unit/spectral/pull/10))
 - ✅ Performance optimizations from production audit ([#13](https://github.com/make-tuned-unit/spectral/pull/13))
-- 📋 Cognitive Spectrogram (cross-wing temporal matching)
+- ✅ Cognitive Spectrogram (cross-wing matching, [#16](https://github.com/make-tuned-unit/spectral/pull/16))
 - 📋 Memify feedback loop (recall quality improves with use)
 - 📋 Federation protocol (sync, conflict resolution, merge)
 - 📋 brain.db migration tooling

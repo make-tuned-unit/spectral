@@ -214,6 +214,7 @@ pub struct ReinforceResult {
 ///     wing_rules: None,
 ///     hall_rules: None,
 ///     device_id: None,
+///     enable_spectrogram: false,
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
