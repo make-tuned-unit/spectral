@@ -10,7 +10,6 @@ fn main() -> anyhow::Result<()> {
     let ontology_path =
         std::env::current_dir()?.join("crates/spectral-graph/examples/try_brain_ontology.toml");
 
-    println!("Opening fresh brain at {:?}", data_dir);
     let brain = Brain::open(BrainConfig {
         data_dir,
         ontology_path,
@@ -20,9 +19,8 @@ fn main() -> anyhow::Result<()> {
         hall_rules: None,
     })?;
     println!("Brain ID: {}", brain.brain_id());
-    println!();
 
-    println!("=== Asserting facts (graph) ===");
+    // Graph assertions
     for (s, p, o) in &[
         ("Alice", "knows", "Bob"),
         ("Bob", "knows", "Carol"),
@@ -30,13 +28,12 @@ fn main() -> anyhow::Result<()> {
     ] {
         let r = brain.assert(s, p, o, 1.0, Visibility::Private)?;
         println!(
-            "  {} -> {} -> {}",
+            "assert: {} -> {} -> {}",
             r.subject.canonical, r.predicate, r.object.canonical
         );
     }
-    println!();
 
-    println!("=== Remembering observations (memory) ===");
+    // Memory ingestion
     for (key, content) in &[
         (
             "polybot-decision",
@@ -53,55 +50,33 @@ fn main() -> anyhow::Result<()> {
     ] {
         let r = brain.remember(key, content)?;
         println!(
-            "  '{}' -> wing={:?} hall={:?} signal={:.2} fingerprints={}",
+            "remember: '{}' wing={:?} hall={:?} signal={:.2}",
             key,
             r.wing.as_deref(),
             r.hall.as_deref(),
-            r.signal_score,
-            r.fingerprints_created
+            r.signal_score
         );
     }
-    println!();
 
-    println!("=== Hybrid recall: 'polybot weather strategy' ===");
+    // Hybrid recall — memory
     let recall = brain.recall("polybot weather strategy")?;
     println!(
-        "Graph: {} entities, {} triples",
-        recall.graph.neighborhood.entities.len(),
+        "\nrecall 'polybot weather strategy': {} memory hits, {} graph triples",
+        recall.memory_hits.len(),
         recall.graph.triples.len()
     );
-    println!("Memory hits: {}", recall.memory_hits.len());
-    for hit in &recall.memory_hits {
-        println!(
-            "  [{}/{}] {}: {}",
-            hit.wing.as_deref().unwrap_or("?"),
-            hit.hall.as_deref().unwrap_or("?"),
-            hit.key,
-            hit.content.chars().take(60).collect::<String>()
-        );
-    }
     assert!(
         !recall.memory_hits.is_empty(),
-        "BUG: polybot observations were remembered but recall returned 0 memory hits"
+        "BUG: polybot recall returned 0 memory hits"
     );
-    println!();
 
-    println!("=== Hybrid recall: 'Alice' ===");
+    // Hybrid recall — graph
     let recall = brain.recall("Alice")?;
     println!(
-        "Graph: {} entities, {} triples",
-        recall.graph.neighborhood.entities.len(),
+        "recall 'Alice': {} memory hits, {} graph triples",
+        recall.memory_hits.len(),
         recall.graph.triples.len()
     );
-    println!(
-        "Memory hits: {} (expected 0 — no memory wing matches 'Alice')",
-        recall.memory_hits.len()
-    );
-    for t in &recall.graph.triples {
-        let from = &t.from.to_string()[..8];
-        let to = &t.to.to_string()[..8];
-        println!("  {} --{}--> {}", from, t.predicate, to);
-    }
 
     Ok(())
 }

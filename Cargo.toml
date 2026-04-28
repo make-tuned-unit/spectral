@@ -5,7 +5,6 @@ members = [
     "crates/spectral-ingest",
     "crates/spectral-graph",
     "crates/spectral-tact",
-    "crates/spectral-constellation",
     "crates/spectral-spectrogram",
     "crates/spectral",
 ]
@@ -49,6 +48,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # Storage
 kuzu = "0.11"
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
 # Async (used by some crates)
 tokio = { version = "1", features = ["full"] }
