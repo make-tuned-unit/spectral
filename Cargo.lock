@@ -2697,6 +2697,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "serde",
+ "serde_json",
  "spectral-core",
  "spectral-ingest",
  "spectral-tact",

@@ -18,6 +18,7 @@ use spectral_ingest::{MemoryHit, MemoryStore};
 use spectral_tact::{LlmClient, TactConfig, TactResult};
 
 use crate::canonicalize::{Canonicalizer, MatchedMention};
+use crate::extract::{ExtractedTriple, ExtractionPrompt};
 use crate::kuzu_store::{Entity, KuzuStore, Neighborhood, Triple};
 use crate::ontology::Ontology;
 use crate::Error;
@@ -101,6 +102,55 @@ pub struct RememberResult {
     pub confidence: f64,
 }
 
+/// Options for `Brain::ingest_text()`.
+#[derive(Debug)]
+pub struct IngestTextOpts {
+    pub source: Option<String>,
+    pub device_id: Option<DeviceId>,
+    pub visibility: Visibility,
+    /// Memory key for the original text. `None` = auto-generate from blake3 of content.
+    pub memory_key: Option<String>,
+    /// Confidence threshold below which extracted triples are rejected. Default 0.5.
+    pub min_confidence: f64,
+}
+
+impl Default for IngestTextOpts {
+    fn default() -> Self {
+        Self {
+            source: None,
+            device_id: None,
+            visibility: Visibility::Private,
+            memory_key: None,
+            min_confidence: 0.5,
+        }
+    }
+}
+
+/// Result of `Brain::ingest_text()`.
+#[derive(Debug)]
+pub struct IngestTextResult {
+    pub memory: RememberResult,
+    pub triples_extracted: usize,
+    pub triples_asserted: usize,
+    pub triples_rejected: Vec<RejectedTriple>,
+}
+
+/// A triple that was extracted but rejected during validation.
+#[derive(Debug)]
+pub struct RejectedTriple {
+    pub raw: ExtractedTriple,
+    pub reason: RejectionReason,
+}
+
+/// Why an extracted triple was rejected.
+#[derive(Debug)]
+pub enum RejectionReason {
+    BelowConfidenceThreshold,
+    UnresolvedSubject,
+    UnresolvedObject,
+    InvalidPredicate(String),
+}
+
 /// A Spectral brain: identity + ontology + knowledge graph + memory store.
 ///
 /// # Open a brain
@@ -126,6 +176,7 @@ pub struct Brain {
     ontology: Ontology,
     store: KuzuStore,
     memory_store: Box<dyn MemoryStore>,
+    llm_client: Option<Box<dyn LlmClient>>,
     tact_config: TactConfig,
     ingest_config: spectral_ingest::ingest::IngestConfig,
     rt: tokio::runtime::Runtime,
@@ -198,6 +249,7 @@ impl Brain {
             ontology,
             store,
             memory_store,
+            llm_client: config.llm_client,
             tact_config,
             ingest_config,
             rt,
@@ -525,6 +577,108 @@ impl Brain {
     /// Direct access to the ontology.
     pub fn ontology(&self) -> &Ontology {
         &self.ontology
+    }
+
+    /// Extract triples from natural-language text, validate against ontology,
+    /// assert valid triples, and store the original text as a memory.
+    ///
+    /// Requires a configured `LlmClient`.
+    pub fn ingest_text(&self, text: &str, opts: IngestTextOpts) -> Result<IngestTextResult, Error> {
+        let llm = self.llm_client.as_ref().ok_or(Error::MissingLlmClient)?;
+
+        // Build prompt with ontology predicates
+        let predicate_names: Vec<String> = self
+            .ontology
+            .predicates
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let prompt = ExtractionPrompt::build(text, &predicate_names);
+
+        // Call LLM
+        let response = self
+            .rt
+            .block_on(llm.complete(&prompt))
+            .map_err(|e| Error::Llm(e.to_string()))?;
+
+        // Parse response
+        let extracted = ExtractionPrompt::parse(&response);
+        let triples_extracted = extracted.len();
+
+        let mut triples_asserted = 0;
+        let mut triples_rejected = Vec::new();
+
+        for triple in extracted {
+            // Check confidence threshold
+            if triple.confidence < opts.min_confidence {
+                triples_rejected.push(RejectedTriple {
+                    raw: triple,
+                    reason: RejectionReason::BelowConfidenceThreshold,
+                });
+                continue;
+            }
+
+            // Try to assert — uses existing canonicalization + ontology validation
+            match self.assert(
+                &triple.subject,
+                &triple.predicate,
+                &triple.object,
+                triple.confidence,
+                opts.visibility,
+            ) {
+                Ok(_) => {
+                    triples_asserted += 1;
+                }
+                Err(Error::UnresolvedMention { mention, .. }) => {
+                    let reason = if mention == triple.subject {
+                        RejectionReason::UnresolvedSubject
+                    } else {
+                        RejectionReason::UnresolvedObject
+                    };
+                    triples_rejected.push(RejectedTriple {
+                        raw: triple,
+                        reason,
+                    });
+                }
+                Err(Error::InvalidPredicate { predicate, .. }) => {
+                    triples_rejected.push(RejectedTriple {
+                        raw: triple,
+                        reason: RejectionReason::InvalidPredicate(predicate),
+                    });
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Store original text as memory
+        let memory_key = opts.memory_key.unwrap_or_else(|| {
+            format!(
+                "ingest:{:016x}",
+                u64::from_be_bytes(
+                    blake3::hash(text.as_bytes()).as_bytes()[..8]
+                        .try_into()
+                        .unwrap(),
+                )
+            )
+        });
+
+        let memory = self.remember_with(
+            &memory_key,
+            text,
+            RememberOpts {
+                source: opts.source,
+                device_id: opts.device_id,
+                visibility: opts.visibility,
+                ..Default::default()
+            },
+        )?;
+
+        Ok(IngestTextResult {
+            memory,
+            triples_extracted,
+            triples_asserted,
+            triples_rejected,
+        })
     }
 }
 

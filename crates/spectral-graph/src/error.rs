@@ -48,4 +48,12 @@ pub enum Error {
         /// The object entity type.
         object_type: String,
     },
+
+    /// No LLM client configured for an operation that requires one.
+    #[error("no LLM client configured; ingest_text requires a client. Set BrainConfig.llm_client or use BrainBuilder::llm_client().")]
+    MissingLlmClient,
+
+    /// LLM call failed.
+    #[error("llm: {0}")]
+    Llm(String),
 }
