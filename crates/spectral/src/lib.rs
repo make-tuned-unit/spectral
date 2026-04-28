@@ -17,10 +17,10 @@
 //! let brain = Brain::open("./my-brain")?;
 //!
 //! // Remember free-text observations
-//! brain.remember("auth-decision", "Decided to use Clerk for auth")?;
+//! brain.remember("auth-decision", "Decided to use Clerk for auth", Visibility::Private)?;
 //!
 //! // Recall with hybrid search (memory + graph)
-//! let result = brain.recall("what was the auth decision")?;
+//! let result = brain.recall_local("what was the auth decision")?;
 //! for hit in &result.memory_hits {
 //!     println!("[{}] {}", hit.key, hit.content);
 //! }
@@ -38,7 +38,7 @@
 //!     .build()?;
 //!
 //! brain.assert("Alice", "knows", "Bob", 1.0, Visibility::Private)?;
-//! let result = brain.recall_graph("Alice")?;
+//! let result = brain.recall_graph("Alice", Visibility::Private)?;
 //! println!("{} triples", result.triples.len());
 //! # Ok::<(), spectral::Error>(())
 //! ```
@@ -149,18 +149,41 @@ impl Brain {
     }
 
     /// Remember free-text content: classify, score, fingerprint, store.
-    pub fn remember(&self, key: &str, content: &str) -> Result<RememberResult, Error> {
-        self.inner.remember(key, content)
+    ///
+    /// The `visibility` parameter controls who can see this memory during recall.
+    pub fn remember(
+        &self,
+        key: &str,
+        content: &str,
+        visibility: Visibility,
+    ) -> Result<RememberResult, Error> {
+        self.inner.remember(key, content, visibility)
     }
 
-    /// Hybrid recall: TACT memory search + graph 2-hop neighborhood.
-    pub fn recall(&self, query: &str) -> Result<HybridRecallResult, Error> {
-        self.inner.recall(query)
+    /// Hybrid recall filtered by visibility context.
+    ///
+    /// A `Private` context sees everything; a `Public` context sees only
+    /// `Public` content. See [`Visibility::allows`] for the full matrix.
+    pub fn recall(
+        &self,
+        query: &str,
+        context_visibility: Visibility,
+    ) -> Result<HybridRecallResult, Error> {
+        self.inner.recall(query, context_visibility)
     }
 
-    /// Graph-only recall: find entities matching query, return 2-hop neighborhood.
-    pub fn recall_graph(&self, query: &str) -> Result<RecallResult, Error> {
-        self.inner.recall_graph(query)
+    /// Convenience: recall with maximally-permissive context (returns everything).
+    pub fn recall_local(&self, query: &str) -> Result<HybridRecallResult, Error> {
+        self.inner.recall_local(query)
+    }
+
+    /// Graph-only recall filtered by visibility context.
+    pub fn recall_graph(
+        &self,
+        query: &str,
+        context_visibility: Visibility,
+    ) -> Result<RecallResult, Error> {
+        self.inner.recall_graph(query, context_visibility)
     }
 
     /// Ingest a document: hash content, create document node, link mentions.
