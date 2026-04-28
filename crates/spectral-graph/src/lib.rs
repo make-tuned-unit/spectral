@@ -6,6 +6,7 @@
 pub mod brain;
 pub mod canonicalize;
 pub mod error;
+pub mod extract;
 pub mod kuzu_store;
 pub mod ontology;
 pub mod provenance;

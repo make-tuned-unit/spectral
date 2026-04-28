@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Brain::ingest_text()` — extract triples from natural-language text via LLM, validate against ontology, assert valid triples, and store original text as a memory
+- `IngestTextOpts`, `IngestTextResult`, `RejectedTriple`, `RejectionReason` types for controlling and inspecting text ingestion
+- `ExtractionPrompt` in `spectral-graph::extract` for building LLM prompts and parsing responses
+- `Error::MissingLlmClient` and `Error::Llm` variants for LLM-related errors
 - `DeviceId` content-addressed identifier in spectral-core
 - `Memory.source`, `Memory.device_id`, `Memory.confidence` fields with backward-compatible defaults
 - `Brain::remember_with()` for ingestion with full metadata
