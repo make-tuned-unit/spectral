@@ -20,6 +20,7 @@ fn main() -> anyhow::Result<()> {
         hall_rules: None,
         device_id: None,
         enable_spectrogram: false,
+        entity_policy: spectral_graph::brain::EntityPolicy::Strict,
     })?;
     println!("Brain ID: {}", brain.brain_id());
 

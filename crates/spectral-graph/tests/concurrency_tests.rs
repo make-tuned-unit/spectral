@@ -39,6 +39,7 @@ fn brain_config(tmp: &TempDir) -> BrainConfig {
         hall_rules: None,
         device_id: None,
         enable_spectrogram: false,
+        entity_policy: spectral_graph::brain::EntityPolicy::Strict,
     }
 }
 

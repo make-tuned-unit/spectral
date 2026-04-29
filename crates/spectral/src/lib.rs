@@ -65,8 +65,8 @@ use std::path::{Path, PathBuf};
 pub use spectral_core::device_id::DeviceId;
 pub use spectral_core::visibility::Visibility;
 pub use spectral_graph::brain::{
-    AssertResult, CrossWingRecallResult, HybridRecallResult, IngestResult, IngestTextOpts,
-    IngestTextResult, RecallResult, ReinforceOpts, ReinforceResult, RejectedTriple,
+    AssertResult, CrossWingRecallResult, EntityPolicy, HybridRecallResult, IngestResult,
+    IngestTextOpts, IngestTextResult, RecallResult, ReinforceOpts, ReinforceResult, RejectedTriple,
     RejectionReason, RememberOpts, RememberResult, ResonantMemoryHit,
 };
 pub use spectral_graph::Error;
@@ -149,6 +149,19 @@ impl Brain {
     ) -> Result<AssertResult, Error> {
         self.inner
             .assert(subject, predicate, object, confidence, visibility)
+    }
+
+    /// Assert a triple with explicit types for subject and object.
+    pub fn assert_typed(
+        &self,
+        subject: (&str, &str),
+        predicate: &str,
+        object: (&str, &str),
+        confidence: f64,
+        visibility: Visibility,
+    ) -> Result<AssertResult, Error> {
+        self.inner
+            .assert_typed(subject, predicate, object, confidence, visibility)
     }
 
     /// Returns the device ID associated with this brain instance.
@@ -273,6 +286,7 @@ pub struct BrainBuilder {
     hall_rules: Option<Vec<(String, String)>>,
     device_id: Option<DeviceId>,
     enable_spectrogram: bool,
+    entity_policy: Option<EntityPolicy>,
     auto_ontology: bool,
 }
 
@@ -333,6 +347,12 @@ impl BrainBuilder {
         self
     }
 
+    /// Set the entity policy for assert(). Default is Strict.
+    pub fn entity_policy(mut self, policy: EntityPolicy) -> Self {
+        self.entity_policy = Some(policy);
+        self
+    }
+
     /// Enable cognitive spectrogram computation on ingest.
     pub fn enable_spectrogram(mut self, enabled: bool) -> Self {
         self.enable_spectrogram = enabled;
@@ -375,6 +395,7 @@ impl BrainBuilder {
             hall_rules: self.hall_rules,
             device_id: self.device_id,
             enable_spectrogram: self.enable_spectrogram,
+            entity_policy: self.entity_policy.unwrap_or_default(),
         };
 
         let inner = spectral_graph::brain::Brain::open(config)?;
