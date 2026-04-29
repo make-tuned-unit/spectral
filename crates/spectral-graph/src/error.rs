@@ -49,6 +49,14 @@ pub enum Error {
         object_type: String,
     },
 
+    /// Entity type cannot be inferred because the predicate has multiple valid domain or range types.
+    #[error("ambiguous entity type for '{mention}': predicate '{predicate}' allows types {allowed:?}. Use assert_typed() to specify explicitly.")]
+    AmbiguousEntityType {
+        mention: String,
+        predicate: String,
+        allowed: Vec<String>,
+    },
+
     /// No LLM client configured for an operation that requires one.
     #[error("no LLM client configured; ingest_text requires a client. Set BrainConfig.llm_client or use BrainBuilder::llm_client().")]
     MissingLlmClient,

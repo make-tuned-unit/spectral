@@ -14,6 +14,7 @@ fn open_brain(tmp: &TempDir) -> Brain {
         hall_rules: None,
         device_id: None,
         enable_spectrogram: false,
+        entity_policy: spectral_graph::brain::EntityPolicy::Strict,
     })
     .unwrap()
 }

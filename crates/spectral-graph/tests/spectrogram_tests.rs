@@ -14,6 +14,7 @@ fn brain_with_spectrogram(tmp: &TempDir) -> Brain {
         hall_rules: None,
         device_id: None,
         enable_spectrogram: true,
+        entity_policy: spectral_graph::brain::EntityPolicy::Strict,
     })
     .unwrap()
 }
@@ -28,6 +29,7 @@ fn brain_without_spectrogram(tmp: &TempDir) -> Brain {
         hall_rules: None,
         device_id: None,
         enable_spectrogram: false,
+        entity_policy: spectral_graph::brain::EntityPolicy::Strict,
     })
     .unwrap()
 }
