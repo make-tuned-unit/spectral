@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 
@@ -24,6 +25,30 @@ use crate::extract::{ExtractedTriple, ExtractionPrompt};
 use crate::kuzu_store::{Entity, KuzuStore, Neighborhood, Triple};
 use crate::ontology::Ontology;
 use crate::Error;
+
+/// Controls how `Brain::assert()` handles entities not found in the ontology.
+#[derive(Default)]
+pub enum EntityPolicy {
+    /// Strict: assert() fails on unknown entities. Default.
+    #[default]
+    Strict,
+    /// AutoCreate: assert() creates new entities using mention text as canonical name.
+    /// Entity type is inferred from the predicate's domain/range.
+    AutoCreate,
+    /// AutoCreateWithCanonicalizer: assert() creates new entities, applying the
+    /// provided function to derive canonical form from mention text.
+    AutoCreateWithCanonicalizer(Arc<dyn Fn(&str) -> String + Send + Sync>),
+}
+
+impl std::fmt::Debug for EntityPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Strict => write!(f, "Strict"),
+            Self::AutoCreate => write!(f, "AutoCreate"),
+            Self::AutoCreateWithCanonicalizer(_) => write!(f, "AutoCreateWithCanonicalizer(...)"),
+        }
+    }
+}
 
 /// Configuration for opening a brain.
 pub struct BrainConfig {
@@ -45,6 +70,8 @@ pub struct BrainConfig {
     pub device_id: Option<DeviceId>,
     /// Enable cognitive spectrogram computation on ingest. Default false.
     pub enable_spectrogram: bool,
+    /// Controls how assert() handles unknown entities. Default Strict.
+    pub entity_policy: EntityPolicy,
 }
 
 /// Result of a successful assertion.
@@ -215,6 +242,7 @@ pub struct ReinforceResult {
 ///     hall_rules: None,
 ///     device_id: None,
 ///     enable_spectrogram: false,
+///     entity_policy: spectral_graph::brain::EntityPolicy::Strict,
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
@@ -222,9 +250,13 @@ pub struct Brain {
     identity: BrainIdentity,
     device_id: DeviceId,
     ontology: Ontology,
+    /// Entities created at runtime via AutoCreate policy. Checked alongside the ontology.
+    runtime_entities: Mutex<Vec<crate::ontology::OntologyEntity>>,
+    ontology_path: PathBuf,
     store: KuzuStore,
     memory_store: Box<dyn MemoryStore>,
     llm_client: Option<Box<dyn LlmClient>>,
+    entity_policy: EntityPolicy,
     enable_spectrogram: bool,
     spectrogram_analyzer: SpectrogramAnalyzer,
     tact_config: TactConfig,
@@ -249,6 +281,7 @@ impl Brain {
         std::fs::create_dir_all(&config.data_dir)?;
 
         let identity = BrainIdentity::load_or_create(&config.data_dir).map_err(Error::Core)?;
+        let ontology_path = config.ontology_path.clone();
         let ontology = Ontology::load(&config.ontology_path)?;
         let store = KuzuStore::open(&config.data_dir.join("graph.kz"))?;
 
@@ -297,9 +330,12 @@ impl Brain {
             identity,
             device_id,
             ontology,
+            runtime_entities: Mutex::new(Vec::new()),
+            ontology_path,
             store,
             memory_store,
             llm_client: config.llm_client,
+            entity_policy: config.entity_policy,
             enable_spectrogram: config.enable_spectrogram,
             spectrogram_analyzer: SpectrogramAnalyzer::default(),
             tact_config,
@@ -320,8 +356,14 @@ impl Brain {
 
     /// Assert a fact: subject text, predicate name, object text.
     ///
-    /// Both subject and object are canonicalized through the ontology.
-    /// The predicate is validated against ontology domain/range constraints.
+    /// Both subject and object are resolved through the ontology. Under
+    /// `EntityPolicy::Strict` (default), unknown entities cause an error.
+    /// Under `AutoCreate` or `AutoCreateWithCanonicalizer`, unknown entities
+    /// are created with types inferred from the predicate's domain/range.
+    ///
+    /// Returns `Error::AmbiguousEntityType` if the predicate has multiple
+    /// valid domain or range types and an entity needs to be created.
+    /// Use `assert_typed()` in that case.
     pub fn assert(
         &self,
         subject: &str,
@@ -330,36 +372,296 @@ impl Brain {
         confidence: f64,
         visibility: Visibility,
     ) -> Result<AssertResult, Error> {
-        let canonicalizer = Canonicalizer::new(&self.ontology);
+        let pred_def = self
+            .ontology
+            .predicates
+            .iter()
+            .find(|p| p.name == predicate);
 
-        let subject_match = canonicalizer.resolve_one(subject).ok_or_else(|| {
-            let nearest = canonicalizer.find_nearest(subject).map(|n| n.canonical);
-            Error::UnresolvedMention {
-                mention: subject.to_string(),
-                nearest,
-            }
-        })?;
+        // Validate predicate exists in the ontology
+        let pd =
+            pred_def.ok_or_else(|| Error::Ontology(format!("unknown predicate: '{predicate}'")))?;
 
-        let object_match = canonicalizer.resolve_one(object).ok_or_else(|| {
-            let nearest = canonicalizer.find_nearest(object).map(|n| n.canonical);
-            Error::UnresolvedMention {
-                mention: object.to_string(),
-                nearest,
-            }
-        })?;
+        let subject_match =
+            self.resolve_or_create(subject, Some(pd.domain.as_slice()), predicate, visibility)?;
+        let object_match =
+            self.resolve_or_create(object, Some(pd.range.as_slice()), predicate, visibility)?;
 
-        self.ontology
-            .validate_triple(
-                predicate,
-                &subject_match.entity_type,
-                &object_match.entity_type,
-            )
-            .map_err(|_| Error::InvalidPredicate {
+        if !pd.domain.iter().any(|d| d == &subject_match.entity_type) {
+            return Err(Error::InvalidPredicate {
                 predicate: predicate.to_string(),
                 subject_type: subject_match.entity_type.clone(),
                 object_type: object_match.entity_type.clone(),
-            })?;
+            });
+        }
+        if !pd.range.iter().any(|r| r == &object_match.entity_type) {
+            return Err(Error::InvalidPredicate {
+                predicate: predicate.to_string(),
+                subject_type: subject_match.entity_type.clone(),
+                object_type: object_match.entity_type.clone(),
+            });
+        }
 
+        self.write_triple(
+            &subject_match,
+            predicate,
+            &object_match,
+            confidence,
+            visibility,
+        )
+    }
+
+    /// Assert a triple with explicit types for subject and object.
+    ///
+    /// Use when the predicate has multiple valid domain/range types, or
+    /// when overriding predicate-derived inference.
+    pub fn assert_typed(
+        &self,
+        subject: (&str, &str), // (entity_type, mention)
+        predicate: &str,
+        object: (&str, &str),
+        confidence: f64,
+        visibility: Visibility,
+    ) -> Result<AssertResult, Error> {
+        let (subject_type, subject_mention) = subject;
+        let (object_type, object_mention) = object;
+
+        let subject_match =
+            self.resolve_or_create_typed(subject_mention, subject_type, visibility)?;
+        let object_match = self.resolve_or_create_typed(object_mention, object_type, visibility)?;
+
+        // Validate predicate if it exists in the ontology
+        if let Some(pd) = self
+            .ontology
+            .predicates
+            .iter()
+            .find(|p| p.name == predicate)
+        {
+            if !pd.domain.iter().any(|d| d == subject_type) {
+                return Err(Error::InvalidPredicate {
+                    predicate: predicate.to_string(),
+                    subject_type: subject_type.to_string(),
+                    object_type: object_type.to_string(),
+                });
+            }
+            if !pd.range.iter().any(|r| r == object_type) {
+                return Err(Error::InvalidPredicate {
+                    predicate: predicate.to_string(),
+                    subject_type: subject_type.to_string(),
+                    object_type: object_type.to_string(),
+                });
+            }
+        }
+
+        self.write_triple(
+            &subject_match,
+            predicate,
+            &object_match,
+            confidence,
+            visibility,
+        )
+    }
+
+    /// Resolve a mention to an entity, creating it if the policy allows.
+    fn resolve_or_create(
+        &self,
+        mention: &str,
+        allowed_types: Option<&[String]>,
+        predicate: &str,
+        visibility: Visibility,
+    ) -> Result<MatchedMention, Error> {
+        let canonicalizer = Canonicalizer::new(&self.ontology);
+
+        // Try ontology match first
+        if let Some(m) = canonicalizer.resolve_one(mention) {
+            return Ok(m);
+        }
+        // Try runtime entities
+        if let Some(m) = self.resolve_from_runtime(mention) {
+            return Ok(m);
+        }
+
+        match &self.entity_policy {
+            EntityPolicy::Strict => {
+                let nearest = canonicalizer.find_nearest(mention).map(|n| n.canonical);
+                Err(Error::UnresolvedMention {
+                    mention: mention.to_string(),
+                    nearest,
+                })
+            }
+            EntityPolicy::AutoCreate => {
+                let entity_type = infer_single_type(mention, allowed_types, predicate)?;
+                self.auto_create_entity(mention, mention, &entity_type, visibility)
+            }
+            EntityPolicy::AutoCreateWithCanonicalizer(f) => {
+                let canonical = f(mention);
+                // Check if canonicalized form matches
+                if let Some(m) = canonicalizer.resolve_one(&canonical) {
+                    self.ensure_alias(&m.canonical, &m.entity_type, mention)?;
+                    return Ok(m);
+                }
+                if let Some(m) = self.resolve_from_runtime(&canonical) {
+                    self.ensure_alias(&m.canonical, &m.entity_type, mention)?;
+                    return Ok(m);
+                }
+                let entity_type = infer_single_type(mention, allowed_types, predicate)?;
+                self.auto_create_entity(&canonical, mention, &entity_type, visibility)
+            }
+        }
+    }
+
+    /// Resolve a mention with an explicit type, creating if policy allows.
+    fn resolve_or_create_typed(
+        &self,
+        mention: &str,
+        entity_type: &str,
+        visibility: Visibility,
+    ) -> Result<MatchedMention, Error> {
+        let canonicalizer = Canonicalizer::new(&self.ontology);
+
+        if let Some(m) = canonicalizer.resolve_one(mention) {
+            return Ok(m);
+        }
+        if let Some(m) = self.resolve_from_runtime(mention) {
+            return Ok(m);
+        }
+
+        match &self.entity_policy {
+            EntityPolicy::Strict => {
+                let nearest = canonicalizer.find_nearest(mention).map(|n| n.canonical);
+                Err(Error::UnresolvedMention {
+                    mention: mention.to_string(),
+                    nearest,
+                })
+            }
+            EntityPolicy::AutoCreate => {
+                self.auto_create_entity(mention, mention, entity_type, visibility)
+            }
+            EntityPolicy::AutoCreateWithCanonicalizer(f) => {
+                let canonical = f(mention);
+                if let Some(m) = canonicalizer.resolve_one(&canonical) {
+                    self.ensure_alias(&m.canonical, &m.entity_type, mention)?;
+                    return Ok(m);
+                }
+                if let Some(m) = self.resolve_from_runtime(&canonical) {
+                    self.ensure_alias(&m.canonical, &m.entity_type, mention)?;
+                    return Ok(m);
+                }
+                self.auto_create_entity(&canonical, mention, entity_type, visibility)
+            }
+        }
+    }
+
+    /// Try to resolve a mention from runtime-created entities.
+    fn resolve_from_runtime(&self, mention: &str) -> Option<MatchedMention> {
+        let lower = mention.to_lowercase();
+        let entities = self.runtime_entities.lock().ok()?;
+        entities.iter().find_map(|e| {
+            let matches = e.canonical.to_lowercase() == lower
+                || e.aliases.iter().any(|a| a.to_lowercase() == lower);
+            if matches {
+                let eid = spectral_core::entity_id::entity_id(&e.entity_type, &e.canonical);
+                Some(MatchedMention {
+                    mention: mention.to_string(),
+                    span: (0, mention.len()),
+                    entity_id: eid,
+                    entity_type: e.entity_type.clone(),
+                    canonical: e.canonical.clone(),
+                    match_kind: crate::canonicalize::MatchKind::Exact,
+                })
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Create a new entity and persist it.
+    fn auto_create_entity(
+        &self,
+        canonical: &str,
+        mention: &str,
+        entity_type: &str,
+        visibility: Visibility,
+    ) -> Result<MatchedMention, Error> {
+        let entity_id = spectral_core::entity_id::entity_id(entity_type, canonical);
+        let aliases = if mention != canonical {
+            vec![mention.to_string()]
+        } else {
+            vec![]
+        };
+
+        // Persist to ontology file
+        self.append_entity_to_ontology(entity_type, canonical, &aliases, visibility)?;
+
+        // Add to runtime entity list
+        if let Ok(mut rt_entities) = self.runtime_entities.lock() {
+            rt_entities.push(crate::ontology::OntologyEntity {
+                entity_type: entity_type.to_string(),
+                canonical: canonical.to_string(),
+                aliases: aliases.clone(),
+                visibility,
+            });
+        }
+
+        Ok(MatchedMention {
+            mention: mention.to_string(),
+            span: (0, mention.len()),
+            entity_id,
+            entity_type: entity_type.to_string(),
+            canonical: canonical.to_string(),
+            match_kind: crate::canonicalize::MatchKind::Exact,
+        })
+    }
+
+    /// Add an alias to an existing runtime entity.
+    fn ensure_alias(&self, canonical: &str, entity_type: &str, alias: &str) -> Result<(), Error> {
+        if let Ok(mut rt_entities) = self.runtime_entities.lock() {
+            if let Some(entity) = rt_entities
+                .iter_mut()
+                .find(|e| e.canonical == canonical && e.entity_type == entity_type)
+            {
+                if !entity.aliases.iter().any(|a| a.eq_ignore_ascii_case(alias)) {
+                    entity.aliases.push(alias.to_string());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Append a new entity to the ontology TOML file for persistence across restarts.
+    fn append_entity_to_ontology(
+        &self,
+        entity_type: &str,
+        canonical: &str,
+        aliases: &[String],
+        visibility: Visibility,
+    ) -> Result<(), Error> {
+        use std::fmt::Write;
+        let mut block = String::new();
+        writeln!(block).unwrap();
+        writeln!(block, "[[entity]]").unwrap();
+        writeln!(block, "type = \"{}\"", entity_type).unwrap();
+        writeln!(block, "canonical = \"{}\"", canonical).unwrap();
+        let alias_strs: Vec<String> = aliases.iter().map(|a| format!("\"{}\"", a)).collect();
+        writeln!(block, "aliases = [{}]", alias_strs.join(", ")).unwrap();
+        writeln!(block, "visibility = \"{}\"", visibility_to_str(visibility)).unwrap();
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.ontology_path)?;
+        std::io::Write::write_all(&mut file, block.as_bytes())?;
+        Ok(())
+    }
+
+    /// Write a triple to the graph store (shared by assert and assert_typed).
+    fn write_triple(
+        &self,
+        subject_match: &MatchedMention,
+        predicate: &str,
+        object_match: &MatchedMention,
+        confidence: f64,
+        visibility: Visibility,
+    ) -> Result<AssertResult, Error> {
         let now = Utc::now();
 
         self.store.upsert_entity(&Entity {
@@ -396,9 +698,9 @@ impl Brain {
 
         Ok(AssertResult {
             triple_written: true,
-            subject: subject_match,
+            subject: subject_match.clone(),
             predicate: predicate.to_string(),
-            object: object_match,
+            object: object_match.clone(),
         })
     }
 
@@ -925,6 +1227,12 @@ impl Brain {
                         reason: RejectionReason::InvalidPredicate(predicate),
                     });
                 }
+                Err(Error::Ontology(_)) => {
+                    triples_rejected.push(RejectedTriple {
+                        raw: triple.clone(),
+                        reason: RejectionReason::InvalidPredicate(triple.predicate),
+                    });
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -1010,6 +1318,31 @@ fn decayed_signal_score(
     let decay_factor = (1.0 - decay).max(0.5);
 
     raw_score * decay_factor
+}
+
+/// Infer a single entity type from a predicate's allowed types.
+/// Returns an error if there are 0 or 2+ allowed types.
+fn infer_single_type(
+    mention: &str,
+    allowed_types: Option<&[String]>,
+    predicate: &str,
+) -> Result<String, Error> {
+    match allowed_types {
+        None => Err(Error::Ontology(format!(
+            "predicate '{}' not found in ontology",
+            predicate
+        ))),
+        Some([]) => Err(Error::Ontology(format!(
+            "predicate '{}' has no valid types",
+            predicate
+        ))),
+        Some([single]) => Ok(single.clone()),
+        Some(types) => Err(Error::AmbiguousEntityType {
+            mention: mention.to_string(),
+            predicate: predicate.to_string(),
+            allowed: types.to_vec(),
+        }),
+    }
 }
 
 /// Convert a SpectrogramRow to a SpectralFingerprint.

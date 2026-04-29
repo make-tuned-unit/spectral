@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `TactConfig::default().min_words` from 3 to 1. Short programmatic queries (e.g., single-word entity lookups) now reach the FTS and fingerprint search paths instead of being silently skipped. Consumers wanting the previous behavior should set `TactConfig::min_words = 3` explicitly.
 
+### Added (EntityPolicy)
+- `EntityPolicy` enum: `Strict` (default, existing behavior), `AutoCreate`, `AutoCreateWithCanonicalizer(Arc<dyn Fn>)` for runtime entity creation
+- `Brain::assert_typed()` for asserting triples with explicit entity types (bypasses predicate-based type inference)
+- `BrainConfig::entity_policy` field (default `Strict`)
+- `Error::AmbiguousEntityType` for predicates with multiple valid domain/range types under AutoCreate
+- Auto-created entities persist to ontology TOML file and survive brain reopen
+
 ### Added
 - `Brain::ingest_text()` — extract triples from natural-language text via LLM, validate against ontology, assert valid triples, and store original text as a memory
 - `IngestTextOpts`, `IngestTextResult`, `RejectedTriple`, `RejectionReason` types for controlling and inspecting text ingestion
