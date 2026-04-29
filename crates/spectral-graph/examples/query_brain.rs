@@ -31,6 +31,7 @@ fn main() -> anyhow::Result<()> {
         llm_client: None,
         wing_rules: None,
         hall_rules: None,
+        entity_policy: spectral_graph::brain::EntityPolicy::Strict,
         device_id: None,
         enable_spectrogram: false,
     })?;
