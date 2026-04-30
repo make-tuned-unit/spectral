@@ -7,6 +7,7 @@ members = [
     "crates/spectral-tact",
     "crates/spectral-spectrogram",
     "crates/spectral",
+    "crates/spectral-bench-real",
 ]
 
 [workspace.package]
