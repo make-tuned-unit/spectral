@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 - `SqliteStore` now memory-maps the database file via adaptive `mmap_size` PRAGMA (50 MB – 1 GB based on file size). This eliminates p99 latency spikes caused by SQLite page cache eviction on databases larger than ~10 MB. On the migrated-brain reference benchmark (1000 iterations): aggregate warm p95 improved 9% (2.35 → 2.14 ms), p99 improved 17% (2.65 → 2.20 ms), worst per-query p99 dropped from 17.18 ms to 7.41 ms, and queries with p99/p95 > 2.0x went from 9 to 2. Configurable via `SqliteStoreConfig::mmap_size` (or `BrainConfig::sqlite_mmap_size`).
 
+### Added (feat/signal-scorer)
+- `DefaultSignalScorer` and `SignalScorer` trait in `spectral-ingest`. Heuristic signal scoring based on hall classification and content keywords. Ports the production-validated reference implementation. Pure Rust, no external dependencies, sub-microsecond per memory. Configurable via `SignalScorerConfig`.
+
 ### Added (feat/bench-real)
 - `spectral-bench-real` workspace crate for measuring recall latency and accuracy against real Spectral brains
 - 30 curated benchmark queries covering single-word, multi-word, concept, temporal, cross-domain, and adversarial patterns

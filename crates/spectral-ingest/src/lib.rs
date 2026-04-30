@@ -9,10 +9,12 @@ pub mod classifier;
 pub mod fingerprint;
 pub mod ingest;
 pub mod signal;
+pub mod signal_scorer;
 #[cfg(feature = "sqlite")]
 pub mod sqlite_store;
 
 pub use classifier::{default_hall_rule_strings, default_wing_rule_strings};
+pub use signal_scorer::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
 
 use serde::{Deserialize, Serialize};
 use std::future::Future;
