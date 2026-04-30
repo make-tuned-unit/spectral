@@ -43,6 +43,7 @@ fn brain_with_llm(tmp: &TempDir, client: Box<dyn LlmClient>) -> Brain {
         device_id: None,
         enable_spectrogram: false,
         entity_policy: spectral_graph::brain::EntityPolicy::Strict,
+        sqlite_mmap_size: None,
     })
     .unwrap()
 }
@@ -58,6 +59,7 @@ fn brain_without_llm(tmp: &TempDir) -> Brain {
         device_id: None,
         enable_spectrogram: false,
         entity_policy: spectral_graph::brain::EntityPolicy::Strict,
+        sqlite_mmap_size: None,
     })
     .unwrap()
 }

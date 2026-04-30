@@ -32,6 +32,7 @@ fn main() -> anyhow::Result<()> {
         wing_rules: None,
         hall_rules: None,
         entity_policy: spectral_graph::brain::EntityPolicy::Strict,
+        sqlite_mmap_size: None,
         device_id: None,
         enable_spectrogram: false,
     })?;

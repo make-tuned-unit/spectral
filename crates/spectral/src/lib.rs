@@ -396,6 +396,7 @@ impl BrainBuilder {
             device_id: self.device_id,
             enable_spectrogram: self.enable_spectrogram,
             entity_policy: self.entity_policy.unwrap_or_default(),
+            sqlite_mmap_size: None,
         };
 
         let inner = spectral_graph::brain::Brain::open(config)?;
