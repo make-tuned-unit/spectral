@@ -40,6 +40,7 @@ fn brain_config(tmp: &TempDir) -> BrainConfig {
         device_id: None,
         enable_spectrogram: false,
         entity_policy: spectral_graph::brain::EntityPolicy::Strict,
+        sqlite_mmap_size: None,
     }
 }
 

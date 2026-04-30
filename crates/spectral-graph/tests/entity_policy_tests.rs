@@ -16,6 +16,7 @@ fn strict_brain(tmp: &TempDir) -> Brain {
         device_id: None,
         enable_spectrogram: false,
         entity_policy: EntityPolicy::Strict,
+        sqlite_mmap_size: None,
     })
     .unwrap()
 }
@@ -40,6 +41,7 @@ fn auto_create_brain(tmp: &TempDir) -> Brain {
         device_id: None,
         enable_spectrogram: false,
         entity_policy: EntityPolicy::AutoCreate,
+        sqlite_mmap_size: None,
     })
     .unwrap()
 }
@@ -59,6 +61,7 @@ fn canonicalizer_brain(tmp: &TempDir) -> Brain {
         device_id: None,
         enable_spectrogram: false,
         entity_policy: EntityPolicy::AutoCreateWithCanonicalizer(canonicalizer),
+        sqlite_mmap_size: None,
     })
     .unwrap()
 }
@@ -314,6 +317,7 @@ fn auto_created_entities_persist_across_brain_reopen() {
             device_id: None,
             enable_spectrogram: false,
             entity_policy: EntityPolicy::AutoCreate,
+            sqlite_mmap_size: None,
         })
         .unwrap();
 
@@ -333,6 +337,7 @@ fn auto_created_entities_persist_across_brain_reopen() {
         device_id: None,
         enable_spectrogram: false,
         entity_policy: EntityPolicy::Strict, // Strict! No auto-create
+        sqlite_mmap_size: None,
     })
     .unwrap();
 
@@ -359,6 +364,7 @@ fn default_policy_is_strict() {
         device_id: None,
         enable_spectrogram: false,
         entity_policy: EntityPolicy::default(),
+        sqlite_mmap_size: None,
     })
     .unwrap();
 

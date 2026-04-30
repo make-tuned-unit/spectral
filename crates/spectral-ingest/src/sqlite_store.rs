@@ -1,4 +1,32 @@
 //! Concrete `MemoryStore` implementation using rusqlite with FTS5.
+//!
+//! # Memory mapping (mmap)
+//!
+//! By default, `SqliteStore` memory-maps the database file via SQLite's
+//! `mmap_size` PRAGMA. This eliminates page cache eviction stalls that
+//! otherwise produce 5–100 ms p99 latency outliers on multi-MB databases.
+//!
+//! The default mmap size adapts to the database file size at open time:
+//!
+//! - **Minimum:** 50 MB (covers small/empty brains)
+//! - **Adaptive:** `file_size × 1.2` (20% headroom for growth)
+//! - **Maximum:** 1 GB (cap for very large brains)
+//!
+//! Trade-offs:
+//!
+//! - **Memory pressure:** mmap'd pages count against process memory in
+//!   utilities like `top`. On a 16 GB machine, mapping 1 GB is fine. On
+//!   embedded systems with <512 MB RAM, consider disabling.
+//! - **macOS:** mmap performance is excellent. **Linux:** also excellent.
+//!   **Windows:** less consistent; consider testing if Windows is a target.
+//! - **Brain growth past max:** if the database exceeds 1 GB, the portion
+//!   beyond falls back to page cache behavior. Override `mmap_size`
+//!   explicitly for very large brains.
+//!
+//! Override via [`SqliteStoreConfig::mmap_size`]:
+//! - `None` (default): adaptive (50 MB – 1 GB)
+//! - `Some(0)`: disable mmap entirely
+//! - `Some(n)`: use exactly *n* bytes
 
 use crate::{Fingerprint, Memory, MemoryHit, MemoryStore, SpectrogramRow};
 use lru::LruCache;
@@ -10,6 +38,17 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 const WING_CACHE_CAPACITY: usize = 32;
+
+/// Configuration for [`SqliteStore`].
+#[derive(Debug, Clone, Default)]
+pub struct SqliteStoreConfig {
+    /// Maximum memory-map size for SQLite, in bytes.
+    ///
+    /// - `None` (default) — compute adaptively based on file size (50 MB – 1 GB).
+    /// - `Some(0)` — disable mmap entirely (page cache only).
+    /// - `Some(n)` — use exactly *n* bytes.
+    pub mmap_size: Option<u64>,
+}
 
 /// SQLite-backed memory store with FTS5 search.
 ///
@@ -29,14 +68,41 @@ impl std::fmt::Debug for SqliteStore {
 }
 
 impl SqliteStore {
+    /// Compute an adaptive mmap size based on database file size.
+    fn compute_mmap_size(db_path: &Path) -> u64 {
+        const MIN_MMAP: u64 = 52_428_800; // 50 MB
+        const MAX_MMAP: u64 = 1_073_741_824; // 1 GB
+        const HEADROOM: f64 = 1.2; // 20% above current size
+
+        match std::fs::metadata(db_path) {
+            Ok(m) => {
+                let target = (m.len() as f64 * HEADROOM) as u64;
+                target.clamp(MIN_MMAP, MAX_MMAP)
+            }
+            Err(_) => MIN_MMAP, // fallback for new databases
+        }
+    }
+
     /// Open or create a memory database at the given path.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
+        Self::open_with_config(path, &SqliteStoreConfig::default())
+    }
+
+    /// Open or create a memory database with explicit configuration.
+    pub fn open_with_config(path: &Path, config: &SqliteStoreConfig) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch(
+
+        let mmap_size = match config.mmap_size {
+            Some(explicit) => explicit,
+            None => Self::compute_mmap_size(path),
+        };
+
+        conn.execute_batch(&format!(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous  = NORMAL;
-             PRAGMA temp_store   = MEMORY;",
-        )?;
+             PRAGMA temp_store   = MEMORY;
+             PRAGMA mmap_size    = {mmap_size};"
+        ))?;
         Self::init_schema(&conn)?;
         Self::migrate_provenance_columns(&conn)?;
         Ok(Self {

@@ -205,6 +205,7 @@ fn open_brain(path: &std::path::Path) -> Result<Brain> {
         wing_rules: None,
         hall_rules: None,
         entity_policy: EntityPolicy::Strict,
+        sqlite_mmap_size: None,
         device_id: None,
         enable_spectrogram: false,
     })?;
