@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 const WING_CACHE_CAPACITY: usize = 32;
 
 /// Configuration for [`SqliteStore`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SqliteStoreConfig {
     /// Maximum memory-map size for SQLite, in bytes.
     ///
@@ -50,11 +50,6 @@ pub struct SqliteStoreConfig {
     pub mmap_size: Option<u64>,
 }
 
-impl Default for SqliteStoreConfig {
-    fn default() -> Self {
-        Self { mmap_size: None }
-    }
-}
 
 /// SQLite-backed memory store with FTS5 search.
 ///
