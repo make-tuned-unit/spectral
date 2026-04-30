@@ -2761,6 +2761,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "spectral-archivist"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "spectral-bench-real"
 version = "0.0.1"
 dependencies = [

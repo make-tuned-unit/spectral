@@ -8,6 +8,7 @@ members = [
     "crates/spectral-spectrogram",
     "crates/spectral",
     "crates/spectral-bench-real",
+    "crates/spectral-archivist",
 ]
 
 [workspace.package]
