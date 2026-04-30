@@ -190,6 +190,14 @@ pattern.
 - You need approximate nearest neighbor search at 100k+ scale
 - Single-shot Q&A without persistent state
 
+## Examples
+
+See [examples/](examples/) for integration patterns:
+- Conversational memory — chat-based agents with persistent context
+- Activity capture — agents that observe and learn from user activity
+
+For runnable code, see `crates/spectral/examples/quickstart.rs`.
+
 ## Roadmap
 
 - ✅ Hybrid memory (knowledge graph + fingerprint store + FTS fallback)
@@ -210,8 +218,7 @@ for crash recovery, concurrency limits, and production deployment guidance.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Short version: run `cargo test` before
-opening a PR.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup. We follow the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). For security issues, see [SECURITY.md](SECURITY.md).
 
 ## License
 
