@@ -72,6 +72,12 @@ pub struct BrainConfig {
     pub enable_spectrogram: bool,
     /// Controls how assert() handles unknown entities. Default Strict.
     pub entity_policy: EntityPolicy,
+    /// SQLite memory-map size override. See [`spectral_ingest::sqlite_store::SqliteStoreConfig::mmap_size`].
+    ///
+    /// - `None` (default): adaptive mmap (50 MB – 1 GB based on file size)
+    /// - `Some(0)`: disable mmap
+    /// - `Some(n)`: use exactly *n* bytes
+    pub sqlite_mmap_size: Option<u64>,
 }
 
 /// Result of a successful assertion.
@@ -243,6 +249,7 @@ pub struct ReinforceResult {
 ///     device_id: None,
 ///     enable_spectrogram: false,
 ///     entity_policy: spectral_graph::brain::EntityPolicy::Strict,
+///     sqlite_mmap_size: None,
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
@@ -288,9 +295,13 @@ impl Brain {
         let memory_db_path = config
             .memory_db_path
             .unwrap_or_else(|| config.data_dir.join("memory.db"));
-        let memory_store: Box<dyn MemoryStore> =
-            Box::new(SqliteStore::open(&memory_db_path).map_err(|e| Error::Schema(e.to_string()))?);
-
+        let sqlite_config = spectral_ingest::sqlite_store::SqliteStoreConfig {
+            mmap_size: config.sqlite_mmap_size,
+        };
+        let memory_store: Box<dyn MemoryStore> = Box::new(
+            SqliteStore::open_with_config(&memory_db_path, &sqlite_config)
+                .map_err(|e| Error::Schema(e.to_string()))?,
+        );
         // Resolve wing/hall rules — shared between ingest and TACT retrieval.
         let wing_rules = config
             .wing_rules
