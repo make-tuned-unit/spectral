@@ -70,6 +70,7 @@ pub use spectral_graph::brain::{
     RejectionReason, RememberOpts, RememberResult, ResonantMemoryHit,
 };
 pub use spectral_graph::Error;
+pub use spectral_ingest::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
 pub use spectral_tact::LlmClient;
 
 // Sub-crate access for advanced users
