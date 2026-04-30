@@ -2,8 +2,8 @@ version = 1
 
 [[entity]]
 type = "person"
-canonical = "sophie-sharratt"
-aliases = ["Sophie", "Sophie Sharratt"]
+canonical = "carol-doe"
+aliases = ["Carol", "Carol Doe"]
 visibility = "private"
 
 [[entity]]

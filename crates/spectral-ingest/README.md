@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
 
     let result = ingest(
         "mem-001", "auth_decision",
-        "Jesse decided to use Clerk for auth",
+        "Alice decided to use Clerk for auth",
         "core", 1700000000.0, &config, &store,
     ).await?;
 

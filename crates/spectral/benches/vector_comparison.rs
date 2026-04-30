@@ -52,10 +52,10 @@ struct WingVocab {
 
 const WING_VOCABS: &[WingVocab] = &[
     WingVocab {
-        name: "polybot",
+        name: "apollo",
         triggers: &[
-            "polybot",
-            "polymarket",
+            "apollo",
+            "prediction-market",
             "weather",
             "prediction",
             "wager",
@@ -69,7 +69,7 @@ const WING_VOCABS: &[WingVocab] = &[
             "backtesting on recent wager data",
         ],
         details: &[
-            "The polymarket platform showed strong signals",
+            "The prediction-market platform showed strong signals",
             "Weather API response times improved significantly",
             "Wager sizing algorithm performed well",
             "Trade execution was within acceptable latency",
@@ -77,8 +77,8 @@ const WING_VOCABS: &[WingVocab] = &[
         ],
     },
     WingVocab {
-        name: "getladle",
-        triggers: &["getladle", "ladle", "mel", "recipe", "cook", "feast"],
+        name: "acme",
+        triggers: &["acme", "widget", "bob", "recipe", "cook", "feast"],
         topics: &[
             "testing the new recipe database",
             "meal planning feature updates",
@@ -87,16 +87,16 @@ const WING_VOCABS: &[WingVocab] = &[
             "menu design improvements",
         ],
         details: &[
-            "Mel's feedback shaped the final ladle interface",
+            "Bob's feedback shaped the final widget interface",
             "Cook time estimation accuracy is at 94 percent",
-            "Getladle feast mode handles groups of twenty plus",
+            "Acme feast mode handles groups of twenty plus",
             "Recipe sharing between users works smoothly",
-            "The ladle app search got noticeably faster",
+            "The widget app search got noticeably faster",
         ],
     },
     WingVocab {
-        name: "henry-infra",
-        triggers: &["infrastructure", "ollama", "zeroclaw", "litellm", "gemma"],
+        name: "infra",
+        triggers: &["infrastructure", "ollama", "taskforge", "litellm", "gemma"],
         topics: &[
             "serving pipeline for the cluster",
             "deployment automation improvements",
@@ -107,14 +107,14 @@ const WING_VOCABS: &[WingVocab] = &[
         details: &[
             "Ollama cluster handled 2x peak load",
             "Litellm proxy routing is stable",
-            "Zeroclaw task runner scaled to 50 concurrent jobs",
+            "Taskforge task runner scaled to 50 concurrent jobs",
             "Gemma model weights updated to latest checkpoint",
             "Infrastructure monitoring dashboards were deployed",
         ],
     },
     WingVocab {
-        name: "jesse",
-        triggers: &["jesse", "coffee", "anniversary", "colour", "rowan", "jude"],
+        name: "alice",
+        triggers: &["alice", "coffee", "anniversary", "colour", "noah", "leo"],
         topics: &[
             "morning routine with the family",
             "planning for the upcoming event",
@@ -123,16 +123,16 @@ const WING_VOCABS: &[WingVocab] = &[
             "personal goals for the quarter",
         ],
         details: &[
-            "Jesse found a new single-origin roast",
+            "Alice found a new single-origin roast",
             "The anniversary celebration went really well",
-            "Rowan and Jude enjoyed the outing",
+            "Noah and Leo enjoyed the outing",
             "Coffee brewing method changed to pour-over",
             "The colour scheme for the office was finalized",
         ],
     },
     WingVocab {
-        name: "worldlitterrun",
-        triggers: &["worldlitterrun", "wlr", "plogging", "bluenose", "marathon"],
+        name: "polaris",
+        triggers: &["polaris", "plr", "plogging", "summit", "marathon"],
         topics: &[
             "route planning for the next event",
             "volunteer coordination update",
@@ -141,17 +141,17 @@ const WING_VOCABS: &[WingVocab] = &[
             "environmental impact assessment",
         ],
         details: &[
-            "WLR tracking showed 15km covered",
+            "PLR tracking showed 15km covered",
             "Plogging session collected 30kg of debris",
-            "Bluenose event registration is at capacity",
+            "Summit event registration is at capacity",
             "Marathon route avoids construction zones",
-            "Worldlitterrun visibility increased 40 percent this quarter",
+            "Polaris visibility increased 40 percent this quarter",
         ],
     },
 ];
 
 // Hall starters that trigger hall classification without triggering any wing rule.
-// "favourite/favorite" is avoided outside jesse (it triggers the jesse wing rule).
+// "favourite/favorite" is avoided outside alice (it triggers the alice wing rule).
 const FACT_STARTERS: &[&str] = &[
     "Decided to",
     "Chose the",
@@ -266,28 +266,28 @@ const COMPARISON_QUERIES: &[ComparisonQuery] = &[
     // ── Keyword overlap: uses exact corpus vocabulary. Both systems should
     //    perform well; measures baseline retrieval capability. ──
     ComparisonQuery {
-        text: "polybot weather prediction wager trade",
-        relevant_wings: &["polybot"],
+        text: "apollo weather prediction wager trade",
+        relevant_wings: &["apollo"],
         category: QueryCategory::KeywordOverlap,
     },
     ComparisonQuery {
-        text: "getladle recipe cook feast ladle mel",
-        relevant_wings: &["getladle"],
+        text: "acme recipe cook feast widget bob",
+        relevant_wings: &["acme"],
         category: QueryCategory::KeywordOverlap,
     },
     ComparisonQuery {
-        text: "infrastructure ollama litellm zeroclaw gemma",
-        relevant_wings: &["henry-infra"],
+        text: "infrastructure ollama litellm taskforge gemma",
+        relevant_wings: &["infra"],
         category: QueryCategory::KeywordOverlap,
     },
     ComparisonQuery {
-        text: "jesse coffee anniversary colour rowan jude",
-        relevant_wings: &["jesse"],
+        text: "alice coffee anniversary colour noah leo",
+        relevant_wings: &["alice"],
         category: QueryCategory::KeywordOverlap,
     },
     ComparisonQuery {
-        text: "worldlitterrun wlr marathon plogging bluenose",
-        relevant_wings: &["worldlitterrun"],
+        text: "polaris plr marathon plogging summit",
+        relevant_wings: &["polaris"],
         category: QueryCategory::KeywordOverlap,
     },
     // ── Paraphrase: rephrases the same concepts with different vocabulary.
@@ -295,82 +295,82 @@ const COMPARISON_QUERIES: &[ComparisonQuery] = &[
     //    semantic similarity. ──
     ComparisonQuery {
         text: "how accurate is the automated forecasting system for betting markets",
-        relevant_wings: &["polybot"],
+        relevant_wings: &["apollo"],
         category: QueryCategory::Paraphrase,
     },
     ComparisonQuery {
         text: "what culinary preparations are available in the meal platform",
-        relevant_wings: &["getladle"],
+        relevant_wings: &["acme"],
         category: QueryCategory::Paraphrase,
     },
     ComparisonQuery {
         text: "how is the neural network hosting cluster performing on GPU tasks",
-        relevant_wings: &["henry-infra"],
+        relevant_wings: &["infra"],
         category: QueryCategory::Paraphrase,
     },
     ComparisonQuery {
         text: "daily caffeine habits and family life updates from the dad",
-        relevant_wings: &["jesse"],
+        relevant_wings: &["alice"],
         category: QueryCategory::Paraphrase,
     },
     ComparisonQuery {
         text: "organized jogging conservation event results from the coastal area",
-        relevant_wings: &["worldlitterrun"],
+        relevant_wings: &["polaris"],
         category: QueryCategory::Paraphrase,
     },
     // ── Multi-hop topical: triggers wing+hall via TACT. Fingerprint search
     //    retrieves cross-hall memories within the detected wing — memories
     //    that share no query vocabulary but are fingerprint-linked. ──
     ComparisonQuery {
-        text: "polybot decided which weather prediction model to deploy",
-        relevant_wings: &["polybot"],
+        text: "apollo decided which weather prediction model to deploy",
+        relevant_wings: &["apollo"],
         category: QueryCategory::MultiHopTopical,
     },
     ComparisonQuery {
-        text: "getladle discovered a breakthrough recipe for the feast",
-        relevant_wings: &["getladle"],
+        text: "acme discovered a breakthrough recipe for the feast",
+        relevant_wings: &["acme"],
         category: QueryCategory::MultiHopTopical,
     },
     ComparisonQuery {
         text: "infrastructure should recommend which ollama model to use",
-        relevant_wings: &["henry-infra"],
+        relevant_wings: &["infra"],
         category: QueryCategory::MultiHopTopical,
     },
     ComparisonQuery {
-        text: "jesse learned that his morning coffee routine needs rowan jude time",
-        relevant_wings: &["jesse"],
+        text: "alice learned that her morning coffee routine needs noah leo time",
+        relevant_wings: &["alice"],
         category: QueryCategory::MultiHopTopical,
     },
     ComparisonQuery {
-        text: "worldlitterrun decided the marathon plogging route for bluenose",
-        relevant_wings: &["worldlitterrun"],
+        text: "polaris decided the marathon plogging route for summit",
+        relevant_wings: &["polaris"],
         category: QueryCategory::MultiHopTopical,
     },
     // ── Vocabulary bridge: completely different vocabulary, bridging
     //    concepts across domains. No wing trigger words. Hard for both. ──
     ComparisonQuery {
         text: "automated system compute costs for the data pipeline",
-        relevant_wings: &["henry-infra"],
+        relevant_wings: &["infra"],
         category: QueryCategory::VocabBridge,
     },
     ComparisonQuery {
         text: "nutritional tracking analytics in community exercise events",
-        relevant_wings: &["getladle", "worldlitterrun"],
+        relevant_wings: &["acme", "polaris"],
         category: QueryCategory::VocabBridge,
     },
     ComparisonQuery {
         text: "personal morning ritual with artisan beverages and family time",
-        relevant_wings: &["jesse"],
+        relevant_wings: &["alice"],
         category: QueryCategory::VocabBridge,
     },
     ComparisonQuery {
         text: "deployment efficiency metrics for real-time data services",
-        relevant_wings: &["henry-infra", "polybot"],
+        relevant_wings: &["infra", "apollo"],
         category: QueryCategory::VocabBridge,
     },
     ComparisonQuery {
         text: "community event scheduling platform with shared meal coordination",
-        relevant_wings: &["worldlitterrun", "getladle"],
+        relevant_wings: &["polaris", "acme"],
         category: QueryCategory::VocabBridge,
     },
 ];

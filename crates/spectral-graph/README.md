@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // Assert facts
-    brain.assert("Sophie", "works_on", "Spectral", 0.95, Visibility::Private)?;
+    brain.assert("Carol", "works_on", "Spectral", 0.95, Visibility::Private)?;
     brain.assert("Mark", "studies", "Library", 0.9, Visibility::Private)?;
     brain.assert("Mark", "prepares_for", "Exam", 0.9, Visibility::Private)?;
 

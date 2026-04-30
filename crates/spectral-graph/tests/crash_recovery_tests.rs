@@ -63,7 +63,7 @@ fn brain_reopens_after_drop_during_remember() {
         brain
             .remember(
                 "crash-test",
-                "Jesse decided to use Clerk for auth",
+                "Alice decided to use Clerk for auth",
                 Visibility::Private,
             )
             .unwrap();
@@ -74,7 +74,7 @@ fn brain_reopens_after_drop_during_remember() {
     {
         let brain = Brain::open(brain_config(&tmp)).unwrap();
         let result = brain
-            .recall("what did Jesse decide about auth", Visibility::Private)
+            .recall("what did Alice decide about auth", Visibility::Private)
             .unwrap();
 
         // The memory should have survived the drop. SQLite WAL ensures
@@ -128,7 +128,7 @@ fn brain_reopens_after_drop_during_ingest_document() {
         brain
             .ingest_document(
                 "test.txt",
-                "Sophie works on Spectral every day",
+                "Carol works on Spectral every day",
                 Visibility::Private,
             )
             .unwrap();
@@ -141,7 +141,7 @@ fn brain_reopens_after_drop_during_ingest_document() {
         let result = brain
             .ingest_document(
                 "test.txt",
-                "Sophie works on Spectral every day",
+                "Carol works on Spectral every day",
                 Visibility::Private,
             )
             .unwrap();
@@ -177,7 +177,7 @@ fn fingerprint_orphan_detection() {
         brain
             .remember(
                 "first-memory",
-                "Polybot weather prediction strategy decided",
+                "Apollo weather prediction strategy decided",
                 Visibility::Private,
             )
             .unwrap();
@@ -185,7 +185,7 @@ fn fingerprint_orphan_detection() {
         brain
             .remember(
                 "second-memory",
-                "Polybot weather engine has a known bug that crashes",
+                "Apollo weather engine has a known bug that crashes",
                 Visibility::Private,
             )
             .unwrap();
@@ -202,13 +202,13 @@ fn fingerprint_orphan_detection() {
         let r = brain
             .remember(
                 "third-memory",
-                "Polybot weather accuracy improved after the fix",
+                "Apollo weather accuracy improved after the fix",
                 Visibility::Private,
             )
             .unwrap();
 
         // The third memory should have fingerprints pairing with the
-        // two existing peers in the "polybot" wing.
+        // two existing peers in the "apollo" wing.
         assert!(
             r.fingerprints_created >= 1,
             "Third memory should pair with existing peers; got {} fingerprints",

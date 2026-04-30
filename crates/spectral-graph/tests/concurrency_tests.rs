@@ -61,7 +61,7 @@ fn concurrent_remembers_different_keys() {
         handles.push(thread::spawn(move || {
             for i in 0..10 {
                 let key = format!("thread{thread_id}-key{i}");
-                let content = format!("Memory {i} from thread {thread_id} about polybot weather");
+                let content = format!("Memory {i} from thread {thread_id} about apollo weather");
                 brain
                     .remember(&key, &content, Visibility::Private)
                     .unwrap_or_else(|e| panic!("thread {thread_id} key {i}: {e}"));
@@ -77,7 +77,7 @@ fn concurrent_remembers_different_keys() {
     drop(brain);
     let brain = Brain::open(brain_config(&tmp)).unwrap();
     let result = brain
-        .recall("polybot weather thread memory", Visibility::Private)
+        .recall("apollo weather thread memory", Visibility::Private)
         .unwrap();
 
     // FTS should find at least some of the 40 memories.
@@ -100,7 +100,7 @@ fn concurrent_remembers_same_key() {
         let brain = Arc::clone(&brain);
         handles.push(thread::spawn(move || {
             for _round in 0..5 {
-                let content = format!("Content from thread {thread_id} about polybot weather");
+                let content = format!("Content from thread {thread_id} about apollo weather");
                 brain
                     .remember("contested-key", &content, Visibility::Private)
                     .unwrap_or_else(|e| panic!("thread {thread_id}: {e}"));
@@ -117,7 +117,7 @@ fn concurrent_remembers_same_key() {
     drop(brain);
     let brain = Brain::open(brain_config(&tmp)).unwrap();
     let result = brain
-        .recall("polybot weather content from thread", Visibility::Private)
+        .recall("apollo weather content from thread", Visibility::Private)
         .unwrap();
 
     let contested: Vec<_> = result
@@ -157,7 +157,7 @@ fn concurrent_reads_during_writes() {
     brain
         .remember(
             "seed",
-            "Polybot weather prediction baseline established",
+            "Apollo weather prediction baseline established",
             Visibility::Private,
         )
         .unwrap();
@@ -170,7 +170,7 @@ fn concurrent_reads_during_writes() {
     let writer = thread::spawn(move || {
         for i in 0..20 {
             let key = format!("write-{i}");
-            let content = format!("Polybot weather observation number {i}");
+            let content = format!("Apollo weather observation number {i}");
             writer_brain
                 .remember(&key, &content, Visibility::Private)
                 .unwrap_or_else(|e| panic!("writer {i}: {e}"));
@@ -186,10 +186,8 @@ fn concurrent_reads_during_writes() {
         readers.push(thread::spawn(move || {
             let mut reads = 0;
             while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                let result = brain.recall(
-                    "polybot weather prediction observation",
-                    Visibility::Private,
-                );
+                let result =
+                    brain.recall("apollo weather prediction observation", Visibility::Private);
                 match result {
                     Ok(r) => {
                         // Verify no torn reads: every hit should have
@@ -239,21 +237,21 @@ fn concurrent_brain_opens_same_path() {
             brain1
                 .remember(
                     "from-brain1",
-                    "Polybot weather data from instance 1",
+                    "Apollo weather data from instance 1",
                     Visibility::Private,
                 )
                 .unwrap();
             brain2
                 .remember(
                     "from-brain2",
-                    "Polybot weather data from instance 2",
+                    "Apollo weather data from instance 2",
                     Visibility::Private,
                 )
                 .unwrap();
 
             // Both memories should be visible (they share the SQLite file).
             let r = brain1
-                .recall("polybot weather data from instance", Visibility::Private)
+                .recall("apollo weather data from instance", Visibility::Private)
                 .unwrap();
             // SQLite WAL handles concurrent access, so both should land.
             // Note: Kuzu graph data may not be shared correctly between

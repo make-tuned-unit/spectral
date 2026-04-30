@@ -54,22 +54,22 @@ mod tests {
 
     /// Golden test: this exact input/output is verified against production brain.db.
     #[test]
-    fn golden_hash_fact_fact_atlas_atlantic_same_day() {
-        let hash = make_fingerprint_hash("fact", "fact", "atlas-atlantic", TimeBucket::SameDay);
-        assert_eq!(hash, "4c355a4f544a52f5");
+    fn golden_hash_fact_fact_polaris_media_same_day() {
+        let hash = make_fingerprint_hash("fact", "fact", "polaris-media", TimeBucket::SameDay);
+        assert_eq!(hash, "9c9cebd7800f89d2");
     }
 
     #[test]
     fn hash_deterministic() {
-        let h1 = make_fingerprint_hash("fact", "discovery", "jesse", TimeBucket::SameWeek);
-        let h2 = make_fingerprint_hash("fact", "discovery", "jesse", TimeBucket::SameWeek);
+        let h1 = make_fingerprint_hash("fact", "discovery", "alice", TimeBucket::SameWeek);
+        let h2 = make_fingerprint_hash("fact", "discovery", "alice", TimeBucket::SameWeek);
         assert_eq!(h1, h2);
     }
 
     #[test]
     fn hash_different_inputs() {
-        let h1 = make_fingerprint_hash("fact", "discovery", "jesse", TimeBucket::SameWeek);
-        let h2 = make_fingerprint_hash("discovery", "fact", "jesse", TimeBucket::SameWeek);
+        let h1 = make_fingerprint_hash("fact", "discovery", "alice", TimeBucket::SameWeek);
+        let h2 = make_fingerprint_hash("discovery", "fact", "alice", TimeBucket::SameWeek);
         assert_ne!(h1, h2, "order of anchor/target hall matters");
     }
 
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn hash_is_lowercase_hex() {
-        let h = make_fingerprint_hash("fact", "event", "polybot", TimeBucket::Older);
+        let h = make_fingerprint_hash("fact", "event", "apollo", TimeBucket::Older);
         assert!(
             h.chars()
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),

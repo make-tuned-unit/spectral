@@ -45,7 +45,7 @@ fn backfill_generates_spectrograms() {
         brain
             .remember(
                 &format!("mem-{i}"),
-                &format!("Decided to use Polybot for weather prediction strategy {i}"),
+                &format!("Decided to use Apollo for weather prediction strategy {i}"),
                 Visibility::Private,
             )
             .unwrap();
@@ -68,7 +68,7 @@ fn spectrogram_storage_roundtrip() {
     brain
         .remember(
             "roundtrip-key",
-            "Decided to use Polybot for weather prediction roundtrip strategy",
+            "Decided to use Apollo for weather prediction roundtrip strategy",
             Visibility::Private,
         )
         .unwrap();
@@ -86,7 +86,7 @@ fn disabled_spectrogram_skips_computation() {
     brain
         .remember(
             "skip-key",
-            "Decided to use Polybot for weather prediction skip strategy",
+            "Decided to use Apollo for weather prediction skip strategy",
             Visibility::Private,
         )
         .unwrap();
@@ -107,25 +107,25 @@ fn cross_wing_match_finds_resonance() {
     // Write two decision memories in different wings
     brain
         .remember(
-            "polybot-decision",
-            "Decided to use Polybot for the weather prediction strategy",
+            "apollo-decision",
+            "Decided to use Apollo for the weather prediction strategy",
             Visibility::Private,
         )
         .unwrap();
 
-    // Jesse wing memory (different wing)
+    // Alice wing memory (different wing)
     brain
         .remember(
-            "jesse-decision",
-            "Jesse decided to use Clerk for the auth strategy",
+            "alice-decision",
+            "Alice decided to use Clerk for the auth strategy",
             Visibility::Private,
         )
         .unwrap();
 
-    // Cross-wing recall from polybot wing should find the jesse decision
+    // Cross-wing recall from apollo wing should find the alice decision
     let result = brain
         .recall_cross_wing(
-            "polybot weather prediction strategy decision",
+            "apollo weather prediction strategy decision",
             Visibility::Private,
             5,
         )
@@ -145,22 +145,22 @@ fn cross_wing_match_excludes_same_wing() {
     // Two memories in the same wing
     brain
         .remember(
-            "polybot-a",
-            "Decided to use Polybot for the weather prediction strategy A",
+            "apollo-a",
+            "Decided to use Apollo for the weather prediction strategy A",
             Visibility::Private,
         )
         .unwrap();
     brain
         .remember(
-            "polybot-b",
-            "Decided to use Polybot for the weather prediction strategy B",
+            "apollo-b",
+            "Decided to use Apollo for the weather prediction strategy B",
             Visibility::Private,
         )
         .unwrap();
 
     let result = brain
         .recall_cross_wing(
-            "polybot weather prediction strategy decision",
+            "apollo weather prediction strategy decision",
             Visibility::Private,
             5,
         )
@@ -183,16 +183,16 @@ fn cross_wing_match_respects_visibility() {
 
     brain
         .remember(
-            "polybot-public-decision",
-            "Decided to use Polybot for the weather prediction strategy public",
+            "apollo-public-decision",
+            "Decided to use Apollo for the weather prediction strategy public",
             Visibility::Public,
         )
         .unwrap();
 
     brain
         .remember(
-            "jesse-private-decision",
-            "Jesse decided to use Clerk for the auth strategy private",
+            "alice-private-decision",
+            "Alice decided to use Clerk for the auth strategy private",
             Visibility::Private,
         )
         .unwrap();
@@ -200,7 +200,7 @@ fn cross_wing_match_respects_visibility() {
     // Public context query should not see private resonant memories
     let result = brain
         .recall_cross_wing(
-            "polybot weather prediction strategy decision",
+            "apollo weather prediction strategy decision",
             Visibility::Public,
             5,
         )

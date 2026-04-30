@@ -40,23 +40,23 @@ fn main() -> anyhow::Result<()> {
 
     // Memory ingestion at different visibility levels
     brain.remember(
-        "polybot-decision",
-        "Decided to use Polybot for the weather prediction strategy",
+        "apollo-decision",
+        "Decided to use Apollo for the weather prediction strategy",
         Visibility::Private,
     )?;
     brain.remember(
-        "polybot-public",
-        "Polybot weather predictions are open source and publicly available",
+        "apollo-public",
+        "Apollo weather predictions are open source and publicly available",
         Visibility::Public,
     )?;
 
     // Recall with Private context — sees everything
-    let all = brain.recall("polybot weather strategy", Visibility::Private)?;
+    let all = brain.recall("apollo weather strategy", Visibility::Private)?;
     println!("\nrecall(Private): {} memory hits", all.memory_hits.len());
     assert!(!all.memory_hits.is_empty());
 
     // Recall with Public context — sees only Public memories
-    let public_only = brain.recall("polybot weather strategy", Visibility::Public)?;
+    let public_only = brain.recall("apollo weather strategy", Visibility::Public)?;
     println!(
         "recall(Public):  {} memory hits",
         public_only.memory_hits.len()
@@ -74,8 +74,8 @@ fn main() -> anyhow::Result<()> {
     // Provenance metadata demonstration
     let device = DeviceId::from_descriptor("smoke-test-host");
     brain.remember_with(
-        "polybot-provenance",
-        "Decided to use Polybot for weather prediction with provenance",
+        "apollo-provenance",
+        "Decided to use Apollo for weather prediction with provenance",
         RememberOpts {
             source: Some("native".into()),
             device_id: Some(device),
@@ -84,7 +84,7 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
 
-    let recall = brain.recall("polybot weather prediction provenance", Visibility::Private)?;
+    let recall = brain.recall("apollo weather prediction provenance", Visibility::Private)?;
     println!("\nProvenance metadata ({} hits):", recall.memory_hits.len());
     for hit in &recall.memory_hits {
         println!(

@@ -54,8 +54,8 @@ mod tests {
 
     #[test]
     fn wing_prompt_includes_categories() {
-        let prompt = wing_classification_prompt("auth setup", &["polybot", "commerce"]);
-        assert!(prompt.contains("polybot, commerce"));
+        let prompt = wing_classification_prompt("auth setup", &["apollo", "commerce"]);
+        assert!(prompt.contains("apollo, commerce"));
         assert!(prompt.contains("auth setup"));
     }
 

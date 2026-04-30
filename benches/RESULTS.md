@@ -55,7 +55,7 @@ faster than computing cosine similarity against 1000 TF-IDF vectors.
 result that needs explanation:
 
 The TACT wing classifier uses regex rules designed for specific real-world
-projects (polybot, getladle, jesse, etc. — from the production zeroclaw
+projects (apollo, acme, alice, etc. — from the production zeroclaw
 deployment). The synthetic corpus uses generic topic words ("infrastructure",
 "engineering") that don't match any TACT wing rule. Without wing detection,
 TACT falls back to FTS search, which uses different query terms than our

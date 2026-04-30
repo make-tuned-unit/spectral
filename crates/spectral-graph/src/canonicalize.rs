@@ -144,14 +144,14 @@ const MIN_WORD_LEN: usize = 3;
 /// version = 1
 /// [[entity]]
 /// type = "person"
-/// canonical = "sophie"
-/// aliases = ["Sophie"]
+/// canonical = "carol"
+/// aliases = ["Carol"]
 /// visibility = "private"
 /// "#).unwrap();
 ///
 /// let c = Canonicalizer::new(&ont);
-/// // "Saphie" is too far for a match but close enough for a suggestion
-/// let result = c.canonicalize("Saphie is here");
+/// // "Caral" is too far for a match but close enough for a suggestion
+/// let result = c.canonicalize("Caral is here");
 /// assert_eq!(result.unresolved.len(), 1);
 /// assert!(result.unresolved[0].nearest.is_some());
 /// ```

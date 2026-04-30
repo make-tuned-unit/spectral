@@ -57,24 +57,24 @@ pub fn default_hall_rule_strings() -> Vec<(String, String)> {
 fn default_wing_rule_pairs() -> Vec<(&'static str, &'static str)> {
     vec![
         (
-            r"jesse|coffee|anniversary|colou?r|favourit|favorit|sons|rowan|jude|sophie.sharratt",
-            "jesse",
+            r"alice|coffee|anniversary|colou?r|favourit|favorit|sons|noah|leo|carol-doe",
+            "alice",
         ),
         (
-            r"polybot|polymarket|strategy|weather|prediction|wager|trade",
-            "polybot",
+            r"apollo|polymarket|strategy|weather|prediction|wager|trade",
+            "apollo",
         ),
-        (r"getladle|ladle|mel|recipe|cook|feast", "getladle"),
-        (r"love|lns|advocacy|grant|dennis|jill|barkhouse", "love-ns"),
-        (r"permagent|henry.sells|stripe|purchase", "permagent"),
-        (r"sophie|immigration|north.star|visa|permit", "sophie"),
+        (r"acme|widget|bob|recipe|cook|feast", "acme"),
+        (r"charity|advocacy|grant|nonprofit|fundrais", "charity"),
+        (r"vega|sales|purchase|commerce", "vega"),
+        (r"travel|immigration|visa|permit", "travel"),
         (
-            r"worldlitterrun|wlr|plogging|litter|marathon|bluenose",
-            "worldlitterrun",
+            r"polaris|volunteer|plogging|litter|marathon|summit",
+            "polaris",
         ),
         (
-            r"task.runner|litellm|zeroclaw|infrastructure|ollama|gemma|model.ladder",
-            "henry-infra",
+            r"task.runner|litellm|infrastructure|ollama|gemma|model.ladder",
+            "infra",
         ),
     ]
 }
@@ -128,17 +128,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wing_jesse() {
+    fn wing_personal() {
         let rules = default_wing_rules();
-        assert_eq!(classify_wing("", "Jesse likes coffee", "", &rules), "jesse");
+        assert_eq!(classify_wing("", "Alice likes coffee", "", &rules), "alice");
     }
 
     #[test]
-    fn wing_polybot() {
+    fn wing_apollo() {
         let rules = default_wing_rules();
         assert_eq!(
-            classify_wing("", "polybot weather prediction", "", &rules),
-            "polybot"
+            classify_wing("", "apollo weather prediction", "", &rules),
+            "apollo"
         );
     }
 
@@ -155,8 +155,8 @@ mod tests {
     fn wing_uses_key_and_category() {
         let rules = default_wing_rules();
         assert_eq!(
-            classify_wing("jesse_pref", "something", "core", &rules),
-            "jesse"
+            classify_wing("alice_pref", "something", "core", &rules),
+            "alice"
         );
     }
 
@@ -164,7 +164,7 @@ mod tests {
     fn hall_fact() {
         let rules = default_hall_rules();
         assert_eq!(
-            classify_hall("Jesse decided to use Clerk for auth", &rules),
+            classify_hall("Alice decided to use Clerk for auth", &rules),
             "fact"
         );
     }
@@ -173,7 +173,7 @@ mod tests {
     fn hall_preference() {
         let rules = default_hall_rules();
         assert_eq!(
-            classify_hall("Jesse prefers dark roast coffee", &rules),
+            classify_hall("Alice prefers dark roast coffee", &rules),
             "preference"
         );
     }

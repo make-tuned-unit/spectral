@@ -827,8 +827,8 @@ mod tests {
         let mem = Memory {
             id: "m1".into(),
             key: "test_key".into(),
-            content: "Jesse decided to use Clerk".into(),
-            wing: Some("jesse".into()),
+            content: "Alice decided to use Clerk".into(),
+            wing: Some("alice".into()),
             hall: Some("fact".into()),
             signal_score: 0.85,
             visibility: "private".into(),
@@ -840,7 +840,7 @@ mod tests {
         };
         store.write(&mem, &[]).await.unwrap();
 
-        let results = store.list_wing_memories("jesse", 0.5).await.unwrap();
+        let results = store.list_wing_memories("alice", 0.5).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "m1");
     }
@@ -891,8 +891,8 @@ mod tests {
         let mem = Memory {
             id: "m1".into(),
             key: "auth_decision".into(),
-            content: "Jesse decided to use Clerk for auth".into(),
-            wing: Some("jesse".into()),
+            content: "Alice decided to use Clerk for auth".into(),
+            wing: Some("alice".into()),
             hall: Some("fact".into()),
             signal_score: 0.85,
             visibility: "private".into(),
@@ -1049,50 +1049,50 @@ mod tests {
     async fn wing_cache_serves_repeated_queries() {
         let store = SqliteStore::open_in_memory().unwrap();
         store
-            .write(&make_mem("m1", "k1", "polybot"), &[])
+            .write(&make_mem("m1", "k1", "apollo"), &[])
             .await
             .unwrap();
 
         // First call — cache miss, queries SQLite
-        let r1 = store.wing_search("polybot", &[], 10).await.unwrap();
+        let r1 = store.wing_search("apollo", &[], 10).await.unwrap();
         assert_eq!(r1.len(), 1);
 
         // Second call — should hit cache (same result)
-        let r2 = store.wing_search("polybot", &[], 10).await.unwrap();
+        let r2 = store.wing_search("apollo", &[], 10).await.unwrap();
         assert_eq!(r2.len(), 1);
         assert_eq!(r2[0].id, r1[0].id);
 
         // Verify cache is populated
         let cache = store.wing_cache.lock().unwrap();
-        assert!(cache.peek(&"polybot".to_string()).is_some());
+        assert!(cache.peek(&"apollo".to_string()).is_some());
     }
 
     #[tokio::test]
     async fn wing_cache_invalidated_on_write() {
         let store = SqliteStore::open_in_memory().unwrap();
         store
-            .write(&make_mem("m1", "k1", "polybot"), &[])
+            .write(&make_mem("m1", "k1", "apollo"), &[])
             .await
             .unwrap();
 
         // Populate cache
-        let r1 = store.wing_search("polybot", &[], 10).await.unwrap();
+        let r1 = store.wing_search("apollo", &[], 10).await.unwrap();
         assert_eq!(r1.len(), 1);
 
         // Write to same wing — should invalidate cache
         store
-            .write(&make_mem("m2", "k2", "polybot"), &[])
+            .write(&make_mem("m2", "k2", "apollo"), &[])
             .await
             .unwrap();
 
         // Cache entry should be gone
         {
             let cache = store.wing_cache.lock().unwrap();
-            assert!(cache.peek(&"polybot".to_string()).is_none());
+            assert!(cache.peek(&"apollo".to_string()).is_none());
         }
 
         // Next query should see the new memory
-        let r2 = store.wing_search("polybot", &[], 10).await.unwrap();
+        let r2 = store.wing_search("apollo", &[], 10).await.unwrap();
         assert_eq!(r2.len(), 2);
     }
 

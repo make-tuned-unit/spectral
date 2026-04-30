@@ -141,7 +141,7 @@ pub struct OntologyEntity {
     /// Entity type (e.g. "person", "project").
     #[serde(rename = "type")]
     pub entity_type: String,
-    /// Canonical name (e.g. "sophie-sharratt").
+    /// Canonical name (e.g. "carol-doe").
     pub canonical: String,
     /// Known aliases for this entity.
     #[serde(default)]
@@ -165,6 +165,15 @@ pub struct OntologyPredicate {
 }
 
 impl Ontology {
+    /// Create an empty ontology with no built-in entities or predicates.
+    pub fn empty() -> Self {
+        Self {
+            version: 1,
+            entities: Vec::new(),
+            predicates: Vec::new(),
+        }
+    }
+
     /// Load and validate an ontology from a TOML file.
     pub fn load(path: &Path) -> Result<Self, Error> {
         let content = std::fs::read_to_string(path)?;

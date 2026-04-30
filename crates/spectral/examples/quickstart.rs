@@ -21,8 +21,8 @@ fn main() -> Result<(), spectral::Error> {
         Visibility::Public,
     )?;
     brain.remember(
-        "polybot-strategy",
-        "Polybot weather prediction strategy looks promising",
+        "apollo-strategy",
+        "Apollo weather prediction strategy looks promising",
         Visibility::Private,
     )?;
 
@@ -33,9 +33,9 @@ fn main() -> Result<(), spectral::Error> {
         println!("  [{}] {}", hit.key, hit.content);
     }
 
-    let result = brain.recall("polybot weather prediction strategy", Visibility::Private)?;
+    let result = brain.recall("apollo weather prediction strategy", Visibility::Private)?;
     println!(
-        "\nRecall 'polybot': {} memory hits",
+        "\nRecall 'apollo': {} memory hits",
         result.memory_hits.len()
     );
     for hit in &result.memory_hits {

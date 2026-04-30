@@ -14,17 +14,17 @@ fn load_from_fixture() {
 fn resolve_alias_case_insensitive() {
     let ont = Ontology::load(Path::new("tests/fixtures/test_ontology.toml")).unwrap();
 
-    let entity = ont.resolve_alias("sophie").unwrap();
-    assert_eq!(entity.canonical, "sophie-sharratt");
+    let entity = ont.resolve_alias("carol").unwrap();
+    assert_eq!(entity.canonical, "carol-doe");
 
-    let entity = ont.resolve_alias("SOPHIE").unwrap();
-    assert_eq!(entity.canonical, "sophie-sharratt");
+    let entity = ont.resolve_alias("CAROL").unwrap();
+    assert_eq!(entity.canonical, "carol-doe");
 }
 
 #[test]
 fn resolve_canonical_as_alias() {
     let ont = Ontology::load(Path::new("tests/fixtures/test_ontology.toml")).unwrap();
-    let entity = ont.resolve_alias("sophie-sharratt").unwrap();
+    let entity = ont.resolve_alias("carol-doe").unwrap();
     assert_eq!(entity.entity_type, "person");
 }
 

@@ -83,7 +83,7 @@ fn assert_invalid_predicate() {
 
     // "studies" has domain=person, range=topic. Using person→person should fail.
     let err = brain
-        .assert("Mark", "studies", "Sophie", 0.9, Visibility::Private)
+        .assert("Mark", "studies", "Carol", 0.9, Visibility::Private)
         .unwrap_err();
 
     match err {
@@ -164,19 +164,19 @@ fn ingest_document_writes_mentions() {
     let result = brain
         .ingest_document(
             "test.txt",
-            "Sophie works on Spectral every day",
+            "Carol works on Spectral every day",
             Visibility::Private,
         )
         .unwrap();
 
     assert_eq!(result.document_id.len(), 32);
-    assert!(result.matched.len() >= 2); // Sophie, Spectral
+    assert!(result.matched.len() >= 2); // Carol, Spectral
     let canonicals: Vec<&str> = result
         .matched
         .iter()
         .map(|m| m.canonical.as_str())
         .collect();
-    assert!(canonicals.contains(&"sophie-sharratt"));
+    assert!(canonicals.contains(&"carol-doe"));
     assert!(canonicals.contains(&"spectral"));
 }
 
@@ -185,7 +185,7 @@ fn ingest_document_idempotent() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
-    let content = "Sophie studies Library Science";
+    let content = "Carol studies Library Science";
     let r1 = brain
         .ingest_document("doc.txt", content, Visibility::Private)
         .unwrap();
@@ -205,7 +205,7 @@ fn remember_and_recall_roundtrip() {
     brain
         .remember(
             "auth_decision",
-            "Jesse decided to use Clerk for auth",
+            "Alice decided to use Clerk for auth",
             Visibility::Private,
         )
         .unwrap();
@@ -242,7 +242,7 @@ fn remember_classifies_correctly() {
     let result = brain
         .remember(
             "auth_decision",
-            "Jesse decided to use Clerk for auth",
+            "Alice decided to use Clerk for auth",
             Visibility::Private,
         )
         .unwrap();
@@ -264,29 +264,29 @@ fn recall_returns_memory_hits_for_matching_wing() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
-    // Remember polybot observations
+    // Remember apollo observations
     brain
         .remember(
-            "polybot-decision",
-            "Decided to use Polybot for the weather prediction strategy",
+            "apollo-decision",
+            "Decided to use Apollo for the weather prediction strategy",
             Visibility::Private,
         )
         .unwrap();
     brain
         .remember(
-            "polybot-bug",
-            "Polybot had a bug in the weather engine",
+            "apollo-bug",
+            "Apollo had a bug in the weather engine",
             Visibility::Private,
         )
         .unwrap();
 
-    // Recall with a query that matches the "polybot" wing
+    // Recall with a query that matches the "apollo" wing
     let result = brain
-        .recall("polybot weather strategy", Visibility::Private)
+        .recall("apollo weather strategy", Visibility::Private)
         .unwrap();
     assert!(
         !result.memory_hits.is_empty(),
-        "expected memory hits for polybot wing query, got 0"
+        "expected memory hits for apollo wing query, got 0"
     );
 }
 
@@ -299,21 +299,21 @@ fn visibility_filters_memories() {
     brain
         .remember(
             "private-secret",
-            "Jesse chose a secret auth provider",
+            "Alice chose a secret auth provider",
             Visibility::Private,
         )
         .unwrap();
     brain
         .remember(
             "public-announcement",
-            "Jesse chose Clerk for the public API",
+            "Alice chose Clerk for the public API",
             Visibility::Public,
         )
         .unwrap();
 
     // Public context: should see only Public memory
     let public = brain
-        .recall("what did Jesse choose", Visibility::Public)
+        .recall("what did Alice choose", Visibility::Public)
         .unwrap();
     assert!(
         public.memory_hits.iter().all(|m| m.visibility == "public"),
@@ -322,7 +322,7 @@ fn visibility_filters_memories() {
 
     // Private context: should see both
     let private = brain
-        .recall("what did Jesse choose", Visibility::Private)
+        .recall("what did Alice choose", Visibility::Private)
         .unwrap();
     assert!(
         private.memory_hits.len() >= public.memory_hits.len(),
@@ -368,14 +368,14 @@ fn visibility_federation_precedent() {
 
     // Assert Private and Org facts
     brain
-        .assert("Sophie", "works_on", "Spectral", 0.9, Visibility::Private)
+        .assert("Carol", "works_on", "Spectral", 0.9, Visibility::Private)
         .unwrap();
     brain
-        .assert("Sophie", "knows", "Mark", 0.9, Visibility::Org)
+        .assert("Carol", "knows", "Mark", 0.9, Visibility::Org)
         .unwrap();
 
     // Org-context recall: Private fact must be filtered out
-    let result = brain.recall("Sophie", Visibility::Org).unwrap();
+    let result = brain.recall("Carol", Visibility::Org).unwrap();
     for t in &result.graph.triples {
         assert!(
             t.visibility >= Visibility::Org,
@@ -394,8 +394,8 @@ fn remember_with_source_persists_source() {
 
     brain
         .remember_with(
-            "polybot-native",
-            "Decided to use Polybot for weather prediction",
+            "apollo-native",
+            "Decided to use Apollo for weather prediction",
             RememberOpts {
                 source: Some("native".into()),
                 visibility: Visibility::Private,
@@ -405,7 +405,7 @@ fn remember_with_source_persists_source() {
         .unwrap();
 
     let result = brain
-        .recall("polybot weather prediction", Visibility::Private)
+        .recall("apollo weather prediction", Visibility::Private)
         .unwrap();
     assert!(!result.memory_hits.is_empty());
     assert_eq!(result.memory_hits[0].source.as_deref(), Some("native"));
@@ -419,8 +419,8 @@ fn remember_with_device_id_persists() {
     let device = DeviceId::from_descriptor("test-laptop-abc");
     brain
         .remember_with(
-            "polybot-device",
-            "Decided to use Polybot for weather prediction via device",
+            "apollo-device",
+            "Decided to use Apollo for weather prediction via device",
             RememberOpts {
                 device_id: Some(device),
                 visibility: Visibility::Private,
@@ -430,7 +430,7 @@ fn remember_with_device_id_persists() {
         .unwrap();
 
     let result = brain
-        .recall("polybot weather prediction device", Visibility::Private)
+        .recall("apollo weather prediction device", Visibility::Private)
         .unwrap();
     assert!(!result.memory_hits.is_empty());
     assert_eq!(
@@ -447,7 +447,7 @@ fn remember_with_confidence_persists() {
     brain
         .remember_with(
             "low-confidence",
-            "Decided to use Polybot for weather prediction maybe",
+            "Decided to use Apollo for weather prediction maybe",
             RememberOpts {
                 confidence: Some(0.5),
                 visibility: Visibility::Private,
@@ -457,7 +457,7 @@ fn remember_with_confidence_persists() {
         .unwrap();
 
     let result = brain
-        .recall("polybot weather prediction maybe", Visibility::Private)
+        .recall("apollo weather prediction maybe", Visibility::Private)
         .unwrap();
     assert!(!result.memory_hits.is_empty());
     assert!((result.memory_hits[0].confidence - 0.5).abs() < f64::EPSILON);
@@ -471,7 +471,7 @@ fn default_remember_uses_none_source_and_full_confidence() {
     let r = brain
         .remember(
             "default-test",
-            "Decided to use Polybot for weather prediction default",
+            "Decided to use Apollo for weather prediction default",
             Visibility::Private,
         )
         .unwrap();
@@ -564,7 +564,7 @@ fn recall_returns_source_and_device_and_confidence() {
     brain
         .remember_with(
             "roundtrip-key",
-            "Decided to use Polybot for weather prediction roundtrip",
+            "Decided to use Apollo for weather prediction roundtrip",
             RememberOpts {
                 source: Some("openbird_sidecar".into()),
                 device_id: Some(device),
@@ -575,7 +575,7 @@ fn recall_returns_source_and_device_and_confidence() {
         .unwrap();
 
     let result = brain
-        .recall("polybot weather prediction roundtrip", Visibility::Private)
+        .recall("apollo weather prediction roundtrip", Visibility::Private)
         .unwrap();
     assert!(!result.memory_hits.is_empty());
 

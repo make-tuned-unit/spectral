@@ -110,16 +110,16 @@ mod tests {
 
     #[test]
     fn fingerprint_hash_is_deterministic() {
-        let h1 = make_fingerprint_hash("fact", "discovery", "polybot", "same_week");
-        let h2 = make_fingerprint_hash("fact", "discovery", "polybot", "same_week");
+        let h1 = make_fingerprint_hash("fact", "discovery", "apollo", "same_week");
+        let h2 = make_fingerprint_hash("fact", "discovery", "apollo", "same_week");
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 16);
     }
 
     #[test]
     fn fingerprint_hash_varies_with_inputs() {
-        let h1 = make_fingerprint_hash("fact", "discovery", "polybot", "same_week");
-        let h2 = make_fingerprint_hash("fact", "discovery", "polybot", "same_month");
+        let h1 = make_fingerprint_hash("fact", "discovery", "apollo", "same_week");
+        let h2 = make_fingerprint_hash("fact", "discovery", "apollo", "same_month");
         assert_ne!(h1, h2);
     }
 

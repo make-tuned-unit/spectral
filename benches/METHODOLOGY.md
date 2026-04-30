@@ -166,11 +166,11 @@ wing rules:
 
 | Wing | Trigger examples |
 |---|---|
-| polybot | polybot, polymarket, weather, prediction, wager, trade |
-| getladle | getladle, ladle, mel, recipe, cook, feast |
-| henry-infra | infrastructure, ollama, zeroclaw, litellm, gemma |
-| jesse | jesse, coffee, anniversary, colour, rowan, jude |
-| worldlitterrun | worldlitterrun, wlr, plogging, bluenose, marathon |
+| apollo | apollo, prediction-market, weather, prediction, wager, trade |
+| acme | acme, widget, bob, recipe, cook, feast |
+| infra | infrastructure, ollama, zeroclaw, litellm, gemma |
+| alice | alice, coffee, anniversary, colour, noah, leo |
+| polaris | polaris, plr, plogging, summit, marathon |
 
 Each memory combines a hall-specific trigger phrase (e.g., "Decided to"
 for fact) with wing-specific vocabulary and topic content. Wing

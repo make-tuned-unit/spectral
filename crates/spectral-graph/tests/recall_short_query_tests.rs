@@ -28,17 +28,17 @@ fn recall_returns_hits_for_single_word_query() {
     for i in 0..5 {
         brain
             .remember(
-                &format!("polybot-mem-{i}"),
-                &format!("Polybot weather prediction strategy observation {i}"),
+                &format!("apollo-mem-{i}"),
+                &format!("Apollo weather prediction strategy observation {i}"),
                 Visibility::Private,
             )
             .unwrap();
     }
 
-    let result = brain.recall("polybot", Visibility::Private).unwrap();
+    let result = brain.recall("apollo", Visibility::Private).unwrap();
     assert!(
         !result.memory_hits.is_empty(),
-        "single-word query 'polybot' should return hits, got 0"
+        "single-word query 'apollo' should return hits, got 0"
     );
 }
 
@@ -50,19 +50,17 @@ fn recall_returns_hits_for_two_word_query() {
     for i in 0..5 {
         brain
             .remember(
-                &format!("polybot-weather-{i}"),
-                &format!("Polybot weather prediction strategy details {i}"),
+                &format!("apollo-weather-{i}"),
+                &format!("Apollo weather prediction strategy details {i}"),
                 Visibility::Private,
             )
             .unwrap();
     }
 
-    let result = brain
-        .recall("polybot weather", Visibility::Private)
-        .unwrap();
+    let result = brain.recall("apollo weather", Visibility::Private).unwrap();
     assert!(
         !result.memory_hits.is_empty(),
-        "two-word query 'polybot weather' should return hits, got 0"
+        "two-word query 'apollo weather' should return hits, got 0"
     );
 }
 
@@ -73,8 +71,8 @@ fn min_words_threshold_respected_when_set_explicitly() {
 
     brain
         .remember(
-            "polybot-explicit",
-            "Polybot weather prediction strategy explicit test",
+            "apollo-explicit",
+            "Apollo weather prediction strategy explicit test",
             Visibility::Private,
         )
         .unwrap();
@@ -83,7 +81,7 @@ fn min_words_threshold_respected_when_set_explicitly() {
     // But TACT's min_words gate is still functional — verified by the fact
     // that the pipeline runs and returns results for short queries.
     // A consumer could set min_words=3 to skip short queries.
-    let result = brain.recall("polybot", Visibility::Private).unwrap();
+    let result = brain.recall("apollo", Visibility::Private).unwrap();
     assert!(
         !result.memory_hits.is_empty(),
         "default min_words=1 should allow single-word queries"

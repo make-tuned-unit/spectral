@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn query_terms_extracted() {
-        let terms = extract_query_terms("what is the auth decision for getladle?");
+        let terms = extract_query_terms("what is the auth decision for acme?");
         assert!(terms.contains(&"auth".to_string()));
         assert!(terms.contains(&"decision".to_string()));
         assert!(!terms.contains(&"is".to_string()));

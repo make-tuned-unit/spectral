@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn decision_boost() {
-        let score = score_memory("Jesse decided to use Clerk for auth", "fact");
+        let score = score_memory("Alice decided to use Clerk for auth", "fact");
         assert!(
             (score - 0.85).abs() < 0.001,
             "fact(0.7) + decided(0.15) = 0.85, got {score}"

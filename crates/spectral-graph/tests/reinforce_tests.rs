@@ -28,13 +28,13 @@ fn reinforce_increases_signal_score() {
     brain
         .remember(
             "test-key",
-            "Decided to use Polybot for the weather prediction strategy",
+            "Decided to use Apollo for the weather prediction strategy",
             Visibility::Private,
         )
         .unwrap();
 
     let before = brain
-        .recall("polybot weather prediction strategy", Visibility::Private)
+        .recall("apollo weather prediction strategy", Visibility::Private)
         .unwrap();
     assert!(!before.memory_hits.is_empty());
     let score_before = before.memory_hits[0].signal_score;
@@ -47,7 +47,7 @@ fn reinforce_increases_signal_score() {
         .unwrap();
 
     let after = brain
-        .recall("polybot weather prediction strategy", Visibility::Private)
+        .recall("apollo weather prediction strategy", Visibility::Private)
         .unwrap();
     assert!(!after.memory_hits.is_empty());
     // Signal score should be higher (original + 0.1, minus negligible decay)
@@ -66,7 +66,7 @@ fn reinforce_clamps_at_one() {
     brain
         .remember(
             "clamp-key",
-            "Decided to use Polybot for weather clamp",
+            "Decided to use Apollo for weather clamp",
             Visibility::Private,
         )
         .unwrap();
@@ -83,7 +83,7 @@ fn reinforce_clamps_at_one() {
 
     // Read signal_score directly from SQLite to verify clamping
     let result = brain
-        .recall("polybot weather clamp", Visibility::Private)
+        .recall("apollo weather clamp", Visibility::Private)
         .unwrap();
     assert!(!result.memory_hits.is_empty());
     // Decayed score can be at most 1.0 (and decay on a just-reinforced memory is ~0)
@@ -102,7 +102,7 @@ fn reinforce_updates_timestamp() {
     brain
         .remember(
             "timestamp-key",
-            "Decided to use Polybot for weather timestamp",
+            "Decided to use Apollo for weather timestamp",
             Visibility::Private,
         )
         .unwrap();
@@ -115,7 +115,7 @@ fn reinforce_updates_timestamp() {
         .unwrap();
 
     let result = brain
-        .recall("polybot weather timestamp", Visibility::Private)
+        .recall("apollo weather timestamp", Visibility::Private)
         .unwrap();
     assert!(!result.memory_hits.is_empty());
     assert!(
@@ -149,14 +149,14 @@ fn reinforce_invalidates_wing_cache() {
     brain
         .remember(
             "cache-key",
-            "Decided to use Polybot for weather cache",
+            "Decided to use Apollo for weather cache",
             Visibility::Private,
         )
         .unwrap();
 
     // Populate wing cache by recalling
     let r1 = brain
-        .recall("polybot weather cache", Visibility::Private)
+        .recall("apollo weather cache", Visibility::Private)
         .unwrap();
     assert!(!r1.memory_hits.is_empty());
     let score1 = r1.memory_hits[0].signal_score;
@@ -171,7 +171,7 @@ fn reinforce_invalidates_wing_cache() {
 
     // Recall again — cache should be invalidated, showing updated score
     let r2 = brain
-        .recall("polybot weather cache", Visibility::Private)
+        .recall("apollo weather cache", Visibility::Private)
         .unwrap();
     assert!(!r2.memory_hits.is_empty());
     assert!(
@@ -188,13 +188,13 @@ fn decay_does_not_affect_recent_memories() {
     let r = brain
         .remember(
             "recent-key",
-            "Decided to use Polybot for weather recent",
+            "Decided to use Apollo for weather recent",
             Visibility::Private,
         )
         .unwrap();
 
     let result = brain
-        .recall("polybot weather recent", Visibility::Private)
+        .recall("apollo weather recent", Visibility::Private)
         .unwrap();
     assert!(!result.memory_hits.is_empty());
 
@@ -215,7 +215,7 @@ fn decay_applies_to_old_memories() {
     brain
         .remember(
             "old-key",
-            "Decided to use Polybot for weather old",
+            "Decided to use Apollo for weather old",
             Visibility::Private,
         )
         .unwrap();
@@ -236,7 +236,7 @@ fn decay_applies_to_old_memories() {
     let brain = open_brain(&tmp);
 
     let result = brain
-        .recall("polybot weather old", Visibility::Private)
+        .recall("apollo weather old", Visibility::Private)
         .unwrap();
     assert!(!result.memory_hits.is_empty());
 
@@ -273,7 +273,7 @@ fn decay_capped_at_50_percent() {
     brain
         .remember(
             "ancient-key",
-            "Decided to use Polybot for weather ancient",
+            "Decided to use Apollo for weather ancient",
             Visibility::Private,
         )
         .unwrap();
@@ -293,7 +293,7 @@ fn decay_capped_at_50_percent() {
     let brain = open_brain(&tmp);
 
     let result = brain
-        .recall("polybot weather ancient", Visibility::Private)
+        .recall("apollo weather ancient", Visibility::Private)
         .unwrap();
     assert!(!result.memory_hits.is_empty());
 
@@ -319,7 +319,7 @@ fn recent_reinforcement_resets_decay_clock() {
     brain
         .remember(
             "reset-key",
-            "Decided to use Polybot for weather reset",
+            "Decided to use Apollo for weather reset",
             Visibility::Private,
         )
         .unwrap();
@@ -340,7 +340,7 @@ fn recent_reinforcement_resets_decay_clock() {
 
     // Before reinforcement — should show decay
     let before = brain
-        .recall("polybot weather reset", Visibility::Private)
+        .recall("apollo weather reset", Visibility::Private)
         .unwrap();
     assert!(!before.memory_hits.is_empty());
     let decayed_score = before.memory_hits[0].signal_score;
@@ -354,7 +354,7 @@ fn recent_reinforcement_resets_decay_clock() {
         .unwrap();
 
     let after = brain
-        .recall("polybot weather reset", Visibility::Private)
+        .recall("apollo weather reset", Visibility::Private)
         .unwrap();
     assert!(!after.memory_hits.is_empty());
 
@@ -375,21 +375,21 @@ fn reinforce_round_trip() {
     brain
         .remember(
             "important",
-            "Decided to use Polybot for weather prediction important decision strategy",
+            "Decided to use Apollo for weather prediction important decision strategy",
             Visibility::Private,
         )
         .unwrap();
     brain
         .remember(
             "trivial",
-            "Polybot had a minor weather prediction config change details",
+            "Apollo had a minor weather prediction config change details",
             Visibility::Private,
         )
         .unwrap();
 
     // Recall and reinforce only the important one
     let r1 = brain
-        .recall("polybot weather prediction strategy", Visibility::Private)
+        .recall("apollo weather prediction strategy", Visibility::Private)
         .unwrap();
     assert!(r1.memory_hits.len() >= 2);
 
@@ -402,7 +402,7 @@ fn reinforce_round_trip() {
 
     // Recall again — the reinforced memory should rank higher
     let r2 = brain
-        .recall("polybot weather prediction strategy", Visibility::Private)
+        .recall("apollo weather prediction strategy", Visibility::Private)
         .unwrap();
     assert!(!r2.memory_hits.is_empty());
 

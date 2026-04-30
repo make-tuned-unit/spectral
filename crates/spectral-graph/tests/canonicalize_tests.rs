@@ -11,8 +11,8 @@ fn exact_alias_case_insensitive() {
     let ont = load_ontology();
     let c = Canonicalizer::new(&ont);
 
-    let m = c.resolve_one("sophie").unwrap();
-    assert_eq!(m.canonical, "sophie-sharratt");
+    let m = c.resolve_one("carol").unwrap();
+    assert_eq!(m.canonical, "carol-doe");
     assert!(matches!(m.match_kind, MatchKind::Exact));
 
     let m = c.resolve_one("MARK").unwrap();
@@ -24,11 +24,11 @@ fn multi_word_alias_prefers_longest() {
     let ont = load_ontology();
     let c = Canonicalizer::new(&ont);
 
-    // "Sophie Sharratt" should match as one entity, not "Sophie" alone
-    let result = c.canonicalize("Sophie Sharratt works here");
+    // "Carol Doe" should match as one entity, not "Carol" alone
+    let result = c.canonicalize("Carol Doe works here");
     assert_eq!(result.matched.len(), 1);
-    assert_eq!(result.matched[0].mention, "Sophie Sharratt");
-    assert_eq!(result.matched[0].canonical, "sophie-sharratt");
+    assert_eq!(result.matched[0].mention, "Carol Doe");
+    assert_eq!(result.matched[0].canonical, "carol-doe");
 }
 
 #[test]
@@ -47,10 +47,10 @@ fn fuzzy_match_below_threshold_unresolved() {
     let ont = load_ontology();
     let c = Canonicalizer::new(&ont);
 
-    // "Saphie" vs "Sophie": distance ~2/6 = 0.667 similarity → unresolved with nearest
-    let result = c.canonicalize("Saphie is here");
-    assert!(result.matched.is_empty() || !result.matched.iter().any(|m| m.mention == "Saphie"));
-    let unresolved = result.unresolved.iter().find(|u| u.mention == "Saphie");
+    // "Caral" vs "Carol": distance ~1/5 = 0.8 similarity → unresolved with nearest
+    let result = c.canonicalize("Caral is here");
+    assert!(result.matched.is_empty() || !result.matched.iter().any(|m| m.mention == "Caral"));
+    let unresolved = result.unresolved.iter().find(|u| u.mention == "Caral");
     assert!(unresolved.is_some());
     let u = unresolved.unwrap();
     assert!(u.nearest.is_some());
@@ -77,16 +77,16 @@ fn span_offsets_track_bytes() {
     let ont = load_ontology();
     let c = Canonicalizer::new(&ont);
 
-    let text = "Hello Sophie and Mark";
+    let text = "Hello Carol and Mark";
     let result = c.canonicalize(text);
     assert_eq!(result.matched.len(), 2);
 
-    let sophie = result
+    let carol = result
         .matched
         .iter()
-        .find(|m| m.canonical == "sophie-sharratt")
+        .find(|m| m.canonical == "carol-doe")
         .unwrap();
-    assert_eq!(&text[sophie.span.0..sophie.span.1], "Sophie");
+    assert_eq!(&text[carol.span.0..carol.span.1], "Carol");
 
     let mark = result
         .matched
