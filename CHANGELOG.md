@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (chore/repo-polish)
+- `SECURITY.md` updated with disclosure policy
+- `CODE_OF_CONDUCT.md` adopting Contributor Covenant 2.1
+- GitHub issue templates (bug, feature, config) and PR template
+- Dependabot config for weekly Cargo and Actions updates
+- `examples/` directory with integration pattern docs (chat memory, activity capture)
+
 ### Changed
 - `TactConfig::default().min_words` from 3 to 1. Short programmatic queries (e.g., single-word entity lookups) now reach the FTS and fingerprint search paths instead of being silently skipped. Consumers wanting the previous behavior should set `TactConfig::min_words = 3` explicitly.
 
