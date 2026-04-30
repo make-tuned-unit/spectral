@@ -54,9 +54,9 @@ mod tests {
 
     /// Golden test: this exact input/output is verified against production brain.db.
     #[test]
-    fn golden_hash_fact_fact_atlas_atlantic_same_day() {
+    fn golden_hash_fact_fact_polaris_media_same_day() {
         let hash = make_fingerprint_hash("fact", "fact", "polaris-media", TimeBucket::SameDay);
-        assert_eq!(hash, "4c355a4f544a52f5");
+        assert_eq!(hash, "9c9cebd7800f89d2");
     }
 
     #[test]

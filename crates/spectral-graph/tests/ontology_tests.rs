@@ -17,7 +17,7 @@ fn resolve_alias_case_insensitive() {
     let entity = ont.resolve_alias("carol").unwrap();
     assert_eq!(entity.canonical, "carol-doe");
 
-    let entity = ont.resolve_alias("SOPHIE").unwrap();
+    let entity = ont.resolve_alias("CAROL").unwrap();
     assert_eq!(entity.canonical, "carol-doe");
 }
 

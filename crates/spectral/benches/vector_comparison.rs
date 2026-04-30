@@ -55,7 +55,7 @@ const WING_VOCABS: &[WingVocab] = &[
         name: "apollo",
         triggers: &[
             "apollo",
-            "polymarket",
+            "prediction-market",
             "weather",
             "prediction",
             "wager",
@@ -69,7 +69,7 @@ const WING_VOCABS: &[WingVocab] = &[
             "backtesting on recent wager data",
         ],
         details: &[
-            "The polymarket platform showed strong signals",
+            "The prediction-market platform showed strong signals",
             "Weather API response times improved significantly",
             "Wager sizing algorithm performed well",
             "Trade execution was within acceptable latency",
@@ -78,7 +78,7 @@ const WING_VOCABS: &[WingVocab] = &[
     },
     WingVocab {
         name: "acme",
-        triggers: &["acme", "ladle", "mel", "recipe", "cook", "feast"],
+        triggers: &["acme", "widget", "bob", "recipe", "cook", "feast"],
         topics: &[
             "testing the new recipe database",
             "meal planning feature updates",
@@ -87,11 +87,11 @@ const WING_VOCABS: &[WingVocab] = &[
             "menu design improvements",
         ],
         details: &[
-            "Bob's feedback shaped the final ladle interface",
+            "Bob's feedback shaped the final widget interface",
             "Cook time estimation accuracy is at 94 percent",
-            "Getladle feast mode handles groups of twenty plus",
+            "Acme feast mode handles groups of twenty plus",
             "Recipe sharing between users works smoothly",
-            "The ladle app search got noticeably faster",
+            "The widget app search got noticeably faster",
         ],
     },
     WingVocab {
@@ -107,7 +107,7 @@ const WING_VOCABS: &[WingVocab] = &[
         details: &[
             "Ollama cluster handled 2x peak load",
             "Litellm proxy routing is stable",
-            "Zeroclaw task runner scaled to 50 concurrent jobs",
+            "Taskforge task runner scaled to 50 concurrent jobs",
             "Gemma model weights updated to latest checkpoint",
             "Infrastructure monitoring dashboards were deployed",
         ],
@@ -132,7 +132,7 @@ const WING_VOCABS: &[WingVocab] = &[
     },
     WingVocab {
         name: "polaris",
-        triggers: &["polaris", "wlr", "plogging", "summit", "marathon"],
+        triggers: &["polaris", "plr", "plogging", "summit", "marathon"],
         topics: &[
             "route planning for the next event",
             "volunteer coordination update",
@@ -141,11 +141,11 @@ const WING_VOCABS: &[WingVocab] = &[
             "environmental impact assessment",
         ],
         details: &[
-            "WLR tracking showed 15km covered",
+            "PLR tracking showed 15km covered",
             "Plogging session collected 30kg of debris",
             "Summit event registration is at capacity",
             "Marathon route avoids construction zones",
-            "Worldlitterrun visibility increased 40 percent this quarter",
+            "Polaris visibility increased 40 percent this quarter",
         ],
     },
 ];
@@ -271,7 +271,7 @@ const COMPARISON_QUERIES: &[ComparisonQuery] = &[
         category: QueryCategory::KeywordOverlap,
     },
     ComparisonQuery {
-        text: "acme recipe cook feast ladle mel",
+        text: "acme recipe cook feast widget bob",
         relevant_wings: &["acme"],
         category: QueryCategory::KeywordOverlap,
     },
@@ -286,7 +286,7 @@ const COMPARISON_QUERIES: &[ComparisonQuery] = &[
         category: QueryCategory::KeywordOverlap,
     },
     ComparisonQuery {
-        text: "polaris wlr marathon plogging summit",
+        text: "polaris plr marathon plogging summit",
         relevant_wings: &["polaris"],
         category: QueryCategory::KeywordOverlap,
     },
@@ -337,7 +337,7 @@ const COMPARISON_QUERIES: &[ComparisonQuery] = &[
         category: QueryCategory::MultiHopTopical,
     },
     ComparisonQuery {
-        text: "alice learned that his morning coffee routine needs noah leo time",
+        text: "alice learned that her morning coffee routine needs noah leo time",
         relevant_wings: &["alice"],
         category: QueryCategory::MultiHopTopical,
     },

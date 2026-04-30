@@ -150,8 +150,8 @@ const MIN_WORD_LEN: usize = 3;
 /// "#).unwrap();
 ///
 /// let c = Canonicalizer::new(&ont);
-/// // "Saphie" is too far for a match but close enough for a suggestion
-/// let result = c.canonicalize("Saphie is here");
+/// // "Caral" is too far for a match but close enough for a suggestion
+/// let result = c.canonicalize("Caral is here");
 /// assert_eq!(result.unresolved.len(), 1);
 /// assert!(result.unresolved[0].nearest.is_some());
 /// ```

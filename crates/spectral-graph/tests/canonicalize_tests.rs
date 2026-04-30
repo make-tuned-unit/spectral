@@ -47,10 +47,10 @@ fn fuzzy_match_below_threshold_unresolved() {
     let ont = load_ontology();
     let c = Canonicalizer::new(&ont);
 
-    // "Saphie" vs "Carol": distance ~2/6 = 0.667 similarity → unresolved with nearest
-    let result = c.canonicalize("Saphie is here");
-    assert!(result.matched.is_empty() || !result.matched.iter().any(|m| m.mention == "Saphie"));
-    let unresolved = result.unresolved.iter().find(|u| u.mention == "Saphie");
+    // "Caral" vs "Carol": distance ~1/5 = 0.8 similarity → unresolved with nearest
+    let result = c.canonicalize("Caral is here");
+    assert!(result.matched.is_empty() || !result.matched.iter().any(|m| m.mention == "Caral"));
+    let unresolved = result.unresolved.iter().find(|u| u.mention == "Caral");
     assert!(unresolved.is_some());
     let u = unresolved.unwrap();
     assert!(u.nearest.is_some());

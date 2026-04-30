@@ -186,10 +186,8 @@ fn concurrent_reads_during_writes() {
         readers.push(thread::spawn(move || {
             let mut reads = 0;
             while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                let result = brain.recall(
-                    "apollo weather prediction observation",
-                    Visibility::Private,
-                );
+                let result =
+                    brain.recall("apollo weather prediction observation", Visibility::Private);
                 match result {
                     Ok(r) => {
                         // Verify no torn reads: every hit should have

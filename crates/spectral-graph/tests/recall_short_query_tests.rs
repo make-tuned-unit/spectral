@@ -57,9 +57,7 @@ fn recall_returns_hits_for_two_word_query() {
             .unwrap();
     }
 
-    let result = brain
-        .recall("apollo weather", Visibility::Private)
-        .unwrap();
+    let result = brain.recall("apollo weather", Visibility::Private).unwrap();
     assert!(
         !result.memory_hits.is_empty(),
         "two-word query 'apollo weather' should return hits, got 0"

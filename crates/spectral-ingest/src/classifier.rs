@@ -57,23 +57,23 @@ pub fn default_hall_rule_strings() -> Vec<(String, String)> {
 fn default_wing_rule_pairs() -> Vec<(&'static str, &'static str)> {
     vec![
         (
-            r"alice|coffee|anniversary|colou?r|favourit|favorit|sons|noah|leo|carol.doe",
+            r"alice|coffee|anniversary|colou?r|favourit|favorit|sons|noah|leo|carol-doe",
             "alice",
         ),
         (
             r"apollo|polymarket|strategy|weather|prediction|wager|trade",
             "apollo",
         ),
-        (r"acme|ladle|mel|recipe|cook|feast", "acme"),
-        (r"love|lns|advocacy|grant|diana|eve|doe", "polaris"),
-        (r"vega|cortex.sells|stripe|purchase", "vega"),
-        (r"carol|immigration|example.co|visa|permit", "carol"),
+        (r"acme|widget|bob|recipe|cook|feast", "acme"),
+        (r"charity|advocacy|grant|nonprofit|fundrais", "charity"),
+        (r"vega|sales|purchase|commerce", "vega"),
+        (r"travel|immigration|visa|permit", "travel"),
         (
-            r"polaris|wlr|plogging|litter|marathon|summit",
+            r"polaris|volunteer|plogging|litter|marathon|summit",
             "polaris",
         ),
         (
-            r"task.runner|litellm|taskforge|infrastructure|ollama|gemma|model.ladder",
+            r"task.runner|litellm|infrastructure|ollama|gemma|model.ladder",
             "infra",
         ),
     ]
@@ -128,7 +128,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wing_alice() {
+    fn wing_personal() {
         let rules = default_wing_rules();
         assert_eq!(classify_wing("", "Alice likes coffee", "", &rules), "alice");
     }
