@@ -50,7 +50,6 @@ pub struct SqliteStoreConfig {
     pub mmap_size: Option<u64>,
 }
 
-
 /// SQLite-backed memory store with FTS5 search.
 ///
 /// Includes an LRU cache for wing-scoped memory queries. The cache is
