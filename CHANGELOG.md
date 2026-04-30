@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (feat/bench-real)
+- `spectral-bench-real` workspace crate for measuring recall latency and accuracy against real Spectral brains
+- 30 curated benchmark queries covering single-word, multi-word, concept, temporal, cross-domain, and adversarial patterns
+- JSON output format suitable for CI integration
+
 ### Added (chore/repo-polish)
 - `SECURITY.md` updated with disclosure policy
 - `CODE_OF_CONDUCT.md` adopting Contributor Covenant 2.1

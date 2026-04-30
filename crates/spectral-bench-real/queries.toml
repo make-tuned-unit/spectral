@@ -1,0 +1,325 @@
+# Spectral benchmark queries
+#
+# 30 curated queries covering six patterns:
+#   - single_word   (5) — single-token entity or concept lookups
+#   - multi_word    (5) — multi-token phrase queries
+#   - concept       (5) — abstract concept anchors
+#   - temporal      (5) — time-reference queries
+#   - cross_domain  (5) — terms spanning multiple wings
+#   - adversarial   (5) — terms expected to match few or no results
+#
+# expected_keywords: at least one must appear (case-insensitive substring)
+# in the content of any top-N result for the accuracy check to pass.
+
+# ── Single-word entity lookups ──────────────────────────────────────
+
+[[queries]]
+name = "single_word_agent"
+text = "agent"
+description = "Single-word lookup for agent-related memories"
+expected_keywords = ["agent"]
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "single_word_memory"
+text = "memory"
+description = "Single-word lookup for memory system references"
+expected_keywords = ["memory"]
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "single_word_pipeline"
+text = "pipeline"
+description = "Single-word lookup for pipeline references"
+expected_keywords = ["pipeline"]
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "single_word_database"
+text = "database"
+description = "Single-word lookup for database references"
+expected_keywords = ["database", "db"]
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "single_word_api"
+text = "api"
+description = "Single-word lookup for API references"
+expected_keywords = ["api"]
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+# ── Multi-word phrase queries ───────────────────────────────────────
+
+[[queries]]
+name = "multi_word_deployment_workflow"
+text = "deployment workflow steps"
+description = "Multi-word query about deployment processes"
+expected_keywords = ["deployment", "deploy"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "multi_word_project_status"
+text = "project status update"
+description = "Multi-word query about project progress"
+expected_keywords = ["project", "status"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "multi_word_data_processing"
+text = "data processing pipeline"
+description = "Multi-word query about data pipelines"
+expected_keywords = ["data", "pipeline", "processing"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "multi_word_error_handling"
+text = "error handling strategy"
+description = "Multi-word query about error management"
+expected_keywords = ["error", "handling"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "multi_word_config_setup"
+text = "configuration file setup"
+description = "Multi-word query about configuration"
+expected_keywords = ["config", "configuration", "setup"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+# ── Concept-anchor queries ──────────────────────────────────────────
+
+[[queries]]
+name = "concept_decision"
+text = "decision"
+description = "Abstract concept: decision-making references"
+expected_keywords = ["decision", "decided"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "concept_architecture"
+text = "architecture"
+description = "Abstract concept: system architecture"
+expected_keywords = ["architecture", "architect"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "concept_strategy"
+text = "strategy"
+description = "Abstract concept: strategy and planning"
+expected_keywords = ["strategy", "strategic"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "concept_integration"
+text = "integration"
+description = "Abstract concept: system integration"
+expected_keywords = ["integration", "integrate"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "concept_automation"
+text = "automation"
+description = "Abstract concept: automation and workflows"
+expected_keywords = ["automation", "automat"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+# ── Temporal queries ────────────────────────────────────────────────
+
+[[queries]]
+name = "temporal_recent"
+text = "recent changes"
+description = "Temporal: recent activity"
+expected_keywords = ["recent", "change", "update"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "temporal_completed"
+text = "completed task"
+description = "Temporal: completed work items"
+expected_keywords = ["completed", "task", "done"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "temporal_scheduled"
+text = "scheduled work"
+description = "Temporal: upcoming scheduled items"
+expected_keywords = ["schedule", "scheduled"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "temporal_deadline"
+text = "deadline timeline"
+description = "Temporal: deadlines and timelines"
+expected_keywords = ["deadline", "timeline", "date"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "temporal_progress"
+text = "progress update"
+description = "Temporal: work in progress"
+expected_keywords = ["progress", "update", "status"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+# ── Cross-domain queries ────────────────────────────────────────────
+
+[[queries]]
+name = "cross_domain_testing"
+text = "testing"
+description = "Cross-domain: testing spans multiple projects"
+expected_keywords = ["test", "testing"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "cross_domain_security"
+text = "security authentication"
+description = "Cross-domain: security spans infrastructure and apps"
+expected_keywords = ["security", "auth", "token"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "cross_domain_documentation"
+text = "documentation readme"
+description = "Cross-domain: docs exist across all projects"
+expected_keywords = ["documentation", "readme", "docs"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "cross_domain_monitoring"
+text = "monitoring logs"
+description = "Cross-domain: observability across systems"
+expected_keywords = ["monitor", "log", "track"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "cross_domain_webhook"
+text = "webhook notification"
+description = "Cross-domain: webhooks used across services"
+expected_keywords = ["webhook", "notification", "event"]
+expected_top_n = 10
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+# ── Adversarial queries ─────────────────────────────────────────────
+# These should return few or zero results. Used to detect false positives.
+
+[[queries]]
+name = "adversarial_gibberish"
+text = "xyzzyplugh"
+description = "Adversarial: nonsense word, should return zero results"
+expected_keywords = []
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "adversarial_unrelated"
+text = "quantum entanglement superconductor"
+description = "Adversarial: highly specific physics terms unlikely in an agent brain"
+expected_keywords = []
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "adversarial_foreign"
+text = "bibliothek zusammenfassung"
+description = "Adversarial: German words unlikely in English-language brain"
+expected_keywords = []
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "adversarial_numeric"
+text = "999888777666"
+description = "Adversarial: pure numeric string, unlikely match"
+expected_keywords = []
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
+
+[[queries]]
+name = "adversarial_emoji"
+text = "unicorn rainbow sparkle"
+description = "Adversarial: whimsical terms unlikely in technical brain"
+expected_keywords = []
+expected_top_n = 5
+latency_budget_p95_ms = 5.0
+latency_budget_p99_ms = 10.0
+visibility = "private"
