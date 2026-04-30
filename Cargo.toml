@@ -34,7 +34,7 @@ toml = "0.8"
 strsim = "0.11"
 
 # TACT / memory ingestion
-sha2 = "0.10"
+sha2 = "0.11"
 regex = "1"
 
 # Errors + logging
