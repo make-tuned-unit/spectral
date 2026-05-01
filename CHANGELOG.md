@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added (feat/spectral-bench-accuracy)
 - `spectral-bench-accuracy` workspace crate for running standard agent memory benchmarks (LongMemEval_S). Produces published-quality accuracy numbers comparable to Mem0, Letta, Zep, Memanto, and other systems. Includes `Actor` and `Judge` traits for swapping evaluation models, per-category accuracy breakdown, cost estimation, resumable runs, and CLI with `run`, `report`, and `dry-run` subcommands.
 
+### Changed (feat/bench-accuracy-detailed-results)
+- `spectral-bench-accuracy` reports now include detailed per-question results via `QuestionResult` struct (question, predicted answer, ground truth, judge reasoning, retrieved memory keys, duration). Replaces the `failures` vec with a `results` vec containing all questions; use `report.failures()` to filter to incorrect answers only.
+
 ### Changed
 - Sanitized all personal data from public codebase. Replaced with generic placeholders (Alice, Bob, Carol, Acme, Apollo, Polaris, Vega). Default classifier rules and ontology now ship with placeholder examples only. Added `Ontology::empty()` constructor.
 
