@@ -129,6 +129,11 @@ pub struct RememberOpts {
     /// Classification confidence override. `None` = default 1.0.
     pub confidence: Option<f64>,
     pub visibility: Visibility,
+    /// Override the memory's creation timestamp. `None` means use
+    /// `Utc::now()` (database default). Use this when ingesting historical
+    /// memories with known dates (e.g., migrating from external systems,
+    /// importing dated conversation history).
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// Result of remembering a memory.
@@ -820,6 +825,7 @@ impl Brain {
             source: opts.source,
             device_id: opts.device_id,
             confidence: opts.confidence,
+            created_at: opts.created_at,
         };
         let result = self
             .rt

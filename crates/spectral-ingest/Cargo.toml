@@ -9,6 +9,7 @@ description = "Memory ingestion pipeline: classify, score, fingerprint, and stor
 
 [dependencies]
 spectral-core = { path = "../spectral-core" }
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

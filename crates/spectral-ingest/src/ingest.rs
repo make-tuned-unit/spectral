@@ -2,6 +2,7 @@
 
 use regex::Regex;
 
+use chrono::{DateTime, Utc};
 use spectral_core::device_id::DeviceId;
 
 use crate::classifier;
@@ -37,6 +38,10 @@ pub struct IngestOpts {
     pub device_id: Option<DeviceId>,
     /// Classification confidence override. `None` = default 1.0.
     pub confidence: Option<f64>,
+    /// Override the memory's creation timestamp. `None` means use the
+    /// database default (`datetime('now')`). Use this when ingesting
+    /// historical memories with known dates.
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// Result of the ingestion pipeline.
@@ -100,7 +105,7 @@ pub async fn ingest_with(
         source: opts.source,
         device_id: opts.device_id.map(|d| *d.as_bytes()),
         confidence: opts.confidence.unwrap_or(1.0),
-        created_at: None,
+        created_at: opts.created_at.map(|dt| dt.to_rfc3339()),
         last_reinforced_at: None,
     };
 
