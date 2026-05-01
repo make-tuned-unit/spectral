@@ -27,3 +27,9 @@ graph.kz
 brain.db
 ontology.lock
 unresolved/
+
+# Local benchmark output (may contain private brain data)
+/bench-results/
+/bench-output/
+*.bench.json
+*.bench.txt
