@@ -72,7 +72,7 @@ impl AnthropicJudge {
     pub fn from_env() -> Result<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
-        Ok(Self::new(api_key, "claude-sonnet-4-5-20250514".into()))
+        Ok(Self::new(api_key, "claude-sonnet-4-6".into()))
     }
 }
 
