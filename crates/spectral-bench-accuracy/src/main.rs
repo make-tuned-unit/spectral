@@ -79,10 +79,10 @@ fn main() -> Result<()> {
             ingest_strategy,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
-            let question_count = max_questions.unwrap_or(ds.questions.len());
+            let question_count = max_questions.unwrap_or(ds.len());
             let estimated_cost = eval::estimate_cost(question_count);
 
-            eprintln!("Dataset: {} questions", ds.questions.len());
+            eprintln!("Dataset: {} questions", ds.len());
             eprintln!("Evaluating: {question_count} questions");
             eprintln!("Estimated cost: ${estimated_cost:.2}");
 
@@ -91,11 +91,13 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            let cats = categories.map(|s| {
-                s.split(',')
-                    .map(|c| Category::from_question_type(c.trim()))
-                    .collect()
-            });
+            let cats = categories
+                .map(|s| {
+                    s.split(',')
+                        .map(|c| Category::from_question_type(c.trim()))
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
 
             let strategy = match ingest_strategy.as_str() {
                 "per_session" => ingest::IngestStrategy::PerSession,
@@ -129,10 +131,7 @@ fn main() -> Result<()> {
 
         Command::DryRun { dataset, work_dir } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
-            let question = ds
-                .questions
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("empty dataset"))?;
+            let question = ds.first().ok_or_else(|| anyhow::anyhow!("empty dataset"))?;
 
             eprintln!("Dry-run: ingesting question {}", question.question_id);
             let brain_dir = work_dir.join(format!("dryrun_{}", question.question_id));

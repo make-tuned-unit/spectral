@@ -5,6 +5,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Whether the eval run completed or halted early.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Completed,
+    HaltedOnErrors { consecutive_errors: usize },
+}
+
 /// Per-category accuracy statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CategoryStats {
@@ -43,6 +51,7 @@ pub struct EvalReport {
     pub per_category: HashMap<String, CategoryStats>,
     /// Detailed per-question results.
     pub results: Vec<QuestionResult>,
+    pub run_status: RunStatus,
     pub started_at: DateTime<Utc>,
     pub completed_at: DateTime<Utc>,
     pub duration_seconds: u64,
@@ -60,6 +69,7 @@ impl EvalReport {
             overall_accuracy: 0.0,
             per_category: HashMap::new(),
             results: Vec::new(),
+            run_status: RunStatus::Completed,
             started_at: Utc::now(),
             completed_at: Utc::now(),
             duration_seconds: 0,
@@ -206,7 +216,7 @@ mod tests {
         let mut report = EvalReport::new("mock", "mock-judge");
         report.record(
             "q1",
-            Category::Abstention,
+            Category::MultiSession,
             true,
             "Q?",
             "A",
@@ -218,7 +228,7 @@ mod tests {
         );
         report.record(
             "q2",
-            Category::Abstention,
+            Category::MultiSession,
             false,
             "Q2?",
             "B",
@@ -230,7 +240,7 @@ mod tests {
         );
         report.record(
             "q3",
-            Category::InformationExtraction,
+            Category::TemporalReasoning,
             true,
             "Q3?",
             "X",
@@ -245,8 +255,8 @@ mod tests {
         assert_eq!(report.total_questions, 3);
         assert_eq!(report.correct, 2);
         assert!((report.overall_accuracy - 2.0 / 3.0).abs() < 0.001);
-        assert_eq!(report.per_category["abstention"].total, 2);
-        assert_eq!(report.per_category["abstention"].correct, 1);
+        assert_eq!(report.per_category["multi-session"].total, 2);
+        assert_eq!(report.per_category["multi-session"].correct, 1);
         assert_eq!(report.results.len(), 3);
         assert_eq!(report.failures().len(), 1);
         assert_eq!(report.failures()[0].question_id, "q2");
@@ -268,7 +278,7 @@ mod tests {
         };
         let json = serde_json::to_string(&qr).unwrap();
         assert!(json.contains("\"question_id\":\"q42\""));
-        assert!(json.contains("\"category\":\"temporal_reasoning\""));
+        assert!(json.contains("\"category\":\"temporal-reasoning\""));
         assert!(json.contains("\"ground_truth\":\"Tuesday\""));
         assert!(json.contains("\"predicted\":\"Wednesday\""));
         assert!(json.contains("\"correct\":false"));

@@ -1,10 +1,10 @@
 //! Evaluation orchestration: full eval loop.
 
 use crate::actor::Actor;
-use crate::dataset::{Category, Dataset, Question};
+use crate::dataset::{Category, Question};
 use crate::ingest::{self, IngestStrategy};
 use crate::judge::Judge;
-use crate::report::EvalReport;
+use crate::report::{EvalReport, RunStatus};
 use crate::retrieval::{self, RetrievalConfig};
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -77,8 +77,8 @@ impl AccuracyEval {
 
     /// Run the full evaluation.
     pub fn run(&self) -> Result<EvalReport> {
-        let dataset = crate::dataset::load_dataset(&self.config.dataset_path)?;
-        let questions = self.filter_questions(&dataset);
+        let questions_all = crate::dataset::load_dataset(&self.config.dataset_path)?;
+        let questions = self.filter_questions(&questions_all);
 
         eprintln!(
             "Running {} questions (actor: {}, judge: {})",
@@ -98,6 +98,8 @@ impl AccuracyEval {
 
         let checkpoint_path = self.config.work_dir.join("checkpoint.json");
         let completed = self.load_completed_ids(&checkpoint_path);
+        let mut consecutive_errors: usize = 0;
+        const MAX_CONSECUTIVE_ERRORS: usize = 3;
 
         for (idx, question) in questions.iter().enumerate() {
             if completed.contains(&question.question_id) {
@@ -105,16 +107,26 @@ impl AccuracyEval {
                 continue;
             }
 
-            match self.eval_single(question) {
+            let category = match Category::from_question_type(&question.question_type) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("warn: skipping {} — {e}", question.question_id);
+                    pb.inc(1);
+                    continue;
+                }
+            };
+
+            match self.eval_single(question, category) {
                 Ok(r) => {
-                    let category = Category::from_question_type(&question.question_type);
+                    consecutive_errors = 0;
+                    let answer_text = question.answer_text();
                     report.record(
                         &question.question_id,
                         category,
                         r.correct,
                         &question.question,
                         &r.predicted,
-                        &question.answer,
+                        &answer_text,
                         r.reasoning,
                         r.memory_count,
                         r.memory_keys,
@@ -122,20 +134,30 @@ impl AccuracyEval {
                     );
                 }
                 Err(e) => {
-                    eprintln!("Error on {}: {e}", question.question_id);
-                    let category = Category::from_question_type(&question.question_type);
+                    consecutive_errors += 1;
+                    eprintln!("[ERROR] {}: {e}", question.question_id);
+                    let answer_text = question.answer_text();
                     report.record(
                         &question.question_id,
                         category,
                         false,
                         &question.question,
                         &format!("[error: {e}]"),
-                        &question.answer,
-                        Some(format!("eval error: {e}")),
+                        &answer_text,
+                        Some(format!("API call failed: {e}")),
                         0,
                         Vec::new(),
                         0,
                     );
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        eprintln!(
+                            "[FATAL] {} consecutive errors. Halting run. Partial report saved.",
+                            consecutive_errors
+                        );
+                        report.run_status = RunStatus::HaltedOnErrors { consecutive_errors };
+                        break;
+                    }
                 }
             }
 
@@ -155,7 +177,7 @@ impl AccuracyEval {
     }
 
     /// Run a single question: ingest, retrieve, act, judge.
-    fn eval_single(&self, question: &Question) -> Result<SingleResult> {
+    fn eval_single(&self, question: &Question, category: Category) -> Result<SingleResult> {
         let start = std::time::Instant::now();
         let brain_dir = self
             .config
@@ -168,24 +190,27 @@ impl AccuracyEval {
         // Retrieve
         let memories = retrieval::retrieve(&brain, &question.question, &self.config.retrieval)?;
         let memory_count = memories.len();
-        // Extract keys from formatted "[wing/hall] key: content" lines
+        // Extract keys from formatted "[date] [wing/hall] key: content" lines
         let memory_keys: Vec<String> = memories
             .iter()
             .filter_map(|m| {
-                m.split("] ")
-                    .nth(1)
-                    .and_then(|rest| rest.split(": ").next().map(|k| k.to_string()))
+                // Skip the two bracketed prefixes, then take the key before ": "
+                let after_brackets = m.split("] ").last()?;
+                after_brackets.split(": ").next().map(|k| k.to_string())
             })
             .collect();
 
         // Act
-        let predicted = self.actor.answer(&question.question, &memories)?;
+        let question_date = question.question_date.as_deref().unwrap_or("unknown");
+        let predicted = self
+            .actor
+            .answer(&question.question, question_date, &memories)?;
 
         // Judge
-        let category = Category::from_question_type(&question.question_type);
+        let answer_text = question.answer_text();
         let grade = self
             .judge
-            .grade(&question.question, &predicted, &question.answer, category)?;
+            .grade(&question.question, &predicted, &answer_text, category)?;
 
         // Clean up brain directory
         let _ = std::fs::remove_dir_all(&brain_dir);
@@ -200,14 +225,15 @@ impl AccuracyEval {
         })
     }
 
-    fn filter_questions<'a>(&self, dataset: &'a Dataset) -> Vec<&'a Question> {
-        let mut questions: Vec<&Question> = dataset.questions.iter().collect();
+    fn filter_questions<'a>(&self, questions_all: &'a [Question]) -> Vec<&'a Question> {
+        let mut questions: Vec<&Question> = questions_all.iter().collect();
 
         if let Some(ref cats) = self.config.categories {
             let cat_strs: HashSet<String> = cats.iter().map(|c| c.as_str().to_string()).collect();
             questions.retain(|q| {
-                let cat = Category::from_question_type(&q.question_type);
-                cat_strs.contains(cat.as_str())
+                Category::from_question_type(&q.question_type)
+                    .map(|cat| cat_strs.contains(cat.as_str()))
+                    .unwrap_or(false)
             });
         }
 
@@ -239,58 +265,98 @@ impl AccuracyEval {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actor::MockActor;
-    use crate::dataset::{Dataset, Question, Turn};
+    use crate::actor::{Actor, MockActor};
+    use crate::dataset::{Question, Turn};
     use crate::judge::MockJudge;
 
-    fn test_dataset() -> Dataset {
-        Dataset {
-            questions: vec![
-                Question {
-                    question_id: "q1".into(),
-                    question_type: "abstention".into(),
-                    question: "What is unknown?".into(),
-                    answer: "I don't know".into(),
-                    haystack_sessions: vec![vec![
-                        Turn {
-                            role: "user".into(),
-                            content: "Hello there.".into(),
-                        },
-                        Turn {
-                            role: "assistant".into(),
-                            content: "Hi!".into(),
-                        },
-                    ]],
-                    haystack_session_ids: vec!["s1".into()],
-                    haystack_dates: vec!["2024-01-15".into()],
-                },
-                Question {
-                    question_id: "q2".into(),
-                    question_type: "information_extraction".into(),
-                    question: "What color is the car?".into(),
-                    answer: "Red".into(),
-                    haystack_sessions: vec![vec![
-                        Turn {
-                            role: "user".into(),
-                            content: "My car is red.".into(),
-                        },
-                        Turn {
-                            role: "assistant".into(),
-                            content: "Nice car!".into(),
-                        },
-                    ]],
-                    haystack_session_ids: vec!["s2".into()],
-                    haystack_dates: vec!["2024-01-16".into()],
-                },
-            ],
+    /// Actor that always returns an error.
+    struct FailingActor;
+    impl Actor for FailingActor {
+        fn answer(&self, _q: &str, _d: &str, _m: &[String]) -> anyhow::Result<String> {
+            Err(anyhow::anyhow!("API returned 401: unauthorized"))
         }
+        fn name(&self) -> &str {
+            "failing"
+        }
+    }
+
+    /// Actor that fails on the Nth call (0-indexed), succeeds otherwise.
+    struct FailNthActor {
+        fail_on: usize,
+        call_count: std::sync::Mutex<usize>,
+    }
+    impl FailNthActor {
+        fn new(fail_on: usize) -> Self {
+            Self {
+                fail_on,
+                call_count: std::sync::Mutex::new(0),
+            }
+        }
+    }
+    impl Actor for FailNthActor {
+        fn answer(&self, _q: &str, _d: &str, _m: &[String]) -> anyhow::Result<String> {
+            let mut count = self.call_count.lock().unwrap();
+            let current = *count;
+            *count += 1;
+            if current == self.fail_on {
+                Err(anyhow::anyhow!("API returned 429: rate limited"))
+            } else {
+                Ok("test answer".into())
+            }
+        }
+        fn name(&self) -> &str {
+            "fail-nth"
+        }
+    }
+
+    fn test_questions() -> Vec<Question> {
+        vec![
+            Question {
+                question_id: "q1".into(),
+                question_type: "multi-session".into(),
+                question: "What is unknown?".into(),
+                answer: serde_json::Value::String("I don't know".into()),
+                question_date: Some("2023/05/30 (Tue) 23:40".into()),
+                haystack_sessions: vec![vec![
+                    Turn {
+                        role: "user".into(),
+                        content: "Hello there.".into(),
+                    },
+                    Turn {
+                        role: "assistant".into(),
+                        content: "Hi!".into(),
+                    },
+                ]],
+                haystack_session_ids: vec!["s1".into()],
+                haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
+            },
+            Question {
+                question_id: "q2".into(),
+                question_type: "temporal-reasoning".into(),
+                question: "What color is the car?".into(),
+                answer: serde_json::Value::String("Red".into()),
+                question_date: Some("2023/06/01 (Thu) 10:00".into()),
+                haystack_sessions: vec![vec![
+                    Turn {
+                        role: "user".into(),
+                        content: "My car is red.".into(),
+                    },
+                    Turn {
+                        role: "assistant".into(),
+                        content: "Nice car!".into(),
+                    },
+                ]],
+                haystack_session_ids: vec!["s2".into()],
+                haystack_dates: vec!["2023/03/01 (Wed) 12:00".into()],
+            },
+        ]
     }
 
     #[test]
     fn full_eval_with_mocks() {
         let dir = tempfile::tempdir().unwrap();
         let ds_path = dir.path().join("dataset.json");
-        std::fs::write(&ds_path, serde_json::to_string(&test_dataset()).unwrap()).unwrap();
+        std::fs::write(&ds_path, serde_json::to_string(&test_questions()).unwrap()).unwrap();
 
         let config = EvalConfig {
             dataset_path: ds_path,
@@ -315,7 +381,7 @@ mod tests {
     fn eval_records_failures() {
         let dir = tempfile::tempdir().unwrap();
         let ds_path = dir.path().join("dataset.json");
-        std::fs::write(&ds_path, serde_json::to_string(&test_dataset()).unwrap()).unwrap();
+        std::fs::write(&ds_path, serde_json::to_string(&test_questions()).unwrap()).unwrap();
 
         let config = EvalConfig {
             dataset_path: ds_path,
@@ -342,5 +408,118 @@ mod tests {
             cost > 10.0 && cost < 100.0,
             "500 questions should cost $10-100, got ${cost}"
         );
+    }
+
+    #[test]
+    fn unknown_question_type_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds_path = dir.path().join("dataset.json");
+        let qs = vec![Question {
+            question_id: "q-unknown".into(),
+            question_type: "bogus-category".into(),
+            question: "Q?".into(),
+            answer: serde_json::Value::String("A".into()),
+            question_date: None,
+            haystack_sessions: vec![vec![Turn {
+                role: "user".into(),
+                content: "Hello.".into(),
+            }]],
+            haystack_session_ids: vec!["s1".into()],
+            haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
+        }];
+        std::fs::write(&ds_path, serde_json::to_string(&qs).unwrap()).unwrap();
+
+        let config = EvalConfig {
+            dataset_path: ds_path,
+            work_dir: dir.path().join("work"),
+            checkpoint_interval: 100,
+            ..Default::default()
+        };
+
+        let eval = AccuracyEval::new(
+            config,
+            Box::new(MockActor::new("answer")),
+            Box::new(MockJudge::always_pass()),
+        );
+        let report = eval.run().unwrap();
+        assert_eq!(report.total_questions, 0, "unknown type should be skipped");
+    }
+
+    fn make_n_questions(n: usize) -> Vec<Question> {
+        (0..n)
+            .map(|i| Question {
+                question_id: format!("q{i}"),
+                question_type: "multi-session".into(),
+                question: format!("Question {i} about topic {i}?"),
+                answer: serde_json::Value::String(format!("Answer {i}")),
+                question_date: Some("2023/05/30 (Tue) 23:40".into()),
+                haystack_sessions: vec![vec![Turn {
+                    role: "user".into(),
+                    content: format!("Content for question {i} about topic {i}."),
+                }]],
+                haystack_session_ids: vec![format!("s{i}")],
+                haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn eval_halts_on_consecutive_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds_path = dir.path().join("dataset.json");
+        let qs = make_n_questions(5);
+        std::fs::write(&ds_path, serde_json::to_string(&qs).unwrap()).unwrap();
+
+        let config = EvalConfig {
+            dataset_path: ds_path,
+            work_dir: dir.path().join("work"),
+            checkpoint_interval: 100,
+            ..Default::default()
+        };
+
+        let eval = AccuracyEval::new(
+            config,
+            Box::new(FailingActor),
+            Box::new(MockJudge::always_pass()),
+        );
+        let report = eval.run().unwrap();
+        // Should halt after 3 consecutive errors, not process all 5
+        assert_eq!(report.total_questions, 3);
+        assert_eq!(
+            report.run_status,
+            RunStatus::HaltedOnErrors {
+                consecutive_errors: 3
+            }
+        );
+    }
+
+    #[test]
+    fn eval_continues_on_isolated_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds_path = dir.path().join("dataset.json");
+        let qs = make_n_questions(4);
+        std::fs::write(&ds_path, serde_json::to_string(&qs).unwrap()).unwrap();
+
+        let config = EvalConfig {
+            dataset_path: ds_path,
+            work_dir: dir.path().join("work"),
+            checkpoint_interval: 100,
+            ..Default::default()
+        };
+
+        // Fail on question index 1 only — the rest succeed
+        let eval = AccuracyEval::new(
+            config,
+            Box::new(FailNthActor::new(1)),
+            Box::new(MockJudge::always_pass()),
+        );
+        let report = eval.run().unwrap();
+        // All 4 questions should be attempted
+        assert_eq!(report.total_questions, 4);
+        assert_eq!(report.run_status, RunStatus::Completed);
+        // 3 correct, 1 failed
+        assert_eq!(report.correct, 3);
+        assert_eq!(report.failures().len(), 1);
+        assert!(report.failures()[0].predicted.contains("[error:"));
     }
 }

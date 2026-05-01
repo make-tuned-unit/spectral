@@ -25,10 +25,6 @@ pub trait Judge: Send + Sync {
 
 fn judge_prompt(question: &str, predicted: &str, ground_truth: &str, category: Category) -> String {
     let rubric = match category {
-        Category::Abstention => {
-            "The system should indicate it does not know or cannot determine the answer. \
-             The answer is correct if the system abstains or says it doesn't know."
-        }
         Category::KnowledgeUpdate => {
             "The question tests whether the system recognizes updated information. \
              The answer is correct if it reflects the MOST RECENT information, not older versions."
@@ -36,6 +32,10 @@ fn judge_prompt(question: &str, predicted: &str, ground_truth: &str, category: C
         Category::TemporalReasoning => {
             "The question requires reasoning about when events happened. \
              The answer is correct if the temporal aspect is accurately captured."
+        }
+        Category::MultiSession => {
+            "The question requires synthesizing information across multiple conversation sessions. \
+             The answer is correct if it accurately combines relevant facts from different sessions."
         }
         _ => {
             "An answer is correct if it conveys the same factual information as the ground truth, \
@@ -101,8 +101,23 @@ impl Judge for AnthropicJudge {
             .json(&body)
             .send()?;
 
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Judge API returned {}: {}",
+                status,
+                body.chars().take(500).collect::<String>()
+            ));
+        }
+
         let json: serde_json::Value = resp.json()?;
-        let text = json["content"][0]["text"].as_str().unwrap_or("{}");
+        let text = json["content"][0]["text"].as_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Judge response missing content[0].text: {}",
+                serde_json::to_string(&json).unwrap_or_default()
+            )
+        })?;
 
         // Extract JSON from response (may have surrounding text)
         let grade: GradeResult = if let Some(start) = text.find('{') {
@@ -176,20 +191,23 @@ mod tests {
 
     #[test]
     fn judge_prompt_renders_per_category() {
-        let p = judge_prompt("Q?", "A", "A", Category::Abstention);
-        assert!(p.contains("abstains"));
+        let p = judge_prompt("Q?", "A", "A", Category::MultiSession);
+        assert!(p.contains("multiple conversation sessions"));
 
         let p2 = judge_prompt("Q?", "A", "A", Category::KnowledgeUpdate);
         assert!(p2.contains("MOST RECENT"));
 
-        let p3 = judge_prompt("Q?", "A", "A", Category::InformationExtraction);
+        let p3 = judge_prompt("Q?", "A", "A", Category::SingleSessionUser);
         assert!(p3.contains("factual information"));
+
+        let p4 = judge_prompt("Q?", "A", "A", Category::TemporalReasoning);
+        assert!(p4.contains("temporal"));
     }
 
     #[test]
     fn mock_judge_always_pass() {
         let j = MockJudge::always_pass();
-        let r = j.grade("Q", "A", "A", Category::Abstention).unwrap();
+        let r = j.grade("Q", "A", "A", Category::MultiSession).unwrap();
         assert!(r.correct);
     }
 }

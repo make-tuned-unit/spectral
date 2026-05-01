@@ -29,8 +29,8 @@ pub mod report;
 pub mod retrieval;
 
 pub use actor::{Actor, AnthropicActor, MockActor};
-pub use dataset::{Category, Dataset, Question};
+pub use dataset::{Category, Question};
 pub use eval::{AccuracyEval, EvalConfig};
 pub use judge::{AnthropicJudge, GradeResult, Judge, MockJudge};
-pub use report::{EvalReport, QuestionResult};
+pub use report::{EvalReport, QuestionResult, RunStatus};
 pub use retrieval::RetrievalConfig;
