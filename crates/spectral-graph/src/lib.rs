@@ -3,6 +3,7 @@
 //! Stores entities, triples, and provenance in an embedded Kuzu graph DB.
 //! Canonicalizes mentions through a TOML ontology.
 
+pub mod activity;
 pub mod brain;
 pub mod canonicalize;
 pub mod error;

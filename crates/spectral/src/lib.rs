@@ -64,6 +64,11 @@ use std::path::{Path, PathBuf};
 
 pub use spectral_core::device_id::DeviceId;
 pub use spectral_core::visibility::Visibility;
+pub use spectral_graph::activity::{
+    ActivityEpisode, ComposeRedaction, DefaultRedactionPolicy, ExcludeBundlesPolicy,
+    IngestActivityStats, NoOpRedactionPolicy, ProbeOpts, ProbeWindow, RecognizedMemory,
+    RedactionPolicy, RollupStats,
+};
 pub use spectral_graph::brain::{
     AssertResult, CrossWingRecallResult, EntityPolicy, HybridRecallResult, IngestResult,
     IngestTextOpts, IngestTextResult, RecallResult, ReinforceOpts, ReinforceResult, RejectedTriple,
@@ -398,6 +403,8 @@ impl BrainBuilder {
             enable_spectrogram: self.enable_spectrogram,
             entity_policy: self.entity_policy.unwrap_or_default(),
             sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
         };
 
         let inner = spectral_graph::brain::Brain::open(config)?;

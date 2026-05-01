@@ -22,6 +22,8 @@ fn main() -> anyhow::Result<()> {
         enable_spectrogram: false,
         entity_policy: spectral_graph::brain::EntityPolicy::Strict,
         sqlite_mmap_size: None,
+        activity_wing: "activity".into(),
+        redaction_policy: None,
     })?;
     println!("Brain ID: {}", brain.brain_id());
 

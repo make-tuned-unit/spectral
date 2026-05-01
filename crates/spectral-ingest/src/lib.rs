@@ -225,6 +225,34 @@ pub trait MemoryStore: Send + Sync {
         &self,
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>>;
+
+    // ── Activity / retention ──
+
+    /// List memories in a wing created after `since` (ISO-8601), ordered by
+    /// created_at DESC, up to `limit`.
+    fn list_wing_memories_since(
+        &self,
+        wing: &str,
+        since: &str,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>>;
+
+    /// Delete memories in a wing created before `before` (ISO-8601).
+    /// Returns the number of deleted rows.
+    fn delete_wing_memories_before(
+        &self,
+        wing: &str,
+        before: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
+    /// For each distinct `source` in a wing, keep only the most recent
+    /// `keep` memories (by created_at), deleting the rest.
+    /// Returns the total number of deleted rows.
+    fn prune_wing_keeping_recent_per_source(
+        &self,
+        wing: &str,
+        keep: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
 }
 
 // ── TimeBucket ──────────────────────────────────────────────────────
