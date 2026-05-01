@@ -1,0 +1,28 @@
+[package]
+name = "spectral-bench-accuracy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Accuracy benchmarks for Spectral: LongMemEval_S and other standard agent memory evaluations."
+
+[[bin]]
+name = "spectral-bench-accuracy"
+path = "src/main.rs"
+
+[dependencies]
+spectral-core = { path = "../spectral-core" }
+spectral-graph = { path = "../spectral-graph" }
+spectral-ingest = { path = "../spectral-ingest" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+
+[dev-dependencies]
+tempfile = "3"

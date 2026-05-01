@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added (feat/aaak-api)
 - `Brain::aaak()` API for token-budgeted foundational fact retrieval (whitepaper L1 / AAAK). Returns ranked, deduplicated, hall-filtered facts suitable for agent system prompt injection. Configurable via `AaakOpts` (max_tokens, min_signal_score, include_halls, include_wings). New `MemoryStore::list_memories_by_signal()` method.
 
+### Added (feat/spectral-bench-accuracy)
+- `spectral-bench-accuracy` workspace crate for running standard agent memory benchmarks (LongMemEval_S). Produces published-quality accuracy numbers comparable to Mem0, Letta, Zep, Memanto, and other systems. Includes `Actor` and `Judge` traits for swapping evaluation models, per-category accuracy breakdown, cost estimation, resumable runs, and CLI with `run`, `report`, and `dry-run` subcommands.
+
 ### Changed
 - Sanitized all personal data from public codebase. Replaced with generic placeholders (Alice, Bob, Carol, Acme, Apollo, Polaris, Vega). Default classifier rules and ontology now ship with placeholder examples only. Added `Ontology::empty()` constructor.
 
