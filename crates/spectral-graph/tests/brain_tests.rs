@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use chrono::{TimeZone, Utc};
 use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, RememberOpts};
@@ -572,6 +573,7 @@ fn recall_returns_source_and_device_and_confidence() {
                 device_id: Some(device),
                 confidence: Some(0.95),
                 visibility: Visibility::Private,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -585,4 +587,131 @@ fn recall_returns_source_and_device_and_confidence() {
     assert_eq!(hit.source.as_deref(), Some("openbird_sidecar"));
     assert_eq!(hit.device_id.as_ref(), Some(device.as_bytes()));
     assert!((hit.confidence - 0.95).abs() < f64::EPSILON);
+}
+
+// ── created_at override tests ───────────────────────────────────────
+
+#[test]
+fn remember_with_created_at_uses_provided_timestamp() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let ts = Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+    brain
+        .remember_with(
+            "created-at-override",
+            "Historical memory from June 2024 about project launch",
+            RememberOpts {
+                created_at: Some(ts),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let result = brain
+        .recall(
+            "historical memory June 2024 project launch",
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(!result.memory_hits.is_empty());
+    let stored = result.memory_hits[0].created_at.as_deref().unwrap();
+    assert!(
+        stored.starts_with("2024-06-15"),
+        "expected created_at to start with 2024-06-15, got {stored}"
+    );
+}
+
+#[test]
+fn remember_without_created_at_uses_now() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    let before = Utc::now();
+
+    brain
+        .remember_with(
+            "created-at-default",
+            "Default timestamp memory about system initialization",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let result = brain
+        .recall(
+            "default timestamp system initialization",
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(!result.memory_hits.is_empty());
+    let stored = result.memory_hits[0].created_at.as_deref().unwrap();
+    let parsed = chrono::NaiveDateTime::parse_from_str(stored, "%Y-%m-%d %H:%M:%S")
+        .expect("parse created_at");
+    let stored_utc = parsed.and_utc();
+    let diff = (stored_utc - before).num_seconds().abs();
+    assert!(
+        diff < 5,
+        "expected created_at within 5s of now, got {diff}s difference"
+    );
+}
+
+#[test]
+fn remember_with_far_past_timestamp() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let ts = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
+    brain
+        .remember_with(
+            "far-past-timestamp",
+            "Ancient memory from year 2020 about early prototype",
+            RememberOpts {
+                created_at: Some(ts),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let result = brain
+        .recall("ancient memory 2020 early prototype", Visibility::Private)
+        .unwrap();
+    assert!(!result.memory_hits.is_empty());
+    let stored = result.memory_hits[0].created_at.as_deref().unwrap();
+    assert!(
+        stored.starts_with("2020-01-01"),
+        "expected created_at to start with 2020-01-01, got {stored}"
+    );
+}
+
+#[test]
+fn remember_with_future_timestamp() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let ts = Utc.with_ymd_and_hms(2028, 12, 25, 18, 30, 0).unwrap();
+    brain
+        .remember_with(
+            "future-timestamp",
+            "Future dated memory about planned deployment in 2028",
+            RememberOpts {
+                created_at: Some(ts),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let result = brain
+        .recall("future planned deployment 2028", Visibility::Private)
+        .unwrap();
+    assert!(!result.memory_hits.is_empty());
+    let stored = result.memory_hits[0].created_at.as_deref().unwrap();
+    assert!(
+        stored.starts_with("2028-12-25"),
+        "expected created_at to start with 2028-12-25, got {stored}"
+    );
 }

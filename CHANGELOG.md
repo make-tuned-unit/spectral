@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (feat/ingest-created-at)
+- `RememberOpts::created_at` and `IngestOpts::created_at` (`Option<DateTime<Utc>>`) for ingesting memories with historical timestamps. Default `None` preserves existing behavior (uses `Utc::now()` / SQLite `datetime('now')`).
+
 ### Added (feat/aaak-api)
 - `Brain::aaak()` API for token-budgeted foundational fact retrieval (whitepaper L1 / AAAK). Returns ranked, deduplicated, hall-filtered facts suitable for agent system prompt injection. Configurable via `AaakOpts` (max_tokens, min_signal_score, include_halls, include_wings). New `MemoryStore::list_memories_by_signal()` method.
 

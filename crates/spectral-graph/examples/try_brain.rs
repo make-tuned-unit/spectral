@@ -83,6 +83,7 @@ fn main() -> anyhow::Result<()> {
             device_id: Some(device),
             confidence: Some(0.95),
             visibility: Visibility::Private,
+            ..Default::default()
         },
     )?;
 

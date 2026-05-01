@@ -2879,6 +2879,7 @@ name = "spectral-ingest"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "lru",
  "regex",
  "rusqlite",

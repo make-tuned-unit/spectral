@@ -322,33 +322,65 @@ impl MemoryStore for SqliteStore {
             // Wrap memory + all fingerprints in a single transaction for atomicity and performance.
             let tx = conn.transaction()?;
 
-            tx.execute(
-                "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
-                                       source, device_id, confidence)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                 ON CONFLICT(key) DO UPDATE SET
-                    content = excluded.content,
-                    wing = excluded.wing,
-                    hall = excluded.hall,
-                    signal_score = excluded.signal_score,
-                    visibility = excluded.visibility,
-                    source = excluded.source,
-                    device_id = excluded.device_id,
-                    confidence = excluded.confidence,
-                    updated_at = datetime('now')",
-                params![
-                    memory.id,
-                    memory.key,
-                    memory.content,
-                    memory.wing,
-                    memory.hall,
-                    memory.signal_score,
-                    memory.visibility,
-                    memory.source,
-                    memory.device_id.as_ref().map(|b| b.as_slice()),
-                    memory.confidence,
-                ],
-            )?;
+            if memory.created_at.is_some() {
+                tx.execute(
+                    "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
+                                           source, device_id, confidence, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                     ON CONFLICT(key) DO UPDATE SET
+                        content = excluded.content,
+                        wing = excluded.wing,
+                        hall = excluded.hall,
+                        signal_score = excluded.signal_score,
+                        visibility = excluded.visibility,
+                        source = excluded.source,
+                        device_id = excluded.device_id,
+                        confidence = excluded.confidence,
+                        created_at = excluded.created_at,
+                        updated_at = datetime('now')",
+                    params![
+                        memory.id,
+                        memory.key,
+                        memory.content,
+                        memory.wing,
+                        memory.hall,
+                        memory.signal_score,
+                        memory.visibility,
+                        memory.source,
+                        memory.device_id.as_ref().map(|b| b.as_slice()),
+                        memory.confidence,
+                        memory.created_at,
+                    ],
+                )?;
+            } else {
+                tx.execute(
+                    "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
+                                           source, device_id, confidence)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(key) DO UPDATE SET
+                        content = excluded.content,
+                        wing = excluded.wing,
+                        hall = excluded.hall,
+                        signal_score = excluded.signal_score,
+                        visibility = excluded.visibility,
+                        source = excluded.source,
+                        device_id = excluded.device_id,
+                        confidence = excluded.confidence,
+                        updated_at = datetime('now')",
+                    params![
+                        memory.id,
+                        memory.key,
+                        memory.content,
+                        memory.wing,
+                        memory.hall,
+                        memory.signal_score,
+                        memory.visibility,
+                        memory.source,
+                        memory.device_id.as_ref().map(|b| b.as_slice()),
+                        memory.confidence,
+                    ],
+                )?;
+            }
 
             for fp in &fingerprints {
                 tx.execute(
