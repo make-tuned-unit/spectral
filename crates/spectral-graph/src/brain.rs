@@ -236,6 +236,57 @@ pub struct ReinforceResult {
     pub memories_not_found: Vec<String>,
 }
 
+/// Options for [`Brain::aaak()`] — Always-Active Agent Knowledge retrieval.
+///
+/// AAAK is the agent's foundational identity: a token-budgeted, ranked set
+/// of the most important facts, suitable for injection into every system prompt.
+/// Corresponds to the L1 "Curated Memory" layer in the TACT whitepaper (~170 tokens).
+#[derive(Debug, Clone)]
+pub struct AaakOpts {
+    /// Maximum tokens for the returned string. Default 170.
+    pub max_tokens: usize,
+    /// Minimum signal_score for inclusion. Default 0.7.
+    pub min_signal_score: f64,
+    /// Halls to include. Default: fact, preference, decision, rule.
+    pub include_halls: Vec<String>,
+    /// Wings to include (None = all wings). Default None.
+    pub include_wings: Option<Vec<String>>,
+    /// Token estimation: characters per token. Default 4.0.
+    pub chars_per_token: f64,
+}
+
+impl Default for AaakOpts {
+    fn default() -> Self {
+        Self {
+            max_tokens: 170,
+            min_signal_score: 0.7,
+            include_halls: vec![
+                "fact".into(),
+                "preference".into(),
+                "decision".into(),
+                "rule".into(),
+            ],
+            include_wings: None,
+            chars_per_token: 4.0,
+        }
+    }
+}
+
+/// Result of [`Brain::aaak()`].
+#[derive(Debug, Clone)]
+pub struct AaakResult {
+    /// Formatted string ready for system prompt injection.
+    pub formatted: String,
+    /// Estimated token count.
+    pub estimated_tokens: usize,
+    /// Number of facts included.
+    pub fact_count: usize,
+    /// Number of facts excluded due to budget.
+    pub excluded_count: usize,
+    /// Wings represented in the result.
+    pub wings_represented: Vec<String>,
+}
+
 /// A Spectral brain: identity + ontology + knowledge graph + memory store.
 ///
 /// # Open a brain
@@ -1476,6 +1527,104 @@ impl Brain {
                     .prune_wing_keeping_recent_per_source(&self.activity_wing, per_bundle),
             )
             .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    // ── AAAK (Always-Active Agent Knowledge) ────────────────────────
+
+    /// Returns the agent's foundational facts as a token-budgeted context
+    /// string suitable for system prompt injection.
+    ///
+    /// AAAK is the L1 "Curated Memory" layer from the TACT whitepaper.
+    /// It selects the highest-signal facts from qualifying halls,
+    /// formats them as a bulleted list, and truncates to the token budget.
+    /// The result is deterministic given the same brain state and options.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use spectral_graph::brain::{Brain, BrainConfig, AaakOpts, EntityPolicy};
+    /// # let brain: Brain = todo!();
+    /// let result = brain.aaak(AaakOpts::default()).unwrap();
+    /// println!("System context (~{} tokens):\n{}", result.estimated_tokens, result.formatted);
+    /// ```
+    pub fn aaak(&self, opts: AaakOpts) -> Result<AaakResult, Error> {
+        let max_chars = (opts.max_tokens as f64 * opts.chars_per_token) as usize;
+        let hall_set: std::collections::HashSet<&str> =
+            opts.include_halls.iter().map(|s| s.as_str()).collect();
+
+        // Fetch high-signal memories
+        let memories = if let Some(ref wings) = opts.include_wings {
+            let mut all = Vec::new();
+            for wing in wings {
+                let mut wing_mems = self
+                    .rt
+                    .block_on(
+                        self.memory_store
+                            .list_wing_memories(wing, opts.min_signal_score),
+                    )
+                    .map_err(|e| Error::Schema(e.to_string()))?;
+                all.append(&mut wing_mems);
+            }
+            // Re-sort across wings by signal_score descending
+            all.sort_by(|a, b| {
+                b.signal_score
+                    .partial_cmp(&a.signal_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            all
+        } else {
+            self.rt
+                .block_on(
+                    self.memory_store
+                        .list_memories_by_signal(opts.min_signal_score, 1000),
+                )
+                .map_err(|e| Error::Schema(e.to_string()))?
+        };
+
+        // Filter by hall
+        let candidates: Vec<_> = memories
+            .iter()
+            .filter(|m| {
+                m.hall
+                    .as_deref()
+                    .map(|h| hall_set.contains(h))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        let mut lines = Vec::new();
+        let mut total_chars = 0;
+        let mut wings_seen = std::collections::HashSet::new();
+        let mut included = 0;
+
+        for mem in &candidates {
+            let content = mem.content.split_whitespace().collect::<Vec<_>>().join(" ");
+            let line = format!("- {content}\n");
+            if total_chars + line.len() > max_chars && !lines.is_empty() {
+                break;
+            }
+            total_chars += line.len();
+            lines.push(line);
+            included += 1;
+            if let Some(ref w) = mem.wing {
+                wings_seen.insert(w.clone());
+            }
+        }
+
+        let formatted = lines.join("");
+        let estimated_tokens = (formatted.len() as f64 / opts.chars_per_token).ceil() as usize;
+        let excluded_count = candidates.len().saturating_sub(included);
+
+        let mut wings_represented: Vec<String> = wings_seen.into_iter().collect();
+        wings_represented.sort();
+
+        Ok(AaakResult {
+            formatted,
+            estimated_tokens,
+            fact_count: included,
+            excluded_count,
+            wings_represented,
+        })
     }
 }
 

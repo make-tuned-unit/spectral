@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (feat/aaak-api)
+- `Brain::aaak()` API for token-budgeted foundational fact retrieval (whitepaper L1 / AAAK). Returns ranked, deduplicated, hall-filtered facts suitable for agent system prompt injection. Configurable via `AaakOpts` (max_tokens, min_signal_score, include_halls, include_wings). New `MemoryStore::list_memories_by_signal()` method.
+
 ### Changed
 - Sanitized all personal data from public codebase. Replaced with generic placeholders (Alice, Bob, Carol, Acme, Apollo, Polaris, Vega). Default classifier rules and ontology now ship with placeholder examples only. Added `Ontology::empty()` constructor.
 

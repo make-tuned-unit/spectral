@@ -147,6 +147,13 @@ pub trait MemoryStore: Send + Sync {
         min_signal: f64,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>>;
 
+    /// List all memories with signal_score >= threshold, ordered by signal_score DESC.
+    fn list_memories_by_signal(
+        &self,
+        min_signal: f64,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>>;
+
     // ── Read side ──
 
     /// Search by fingerprint hashes within a wing.
