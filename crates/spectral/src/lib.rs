@@ -70,9 +70,9 @@ pub use spectral_graph::activity::{
     RedactionPolicy, RollupStats,
 };
 pub use spectral_graph::brain::{
-    AssertResult, CrossWingRecallResult, EntityPolicy, HybridRecallResult, IngestResult,
-    IngestTextOpts, IngestTextResult, RecallResult, ReinforceOpts, ReinforceResult, RejectedTriple,
-    RejectionReason, RememberOpts, RememberResult, ResonantMemoryHit,
+    AaakOpts, AaakResult, AssertResult, CrossWingRecallResult, EntityPolicy, HybridRecallResult,
+    IngestResult, IngestTextOpts, IngestTextResult, RecallResult, ReinforceOpts, ReinforceResult,
+    RejectedTriple, RejectionReason, RememberOpts, RememberResult, ResonantMemoryHit,
 };
 pub use spectral_graph::Error;
 pub use spectral_ingest::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
@@ -248,6 +248,12 @@ impl Brain {
     /// Reinforce memories that the caller found useful from a recall result.
     pub fn reinforce(&self, opts: ReinforceOpts) -> Result<ReinforceResult, Error> {
         self.inner.reinforce(opts)
+    }
+
+    /// Returns the agent's foundational facts as a token-budgeted context
+    /// string suitable for system prompt injection (AAAK / L1 curated memory).
+    pub fn aaak(&self, opts: AaakOpts) -> Result<AaakResult, Error> {
+        self.inner.aaak(opts)
     }
 
     /// Ingest a document: hash content, create document node, link mentions.

@@ -406,6 +406,29 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    fn list_memories_by_signal(
+        &self,
+        min_signal: f64,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let sql = format!(
+                "SELECT {MEMORY_COLUMNS} FROM memories WHERE signal_score >= ?1 \
+                 ORDER BY signal_score DESC LIMIT ?2"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![min_signal, limit as i64], memory_from_row)?;
+            let mut memories = Vec::new();
+            for row in rows {
+                memories.push(row?);
+            }
+            Ok(memories)
+        })
+    }
+
     fn fingerprint_search(
         &self,
         wing: &str,
