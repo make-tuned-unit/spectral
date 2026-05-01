@@ -815,6 +815,87 @@ impl MemoryStore for SqliteStore {
             Ok(ids)
         })
     }
+
+    fn list_wing_memories_since(
+        &self,
+        wing: &str,
+        since: &str,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
+        let wing = wing.to_string();
+        let since = since.to_string();
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let sql = format!(
+                "SELECT {MEMORY_COLUMNS} FROM memories \
+                 WHERE wing = ?1 AND created_at > ?2 \
+                 ORDER BY created_at DESC LIMIT ?3"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![wing, since, limit as i64], memory_from_row)?;
+            let mut memories = Vec::new();
+            for row in rows {
+                memories.push(row?);
+            }
+            Ok(memories)
+        })
+    }
+
+    fn delete_wing_memories_before(
+        &self,
+        wing: &str,
+        before: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let wing = wing.to_string();
+        let before = before.to_string();
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let deleted = conn.execute(
+                "DELETE FROM memories WHERE wing = ?1 AND created_at < ?2",
+                params![wing, before],
+            )?;
+            Ok(deleted)
+        })
+    }
+
+    fn prune_wing_keeping_recent_per_source(
+        &self,
+        wing: &str,
+        keep: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let wing = wing.to_string();
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+
+            // Get distinct sources in this wing
+            let mut src_stmt = conn.prepare(
+                "SELECT DISTINCT source FROM memories WHERE wing = ?1 AND source IS NOT NULL",
+            )?;
+            let sources: Vec<String> = src_stmt
+                .query_map(params![wing], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let mut total_deleted = 0;
+            for source in &sources {
+                let deleted = conn.execute(
+                    "DELETE FROM memories WHERE wing = ?1 AND source = ?2 AND id NOT IN (\
+                         SELECT id FROM memories WHERE wing = ?1 AND source = ?2 \
+                         ORDER BY created_at DESC LIMIT ?3\
+                     )",
+                    params![wing, source, keep as i64],
+                )?;
+                total_deleted += deleted;
+            }
+            Ok(total_deleted)
+        })
+    }
 }
 
 #[cfg(test)]

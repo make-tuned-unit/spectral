@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use spectral_core::device_id::DeviceId;
 use spectral_core::entity_id::EntityId;
@@ -78,6 +78,11 @@ pub struct BrainConfig {
     /// - `Some(0)`: disable mmap
     /// - `Some(n)`: use exactly *n* bytes
     pub sqlite_mmap_size: Option<u64>,
+    /// Wing name for activity episodes. Default "activity".
+    pub activity_wing: String,
+    /// Redaction policy applied to activity episodes before storage.
+    /// Default: [`DefaultRedactionPolicy`](crate::activity::DefaultRedactionPolicy).
+    pub redaction_policy: Option<Box<dyn crate::activity::RedactionPolicy>>,
 }
 
 /// Result of a successful assertion.
@@ -250,6 +255,8 @@ pub struct ReinforceResult {
 ///     enable_spectrogram: false,
 ///     entity_policy: spectral_graph::brain::EntityPolicy::Strict,
 ///     sqlite_mmap_size: None,
+///     activity_wing: "activity".into(),
+///     redaction_policy: None,
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
@@ -268,6 +275,8 @@ pub struct Brain {
     spectrogram_analyzer: SpectrogramAnalyzer,
     tact_config: TactConfig,
     ingest_config: spectral_ingest::ingest::IngestConfig,
+    activity_wing: String,
+    redaction_policy: Box<dyn crate::activity::RedactionPolicy>,
     rt: tokio::runtime::Runtime,
 }
 
@@ -351,6 +360,10 @@ impl Brain {
             spectrogram_analyzer: SpectrogramAnalyzer::default(),
             tact_config,
             ingest_config,
+            activity_wing: config.activity_wing,
+            redaction_policy: config
+                .redaction_policy
+                .unwrap_or_else(|| Box::new(crate::activity::DefaultRedactionPolicy::default())),
             rt,
         })
     }
@@ -1277,6 +1290,192 @@ impl Brain {
             triples_asserted,
             triples_rejected,
         })
+    }
+
+    // ── Activity ingestion ──────────────────────────────────────────
+
+    /// Ingest a batch of activity episodes. Idempotent on episode.id (UPSERT).
+    /// Applies the configured RedactionPolicy before storage.
+    pub fn ingest_activity(
+        &self,
+        episodes: &[crate::activity::ActivityEpisode],
+    ) -> Result<crate::activity::IngestActivityStats, Error> {
+        use crate::activity::IngestActivityStats;
+
+        let mut stats = IngestActivityStats {
+            episodes_received: episodes.len(),
+            ..Default::default()
+        };
+
+        for episode in episodes {
+            // Apply redaction policy
+            let redacted = match self.redaction_policy.redact(episode.clone()) {
+                Some(ep) => {
+                    if ep.window_title != episode.window_title
+                        || ep.url != episode.url
+                        || ep.excerpt != episode.excerpt
+                    {
+                        stats.episodes_redacted += 1;
+                    }
+                    ep
+                }
+                None => {
+                    stats.episodes_rejected += 1;
+                    continue;
+                }
+            };
+
+            let content = redacted.to_content();
+            let signal_score = redacted.compute_signal_score();
+            let memory_id = format!(
+                "{:016x}",
+                u64::from_be_bytes(
+                    blake3::hash(redacted.id.as_bytes()).as_bytes()[..8]
+                        .try_into()
+                        .unwrap()
+                )
+            );
+
+            let memory = spectral_ingest::Memory {
+                id: memory_id,
+                key: redacted.id.clone(),
+                content,
+                wing: Some(self.activity_wing.clone()),
+                hall: Some(redacted.source.clone()),
+                signal_score,
+                visibility: "private".into(),
+                source: Some(redacted.bundle_id.clone()),
+                device_id: None,
+                confidence: 1.0,
+                created_at: Some(redacted.started_at.to_rfc3339()),
+                last_reinforced_at: None,
+            };
+
+            self.rt
+                .block_on(self.memory_store.write(&memory, &[]))
+                .map_err(|e| Error::Schema(e.to_string()))?;
+            stats.episodes_inserted += 1;
+        }
+
+        Ok(stats)
+    }
+
+    /// Single-shot recognition. Given a context string, returns memories
+    /// that pattern-match without requiring an explicit query.
+    pub fn probe(
+        &self,
+        context: &str,
+        opts: crate::activity::ProbeOpts,
+    ) -> Result<Vec<crate::activity::RecognizedMemory>, Error> {
+        if context.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Use recall as the retrieval backbone
+        let recall_result = self.recall(context, Visibility::Private)?;
+
+        let mut recognized: Vec<crate::activity::RecognizedMemory> = recall_result
+            .memory_hits
+            .into_iter()
+            .filter(|hit| {
+                if let Some(ref wing_filter) = opts.wing_filter {
+                    hit.wing.as_deref() == Some(wing_filter.as_str())
+                } else {
+                    true
+                }
+            })
+            .map(|hit| {
+                let relevance =
+                    (hit.signal_score * 0.4 + (hit.hits as f64).min(5.0) / 5.0 * 0.6).min(1.0);
+                crate::activity::RecognizedMemory {
+                    id: hit.id,
+                    key: hit.key,
+                    content: hit.content,
+                    wing: hit.wing,
+                    hall: hit.hall,
+                    signal_score: hit.signal_score,
+                    relevance,
+                    hits: hit.hits,
+                }
+            })
+            .filter(|r| r.relevance >= opts.min_relevance)
+            .collect();
+
+        recognized.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        recognized.truncate(opts.max_results);
+        Ok(recognized)
+    }
+
+    /// Recognition over the recent activity window. Reads recent episodes,
+    /// synthesizes them into a context string, then calls probe().
+    pub fn probe_recent(
+        &self,
+        window: crate::activity::ProbeWindow,
+        opts: crate::activity::ProbeOpts,
+    ) -> Result<Vec<crate::activity::RecognizedMemory>, Error> {
+        let since = match window {
+            crate::activity::ProbeWindow::Duration(d) => (Utc::now() - d).to_rfc3339(),
+            crate::activity::ProbeWindow::Since(dt) => dt.to_rfc3339(),
+            crate::activity::ProbeWindow::Count(_) => {
+                // For count, use a very old timestamp and let the limit handle it
+                "2000-01-01T00:00:00Z".to_string()
+            }
+        };
+
+        let limit = match window {
+            crate::activity::ProbeWindow::Count(n) => n,
+            _ => 100,
+        };
+
+        let recent_memories = self
+            .rt
+            .block_on(self.memory_store.list_wing_memories_since(
+                &self.activity_wing,
+                &since,
+                limit,
+            ))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
+        if recent_memories.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Synthesize context from recent activity
+        let context: String = recent_memories
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+
+        self.probe(&context, opts)
+    }
+
+    // ── Activity retention ──────────────────────────────────────────
+
+    /// Prune activity episodes older than the cutoff. Returns count pruned.
+    pub fn prune_activity_older_than(&self, cutoff: DateTime<Utc>) -> Result<usize, Error> {
+        let before = cutoff.to_rfc3339();
+        self.rt
+            .block_on(
+                self.memory_store
+                    .delete_wing_memories_before(&self.activity_wing, &before),
+            )
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Keep only the most recent `per_bundle` activity episodes per bundle_id.
+    /// Returns count pruned.
+    pub fn prune_activity_keep_recent(&self, per_bundle: usize) -> Result<usize, Error> {
+        self.rt
+            .block_on(
+                self.memory_store
+                    .prune_wing_keeping_recent_per_source(&self.activity_wing, per_bundle),
+            )
+            .map_err(|e| Error::Schema(e.to_string()))
     }
 }
 

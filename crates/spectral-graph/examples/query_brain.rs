@@ -33,6 +33,8 @@ fn main() -> anyhow::Result<()> {
         hall_rules: None,
         entity_policy: spectral_graph::brain::EntityPolicy::Strict,
         sqlite_mmap_size: None,
+        activity_wing: "activity".into(),
+        redaction_policy: None,
         device_id: None,
         enable_spectrogram: false,
     })?;
