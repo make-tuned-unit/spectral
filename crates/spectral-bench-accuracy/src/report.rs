@@ -14,16 +14,21 @@ pub struct CategoryStats {
     pub accuracy: f64,
 }
 
-/// A single evaluation failure for post-mortem analysis.
+/// Detailed result for a single evaluated question.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvalFailure {
+pub struct QuestionResult {
     pub question_id: String,
     pub category: Category,
     pub question: String,
-    pub predicted: String,
     pub ground_truth: String,
+    pub predicted: String,
+    pub correct: bool,
     pub judge_reasoning: Option<String>,
     pub retrieved_memory_count: usize,
+    /// Keys of the top retrieved memories (not full content).
+    pub retrieved_memory_keys: Vec<String>,
+    /// Wall-clock time for this question in milliseconds.
+    pub duration_ms: u64,
 }
 
 /// Full evaluation report.
@@ -36,7 +41,8 @@ pub struct EvalReport {
     pub correct: usize,
     pub overall_accuracy: f64,
     pub per_category: HashMap<String, CategoryStats>,
-    pub failures: Vec<EvalFailure>,
+    /// Detailed per-question results.
+    pub results: Vec<QuestionResult>,
     pub started_at: DateTime<Utc>,
     pub completed_at: DateTime<Utc>,
     pub duration_seconds: u64,
@@ -53,7 +59,7 @@ impl EvalReport {
             correct: 0,
             overall_accuracy: 0.0,
             per_category: HashMap::new(),
-            failures: Vec::new(),
+            results: Vec::new(),
             started_at: Utc::now(),
             completed_at: Utc::now(),
             duration_seconds: 0,
@@ -72,6 +78,8 @@ impl EvalReport {
         ground_truth: &str,
         judge_reasoning: Option<String>,
         memory_count: usize,
+        memory_keys: Vec<String>,
+        duration_ms: u64,
     ) {
         self.total_questions += 1;
         if correct {
@@ -94,17 +102,23 @@ impl EvalReport {
         }
         entry.accuracy = entry.correct as f64 / entry.total as f64;
 
-        if !correct {
-            self.failures.push(EvalFailure {
-                question_id: question_id.into(),
-                category,
-                question: question.into(),
-                predicted: predicted.into(),
-                ground_truth: ground_truth.into(),
-                judge_reasoning,
-                retrieved_memory_count: memory_count,
-            });
-        }
+        self.results.push(QuestionResult {
+            question_id: question_id.into(),
+            category,
+            question: question.into(),
+            ground_truth: ground_truth.into(),
+            predicted: predicted.into(),
+            correct,
+            judge_reasoning,
+            retrieved_memory_count: memory_count,
+            retrieved_memory_keys: memory_keys,
+            duration_ms,
+        });
+    }
+
+    /// Returns failed results (correct == false).
+    pub fn failures(&self) -> Vec<&QuestionResult> {
+        self.results.iter().filter(|r| !r.correct).collect()
     }
 
     /// Finalize the report.
@@ -153,12 +167,16 @@ impl EvalReport {
             }
         }
 
-        if !self.failures.is_empty() {
+        let failures = self.failures();
+        if !failures.is_empty() {
             lines.push(String::new());
-            lines.push(format!(
-                "Failures: {} (see JSON for details)",
-                self.failures.len()
-            ));
+            lines.push(format!("Failures: {}", failures.len()));
+            for f in failures.iter().take(20) {
+                lines.push(format!("  {} [{}]", f.question_id, f.category));
+            }
+            if failures.len() > 20 {
+                lines.push(format!("  ... and {} more", failures.len() - 20));
+            }
         }
 
         lines.join("\n")
@@ -186,8 +204,30 @@ mod tests {
     #[test]
     fn report_aggregation_computes_accuracy() {
         let mut report = EvalReport::new("mock", "mock-judge");
-        report.record("q1", Category::Abstention, true, "Q?", "A", "A", None, 5);
-        report.record("q2", Category::Abstention, false, "Q2?", "B", "C", None, 3);
+        report.record(
+            "q1",
+            Category::Abstention,
+            true,
+            "Q?",
+            "A",
+            "A",
+            None,
+            5,
+            vec!["k1".into()],
+            100,
+        );
+        report.record(
+            "q2",
+            Category::Abstention,
+            false,
+            "Q2?",
+            "B",
+            "C",
+            Some("wrong answer".into()),
+            3,
+            vec!["k2".into(), "k3".into()],
+            200,
+        );
         report.record(
             "q3",
             Category::InformationExtraction,
@@ -197,6 +237,8 @@ mod tests {
             "X",
             None,
             10,
+            vec![],
+            50,
         );
         report.finalize();
 
@@ -205,6 +247,34 @@ mod tests {
         assert!((report.overall_accuracy - 2.0 / 3.0).abs() < 0.001);
         assert_eq!(report.per_category["abstention"].total, 2);
         assert_eq!(report.per_category["abstention"].correct, 1);
-        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.results.len(), 3);
+        assert_eq!(report.failures().len(), 1);
+        assert_eq!(report.failures()[0].question_id, "q2");
+    }
+
+    #[test]
+    fn question_result_serializes_all_fields() {
+        let qr = QuestionResult {
+            question_id: "q42".into(),
+            category: Category::TemporalReasoning,
+            question: "When did it happen?".into(),
+            ground_truth: "Tuesday".into(),
+            predicted: "Wednesday".into(),
+            correct: false,
+            judge_reasoning: Some("Off by one day".into()),
+            retrieved_memory_count: 7,
+            retrieved_memory_keys: vec!["s1:turn:0:user".into(), "s2:turn:1:assistant".into()],
+            duration_ms: 1234,
+        };
+        let json = serde_json::to_string(&qr).unwrap();
+        assert!(json.contains("\"question_id\":\"q42\""));
+        assert!(json.contains("\"category\":\"temporal_reasoning\""));
+        assert!(json.contains("\"ground_truth\":\"Tuesday\""));
+        assert!(json.contains("\"predicted\":\"Wednesday\""));
+        assert!(json.contains("\"correct\":false"));
+        assert!(json.contains("\"judge_reasoning\":\"Off by one day\""));
+        assert!(json.contains("\"retrieved_memory_count\":7"));
+        assert!(json.contains("\"retrieved_memory_keys\""));
+        assert!(json.contains("\"duration_ms\":1234"));
     }
 }

@@ -56,6 +56,16 @@ pub struct AccuracyEval {
     judge: Box<dyn Judge>,
 }
 
+/// Result of evaluating a single question.
+struct SingleResult {
+    correct: bool,
+    predicted: String,
+    memory_count: usize,
+    memory_keys: Vec<String>,
+    reasoning: Option<String>,
+    duration_ms: u64,
+}
+
 impl AccuracyEval {
     pub fn new(config: EvalConfig, actor: Box<dyn Actor>, judge: Box<dyn Judge>) -> Self {
         Self {
@@ -96,17 +106,19 @@ impl AccuracyEval {
             }
 
             match self.eval_single(question) {
-                Ok((correct, predicted, memory_count, reasoning)) => {
+                Ok(r) => {
                     let category = Category::from_question_type(&question.question_type);
                     report.record(
                         &question.question_id,
                         category,
-                        correct,
+                        r.correct,
                         &question.question,
-                        &predicted,
+                        &r.predicted,
                         &question.answer,
-                        reasoning,
-                        memory_count,
+                        r.reasoning,
+                        r.memory_count,
+                        r.memory_keys,
+                        r.duration_ms,
                     );
                 }
                 Err(e) => {
@@ -120,6 +132,8 @@ impl AccuracyEval {
                         &format!("[error: {e}]"),
                         &question.answer,
                         Some(format!("eval error: {e}")),
+                        0,
+                        Vec::new(),
                         0,
                     );
                 }
@@ -141,7 +155,8 @@ impl AccuracyEval {
     }
 
     /// Run a single question: ingest, retrieve, act, judge.
-    fn eval_single(&self, question: &Question) -> Result<(bool, String, usize, Option<String>)> {
+    fn eval_single(&self, question: &Question) -> Result<SingleResult> {
+        let start = std::time::Instant::now();
         let brain_dir = self
             .config
             .work_dir
@@ -153,6 +168,15 @@ impl AccuracyEval {
         // Retrieve
         let memories = retrieval::retrieve(&brain, &question.question, &self.config.retrieval)?;
         let memory_count = memories.len();
+        // Extract keys from formatted "[wing/hall] key: content" lines
+        let memory_keys: Vec<String> = memories
+            .iter()
+            .filter_map(|m| {
+                m.split("] ")
+                    .nth(1)
+                    .and_then(|rest| rest.split(": ").next().map(|k| k.to_string()))
+            })
+            .collect();
 
         // Act
         let predicted = self.actor.answer(&question.question, &memories)?;
@@ -166,7 +190,14 @@ impl AccuracyEval {
         // Clean up brain directory
         let _ = std::fs::remove_dir_all(&brain_dir);
 
-        Ok((grade.correct, predicted, memory_count, grade.reasoning))
+        Ok(SingleResult {
+            correct: grade.correct,
+            predicted,
+            memory_count,
+            memory_keys,
+            reasoning: grade.reasoning,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
     }
 
     fn filter_questions<'a>(&self, dataset: &'a Dataset) -> Vec<&'a Question> {
@@ -190,9 +221,9 @@ impl AccuracyEval {
     fn load_completed_ids(&self, checkpoint_path: &Path) -> HashSet<String> {
         if let Ok(report) = crate::report::load_report(checkpoint_path) {
             let mut ids: HashSet<String> = report
-                .failures
+                .results
                 .iter()
-                .map(|f| f.question_id.clone())
+                .map(|r| r.question_id.clone())
                 .collect();
             // Also include questions that passed (not in failures)
             // We need to reconstruct from per_category totals — simpler to just re-run
@@ -301,7 +332,7 @@ mod tests {
         );
         let report = eval.run().unwrap();
         assert_eq!(report.correct, 0);
-        assert_eq!(report.failures.len(), 2);
+        assert_eq!(report.failures().len(), 2);
     }
 
     #[test]

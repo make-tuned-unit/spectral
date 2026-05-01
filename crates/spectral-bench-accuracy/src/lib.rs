@@ -32,5 +32,5 @@ pub use actor::{Actor, AnthropicActor, MockActor};
 pub use dataset::{Category, Dataset, Question};
 pub use eval::{AccuracyEval, EvalConfig};
 pub use judge::{AnthropicJudge, GradeResult, Judge, MockJudge};
-pub use report::EvalReport;
+pub use report::{EvalReport, QuestionResult};
 pub use retrieval::RetrievalConfig;
