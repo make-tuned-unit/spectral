@@ -4,8 +4,8 @@ use anyhow::Result;
 
 /// Actor that synthesizes an answer from retrieved memories.
 pub trait Actor: Send + Sync {
-    /// Given a question and retrieved memories, produce an answer.
-    fn answer(&self, question: &str, memories: &[String]) -> Result<String>;
+    /// Given a question, the question's date context, and retrieved memories, produce an answer.
+    fn answer(&self, question: &str, question_date: &str, memories: &[String]) -> Result<String>;
     /// Identifier for the report.
     fn name(&self) -> &str;
 }
@@ -34,11 +34,13 @@ impl AnthropicActor {
 }
 
 impl Actor for AnthropicActor {
-    fn answer(&self, question: &str, memories: &[String]) -> Result<String> {
+    fn answer(&self, question: &str, question_date: &str, memories: &[String]) -> Result<String> {
         let memories_text = memories.join("\n");
         let prompt = format!(
             "You are answering a question based on a long conversation history.\n\
-             Below are memories retrieved from the conversation.\n\
+             Today's date is {question_date}.\n\
+             Below are memories retrieved from the conversation, each prefixed \
+             with the date it was created.\n\
              Answer the question accurately based ONLY on these memories.\n\
              If the answer cannot be determined from the memories, say \"I don't know.\"\n\n\
              Memories:\n{memories_text}\n\n\
@@ -61,10 +63,25 @@ impl Actor for AnthropicActor {
             .json(&body)
             .send()?;
 
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Actor API returned {}: {}",
+                status,
+                body.chars().take(500).collect::<String>()
+            ));
+        }
+
         let json: serde_json::Value = resp.json()?;
         let text = json["content"][0]["text"]
             .as_str()
-            .unwrap_or("")
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Actor response missing content[0].text: {}",
+                    serde_json::to_string(&json).unwrap_or_default()
+                )
+            })?
             .to_string();
         Ok(text)
     }
@@ -88,7 +105,12 @@ impl MockActor {
 }
 
 impl Actor for MockActor {
-    fn answer(&self, _question: &str, _memories: &[String]) -> Result<String> {
+    fn answer(
+        &self,
+        _question: &str,
+        _question_date: &str,
+        _memories: &[String],
+    ) -> Result<String> {
         Ok(self.response.clone())
     }
 
