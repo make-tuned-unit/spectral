@@ -12,6 +12,7 @@ spectral-core = { path = "../spectral-core" }
 spectral-ingest = { path = "../spectral-ingest" }
 spectral-spectrogram = { path = "../spectral-spectrogram" }
 spectral-tact = { path = "../spectral-tact" }
+spectral-cascade = { path = "../spectral-cascade" }
 tokio = { workspace = true }
 kuzu = { workspace = true }
 blake3 = { workspace = true }

@@ -944,6 +944,26 @@ impl Brain {
         self.recall(query, Visibility::Private)
     }
 
+    /// Run the cascade: ordered recognition layers (L1 AAAK → L3 TACT)
+    /// with token budgets. Returns per-layer outcomes and merged hits.
+    pub fn recall_cascade(
+        &self,
+        query: &str,
+        config: &spectral_cascade::orchestrator::CascadeConfig,
+    ) -> Result<spectral_cascade::result::CascadeResult, Error> {
+        let layers: Vec<Box<dyn spectral_cascade::Layer>> = vec![
+            Box::new(crate::cascade_layers::AaakLayer::new(self, 200)),
+            Box::new(crate::cascade_layers::ConstellationLayer::new(
+                self,
+                config.total_budget,
+            )),
+        ];
+        let cascade = spectral_cascade::orchestrator::Cascade::new(layers, config.clone());
+        cascade
+            .query(query)
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// Graph-only recall filtered by visibility context.
     pub fn recall_graph(
         &self,
