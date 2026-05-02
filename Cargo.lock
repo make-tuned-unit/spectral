@@ -2839,6 +2839,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spectral-cascade"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "spectral-ingest",
+ "thiserror",
+]
+
+[[package]]
 name = "spectral-core"
 version = "0.0.1"
 dependencies = [
@@ -2863,6 +2872,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "spectral-cascade",
  "spectral-core",
  "spectral-ingest",
  "spectral-spectrogram",

@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use chrono::{TimeZone, Utc};
+use spectral_cascade::orchestrator::CascadeConfig;
+use spectral_cascade::LayerResult;
 use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, RememberOpts};
@@ -758,4 +760,81 @@ fn brain_open_respects_custom_tact_max_results() {
         "expected more than default 5 hits, got {}",
         result.memory_hits.len()
     );
+}
+
+// ── Cascade integration tests ───────────────────────────────────────
+
+#[test]
+fn recall_cascade_falls_through_to_l3() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Ingest memories that AAAK won't surface (low signal, no AAAK-worthy halls)
+    brain
+        .remember(
+            "cascade-l3-test",
+            "Discussed cascade architecture for retrieval pipeline",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let config = CascadeConfig::default();
+    let result = brain
+        .recall_cascade("cascade architecture retrieval", &config)
+        .unwrap();
+
+    // AAAK (L1) should skip (no high-signal foundational facts in a fresh brain).
+    // L3 constellation/TACT should find the memory.
+    assert!(
+        !result.merged_hits.is_empty(),
+        "cascade should produce hits via L3"
+    );
+    // Should not have stopped at L1 since AAAK skipped
+    assert_ne!(
+        result.stopped_at,
+        Some(spectral_cascade::LayerId::L1),
+        "should not stop at L1 when no AAAK facts found"
+    );
+}
+
+#[test]
+fn recall_cascade_returns_aaak_when_sufficient() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Ingest a high-signal fact in a hall that AAAK includes
+    brain
+        .remember_with(
+            "aaak-cascade-test",
+            "Decided to use PostgreSQL for the production database",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let config = CascadeConfig::default();
+    let result = brain
+        .recall_cascade("PostgreSQL production database", &config)
+        .unwrap();
+
+    // Check that at least one layer produced results
+    assert!(!result.merged_hits.is_empty());
+
+    // Check that L1 ran (it may be Sufficient, Partial, or Skipped depending
+    // on whether the memory's signal score and hall match AAAK criteria)
+    let l1_outcome = result
+        .layer_outcomes
+        .iter()
+        .find(|(id, _)| *id == spectral_cascade::LayerId::L1);
+    assert!(l1_outcome.is_some(), "L1 should have been executed");
+
+    // If L1 was Sufficient, cascade stopped early (ideal case).
+    // If L1 Skipped (signal score too low for AAAK threshold), L3 picked it up.
+    // Both are valid — the test confirms the cascade ran without error.
+    let l1_was_sufficient = matches!(l1_outcome.unwrap().1, LayerResult::Sufficient { .. });
+    if l1_was_sufficient {
+        assert_eq!(result.stopped_at, Some(spectral_cascade::LayerId::L1));
+    }
 }
