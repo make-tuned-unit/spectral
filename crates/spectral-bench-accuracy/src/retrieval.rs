@@ -32,7 +32,7 @@ pub enum RetrievalPath {
 }
 
 /// Format a MemoryHit into the standard actor format.
-fn format_hit(hit: &spectral_ingest::MemoryHit) -> String {
+pub fn format_hit(hit: &spectral_ingest::MemoryHit) -> String {
     let date = hit
         .created_at
         .as_deref()

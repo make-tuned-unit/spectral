@@ -1567,6 +1567,13 @@ impl Brain {
     /// let result = brain.aaak(AaakOpts::default()).unwrap();
     /// println!("System context (~{} tokens):\n{}", result.estimated_tokens, result.formatted);
     /// ```
+    /// List all memories sorted by signal_score descending, up to `limit`.
+    pub fn list_all_memories(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
+        self.rt
+            .block_on(self.memory_store.list_memories_by_signal(0.0, limit))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     pub fn aaak(&self, opts: AaakOpts) -> Result<AaakResult, Error> {
         let max_chars = (opts.max_tokens as f64 * opts.chars_per_token) as usize;
         let hall_set: std::collections::HashSet<&str> =
