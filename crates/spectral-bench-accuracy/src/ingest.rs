@@ -57,10 +57,10 @@ pub fn ingest_question(
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
-        // Override TACT to return up to 20 results — multi-session questions
-        // need memories from 3+ sessions, which top-K=5 physically cannot provide.
+        // EXPERIMENTAL: K=50 to test ranking-vs-window hypothesis. Revert to 20 if not better.
         tact_config: Some(TactConfig {
-            max_results: 20,
+            max_results: 50,
+            max_context_chars: 60000,
             ..TactConfig::default()
         }),
     })?;

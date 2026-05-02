@@ -12,7 +12,8 @@ pub struct RetrievalConfig {
 
 impl Default for RetrievalConfig {
     fn default() -> Self {
-        Self { max_results: 20 }
+        // EXPERIMENTAL: K=50 to test ranking-vs-window hypothesis. Revert to 20 if not better.
+        Self { max_results: 50 }
     }
 }
 
