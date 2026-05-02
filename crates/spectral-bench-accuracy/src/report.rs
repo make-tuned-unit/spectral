@@ -5,6 +5,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn default_retrieval_path() -> String {
+    "tact".into()
+}
+
 /// Whether the eval run completed or halted early.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +49,9 @@ pub struct EvalReport {
     pub spectral_version: String,
     pub actor_name: String,
     pub judge_name: String,
+    /// Which retrieval path was used ("tact" or "graph").
+    #[serde(default = "default_retrieval_path")]
+    pub retrieval_path: String,
     pub total_questions: usize,
     pub correct: usize,
     pub overall_accuracy: f64,
@@ -64,6 +71,7 @@ impl EvalReport {
             spectral_version: env!("CARGO_PKG_VERSION").into(),
             actor_name: actor_name.into(),
             judge_name: judge_name.into(),
+            retrieval_path: "tact".into(),
             total_questions: 0,
             correct: 0,
             overall_accuracy: 0.0,
