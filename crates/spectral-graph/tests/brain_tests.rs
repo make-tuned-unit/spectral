@@ -4,6 +4,7 @@ use chrono::{TimeZone, Utc};
 use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, RememberOpts};
+use spectral_tact::TactConfig;
 use tempfile::TempDir;
 
 fn brain_config(tmp: &TempDir) -> BrainConfig {
@@ -20,6 +21,7 @@ fn brain_config(tmp: &TempDir) -> BrainConfig {
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
+        tact_config: None,
     }
 }
 
@@ -713,5 +715,47 @@ fn remember_with_future_timestamp() {
     assert!(
         stored.starts_with("2028-12-25"),
         "expected created_at to start with 2028-12-25, got {stored}"
+    );
+}
+
+// ── TactConfig override tests ───────────────────────────────────────
+
+#[test]
+fn brain_open_respects_custom_tact_max_results() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(BrainConfig {
+        tact_config: Some(TactConfig {
+            max_results: 15,
+            ..TactConfig::default()
+        }),
+        ..brain_config(&tmp)
+    })
+    .unwrap();
+
+    // Ingest 20 memories with the word "project" so they all match a single recall
+    for i in 0..20 {
+        brain
+            .remember(
+                &format!("tact-test-{i}"),
+                &format!("Project milestone {i} completed successfully with results"),
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+
+    let result = brain
+        .recall("project milestone completed results", Visibility::Private)
+        .unwrap();
+    // With max_results=15, we should get at most 15 hits even though 20 match
+    assert!(
+        result.memory_hits.len() <= 15,
+        "expected at most 15 hits with custom tact_config, got {}",
+        result.memory_hits.len()
+    );
+    // And we should get more than the default 5
+    assert!(
+        result.memory_hits.len() > 5,
+        "expected more than default 5 hits, got {}",
+        result.memory_hits.len()
     );
 }

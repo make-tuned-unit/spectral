@@ -19,6 +19,7 @@ fn strict_brain(tmp: &TempDir) -> Brain {
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
+        tact_config: None,
     })
     .unwrap()
 }
@@ -46,6 +47,7 @@ fn auto_create_brain(tmp: &TempDir) -> Brain {
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
+        tact_config: None,
     })
     .unwrap()
 }
@@ -68,6 +70,7 @@ fn canonicalizer_brain(tmp: &TempDir) -> Brain {
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
+        tact_config: None,
     })
     .unwrap()
 }
@@ -326,6 +329,7 @@ fn auto_created_entities_persist_across_brain_reopen() {
             sqlite_mmap_size: None,
             activity_wing: "activity".into(),
             redaction_policy: None,
+            tact_config: None,
         })
         .unwrap();
 
@@ -348,6 +352,7 @@ fn auto_created_entities_persist_across_brain_reopen() {
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
+        tact_config: None,
     })
     .unwrap();
 
@@ -377,6 +382,7 @@ fn default_policy_is_strict() {
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
+        tact_config: None,
     })
     .unwrap();
 

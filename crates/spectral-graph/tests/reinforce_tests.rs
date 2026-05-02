@@ -18,6 +18,7 @@ fn open_brain(tmp: &TempDir) -> Brain {
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
+        tact_config: None,
     })
     .unwrap()
 }

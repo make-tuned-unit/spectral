@@ -5,6 +5,7 @@ use anyhow::Result;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RememberOpts};
+use spectral_tact::TactConfig;
 use std::path::Path;
 
 /// How to ingest conversation sessions into the brain.
@@ -56,6 +57,12 @@ pub fn ingest_question(
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
+        // Override TACT to return up to 20 results — multi-session questions
+        // need memories from 3+ sessions, which top-K=5 physically cannot provide.
+        tact_config: Some(TactConfig {
+            max_results: 20,
+            ..TactConfig::default()
+        }),
     })?;
 
     let sessions = &question.haystack_sessions;
