@@ -48,6 +48,10 @@ enum Command {
         /// Retrieval path: tact (default) or graph
         #[arg(long, default_value = "tact")]
         retrieval_path: String,
+
+        /// Write per-memory signal score records to this JSONL path
+        #[arg(long)]
+        dump_scores: Option<PathBuf>,
     },
 
     /// Pretty-print a previously saved JSON report
@@ -55,6 +59,25 @@ enum Command {
         /// Path to the JSON report file
         #[arg(long)]
         path: PathBuf,
+    },
+
+    /// Deep-inspect a single question: ingest, recall, enumerate all memories
+    Inspect {
+        /// Path to the LongMemEval_S dataset JSON
+        #[arg(long)]
+        dataset: PathBuf,
+
+        /// Question ID to inspect
+        #[arg(long)]
+        question_id: String,
+
+        /// Working directory
+        #[arg(long, default_value = "eval-work")]
+        work_dir: PathBuf,
+
+        /// Output JSON file
+        #[arg(long, default_value = "inspect.json")]
+        output: PathBuf,
     },
 
     /// Dry-run: ingest one question, retrieve, but don't call LLMs
@@ -82,6 +105,7 @@ fn main() -> Result<()> {
             confirm_cost,
             ingest_strategy,
             retrieval_path,
+            dump_scores,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
@@ -121,6 +145,7 @@ fn main() -> Result<()> {
                 categories: cats,
                 ingest_strategy: strategy,
                 retrieval_path: ret_path,
+                dump_scores_path: dump_scores,
                 ..Default::default()
             };
 
@@ -138,6 +163,38 @@ fn main() -> Result<()> {
         Command::Report { path } => {
             let report = report::load_report(&path)?;
             println!("{}", report.summary());
+        }
+
+        Command::Inspect {
+            dataset,
+            question_id,
+            work_dir,
+            output,
+        } => {
+            let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
+            let question = ds
+                .iter()
+                .find(|q| q.question_id == question_id)
+                .ok_or_else(|| anyhow::anyhow!("question_id {question_id} not found in dataset"))?;
+
+            std::fs::create_dir_all(&work_dir)?;
+            eprintln!("Inspecting question {question_id}...");
+            let result = spectral_bench_accuracy::inspect::inspect_question(
+                question,
+                &work_dir,
+                &RetrievalConfig::default(),
+            )?;
+
+            let json = serde_json::to_string_pretty(&result)?;
+            std::fs::write(&output, &json)?;
+
+            eprintln!(
+                "Total memories in haystack: {}",
+                result.haystack_memory_count
+            );
+            eprintln!("Top-20 retrieved: {}", result.retrieved_top_20.len());
+            eprintln!("All memories enumerated: {}", result.all_memories.len());
+            eprintln!("\nInspect output saved to {}", output.display());
         }
 
         Command::DryRun { dataset, work_dir } => {

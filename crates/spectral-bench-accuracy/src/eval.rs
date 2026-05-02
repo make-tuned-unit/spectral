@@ -3,6 +3,7 @@
 use crate::actor::Actor;
 use crate::dataset::{Category, Question};
 use crate::ingest::{self, IngestStrategy};
+use crate::inspect;
 use crate::judge::Judge;
 use crate::report::{EvalReport, RunStatus};
 use crate::retrieval::{self, RetrievalConfig, RetrievalPath};
@@ -23,6 +24,9 @@ pub struct EvalConfig {
     pub retrieval: RetrievalConfig,
     /// Which retrieval path to use (tact or graph).
     pub retrieval_path: RetrievalPath,
+    /// If set, write per-memory signal score records to this JSONL path.
+    #[serde(default)]
+    pub dump_scores_path: Option<PathBuf>,
     /// Save partial results every N questions.
     pub checkpoint_interval: usize,
 }
@@ -38,6 +42,7 @@ impl Default for EvalConfig {
             ingest_strategy: IngestStrategy::default(),
             retrieval: RetrievalConfig::default(),
             retrieval_path: RetrievalPath::default(),
+            dump_scores_path: None,
             checkpoint_interval: 10,
         }
     }
@@ -67,6 +72,8 @@ struct SingleResult {
     memory_keys: Vec<String>,
     reasoning: Option<String>,
     duration_ms: u64,
+    /// Raw memory hits for signal-score dumping.
+    raw_hits: Vec<spectral_ingest::MemoryHit>,
 }
 
 impl AccuracyEval {
@@ -108,6 +115,13 @@ impl AccuracyEval {
         let mut consecutive_errors: usize = 0;
         const MAX_CONSECUTIVE_ERRORS: usize = 3;
 
+        // Open score dump file if requested
+        let mut score_writer: Option<std::io::BufWriter<std::fs::File>> =
+            self.config.dump_scores_path.as_ref().map(|p| {
+                std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new("."))).ok();
+                std::io::BufWriter::new(std::fs::File::create(p).expect("create score dump file"))
+            });
+
         for (idx, question) in questions.iter().enumerate() {
             if completed.contains(&question.question_id) {
                 pb.inc(1);
@@ -126,6 +140,14 @@ impl AccuracyEval {
             match self.eval_single(question, category) {
                 Ok(r) => {
                     consecutive_errors = 0;
+                    if let Some(ref mut w) = score_writer {
+                        let _ = inspect::write_score_records(
+                            w,
+                            &question.question_id,
+                            &r.raw_hits,
+                            r.correct,
+                        );
+                    }
                     let answer_text = question.answer_text();
                     report.record(
                         &question.question_id,
@@ -194,21 +216,28 @@ impl AccuracyEval {
         // Ingest
         let brain = ingest::ingest_question(question, &brain_dir, self.config.ingest_strategy)?;
 
-        // Retrieve
-        let memories = match self.config.retrieval_path {
+        // Retrieve — get raw hits for score dumping, formatted strings for actor
+        let (memories, raw_hits) = match self.config.retrieval_path {
             RetrievalPath::Tact => {
-                retrieval::retrieve(&brain, &question.question, &self.config.retrieval)?
+                let result = brain.recall_local(&question.question)?;
+                let hits: Vec<_> = result
+                    .memory_hits
+                    .into_iter()
+                    .take(self.config.retrieval.max_results)
+                    .collect();
+                let formatted: Vec<String> = hits.iter().map(retrieval::format_hit).collect();
+                (formatted, hits)
             }
             RetrievalPath::Graph => {
-                retrieval::retrieve_graph(&brain, &question.question, &self.config.retrieval)?
+                let formatted =
+                    retrieval::retrieve_graph(&brain, &question.question, &self.config.retrieval)?;
+                (formatted, Vec::new())
             }
         };
         let memory_count = memories.len();
-        // Extract keys from formatted "[date] [wing/hall] key: content" lines
         let memory_keys: Vec<String> = memories
             .iter()
             .filter_map(|m| {
-                // Skip the two bracketed prefixes, then take the key before ": "
                 let after_brackets = m.split("] ").last()?;
                 after_brackets.split(": ").next().map(|k| k.to_string())
             })
@@ -236,6 +265,7 @@ impl AccuracyEval {
             memory_keys,
             reasoning: grade.reasoning,
             duration_ms: start.elapsed().as_millis() as u64,
+            raw_hits,
         })
     }
 
