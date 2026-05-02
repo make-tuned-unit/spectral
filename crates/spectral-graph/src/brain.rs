@@ -83,6 +83,12 @@ pub struct BrainConfig {
     /// Redaction policy applied to activity episodes before storage.
     /// Default: [`DefaultRedactionPolicy`](crate::activity::DefaultRedactionPolicy).
     pub redaction_policy: Option<Box<dyn crate::activity::RedactionPolicy>>,
+    /// Override TACT pipeline configuration. `None` uses defaults.
+    /// When `Some`, the provided config's `max_results`, `min_words`,
+    /// and `max_context_chars` are used; `wing_rules` and `hall_rules`
+    /// are still derived from `BrainConfig::wing_rules`/`hall_rules`
+    /// so consumers don't have to duplicate them.
+    pub tact_config: Option<TactConfig>,
 }
 
 /// Result of a successful assertion.
@@ -313,6 +319,7 @@ pub struct AaakResult {
 ///     sqlite_mmap_size: None,
 ///     activity_wing: "activity".into(),
 ///     redaction_policy: None,
+///     tact_config: None,
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
@@ -375,10 +382,17 @@ impl Brain {
             .hall_rules
             .unwrap_or_else(spectral_ingest::default_hall_rule_strings);
 
-        let tact_config = TactConfig {
-            wing_rules: wing_rules.clone(),
-            hall_rules: hall_rules.clone(),
-            ..TactConfig::default()
+        let tact_config = match config.tact_config {
+            Some(custom) => TactConfig {
+                wing_rules: wing_rules.clone(),
+                hall_rules: hall_rules.clone(),
+                ..custom
+            },
+            None => TactConfig {
+                wing_rules: wing_rules.clone(),
+                hall_rules: hall_rules.clone(),
+                ..TactConfig::default()
+            },
         };
 
         let ingest_config = spectral_ingest::ingest::IngestConfig {

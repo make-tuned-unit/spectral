@@ -208,6 +208,7 @@ fn open_brain(path: &std::path::Path) -> Result<Brain> {
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
         redaction_policy: None,
+        tact_config: None,
         device_id: None,
         enable_spectrogram: false,
     })?;

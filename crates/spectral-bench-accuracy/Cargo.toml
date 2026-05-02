@@ -15,6 +15,7 @@ path = "src/main.rs"
 spectral-core = { path = "../spectral-core" }
 spectral-graph = { path = "../spectral-graph" }
 spectral-ingest = { path = "../spectral-ingest" }
+spectral-tact = { path = "../spectral-tact" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

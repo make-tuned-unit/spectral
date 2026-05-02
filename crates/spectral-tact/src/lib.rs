@@ -47,7 +47,7 @@ impl Default for TactConfig {
         Self {
             min_words: 1,
             max_results: 5,
-            max_context_chars: 6000,
+            max_context_chars: 24000,
             wing_rules: Vec::new(),
             hall_rules: vec![
                 (

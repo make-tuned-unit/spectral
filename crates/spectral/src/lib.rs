@@ -411,6 +411,7 @@ impl BrainBuilder {
             sqlite_mmap_size: None,
             activity_wing: "activity".into(),
             redaction_policy: None,
+            tact_config: None,
         };
 
         let inner = spectral_graph::brain::Brain::open(config)?;
