@@ -5,7 +5,7 @@ use crate::dataset::{Category, Question};
 use crate::ingest::{self, IngestStrategy};
 use crate::judge::Judge;
 use crate::report::{EvalReport, RunStatus};
-use crate::retrieval::{self, RetrievalConfig};
+use crate::retrieval::{self, RetrievalConfig, RetrievalPath};
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
@@ -21,6 +21,8 @@ pub struct EvalConfig {
     pub seed: u64,
     pub ingest_strategy: IngestStrategy,
     pub retrieval: RetrievalConfig,
+    /// Which retrieval path to use (tact or graph).
+    pub retrieval_path: RetrievalPath,
     /// Save partial results every N questions.
     pub checkpoint_interval: usize,
 }
@@ -35,6 +37,7 @@ impl Default for EvalConfig {
             seed: 42,
             ingest_strategy: IngestStrategy::default(),
             retrieval: RetrievalConfig::default(),
+            retrieval_path: RetrievalPath::default(),
             checkpoint_interval: 10,
         }
     }
@@ -88,6 +91,10 @@ impl AccuracyEval {
         );
 
         let mut report = EvalReport::new(self.actor.name(), self.judge.name());
+        report.retrieval_path = match self.config.retrieval_path {
+            RetrievalPath::Tact => "tact".into(),
+            RetrievalPath::Graph => "graph".into(),
+        };
         let pb = ProgressBar::new(questions.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -188,7 +195,14 @@ impl AccuracyEval {
         let brain = ingest::ingest_question(question, &brain_dir, self.config.ingest_strategy)?;
 
         // Retrieve
-        let memories = retrieval::retrieve(&brain, &question.question, &self.config.retrieval)?;
+        let memories = match self.config.retrieval_path {
+            RetrievalPath::Tact => {
+                retrieval::retrieve(&brain, &question.question, &self.config.retrieval)?
+            }
+            RetrievalPath::Graph => {
+                retrieval::retrieve_graph(&brain, &question.question, &self.config.retrieval)?
+            }
+        };
         let memory_count = memories.len();
         // Extract keys from formatted "[date] [wing/hall] key: content" lines
         let memory_keys: Vec<String> = memories

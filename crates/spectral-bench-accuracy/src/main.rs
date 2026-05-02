@@ -44,6 +44,10 @@ enum Command {
         /// Ingestion strategy: per_turn or per_session
         #[arg(long, default_value = "per_turn")]
         ingest_strategy: String,
+
+        /// Retrieval path: tact (default) or graph
+        #[arg(long, default_value = "tact")]
+        retrieval_path: String,
     },
 
     /// Pretty-print a previously saved JSON report
@@ -77,6 +81,7 @@ fn main() -> Result<()> {
             output,
             confirm_cost,
             ingest_strategy,
+            retrieval_path,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
@@ -104,12 +109,18 @@ fn main() -> Result<()> {
                 _ => ingest::IngestStrategy::PerTurn,
             };
 
+            let ret_path = match retrieval_path.as_str() {
+                "graph" => retrieval::RetrievalPath::Graph,
+                _ => retrieval::RetrievalPath::Tact,
+            };
+
             let config = EvalConfig {
                 dataset_path: dataset,
                 work_dir,
                 max_questions,
                 categories: cats,
                 ingest_strategy: strategy,
+                retrieval_path: ret_path,
                 ..Default::default()
             };
 

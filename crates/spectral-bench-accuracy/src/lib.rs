@@ -33,4 +33,4 @@ pub use dataset::{Category, Question};
 pub use eval::{AccuracyEval, EvalConfig};
 pub use judge::{AnthropicJudge, GradeResult, Judge, MockJudge};
 pub use report::{EvalReport, QuestionResult, RunStatus};
-pub use retrieval::RetrievalConfig;
+pub use retrieval::{RetrievalConfig, RetrievalPath};
