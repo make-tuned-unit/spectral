@@ -107,6 +107,7 @@ pub async fn ingest_with(
         confidence: opts.confidence.unwrap_or(1.0),
         created_at: opts.created_at.map(|dt| dt.to_rfc3339()),
         last_reinforced_at: None,
+        episode_id: None,
     };
 
     let fingerprints = if signal_score >= config.signal_threshold {

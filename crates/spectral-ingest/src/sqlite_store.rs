@@ -28,7 +28,7 @@
 //! - `Some(0)`: disable mmap entirely
 //! - `Some(n)`: use exactly *n* bytes
 
-use crate::{Fingerprint, Memory, MemoryHit, MemoryStore, SpectrogramRow};
+use crate::{Episode, Fingerprint, Memory, MemoryHit, MemoryStore, SpectrogramRow};
 use lru::LruCache;
 use rusqlite::{params, Connection};
 use std::future::Future;
@@ -200,7 +200,20 @@ impl SqliteStore {
                 created_at        TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (memory_id) REFERENCES memories(id)
             );
-            CREATE INDEX IF NOT EXISTS idx_spectrogram_action ON memory_spectrogram(action_type);",
+            CREATE INDEX IF NOT EXISTS idx_spectrogram_action ON memory_spectrogram(action_type);
+
+            CREATE TABLE IF NOT EXISTS episodes (
+                id             TEXT PRIMARY KEY,
+                started_at     TEXT NOT NULL,
+                ended_at       TEXT NOT NULL,
+                memory_count   INTEGER NOT NULL DEFAULT 0,
+                wing           TEXT NOT NULL,
+                summary_preview TEXT,
+                created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_episodes_started_at ON episodes(started_at);
+            CREATE INDEX IF NOT EXISTS idx_episodes_wing ON episodes(wing);",
         )?;
         Ok(())
     }
@@ -250,6 +263,22 @@ impl SqliteStore {
             )?;
         }
 
+        // episode_id column
+        let mut has_episode_id = false;
+        let mut stmt3 = conn.prepare("PRAGMA table_info(memories)")?;
+        let rows3 = stmt3.query_map([], |row| row.get::<_, String>(1))?;
+        for name in rows3 {
+            if name?.as_str() == "episode_id" {
+                has_episode_id = true;
+            }
+        }
+        if !has_episode_id {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN episode_id TEXT DEFAULT NULL;
+                 CREATE INDEX IF NOT EXISTS idx_memories_episode_id ON memories(episode_id);",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -260,12 +289,12 @@ impl SqliteStore {
 }
 
 /// Standard column list for memory queries.
-const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at";
+const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id";
 
 /// Parse a Memory from a row with the standard column order.
 /// Columns: id(0), key(1), content(2), wing(3), hall(4), signal_score(5),
 /// visibility(6), source(7), device_id(8), confidence(9), created_at(10),
-/// last_reinforced_at(11)
+/// last_reinforced_at(11), episode_id(12)
 fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
     let device_blob: Option<Vec<u8>> = row.get(8)?;
     let device_id = device_blob.and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
@@ -282,6 +311,7 @@ fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         confidence: row.get::<_, f64>(9).unwrap_or(1.0),
         created_at: row.get(10).ok(),
         last_reinforced_at: row.get(11).ok(),
+        episode_id: row.get(12).ok(),
     })
 }
 
@@ -379,6 +409,14 @@ impl MemoryStore for SqliteStore {
                         memory.device_id.as_ref().map(|b| b.as_slice()),
                         memory.confidence,
                     ],
+                )?;
+            }
+
+            // Set episode_id if provided
+            if let Some(ref ep_id) = memory.episode_id {
+                tx.execute(
+                    "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
+                    params![ep_id, memory.id],
                 )?;
             }
 
@@ -951,6 +989,131 @@ impl MemoryStore for SqliteStore {
             Ok(total_deleted)
         })
     }
+
+    fn write_episode(
+        &self,
+        episode: &Episode,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let episode = episode.clone();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            conn.execute(
+                "INSERT INTO episodes (id, started_at, ended_at, memory_count, wing, summary_preview, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))
+                 ON CONFLICT(id) DO UPDATE SET
+                    ended_at = excluded.ended_at,
+                    memory_count = excluded.memory_count,
+                    summary_preview = excluded.summary_preview,
+                    updated_at = datetime('now')",
+                params![
+                    episode.id,
+                    episode.started_at,
+                    episode.ended_at,
+                    episode.memory_count as i64,
+                    episode.wing,
+                    episode.summary_preview,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn find_recent_episode(
+        &self,
+        wing: &str,
+        since: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Episode>>> + Send + '_>> {
+        let wing = wing.to_string();
+        let since = since.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT id, started_at, ended_at, memory_count, wing, summary_preview
+                 FROM episodes WHERE wing = ?1 AND ended_at > ?2
+                 ORDER BY ended_at DESC LIMIT 1",
+            )?;
+            let episode = stmt
+                .query_row(params![wing, since], |row| {
+                    Ok(Episode {
+                        id: row.get(0)?,
+                        started_at: row.get(1)?,
+                        ended_at: row.get(2)?,
+                        memory_count: row.get::<_, i64>(3)? as usize,
+                        wing: row.get(4)?,
+                        summary_preview: row.get(5)?,
+                    })
+                })
+                .ok();
+            Ok(episode)
+        })
+    }
+
+    fn list_episodes(
+        &self,
+        wing: Option<&str>,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Episode>>> + Send + '_>> {
+        let wing = wing.map(|s| s.to_string());
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            fn episode_from_row(row: &rusqlite::Row) -> rusqlite::Result<Episode> {
+                Ok(Episode {
+                    id: row.get(0)?,
+                    started_at: row.get(1)?,
+                    ended_at: row.get(2)?,
+                    memory_count: row.get::<_, i64>(3)? as usize,
+                    wing: row.get(4)?,
+                    summary_preview: row.get(5)?,
+                })
+            }
+
+            let episodes = if let Some(ref w) = wing {
+                let mut stmt = conn.prepare(
+                    "SELECT id, started_at, ended_at, memory_count, wing, summary_preview
+                     FROM episodes WHERE wing = ?1 ORDER BY ended_at DESC LIMIT ?2",
+                )?;
+                let v: Vec<Episode> = stmt
+                    .query_map(params![w, limit as i64], episode_from_row)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                v
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT id, started_at, ended_at, memory_count, wing, summary_preview
+                     FROM episodes ORDER BY ended_at DESC LIMIT ?1",
+                )?;
+                let v: Vec<Episode> = stmt
+                    .query_map(params![limit as i64], episode_from_row)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                v
+            };
+            Ok(episodes)
+        })
+    }
+
+    fn list_memories_by_episode(
+        &self,
+        episode_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
+        let episode_id = episode_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let sql = format!(
+                "SELECT {MEMORY_COLUMNS} FROM memories WHERE episode_id = ?1 ORDER BY created_at"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mems = stmt
+                .query_map(params![episode_id], memory_from_row)?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(mems)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -973,6 +1136,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -997,6 +1161,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         };
         store.write(&mem1, &[]).await.unwrap();
 
@@ -1013,6 +1178,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         };
         store.write(&mem2, &[]).await.unwrap();
 
@@ -1037,6 +1203,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -1067,6 +1234,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1082,6 +1250,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -1122,6 +1291,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1137,6 +1307,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -1178,6 +1349,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         }
     }
 
@@ -1354,5 +1526,132 @@ mod tests {
             .unwrap();
         assert_eq!(mem_count, 2); // m0 + m1
         assert_eq!(fp_count, 5); // all 5 fingerprints
+    }
+
+    // ── Episode storage tests ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn write_episode_persists_episode() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let ep = Episode {
+            id: "ep-1".into(),
+            started_at: "2023-06-15 10:00:00".into(),
+            ended_at: "2023-06-15 10:30:00".into(),
+            memory_count: 3,
+            wing: "general".into(),
+            summary_preview: Some("Discussed project architecture".into()),
+        };
+        store.write_episode(&ep).await.unwrap();
+
+        let episodes = store.list_episodes(None, 100).await.unwrap();
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].id, "ep-1");
+        assert_eq!(episodes[0].memory_count, 3);
+        assert_eq!(episodes[0].wing, "general");
+        assert_eq!(
+            episodes[0].summary_preview.as_deref(),
+            Some("Discussed project architecture")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_by_episode_returns_constituents() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        let ep = Episode {
+            id: "ep-mem-test".into(),
+            started_at: "2023-06-15 10:00:00".into(),
+            ended_at: "2023-06-15 10:30:00".into(),
+            memory_count: 3,
+            wing: "general".into(),
+            summary_preview: None,
+        };
+        store.write_episode(&ep).await.unwrap();
+
+        for i in 0..3 {
+            let mem = Memory {
+                id: format!("em{i}"),
+                key: format!("ep-key-{i}"),
+                content: format!("Episode memory content {i}"),
+                wing: Some("general".into()),
+                hall: Some("fact".into()),
+                signal_score: 0.7,
+                visibility: "private".into(),
+                source: None,
+                device_id: None,
+                confidence: 1.0,
+                created_at: None,
+                last_reinforced_at: None,
+                episode_id: Some("ep-mem-test".into()),
+            };
+            store.write(&mem, &[]).await.unwrap();
+        }
+
+        let mems = store.list_memories_by_episode("ep-mem-test").await.unwrap();
+        assert_eq!(mems.len(), 3);
+        for m in &mems {
+            assert_eq!(m.episode_id.as_deref(), Some("ep-mem-test"));
+        }
+    }
+
+    #[tokio::test]
+    async fn find_recent_episode_finds_episode_in_window() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        // Episode ended 10 minutes ago
+        let now = chrono::Utc::now();
+        let ended = (now - chrono::Duration::minutes(10))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let started = (now - chrono::Duration::minutes(40))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let since = (now - chrono::Duration::minutes(30))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        let ep = Episode {
+            id: "ep-recent".into(),
+            started_at: started,
+            ended_at: ended,
+            memory_count: 5,
+            wing: "general".into(),
+            summary_preview: None,
+        };
+        store.write_episode(&ep).await.unwrap();
+
+        let found = store.find_recent_episode("general", &since).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, "ep-recent");
+    }
+
+    #[tokio::test]
+    async fn find_recent_episode_excludes_episode_outside_window() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        // Episode ended 60 minutes ago
+        let now = chrono::Utc::now();
+        let ended = (now - chrono::Duration::minutes(60))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let started = (now - chrono::Duration::minutes(90))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let since = (now - chrono::Duration::minutes(30))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        let ep = Episode {
+            id: "ep-old".into(),
+            started_at: started,
+            ended_at: ended,
+            memory_count: 5,
+            wing: "general".into(),
+            summary_preview: None,
+        };
+        store.write_episode(&ep).await.unwrap();
+
+        let found = store.find_recent_episode("general", &since).await.unwrap();
+        assert!(found.is_none());
     }
 }

@@ -1130,6 +1130,7 @@ impl Brain {
                     confidence: seed.confidence,
                     created_at: seed.created_at.clone(),
                     last_reinforced_at: seed.last_reinforced_at.clone(),
+                    episode_id: None,
                 };
                 self.spectrogram_analyzer
                     .analyze(&mem, &AnalysisContext::default())
@@ -1440,6 +1441,7 @@ impl Brain {
                 confidence: 1.0,
                 created_at: Some(redacted.started_at.to_rfc3339()),
                 last_reinforced_at: None,
+                episode_id: None,
             };
 
             self.rt
@@ -1587,6 +1589,27 @@ impl Brain {
     /// let result = brain.aaak(AaakOpts::default()).unwrap();
     /// println!("System context (~{} tokens):\n{}", result.estimated_tokens, result.formatted);
     /// ```
+    /// List episodes, optionally filtered by wing.
+    pub fn list_episodes(
+        &self,
+        wing: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<spectral_ingest::Episode>, Error> {
+        self.rt
+            .block_on(self.memory_store.list_episodes(wing, limit))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Get all memories belonging to an episode.
+    pub fn list_memories_by_episode(
+        &self,
+        episode_id: &str,
+    ) -> Result<Vec<spectral_ingest::Memory>, Error> {
+        self.rt
+            .block_on(self.memory_store.list_memories_by_episode(episode_id))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// List all memories sorted by signal_score descending, up to `limit`.
     pub fn list_all_memories(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
         self.rt

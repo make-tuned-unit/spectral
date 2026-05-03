@@ -49,6 +49,9 @@ pub struct Memory {
     /// When this memory was last reinforced via the Memify feedback loop.
     #[serde(default)]
     pub last_reinforced_at: Option<String>,
+    /// Episode this memory belongs to (if any).
+    #[serde(default)]
+    pub episode_id: Option<String>,
 }
 
 fn default_confidence() -> f64 {
@@ -105,6 +108,20 @@ pub struct MemoryHit {
     /// When this memory was last reinforced.
     #[serde(default)]
     pub last_reinforced_at: Option<String>,
+}
+
+// ── Episode ────────────────────────────────────────────────────────
+
+/// An episode groups temporally-related memories within a wing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Episode {
+    pub id: String,
+    pub started_at: String,
+    pub ended_at: String,
+    pub memory_count: usize,
+    pub wing: String,
+    /// First ~200 chars of the highest-signal memory in the episode.
+    pub summary_preview: Option<String>,
 }
 
 // ── SpectrogramRow ─────────────────────────────────────────────────
@@ -260,6 +277,35 @@ pub trait MemoryStore: Send + Sync {
         wing: &str,
         keep: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
+    // ── Episodes ──
+
+    /// Write or update an episode record.
+    fn write_episode(
+        &self,
+        episode: &Episode,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Find the most recent episode in a wing that ended within the given
+    /// time window (ISO-8601 cutoff).
+    fn find_recent_episode(
+        &self,
+        wing: &str,
+        since: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Episode>>> + Send + '_>>;
+
+    /// List episodes, optionally filtered by wing.
+    fn list_episodes(
+        &self,
+        wing: Option<&str>,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Episode>>> + Send + '_>>;
+
+    /// Get all memories belonging to an episode.
+    fn list_memories_by_episode(
+        &self,
+        episode_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>>;
 }
 
 // ── TimeBucket ──────────────────────────────────────────────────────
