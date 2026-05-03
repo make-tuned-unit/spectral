@@ -42,18 +42,21 @@ impl std::fmt::Display for LayerId {
 
 /// Result returned by a single layer.
 pub enum LayerResult {
-    /// Layer found sufficient context; cascade can stop.
+    /// Layer found sufficient context; cascade can stop if confidence
+    /// meets the threshold.
     Sufficient {
         hits: Vec<MemoryHit>,
         tokens_used: usize,
+        confidence: f64,
     },
     /// Layer found partial context; cascade should continue.
     Partial {
         hits: Vec<MemoryHit>,
         tokens_used: usize,
+        confidence: f64,
     },
     /// Layer determined the query doesn't apply to it.
-    Skipped { reason: String },
+    Skipped { reason: String, confidence: f64 },
 }
 
 impl LayerResult {
@@ -70,6 +73,14 @@ impl LayerResult {
         match self {
             Self::Sufficient { hits, .. } | Self::Partial { hits, .. } => hits,
             Self::Skipped { .. } => &[],
+        }
+    }
+
+    pub fn confidence(&self) -> f64 {
+        match self {
+            Self::Sufficient { confidence, .. }
+            | Self::Partial { confidence, .. }
+            | Self::Skipped { confidence, .. } => *confidence,
         }
     }
 }

@@ -36,6 +36,7 @@ impl Layer for AaakLayer<'_> {
         if result.fact_count == 0 {
             return Ok(LayerResult::Skipped {
                 reason: "no foundational facts matched".into(),
+                confidence: 0.0,
             });
         }
 
@@ -64,6 +65,7 @@ impl Layer for AaakLayer<'_> {
         Ok(LayerResult::Sufficient {
             hits: vec![hit],
             tokens_used: result.estimated_tokens,
+            confidence: 0.95,
         })
     }
 }
@@ -98,6 +100,7 @@ impl Layer for ConstellationLayer<'_> {
         if result.memory_hits.is_empty() {
             return Ok(LayerResult::Skipped {
                 reason: "no constellation/FTS matches".into(),
+                confidence: 0.0,
             });
         }
 
@@ -118,9 +121,20 @@ impl Layer for ConstellationLayer<'_> {
 
         let tokens_used = chars_used / 4;
 
+        // Confidence proportional to top hit's signal score, capped
+        // below threshold so L3 alone doesn't trip early stopping.
+        let confidence = hits
+            .first()
+            .map(|h| h.signal_score.min(0.85))
+            .unwrap_or(0.0);
+
         // Constellation alone may not be sufficient for synthesis
         // questions; return Partial so cascade can fall through to
         // L2 (episode summaries) when it ships.
-        Ok(LayerResult::Partial { hits, tokens_used })
+        Ok(LayerResult::Partial {
+            hits,
+            tokens_used,
+            confidence,
+        })
     }
 }
