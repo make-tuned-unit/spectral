@@ -105,6 +105,58 @@ pub fn retrieve_graph(
     Ok(memories)
 }
 
+/// Telemetry from a cascade retrieval run.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct CascadeTelemetry {
+    pub stopped_at: Option<String>,
+    pub max_confidence: f64,
+    pub total_tokens_used: usize,
+    pub layer_outcomes: Vec<(String, String)>,
+}
+
+/// Retrieve memories via the cascade (L1→L2→L3).
+pub fn retrieve_cascade(
+    brain: &Brain,
+    question: &str,
+    config: &RetrievalConfig,
+) -> Result<(Vec<String>, CascadeTelemetry)> {
+    let cascade_config = spectral_cascade::orchestrator::CascadeConfig::default();
+    let result = brain.recall_cascade(question, &cascade_config)?;
+
+    let formatted: Vec<String> = result
+        .merged_hits
+        .iter()
+        .take(config.max_results)
+        .map(format_hit)
+        .collect();
+
+    let telemetry = CascadeTelemetry {
+        stopped_at: result.stopped_at.map(|id| id.to_string()),
+        max_confidence: result.max_confidence,
+        total_tokens_used: result.total_tokens_used,
+        layer_outcomes: result
+            .layer_outcomes
+            .iter()
+            .map(|(id, r)| {
+                let status = match r {
+                    spectral_cascade::LayerResult::Sufficient { confidence, .. } => {
+                        format!("sufficient(confidence={confidence:.2})")
+                    }
+                    spectral_cascade::LayerResult::Partial { confidence, .. } => {
+                        format!("partial(confidence={confidence:.2})")
+                    }
+                    spectral_cascade::LayerResult::Skipped { reason, .. } => {
+                        format!("skipped({reason})")
+                    }
+                };
+                (id.to_string(), status)
+            })
+            .collect(),
+    };
+
+    Ok((formatted, telemetry))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

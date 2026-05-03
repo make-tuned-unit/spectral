@@ -86,6 +86,7 @@ pub fn ingest_question(
                         &turn.content,
                         RememberOpts {
                             created_at,
+                            episode_id: Some(session_id.to_string()),
                             visibility: Visibility::Private,
                             ..Default::default()
                         },
@@ -104,6 +105,7 @@ pub fn ingest_question(
                     &content,
                     RememberOpts {
                         created_at,
+                        episode_id: Some(session_id.to_string()),
                         visibility: Visibility::Private,
                         ..Default::default()
                     },
@@ -219,5 +221,74 @@ mod tests {
             stored.starts_with("2023-02-15"),
             "expected created_at starting with 2023-02-15, got {stored}"
         );
+    }
+
+    #[test]
+    fn episode_id_threaded_through_ingest() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = Question {
+            question_id: "q-ep".into(),
+            question_type: "multi-session".into(),
+            question: "test?".into(),
+            answer: serde_json::Value::String("test".into()),
+            question_date: None,
+            haystack_sessions: vec![
+                vec![
+                    Turn {
+                        role: "user".into(),
+                        content: "Session one content about project alpha".into(),
+                    },
+                    Turn {
+                        role: "assistant".into(),
+                        content: "I see, project alpha looks good".into(),
+                    },
+                ],
+                vec![
+                    Turn {
+                        role: "user".into(),
+                        content: "Session two content about project beta".into(),
+                    },
+                    Turn {
+                        role: "assistant".into(),
+                        content: "Project beta is interesting".into(),
+                    },
+                ],
+            ],
+            haystack_session_ids: vec!["sess-alpha".into(), "sess-beta".into()],
+            haystack_dates: vec![
+                "2023/02/15 (Wed) 23:50".into(),
+                "2023/02/16 (Thu) 10:00".into(),
+            ],
+        };
+        let brain = ingest_question(&q, dir.path(), IngestStrategy::PerTurn).unwrap();
+
+        let episodes = brain.list_episodes(None, 100).unwrap();
+        assert_eq!(
+            episodes.len(),
+            2,
+            "should create 2 episodes from 2 sessions"
+        );
+
+        let ids: Vec<&str> = episodes.iter().map(|e| e.id.as_str()).collect();
+        assert!(ids.contains(&"sess-alpha"));
+        assert!(ids.contains(&"sess-beta"));
+    }
+
+    #[test]
+    fn cascade_telemetry_populated_when_use_cascade() {
+        use crate::retrieval::{retrieve_cascade, RetrievalConfig};
+
+        let dir = tempfile::tempdir().unwrap();
+        let brain = ingest_question(&test_question(), dir.path(), IngestStrategy::PerTurn).unwrap();
+
+        let (memories, telemetry) =
+            retrieve_cascade(&brain, "sky blue", &RetrievalConfig::default()).unwrap();
+        assert!(!memories.is_empty());
+        assert!(telemetry.layer_outcomes.len() >= 2);
+
+        // Verify telemetry serializes to JSON
+        let json = serde_json::to_string(&telemetry).unwrap();
+        assert!(json.contains("max_confidence"));
+        assert!(json.contains("total_tokens_used"));
     }
 }

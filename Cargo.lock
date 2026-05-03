@@ -2817,6 +2817,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "spectral-cascade",
  "spectral-core",
  "spectral-graph",
  "spectral-ingest",

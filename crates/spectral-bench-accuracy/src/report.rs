@@ -41,6 +41,9 @@ pub struct QuestionResult {
     pub retrieved_memory_keys: Vec<String>,
     /// Wall-clock time for this question in milliseconds.
     pub duration_ms: u64,
+    /// Cascade telemetry (populated when --use-cascade is set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade_telemetry: Option<crate::retrieval::CascadeTelemetry>,
 }
 
 /// Full evaluation report.
@@ -98,6 +101,7 @@ impl EvalReport {
         memory_count: usize,
         memory_keys: Vec<String>,
         duration_ms: u64,
+        cascade_telemetry: Option<crate::retrieval::CascadeTelemetry>,
     ) {
         self.total_questions += 1;
         if correct {
@@ -131,6 +135,7 @@ impl EvalReport {
             retrieved_memory_count: memory_count,
             retrieved_memory_keys: memory_keys,
             duration_ms,
+            cascade_telemetry,
         });
     }
 
@@ -233,6 +238,7 @@ mod tests {
             5,
             vec!["k1".into()],
             100,
+            None,
         );
         report.record(
             "q2",
@@ -245,6 +251,7 @@ mod tests {
             3,
             vec!["k2".into(), "k3".into()],
             200,
+            None,
         );
         report.record(
             "q3",
@@ -257,6 +264,7 @@ mod tests {
             10,
             vec![],
             50,
+            None,
         );
         report.finalize();
 
@@ -283,6 +291,7 @@ mod tests {
             retrieved_memory_count: 7,
             retrieved_memory_keys: vec!["s1:turn:0:user".into(), "s2:turn:1:assistant".into()],
             duration_ms: 1234,
+            cascade_telemetry: None,
         };
         let json = serde_json::to_string(&qr).unwrap();
         assert!(json.contains("\"question_id\":\"q42\""));
