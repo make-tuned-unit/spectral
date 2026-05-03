@@ -10,9 +10,13 @@ use crate::{Layer, LayerResult};
 pub struct CascadeConfig {
     /// Total token budget across all layers.
     pub total_budget: usize,
-    /// Stop cascade as soon as a layer returns Sufficient.
-    /// Default true. Set false to always traverse all layers.
+    /// Stop cascade as soon as a layer returns Sufficient with
+    /// confidence >= confidence_threshold. Default true.
     pub stop_on_sufficient: bool,
+    /// Confidence threshold for early stopping. A layer returning
+    /// Sufficient with confidence >= threshold halts the cascade.
+    /// Default 0.85.
+    pub confidence_threshold: f64,
 }
 
 impl Default for CascadeConfig {
@@ -20,6 +24,7 @@ impl Default for CascadeConfig {
         Self {
             total_budget: 4096,
             stop_on_sufficient: true,
+            confidence_threshold: 0.85,
         }
     }
 }
@@ -61,25 +66,35 @@ impl<'a> Cascade<'a> {
                 }
             }
 
-            let is_sufficient = matches!(&result, LayerResult::Sufficient { .. });
+            let should_stop = self.config.stop_on_sufficient
+                && matches!(
+                    &result,
+                    LayerResult::Sufficient { confidence, .. }
+                        if *confidence >= self.config.confidence_threshold
+                );
             let layer_id = layer.id();
 
             tokens_remaining = tokens_remaining.saturating_sub(tokens_used);
             layer_outcomes.push((layer_id, result));
 
-            if is_sufficient && self.config.stop_on_sufficient {
+            if should_stop {
                 stopped_at = Some(layer_id);
                 break;
             }
         }
 
         let total_tokens_used = self.config.total_budget - tokens_remaining;
+        let max_confidence = layer_outcomes
+            .iter()
+            .map(|(_, r)| r.confidence())
+            .fold(0.0_f64, f64::max);
 
         Ok(CascadeResult {
             layer_outcomes,
             merged_hits: all_hits,
             total_tokens_used,
             stopped_at,
+            max_confidence,
         })
     }
 }
@@ -153,6 +168,7 @@ mod tests {
                     LayerResult::Partial {
                         hits: vec![],
                         tokens_used: 10,
+                        confidence: 0.3,
                     }
                 }))
             },
@@ -163,6 +179,7 @@ mod tests {
                     LayerResult::Partial {
                         hits: vec![],
                         tokens_used: 10,
+                        confidence: 0.3,
                     }
                 }))
             },
@@ -173,6 +190,7 @@ mod tests {
                     LayerResult::Partial {
                         hits: vec![],
                         tokens_used: 10,
+                        confidence: 0.3,
                     }
                 }))
             },
@@ -199,12 +217,14 @@ mod tests {
                 Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Sufficient {
                     hits: vec![make_hit("m1")],
                     tokens_used: 50,
+                    confidence: 0.95,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, move |_| {
                     l3_calls_clone.fetch_add(1, Ordering::SeqCst);
                     LayerResult::Partial {
                         hits: vec![make_hit("m2")],
                         tokens_used: 50,
+                        confidence: 0.5,
                     }
                 })),
             ],
@@ -228,10 +248,12 @@ mod tests {
                 Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Partial {
                     hits: vec![make_hit("m1")],
                     tokens_used: 50,
+                    confidence: 0.4,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |_| LayerResult::Partial {
                     hits: vec![make_hit("m2")],
                     tokens_used: 50,
+                    confidence: 0.6,
                 })),
             ],
             CascadeConfig::default(),
@@ -249,6 +271,7 @@ mod tests {
             vec![
                 Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Skipped {
                     reason: "no facts".into(),
+                    confidence: 0.0,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |budget| {
                     // Budget should be full since skip consumes 0 tokens
@@ -256,6 +279,7 @@ mod tests {
                     LayerResult::Partial {
                         hits: vec![make_hit("m1")],
                         tokens_used: 100,
+                        confidence: 0.7,
                     }
                 })),
             ],
@@ -273,12 +297,14 @@ mod tests {
                 Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Partial {
                     hits: vec![make_hit("m1")],
                     tokens_used: 80,
+                    confidence: 0.3,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |budget| {
                     assert_eq!(budget, 20);
                     LayerResult::Partial {
                         hits: vec![make_hit("m2")],
                         tokens_used: 20,
+                        confidence: 0.5,
                     }
                 })),
                 // Third layer should not be called — budget exhausted
@@ -303,10 +329,12 @@ mod tests {
                 Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Partial {
                     hits: vec![make_hit("shared"), make_hit("only-l1")],
                     tokens_used: 50,
+                    confidence: 0.4,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |_| LayerResult::Partial {
                     hits: vec![make_hit("shared"), make_hit("only-l3")],
                     tokens_used: 50,
+                    confidence: 0.6,
                 })),
             ],
             CascadeConfig::default(),
@@ -318,5 +346,92 @@ mod tests {
         assert!(ids.contains(&"shared"));
         assert!(ids.contains(&"only-l1"));
         assert!(ids.contains(&"only-l3"));
+    }
+
+    #[test]
+    fn cascade_stops_on_high_confidence_sufficient() {
+        use std::sync::Arc;
+
+        let l3_calls = Arc::new(AtomicUsize::new(0));
+        let l3_clone = l3_calls.clone();
+
+        let cascade = Cascade::new(
+            vec![
+                Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Sufficient {
+                    hits: vec![make_hit("m1")],
+                    tokens_used: 50,
+                    confidence: 0.95,
+                })),
+                Box::new(MockLayer::new(LayerId::L3, move |_| {
+                    l3_clone.fetch_add(1, Ordering::SeqCst);
+                    LayerResult::Partial {
+                        hits: vec![make_hit("m2")],
+                        tokens_used: 50,
+                        confidence: 0.5,
+                    }
+                })),
+            ],
+            CascadeConfig {
+                confidence_threshold: 0.85,
+                ..Default::default()
+            },
+        );
+        let result = cascade.query("test").unwrap();
+        assert_eq!(result.stopped_at, Some(LayerId::L1));
+        assert_eq!(l3_calls.load(Ordering::SeqCst), 0);
+        assert!((result.max_confidence - 0.95).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cascade_continues_on_low_confidence_sufficient() {
+        let cascade = Cascade::new(
+            vec![
+                Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Sufficient {
+                    hits: vec![make_hit("m1")],
+                    tokens_used: 50,
+                    confidence: 0.5, // Below threshold
+                })),
+                Box::new(MockLayer::new(LayerId::L3, |_| LayerResult::Partial {
+                    hits: vec![make_hit("m2")],
+                    tokens_used: 50,
+                    confidence: 0.7,
+                })),
+            ],
+            CascadeConfig {
+                confidence_threshold: 0.85,
+                ..Default::default()
+            },
+        );
+        let result = cascade.query("test").unwrap();
+        // Should NOT have stopped — confidence 0.5 < threshold 0.85
+        assert!(result.stopped_at.is_none());
+        assert_eq!(result.merged_hits.len(), 2);
+        assert_eq!(result.layer_outcomes.len(), 2);
+    }
+
+    #[test]
+    fn cascade_result_includes_max_confidence() {
+        let cascade = Cascade::new(
+            vec![
+                Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Partial {
+                    hits: vec![make_hit("m1")],
+                    tokens_used: 30,
+                    confidence: 0.3,
+                })),
+                Box::new(MockLayer::new(LayerId::L2, |_| LayerResult::Partial {
+                    hits: vec![make_hit("m2")],
+                    tokens_used: 30,
+                    confidence: 0.7,
+                })),
+                Box::new(MockLayer::new(LayerId::L3, |_| LayerResult::Partial {
+                    hits: vec![make_hit("m3")],
+                    tokens_used: 30,
+                    confidence: 0.5,
+                })),
+            ],
+            CascadeConfig::default(),
+        );
+        let result = cascade.query("test").unwrap();
+        assert!((result.max_confidence - 0.7).abs() < f64::EPSILON);
     }
 }

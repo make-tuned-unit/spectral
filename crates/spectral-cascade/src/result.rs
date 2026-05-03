@@ -13,4 +13,6 @@ pub struct CascadeResult {
     pub total_tokens_used: usize,
     /// If the cascade stopped early, which layer caused it.
     pub stopped_at: Option<LayerId>,
+    /// Highest confidence reported by any layer.
+    pub max_confidence: f64,
 }
