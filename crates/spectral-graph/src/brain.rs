@@ -140,6 +140,9 @@ pub struct RememberOpts {
     /// memories with known dates (e.g., migrating from external systems,
     /// importing dated conversation history).
     pub created_at: Option<DateTime<Utc>>,
+    /// Assign the memory to this episode. `None` = auto-detect via
+    /// time-gap heuristic.
+    pub episode_id: Option<String>,
 }
 
 /// Result of remembering a memory.
@@ -840,6 +843,7 @@ impl Brain {
             device_id: opts.device_id,
             confidence: opts.confidence,
             created_at: opts.created_at,
+            episode_id: opts.episode_id,
         };
         let result = self
             .rt
@@ -953,6 +957,7 @@ impl Brain {
     ) -> Result<spectral_cascade::result::CascadeResult, Error> {
         let layers: Vec<Box<dyn spectral_cascade::Layer>> = vec![
             Box::new(crate::cascade_layers::AaakLayer::new(self, 200)),
+            Box::new(crate::cascade_layers::EpisodeLayer::new(self, 1500)),
             Box::new(crate::cascade_layers::ConstellationLayer::new(
                 self,
                 config.total_budget,
@@ -1130,7 +1135,7 @@ impl Brain {
                     confidence: seed.confidence,
                     created_at: seed.created_at.clone(),
                     last_reinforced_at: seed.last_reinforced_at.clone(),
-                    episode_id: None,
+                    episode_id: seed.episode_id.clone(),
                 };
                 self.spectrogram_analyzer
                     .analyze(&mem, &AnalysisContext::default())
@@ -1194,6 +1199,7 @@ impl Brain {
                         confidence: mem.confidence,
                         created_at: mem.created_at.clone(),
                         last_reinforced_at: mem.last_reinforced_at.clone(),
+                        episode_id: mem.episode_id.clone(),
                     },
                     resonance_score: rmatch.resonance_score,
                     matched_dimensions: rmatch.matched_dimensions.clone(),

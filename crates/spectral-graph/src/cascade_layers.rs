@@ -1,5 +1,7 @@
 //! Cascade layer adapters for spectral-graph.
 
+use std::collections::HashMap;
+
 use spectral_cascade::{Layer, LayerId, LayerResult};
 use spectral_ingest::MemoryHit;
 
@@ -57,6 +59,7 @@ impl Layer for AaakLayer<'_> {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         };
 
         // Foundational facts are always grounding — return Sufficient
@@ -136,5 +139,120 @@ impl Layer for ConstellationLayer<'_> {
             tokens_used,
             confidence,
         })
+    }
+}
+
+/// L2 Episode layer: retrieves memories grouped by episode_id.
+///
+/// Runs FTS, groups results by episode_id, scores episodes by
+/// sum of constituent signal scores, returns the top episode's
+/// full memory set. Returns Sufficient when one episode clearly
+/// dominates.
+pub struct EpisodeLayer<'b> {
+    brain: &'b Brain,
+    max_tokens: usize,
+}
+
+impl<'b> EpisodeLayer<'b> {
+    pub fn new(brain: &'b Brain, max_tokens: usize) -> Self {
+        Self { brain, max_tokens }
+    }
+}
+
+impl Layer for EpisodeLayer<'_> {
+    fn id(&self) -> LayerId {
+        LayerId::L2
+    }
+
+    fn query(
+        &self,
+        query: &str,
+        budget_remaining: usize,
+    ) -> Result<LayerResult, Box<dyn std::error::Error + Send + Sync>> {
+        let recall = self
+            .brain
+            .recall_local(query)
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+
+        // Group FTS hits by episode_id, sum signal scores per episode
+        let mut episode_scores: HashMap<String, f64> = HashMap::new();
+        for hit in &recall.memory_hits {
+            if let Some(ref ep_id) = hit.episode_id {
+                *episode_scores.entry(ep_id.clone()).or_default() += hit.signal_score;
+            }
+        }
+
+        if episode_scores.is_empty() {
+            return Ok(LayerResult::Skipped {
+                reason: "no memories with episode_id matched".into(),
+                confidence: 0.0,
+            });
+        }
+
+        // Sort by score descending
+        let mut sorted: Vec<_> = episode_scores.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let (top_id, top_score) = sorted[0].clone();
+        let second_score = sorted.get(1).map(|x| x.1).unwrap_or(0.0);
+
+        // Fetch all memories for the top episode
+        let episode_memories = self
+            .brain
+            .list_memories_by_episode(&top_id)
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+
+        // Convert to MemoryHits, truncate by token budget
+        let budget = budget_remaining.min(self.max_tokens);
+        let max_chars = budget * 4;
+        let mut chars_used = 0;
+        let mut hits = Vec::new();
+
+        for mem in &episode_memories {
+            let hit_chars = mem.content.len() + mem.key.len() + 20;
+            if chars_used + hit_chars > max_chars && !hits.is_empty() {
+                break;
+            }
+            chars_used += hit_chars;
+            hits.push(MemoryHit {
+                id: mem.id.clone(),
+                key: mem.key.clone(),
+                content: mem.content.clone(),
+                wing: mem.wing.clone(),
+                hall: mem.hall.clone(),
+                signal_score: mem.signal_score,
+                visibility: mem.visibility.clone(),
+                hits: 0,
+                source: mem.source.clone(),
+                device_id: mem.device_id,
+                confidence: mem.confidence,
+                created_at: mem.created_at.clone(),
+                last_reinforced_at: mem.last_reinforced_at.clone(),
+                episode_id: mem.episode_id.clone(),
+            });
+        }
+
+        let tokens_used = chars_used / 4;
+
+        // Confidence based on relevance ratio
+        let ratio = if second_score > 0.0 {
+            top_score / second_score
+        } else {
+            f64::INFINITY
+        };
+
+        if ratio >= 1.5 {
+            let confidence = (ratio / 3.0).min(0.92);
+            Ok(LayerResult::Sufficient {
+                hits,
+                tokens_used,
+                confidence,
+            })
+        } else {
+            Ok(LayerResult::Partial {
+                hits,
+                tokens_used,
+                confidence: 0.5,
+            })
+        }
     }
 }

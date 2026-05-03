@@ -332,6 +332,7 @@ fn memory_hit_from_row(row: &rusqlite::Row, hits: usize) -> rusqlite::Result<Mem
         confidence: row.get::<_, f64>(9).unwrap_or(1.0),
         created_at: row.get(10).ok(),
         last_reinforced_at: row.get(11).ok(),
+        episode_id: row.get(12).ok(),
     })
 }
 
@@ -1653,5 +1654,256 @@ mod tests {
 
         let found = store.find_recent_episode("general", &since).await.unwrap();
         assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn episode_auto_detected_within_time_gap() {
+        use crate::ingest::{IngestConfig, IngestOpts};
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = IngestConfig::default();
+
+        // Ingest two memories quickly (same wing, no explicit episode_id)
+        crate::ingest::ingest_with(
+            "m1",
+            "k1",
+            "First memory about project design",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            IngestOpts::default(),
+        )
+        .await
+        .unwrap();
+
+        crate::ingest::ingest_with(
+            "m2",
+            "k2",
+            "Second memory about project design details",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            IngestOpts::default(),
+        )
+        .await
+        .unwrap();
+
+        // Both should share the same episode
+        let mems: Vec<Memory> = {
+            let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories ORDER BY id");
+            let conn = store.conn();
+            let mut stmt = conn.prepare(&sql).unwrap();
+            stmt.query_map([], memory_from_row)
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert_eq!(mems.len(), 2);
+        assert!(mems[0].episode_id.is_some());
+        assert_eq!(mems[0].episode_id, mems[1].episode_id);
+    }
+
+    #[tokio::test]
+    async fn episode_consumer_provided_id_used() {
+        use crate::ingest::{IngestConfig, IngestOpts};
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = IngestConfig::default();
+
+        crate::ingest::ingest_with(
+            "m1",
+            "k1",
+            "Memory with explicit episode",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            IngestOpts {
+                episode_id: Some("my-session".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // Drop the MutexGuard before calling async store methods
+        let ep_id: String = {
+            let conn = store.conn();
+            conn.query_row("SELECT episode_id FROM memories WHERE id = 'm1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(ep_id, "my-session");
+
+        let episodes = store.list_episodes(None, 100).await.unwrap();
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].id, "my-session");
+    }
+
+    #[tokio::test]
+    async fn episode_consumer_provided_id_joins_existing() {
+        use crate::ingest::{IngestConfig, IngestOpts};
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = IngestConfig::default();
+        let opts = || IngestOpts {
+            episode_id: Some("shared-ep".into()),
+            ..Default::default()
+        };
+
+        crate::ingest::ingest_with(
+            "m1",
+            "k1",
+            "First in shared episode",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            opts(),
+        )
+        .await
+        .unwrap();
+
+        crate::ingest::ingest_with(
+            "m2",
+            "k2",
+            "Second in shared episode",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            opts(),
+        )
+        .await
+        .unwrap();
+
+        let mems = store.list_memories_by_episode("shared-ep").await.unwrap();
+        assert_eq!(mems.len(), 2);
+
+        let episodes = store.list_episodes(None, 100).await.unwrap();
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].memory_count, 2);
+    }
+
+    #[tokio::test]
+    async fn memory_hit_includes_episode_id_after_recall() {
+        use crate::ingest::{IngestConfig, IngestOpts};
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = IngestConfig::default();
+
+        crate::ingest::ingest_with(
+            "m1",
+            "k1",
+            "Memory with episode for recall test",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            IngestOpts {
+                episode_id: Some("ep-recall".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let hits = store
+            .fts_search(&["episode".into(), "recall".into()], 10)
+            .await
+            .unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].episode_id.as_deref(), Some("ep-recall"));
+    }
+
+    #[tokio::test]
+    async fn auto_detected_episode_uses_correct_wing() {
+        use crate::ingest::{IngestConfig, IngestOpts};
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        // Use wing rules that classify "work" content into "work" wing
+        let config = IngestConfig {
+            wing_rules: vec![(
+                regex::Regex::new("work|project|deploy").unwrap(),
+                "work".into(),
+            )],
+            ..Default::default()
+        };
+
+        crate::ingest::ingest_with(
+            "m1",
+            "k1",
+            "Work project deploy task",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            IngestOpts::default(),
+        )
+        .await
+        .unwrap();
+
+        let episodes = store.list_episodes(Some("work"), 100).await.unwrap();
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].wing, "work");
+    }
+
+    #[tokio::test]
+    async fn find_recent_episode_only_searches_same_wing() {
+        use crate::ingest::{IngestConfig, IngestOpts};
+
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        // Create an episode in "work" wing
+        let ep = Episode {
+            id: "ep-work".into(),
+            started_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            ended_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            memory_count: 1,
+            wing: "work".into(),
+            summary_preview: None,
+        };
+        store.write_episode(&ep).await.unwrap();
+
+        // Ingest into "personal" wing — should NOT join "work" episode
+        let config = IngestConfig {
+            wing_rules: vec![(
+                regex::Regex::new("personal|hobby").unwrap(),
+                "personal".into(),
+            )],
+            ..Default::default()
+        };
+
+        crate::ingest::ingest_with(
+            "m1",
+            "k1",
+            "Personal hobby activity",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            IngestOpts::default(),
+        )
+        .await
+        .unwrap();
+
+        // Check that the personal memory got a different episode
+        let mem: Memory = {
+            let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories WHERE id = 'm1'");
+            let conn = store.conn();
+            conn.query_row(&sql, [], memory_from_row).unwrap()
+        };
+        assert_ne!(mem.episode_id.as_deref(), Some("ep-work"));
     }
 }
