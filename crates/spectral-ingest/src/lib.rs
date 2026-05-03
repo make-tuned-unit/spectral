@@ -108,6 +108,9 @@ pub struct MemoryHit {
     /// When this memory was last reinforced.
     #[serde(default)]
     pub last_reinforced_at: Option<String>,
+    /// Episode this memory belongs to (if any).
+    #[serde(default)]
+    pub episode_id: Option<String>,
 }
 
 // ── Episode ────────────────────────────────────────────────────────

@@ -121,6 +121,7 @@ mod tests {
             confidence: 1.0,
             created_at: None,
             last_reinforced_at: None,
+            episode_id: None,
         }
     }
 

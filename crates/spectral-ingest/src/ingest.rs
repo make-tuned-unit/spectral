@@ -8,7 +8,10 @@ use spectral_core::device_id::DeviceId;
 use crate::classifier;
 use crate::fingerprint;
 use crate::signal;
-use crate::{Fingerprint, Memory, MemoryStore, TimeBucket};
+use crate::{Episode, Fingerprint, Memory, MemoryStore, TimeBucket};
+
+/// Default time gap for auto-detecting episode boundaries (30 minutes).
+const EPISODE_GAP_MINUTES: i64 = 30;
 
 /// Configuration for the ingestion pipeline.
 #[derive(Debug, Clone)]
@@ -42,6 +45,10 @@ pub struct IngestOpts {
     /// database default (`datetime('now')`). Use this when ingesting
     /// historical memories with known dates.
     pub created_at: Option<DateTime<Utc>>,
+    /// Assign the memory to this episode. `None` = auto-detect via
+    /// time-gap heuristic (join recent episode in same wing if within
+    /// 30 min, otherwise create a new episode).
+    pub episode_id: Option<String>,
 }
 
 /// Result of the ingestion pipeline.
@@ -94,6 +101,76 @@ pub async fn ingest_with(
     let hall = classifier::classify_hall(content, &config.hall_rules);
     let signal_score = signal::score_memory(content, &hall);
 
+    let now = Utc::now();
+    let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    // Resolve episode_id: consumer-provided or auto-detected
+    let episode_id = if let Some(ep_id) = opts.episode_id {
+        // Consumer-provided episode_id — join or create that episode
+        let existing = store
+            .find_recent_episode(&wing, "1970-01-01 00:00:00")
+            .await?;
+        let is_existing = existing.as_ref().is_some_and(|e| e.id == ep_id);
+
+        if is_existing {
+            let mut ep = existing.unwrap();
+            ep.memory_count += 1;
+            ep.ended_at = now_str.clone();
+            if signal_score > 0.5 {
+                if let Some(ref prev) = ep.summary_preview {
+                    if prev.len() < 10 || signal_score > 0.8 {
+                        ep.summary_preview = Some(content.chars().take(200).collect());
+                    }
+                }
+            }
+            store.write_episode(&ep).await?;
+        } else {
+            let ep = Episode {
+                id: ep_id.clone(),
+                started_at: now_str.clone(),
+                ended_at: now_str.clone(),
+                memory_count: 1,
+                wing: wing.clone(),
+                summary_preview: Some(content.chars().take(200).collect()),
+            };
+            store.write_episode(&ep).await?;
+        }
+        Some(ep_id)
+    } else {
+        // Auto-detect: find recent episode in same wing within time gap
+        let since = (now - chrono::Duration::minutes(EPISODE_GAP_MINUTES))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let recent = store.find_recent_episode(&wing, &since).await?;
+
+        if let Some(mut ep) = recent {
+            ep.memory_count += 1;
+            ep.ended_at = now_str.clone();
+            if signal_score > 0.5 {
+                if let Some(ref prev) = ep.summary_preview {
+                    if prev.len() < 10 || signal_score > 0.8 {
+                        ep.summary_preview = Some(content.chars().take(200).collect());
+                    }
+                }
+            }
+            store.write_episode(&ep).await?;
+            Some(ep.id)
+        } else {
+            // Create new episode with a deterministic ID from the memory ID
+            let ep_id = format!("ep-{id}");
+            let ep = Episode {
+                id: ep_id.clone(),
+                started_at: now_str.clone(),
+                ended_at: now_str.clone(),
+                memory_count: 1,
+                wing: wing.clone(),
+                summary_preview: Some(content.chars().take(200).collect()),
+            };
+            store.write_episode(&ep).await?;
+            Some(ep_id)
+        }
+    };
+
     let memory = Memory {
         id: id.to_string(),
         key: key.to_string(),
@@ -107,7 +184,7 @@ pub async fn ingest_with(
         confidence: opts.confidence.unwrap_or(1.0),
         created_at: opts.created_at.map(|dt| dt.to_rfc3339()),
         last_reinforced_at: None,
-        episode_id: None,
+        episode_id,
     };
 
     let fingerprints = if signal_score >= config.signal_threshold {

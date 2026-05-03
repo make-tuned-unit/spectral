@@ -195,6 +195,7 @@ mod tests {
                 confidence: 1.0,
                 created_at: None,
                 last_reinforced_at: None,
+                episode_id: None,
                 hits: 3,
             },
             MemoryHit {
@@ -210,6 +211,7 @@ mod tests {
                 confidence: 1.0,
                 created_at: None,
                 last_reinforced_at: None,
+                episode_id: None,
                 hits: 1,
             },
         ];
