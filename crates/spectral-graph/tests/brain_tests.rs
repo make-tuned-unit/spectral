@@ -976,3 +976,103 @@ fn recall_cascade_skips_l2_when_no_episodes() {
     assert!(!result.merged_hits.is_empty());
     assert!(result.layer_outcomes.len() >= 2);
 }
+
+// ── AaakLayer calibration tests ─────────────────────────────────────
+
+#[test]
+fn aaak_layer_skips_when_no_high_signal_facts() {
+    use spectral_cascade::Layer;
+    use spectral_graph::cascade_layers::AaakLayer;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Ingest memories without boost keywords — these score below 0.85.
+    // Generic conversational content doesn't trigger decision/error/insight
+    // boosts, so signal stays at base (0.5-0.7 depending on hall).
+    for (i, content) in [
+        "The weather was nice today during our walk",
+        "We had lunch at the Italian place on Main Street",
+        "The meeting ran long but was productive overall",
+        "Traffic was heavy on the way home from work",
+        "The new office layout looks pretty good so far",
+    ]
+    .iter()
+    .enumerate()
+    {
+        brain
+            .remember(&format!("low-signal-{i}"), content, Visibility::Private)
+            .unwrap();
+    }
+
+    let layer = AaakLayer::new(&brain, 200);
+    let result = layer.query("weather lunch meeting", 4096).unwrap();
+    assert!(
+        matches!(result, LayerResult::Skipped { .. }),
+        "AaakLayer should skip when no memories score >= 0.85"
+    );
+}
+
+#[test]
+fn aaak_layer_skips_when_only_preference_hall_above_threshold() {
+    use spectral_cascade::Layer;
+    use spectral_graph::cascade_layers::AaakLayer;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // "I prefer" triggers preference hall, but AaakLayer only includes "fact"
+    brain
+        .remember(
+            "pref-high",
+            "I prefer using Rust for all systems programming work",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let layer = AaakLayer::new(&brain, 200);
+    let result = layer.query("Rust programming", 4096).unwrap();
+    // Even if signal score were high enough, preference hall is excluded
+    assert!(
+        matches!(result, LayerResult::Skipped { .. }),
+        "AaakLayer should skip preference-hall memories"
+    );
+}
+
+#[test]
+fn aaak_layer_fires_when_fact_above_threshold() {
+    use spectral_cascade::Layer;
+    use spectral_graph::cascade_layers::AaakLayer;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // "decided to use" → fact hall (0.7 base) + decision boost (+0.15) = 0.85.
+    // This goes through the real classifier + scorer via remember_with.
+    let r = brain
+        .remember_with(
+            "fact-high",
+            "Decided to use Rust for the production database layer",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    // Verify classifier + scorer produced the expected values
+    assert_eq!(r.hall.as_deref(), Some("fact"), "should classify as fact");
+    assert!(
+        r.signal_score >= 0.85,
+        "fact + 'decided' should score >= 0.85, got {}",
+        r.signal_score
+    );
+
+    // Now run AaakLayer — should find this memory and return Sufficient
+    let layer = AaakLayer::new(&brain, 200);
+    let result = layer.query("Rust production database", 4096).unwrap();
+    assert!(
+        matches!(result, LayerResult::Sufficient { .. }),
+        "AaakLayer should fire on a fact-hall memory scoring >= 0.85"
+    );
+}

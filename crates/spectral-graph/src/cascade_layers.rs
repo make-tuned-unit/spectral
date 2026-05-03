@@ -30,8 +30,23 @@ impl Layer for AaakLayer<'_> {
         budget_remaining: usize,
     ) -> Result<LayerResult, Box<dyn std::error::Error + Send + Sync>> {
         let budget = budget_remaining.min(self.max_tokens);
+        // AaakLayer applies stricter calibration than AaakOpts::default()
+        // because returning Sufficient short-circuits L2 and L3 in the
+        // cascade. False positives (firing on incidentally-classified
+        // conversational data) are more costly than false negatives.
+        //
+        // 0.85 is the score for a fact-classified memory with one boost
+        // keyword (decided/chose/switched): fact base 0.7 + decision
+        // boost 0.15 = 0.85. This separates genuine single-fact
+        // statements from conversational text that only matches the fact
+        // regex without boost keywords (which scores 0.7).
+        //
+        // Hall restricted to "fact" only: preference/decision/rule halls
+        // fire too readily on conversational patterns.
         let result = self.brain.aaak(AaakOpts {
             max_tokens: budget,
+            min_signal_score: 0.85,
+            include_halls: vec!["fact".into()],
             ..AaakOpts::default()
         })?;
 
