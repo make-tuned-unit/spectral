@@ -52,6 +52,10 @@ enum Command {
         /// Write per-memory signal score records to this JSONL path
         #[arg(long)]
         dump_scores: Option<PathBuf>,
+
+        /// Use cascade retrieval (L1→L2→L3) instead of direct recall
+        #[arg(long)]
+        use_cascade: bool,
     },
 
     /// Pretty-print a previously saved JSON report
@@ -106,6 +110,7 @@ fn main() -> Result<()> {
             ingest_strategy,
             retrieval_path,
             dump_scores,
+            use_cascade,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
@@ -145,6 +150,7 @@ fn main() -> Result<()> {
                 categories: cats,
                 ingest_strategy: strategy,
                 retrieval_path: ret_path,
+                use_cascade,
                 dump_scores_path: dump_scores,
                 ..Default::default()
             };

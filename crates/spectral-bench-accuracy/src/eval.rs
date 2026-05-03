@@ -24,6 +24,9 @@ pub struct EvalConfig {
     pub retrieval: RetrievalConfig,
     /// Which retrieval path to use (tact or graph).
     pub retrieval_path: RetrievalPath,
+    /// Use cascade retrieval (L1→L2→L3) instead of direct recall.
+    #[serde(default)]
+    pub use_cascade: bool,
     /// If set, write per-memory signal score records to this JSONL path.
     #[serde(default)]
     pub dump_scores_path: Option<PathBuf>,
@@ -42,6 +45,7 @@ impl Default for EvalConfig {
             ingest_strategy: IngestStrategy::default(),
             retrieval: RetrievalConfig::default(),
             retrieval_path: RetrievalPath::default(),
+            use_cascade: false,
             dump_scores_path: None,
             checkpoint_interval: 10,
         }
@@ -74,6 +78,8 @@ struct SingleResult {
     duration_ms: u64,
     /// Raw memory hits for signal-score dumping.
     raw_hits: Vec<spectral_ingest::MemoryHit>,
+    /// Cascade telemetry (populated when use_cascade is true).
+    cascade_telemetry: Option<retrieval::CascadeTelemetry>,
 }
 
 impl AccuracyEval {
@@ -160,6 +166,7 @@ impl AccuracyEval {
                         r.memory_count,
                         r.memory_keys,
                         r.duration_ms,
+                        r.cascade_telemetry,
                     );
                 }
                 Err(e) => {
@@ -177,6 +184,7 @@ impl AccuracyEval {
                         0,
                         Vec::new(),
                         0,
+                        None,
                     );
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
@@ -217,21 +225,30 @@ impl AccuracyEval {
         let brain = ingest::ingest_question(question, &brain_dir, self.config.ingest_strategy)?;
 
         // Retrieve — get raw hits for score dumping, formatted strings for actor
-        let (memories, raw_hits) = match self.config.retrieval_path {
-            RetrievalPath::Tact => {
-                let result = brain.recall_local(&question.question)?;
-                let hits: Vec<_> = result
-                    .memory_hits
-                    .into_iter()
-                    .take(self.config.retrieval.max_results)
-                    .collect();
-                let formatted: Vec<String> = hits.iter().map(retrieval::format_hit).collect();
-                (formatted, hits)
-            }
-            RetrievalPath::Graph => {
-                let formatted =
-                    retrieval::retrieve_graph(&brain, &question.question, &self.config.retrieval)?;
-                (formatted, Vec::new())
+        let (memories, raw_hits, cascade_telemetry) = if self.config.use_cascade {
+            let (formatted, telemetry) =
+                retrieval::retrieve_cascade(&brain, &question.question, &self.config.retrieval)?;
+            (formatted, Vec::new(), Some(telemetry))
+        } else {
+            match self.config.retrieval_path {
+                RetrievalPath::Tact => {
+                    let result = brain.recall_local(&question.question)?;
+                    let hits: Vec<_> = result
+                        .memory_hits
+                        .into_iter()
+                        .take(self.config.retrieval.max_results)
+                        .collect();
+                    let formatted: Vec<String> = hits.iter().map(retrieval::format_hit).collect();
+                    (formatted, hits, None)
+                }
+                RetrievalPath::Graph => {
+                    let formatted = retrieval::retrieve_graph(
+                        &brain,
+                        &question.question,
+                        &self.config.retrieval,
+                    )?;
+                    (formatted, Vec::new(), None)
+                }
             }
         };
         let memory_count = memories.len();
@@ -266,6 +283,7 @@ impl AccuracyEval {
             reasoning: grade.reasoning,
             duration_ms: start.elapsed().as_millis() as u64,
             raw_hits,
+            cascade_telemetry,
         })
     }
 
