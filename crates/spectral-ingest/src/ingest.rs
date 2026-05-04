@@ -49,6 +49,14 @@ pub struct IngestOpts {
     /// time-gap heuristic (join recent episode in same wing if within
     /// 30 min, otherwise create a new episode).
     pub episode_id: Option<String>,
+    /// Compaction tier for ambient stream memories. Set to `Some(Raw)` when
+    /// ingesting raw activity events; the Librarian (or other consumer-side
+    /// compaction process) updates this to `HourlyRollup`, `DailyRollup`, or
+    /// `WeeklyRollup` as memories are aggregated over time. `None` means the
+    /// memory is not part of the ambient stream. Spectral uses
+    /// `compaction_tier.is_some()` as the canonical signal that a memory
+    /// belongs to the ambient stream.
+    pub compaction_tier: Option<crate::CompactionTier>,
 }
 
 /// Result of the ingestion pipeline.
@@ -185,7 +193,7 @@ pub async fn ingest_with(
         created_at: opts.created_at.map(|dt| dt.to_rfc3339()),
         last_reinforced_at: None,
         episode_id,
-        compaction_tier: None,
+        compaction_tier: opts.compaction_tier,
     };
 
     let fingerprints = if signal_score >= config.signal_threshold {

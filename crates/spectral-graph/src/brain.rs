@@ -143,6 +143,15 @@ pub struct RememberOpts {
     /// Assign the memory to this episode. `None` = auto-detect via
     /// time-gap heuristic.
     pub episode_id: Option<String>,
+    /// Compaction tier for ambient stream memories. Set to `Some(Raw)` when
+    /// ingesting raw activity events; the Librarian (or other consumer-side
+    /// compaction process) updates this to `HourlyRollup`, `DailyRollup`, or
+    /// `WeeklyRollup` as memories are aggregated over time. `None` means the
+    /// memory is not part of the ambient stream (e.g., core or semantic facts
+    /// written via direct user interaction). Spectral uses
+    /// `compaction_tier.is_some()` as the canonical signal that a memory
+    /// belongs to the ambient stream.
+    pub compaction_tier: Option<spectral_ingest::CompactionTier>,
 }
 
 /// Result of remembering a memory.
@@ -844,6 +853,7 @@ impl Brain {
             confidence: opts.confidence,
             created_at: opts.created_at,
             episode_id: opts.episode_id,
+            compaction_tier: opts.compaction_tier,
         };
         let result = self
             .rt
@@ -1662,6 +1672,18 @@ impl Brain {
     ) -> Result<Vec<spectral_ingest::MemoryAnnotation>, Error> {
         self.rt
             .block_on(self.memory_store.list_annotations(memory_id))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Update the compaction_tier on an existing memory. Used by rollup
+    /// consumers (e.g., Permagent's Librarian) to track compaction state.
+    pub fn set_compaction_tier(
+        &self,
+        memory_id: &str,
+        tier: spectral_ingest::CompactionTier,
+    ) -> Result<(), Error> {
+        self.rt
+            .block_on(self.memory_store.set_compaction_tier(memory_id, tier))
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
