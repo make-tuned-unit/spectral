@@ -1076,3 +1076,153 @@ fn aaak_layer_fires_when_fact_above_threshold() {
         "AaakLayer should fire on a fact-hall memory scoring >= 0.85"
     );
 }
+
+// ── Annotation + ambient data tests ─────────────────────────────────
+
+#[test]
+fn brain_annotate_and_list_round_trip() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let r = brain
+        .remember(
+            "ann-test-mem",
+            "Discussed cascade architecture for the recognition pipeline",
+            Visibility::Private,
+        )
+        .unwrap();
+    let memory_id = &r.memory_id;
+
+    let input = spectral_ingest::AnnotationInput {
+        description: "Architecture discussion about cascade layers".into(),
+        who: vec![
+            spectral_ingest::EntityRef {
+                canonical_id: "person:jesse-sharratt".into(),
+                display_name: "Jesse Sharratt".into(),
+            },
+            spectral_ingest::EntityRef {
+                canonical_id: "did:chitin:spectral-agent".into(),
+                display_name: "Spectral Agent".into(),
+            },
+        ],
+        why: "Designing the L2 episode layer".into(),
+        where_: Some("office".into()),
+        when_: chrono::Utc::now(),
+        how: "Pair programming session".into(),
+    };
+
+    let ann = brain.annotate(memory_id, input).unwrap();
+    assert!(ann.id.starts_with("ann-"));
+
+    let loaded = brain.list_annotations(memory_id).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].who.len(), 2);
+    assert_eq!(loaded[0].who[0].canonical_id, "person:jesse-sharratt");
+    assert_eq!(loaded[0].who[1].canonical_id, "did:chitin:spectral-agent");
+    assert_eq!(
+        loaded[0].description,
+        "Architecture discussion about cascade layers"
+    );
+
+    // Probe should surface the cascade-related memory
+    let probe_results = brain
+        .probe(
+            "cascade architecture recognition",
+            spectral_graph::activity::ProbeOpts::default(),
+        )
+        .unwrap();
+    // Signal quality note: probe uses recall() which runs TACT/FTS.
+    // The memory content "Discussed cascade architecture for the recognition pipeline"
+    // should match query keywords "cascade architecture recognition" via FTS.
+    assert!(
+        !probe_results.is_empty(),
+        "probe should surface the cascade-related memory"
+    );
+}
+
+#[test]
+fn probe_handles_timeline_shaped_input() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember_with(
+            "cascade-fix",
+            "Fixed cascade calibration bug in the recognition pipeline",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    brain
+        .remember_with(
+            "cascade-test",
+            "Wrote test for cascade query orchestration",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    brain
+        .remember_with(
+            "cascade-perf",
+            "Cascade performance is fast on benchmark queries",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    brain
+        .remember_with(
+            "rust-async",
+            "Async Rust patterns for concurrent processing",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    brain
+        .remember_with(
+            "git-rebase",
+            "Git rebase workflow for feature branches",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    // Construct timeline-shaped probe context (what Permagent Phase 2 feeds)
+    let timeline_context = "[14:32] User opened ~/projects/spectral/src/cascade.rs\n\
+        [14:33] User typed: fn cascade_query(...)\n\
+        [14:34] Window: spectral - cascade.rs\n\
+        [14:35] User Slack-messaged team: pushing cascade calibration fix\n\
+        [14:36] User opened terminal: cargo test cascade";
+
+    let results = brain
+        .probe(
+            timeline_context,
+            spectral_graph::activity::ProbeOpts::default(),
+        )
+        .unwrap();
+
+    let surfaced_keys: Vec<&str> = results.iter().map(|m| m.key.as_str()).collect();
+    // Signal quality: probe uses recall() which runs TACT/FTS on the timeline text.
+    // "cascade" appears 4 times in the timeline — FTS should match memories
+    // containing "cascade" in their content.
+    assert!(
+        surfaced_keys.iter().any(|k| k.starts_with("cascade-")),
+        "Expected at least one cascade-related memory from timeline probe. Surfaced: {surfaced_keys:?}"
+    );
+
+    // Diagnostic: log what surfaced for signal quality analysis
+    eprintln!(
+        "Timeline probe surfaced {} memories: {:?}",
+        results.len(),
+        surfaced_keys
+    );
+}
