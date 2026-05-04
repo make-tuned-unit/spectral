@@ -224,6 +224,7 @@ mod tests {
             source: "accessibility".into(),
             source_event_count: 10,
             metadata: serde_json::Value::Null,
+            wing: None,
         }
     }
 
