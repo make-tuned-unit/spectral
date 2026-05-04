@@ -33,6 +33,11 @@ pub struct ActivityEpisode {
     /// Optional consumer metadata (e.g., engagement score).
     #[serde(default)]
     pub metadata: serde_json::Value,
+    /// Wing this episode belongs to. Set by consumers who classify
+    /// activity into Spectral wings (e.g., "permagent", "spectral").
+    /// None means unclassified.
+    #[serde(default)]
+    pub wing: Option<String>,
 }
 
 impl ActivityEpisode {

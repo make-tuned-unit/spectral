@@ -112,6 +112,7 @@ mod tests {
             source: "test".into(),
             source_event_count: 1,
             metadata: serde_json::Value::Null,
+            wing: Some("permagent".into()),
         };
 
         let ctx = RecognitionContext::empty()

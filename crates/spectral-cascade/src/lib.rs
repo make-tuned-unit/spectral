@@ -122,8 +122,9 @@ pub trait Layer: Send + Sync {
 
     /// Run this layer's query. `budget_remaining` is the token budget
     /// still available across the cascade. `context` carries ambient
-    /// state for context-conditional scoring (currently ignored by all
-    /// layers; behavior change ships in subsequent PRs).
+    /// state for context-conditional scoring. Layers use context to
+    /// filter (L1) or boost/downrank (L2, L3) based on wing alignment
+    /// and temporal proximity. Empty context = no ambient signal.
     fn query(
         &self,
         query: &str,
