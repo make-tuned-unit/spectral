@@ -5,6 +5,7 @@
 //! Fingerprint hashes are byte-identical to the production Python
 //! implementation in `constellation.py` / `tact_retrieval.py`.
 
+pub mod activity;
 pub mod classifier;
 pub mod fingerprint;
 pub mod ingest;

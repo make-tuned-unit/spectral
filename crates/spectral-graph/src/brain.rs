@@ -963,6 +963,7 @@ impl Brain {
     pub fn recall_cascade(
         &self,
         query: &str,
+        context: &spectral_cascade::RecognitionContext,
         config: &spectral_cascade::orchestrator::CascadeConfig,
     ) -> Result<spectral_cascade::result::CascadeResult, Error> {
         let layers: Vec<Box<dyn spectral_cascade::Layer>> = vec![
@@ -975,7 +976,7 @@ impl Brain {
         ];
         let cascade = spectral_cascade::orchestrator::Cascade::new(layers, config.clone());
         cascade
-            .query(query)
+            .query(query, context)
             .map_err(|e| Error::Schema(e.to_string()))
     }
 

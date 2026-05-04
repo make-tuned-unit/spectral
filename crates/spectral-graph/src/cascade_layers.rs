@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use spectral_cascade::{Layer, LayerId, LayerResult};
+use spectral_cascade::{Layer, LayerId, LayerResult, RecognitionContext};
 use spectral_ingest::MemoryHit;
 
 use crate::brain::{AaakOpts, Brain};
@@ -24,10 +24,12 @@ impl Layer for AaakLayer<'_> {
         LayerId::L1
     }
 
+    // TODO: next PR — incorporate context into scoring. Currently ignored.
     fn query(
         &self,
         _query: &str,
         budget_remaining: usize,
+        _context: &RecognitionContext,
     ) -> Result<LayerResult, Box<dyn std::error::Error + Send + Sync>> {
         let budget = budget_remaining.min(self.max_tokens);
         // AaakLayer applies stricter calibration than AaakOpts::default()
@@ -54,6 +56,7 @@ impl Layer for AaakLayer<'_> {
             return Ok(LayerResult::Skipped {
                 reason: "no foundational facts matched".into(),
                 confidence: 0.0,
+                recognition_token_cost: 0,
             });
         }
 
@@ -84,6 +87,7 @@ impl Layer for AaakLayer<'_> {
             hits: vec![hit],
             tokens_used: result.estimated_tokens,
             confidence: 0.95,
+            recognition_token_cost: 0,
         })
     }
 }
@@ -105,10 +109,12 @@ impl Layer for ConstellationLayer<'_> {
         LayerId::L3
     }
 
+    // TODO: next PR — incorporate context into scoring. Currently ignored.
     fn query(
         &self,
         query: &str,
         budget_remaining: usize,
+        _context: &RecognitionContext,
     ) -> Result<LayerResult, Box<dyn std::error::Error + Send + Sync>> {
         let result = self
             .brain
@@ -119,6 +125,7 @@ impl Layer for ConstellationLayer<'_> {
             return Ok(LayerResult::Skipped {
                 reason: "no constellation/FTS matches".into(),
                 confidence: 0.0,
+                recognition_token_cost: 0,
             });
         }
 
@@ -153,6 +160,7 @@ impl Layer for ConstellationLayer<'_> {
             hits,
             tokens_used,
             confidence,
+            recognition_token_cost: 0,
         })
     }
 }
@@ -179,10 +187,12 @@ impl Layer for EpisodeLayer<'_> {
         LayerId::L2
     }
 
+    // TODO: next PR — incorporate context into scoring. Currently ignored.
     fn query(
         &self,
         query: &str,
         budget_remaining: usize,
+        _context: &RecognitionContext,
     ) -> Result<LayerResult, Box<dyn std::error::Error + Send + Sync>> {
         let recall = self
             .brain
@@ -201,6 +211,7 @@ impl Layer for EpisodeLayer<'_> {
             return Ok(LayerResult::Skipped {
                 reason: "no memories with episode_id matched".into(),
                 confidence: 0.0,
+                recognition_token_cost: 0,
             });
         }
 
@@ -261,12 +272,14 @@ impl Layer for EpisodeLayer<'_> {
                 hits,
                 tokens_used,
                 confidence,
+                recognition_token_cost: 0,
             })
         } else {
             Ok(LayerResult::Partial {
                 hits,
                 tokens_used,
                 confidence: 0.5,
+                recognition_token_cost: 0,
             })
         }
     }

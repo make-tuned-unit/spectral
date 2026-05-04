@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use chrono::{TimeZone, Utc};
 use spectral_cascade::orchestrator::CascadeConfig;
-use spectral_cascade::LayerResult;
+use spectral_cascade::{LayerResult, RecognitionContext};
 use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, RememberOpts};
@@ -780,7 +780,11 @@ fn recall_cascade_falls_through_to_l3() {
 
     let config = CascadeConfig::default();
     let result = brain
-        .recall_cascade("cascade architecture retrieval", &config)
+        .recall_cascade(
+            "cascade architecture retrieval",
+            &RecognitionContext::empty(),
+            &config,
+        )
         .unwrap();
 
     // AAAK (L1) should skip (no high-signal foundational facts in a fresh brain).
@@ -816,7 +820,11 @@ fn recall_cascade_returns_aaak_when_sufficient() {
 
     let config = CascadeConfig::default();
     let result = brain
-        .recall_cascade("PostgreSQL production database", &config)
+        .recall_cascade(
+            "PostgreSQL production database",
+            &RecognitionContext::empty(),
+            &config,
+        )
         .unwrap();
 
     // Check that at least one layer produced results
@@ -900,7 +908,11 @@ fn recall_cascade_returns_episode_when_dominant() {
 
     let config = CascadeConfig::default();
     let result = brain
-        .recall_cascade("python development coding debugging", &config)
+        .recall_cascade(
+            "python development coding debugging",
+            &RecognitionContext::empty(),
+            &config,
+        )
         .unwrap();
 
     let l2_outcome = result
@@ -943,7 +955,11 @@ fn recall_cascade_falls_through_to_l3_when_episodes_balanced() {
 
     let config = CascadeConfig::default();
     let result = brain
-        .recall_cascade("architecture discussion iteration", &config)
+        .recall_cascade(
+            "architecture discussion iteration",
+            &RecognitionContext::empty(),
+            &config,
+        )
         .unwrap();
 
     // Cascade should run all 3 layers
@@ -970,11 +986,51 @@ fn recall_cascade_skips_l2_when_no_episodes() {
 
     let config = CascadeConfig::default();
     let result = brain
-        .recall_cascade("cascade episode testing scenario", &config)
+        .recall_cascade(
+            "cascade episode testing scenario",
+            &RecognitionContext::empty(),
+            &config,
+        )
         .unwrap();
 
     assert!(!result.merged_hits.is_empty());
     assert!(result.layer_outcomes.len() >= 2);
+}
+
+#[test]
+fn recall_cascade_accepts_context() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "ctx-test",
+            "Memory for recognition context acceptance test",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let config = CascadeConfig::default();
+
+    // Empty context — should work identically to previous behavior
+    let result = brain
+        .recall_cascade(
+            "recognition context acceptance test",
+            &RecognitionContext::empty(),
+            &config,
+        )
+        .unwrap();
+    assert!(!result.merged_hits.is_empty());
+    assert_eq!(result.total_recognition_token_cost, 0);
+
+    // Populated context with focus_wing — behavior unchanged in this PR,
+    // but proves the signature accepts it without error.
+    let ctx = RecognitionContext::empty().with_focus_wing("permagent");
+    let result2 = brain
+        .recall_cascade("recognition context acceptance test", &ctx, &config)
+        .unwrap();
+    assert!(!result2.merged_hits.is_empty());
+    assert_eq!(result2.total_recognition_token_cost, 0);
 }
 
 // ── AaakLayer calibration tests ─────────────────────────────────────
@@ -1006,7 +1062,9 @@ fn aaak_layer_skips_when_no_high_signal_facts() {
     }
 
     let layer = AaakLayer::new(&brain, 200);
-    let result = layer.query("weather lunch meeting", 4096).unwrap();
+    let result = layer
+        .query("weather lunch meeting", 4096, &RecognitionContext::empty())
+        .unwrap();
     assert!(
         matches!(result, LayerResult::Skipped { .. }),
         "AaakLayer should skip when no memories score >= 0.85"
@@ -1031,7 +1089,9 @@ fn aaak_layer_skips_when_only_preference_hall_above_threshold() {
         .unwrap();
 
     let layer = AaakLayer::new(&brain, 200);
-    let result = layer.query("Rust programming", 4096).unwrap();
+    let result = layer
+        .query("Rust programming", 4096, &RecognitionContext::empty())
+        .unwrap();
     // Even if signal score were high enough, preference hall is excluded
     assert!(
         matches!(result, LayerResult::Skipped { .. }),
@@ -1070,7 +1130,13 @@ fn aaak_layer_fires_when_fact_above_threshold() {
 
     // Now run AaakLayer — should find this memory and return Sufficient
     let layer = AaakLayer::new(&brain, 200);
-    let result = layer.query("Rust production database", 4096).unwrap();
+    let result = layer
+        .query(
+            "Rust production database",
+            4096,
+            &RecognitionContext::empty(),
+        )
+        .unwrap();
     assert!(
         matches!(result, LayerResult::Sufficient { .. }),
         "AaakLayer should fire on a fact-hall memory scoring >= 0.85"
