@@ -2289,4 +2289,65 @@ mod tests {
             "did:chitin:org:make-tuned-unit:agent:spectral-v2"
         );
     }
+
+    #[tokio::test]
+    async fn compaction_tier_round_trips_through_ingest_with() {
+        use crate::ingest::{IngestConfig, IngestOpts};
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = IngestConfig::default();
+
+        crate::ingest::ingest_with(
+            "m1",
+            "k1",
+            "Raw ambient event from activity monitor",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            IngestOpts {
+                compaction_tier: Some(CompactionTier::Raw),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories WHERE id = 'm1'");
+        let mem: Memory = {
+            let conn = store.conn();
+            conn.query_row(&sql, [], memory_from_row).unwrap()
+        };
+        assert_eq!(mem.compaction_tier, Some(CompactionTier::Raw));
+    }
+
+    #[tokio::test]
+    async fn ingest_opts_compaction_tier_defaults_to_none() {
+        use crate::ingest::{IngestConfig, IngestOpts};
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = IngestConfig::default();
+
+        crate::ingest::ingest_with(
+            "m1",
+            "k1",
+            "Default ingest without compaction tier",
+            "core",
+            0.0,
+            "private",
+            &config,
+            &store,
+            IngestOpts::default(),
+        )
+        .await
+        .unwrap();
+
+        let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories WHERE id = 'm1'");
+        let mem: Memory = {
+            let conn = store.conn();
+            conn.query_row(&sql, [], memory_from_row).unwrap()
+        };
+        assert!(mem.compaction_tier.is_none());
+    }
 }

@@ -1226,3 +1226,28 @@ fn probe_handles_timeline_shaped_input() {
         surfaced_keys
     );
 }
+
+#[test]
+fn remember_with_persists_compaction_tier() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let r = brain
+        .remember_with(
+            "tier-test",
+            "Raw ambient activity event from screen monitor",
+            RememberOpts {
+                compaction_tier: Some(spectral_ingest::CompactionTier::HourlyRollup),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let mems = brain.list_all_memories(100).unwrap();
+    let mem = mems.iter().find(|m| m.id == r.memory_id).unwrap();
+    assert_eq!(
+        mem.compaction_tier,
+        Some(spectral_ingest::CompactionTier::HourlyRollup)
+    );
+}
