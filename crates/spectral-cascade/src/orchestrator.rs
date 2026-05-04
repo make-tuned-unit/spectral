@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use crate::context::RecognitionContext;
 use crate::result::CascadeResult;
 use crate::{Layer, LayerResult};
 
@@ -44,20 +45,23 @@ impl<'a> Cascade<'a> {
     pub fn query(
         &self,
         query: &str,
+        context: &RecognitionContext,
     ) -> Result<CascadeResult, Box<dyn std::error::Error + Send + Sync>> {
         let mut layer_outcomes = Vec::new();
         let mut all_hits = Vec::new();
         let mut seen_ids = HashSet::new();
         let mut tokens_remaining = self.config.total_budget;
         let mut stopped_at = None;
+        let mut total_recognition_token_cost: usize = 0;
 
         for layer in &self.layers {
             if tokens_remaining == 0 {
                 break;
             }
 
-            let result = layer.query(query, tokens_remaining)?;
+            let result = layer.query(query, tokens_remaining, context)?;
             let tokens_used = result.tokens_used();
+            total_recognition_token_cost += result.recognition_token_cost();
 
             // Collect unique hits
             for hit in result.hits() {
@@ -95,6 +99,7 @@ impl<'a> Cascade<'a> {
             total_tokens_used,
             stopped_at,
             max_confidence,
+            total_recognition_token_cost,
         })
     }
 }
@@ -125,6 +130,10 @@ mod tests {
         }
     }
 
+    fn empty_ctx() -> RecognitionContext {
+        RecognitionContext::empty()
+    }
+
     struct MockLayer {
         layer_id: LayerId,
         result_fn: Box<dyn Fn(usize) -> LayerResult + Send + Sync>,
@@ -150,6 +159,7 @@ mod tests {
             &self,
             _query: &str,
             budget: usize,
+            _context: &RecognitionContext,
         ) -> Result<LayerResult, Box<dyn std::error::Error + Send + Sync>> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             Ok((self.result_fn)(budget))
@@ -170,6 +180,7 @@ mod tests {
                         hits: vec![],
                         tokens_used: 10,
                         confidence: 0.3,
+                        recognition_token_cost: 0,
                     }
                 }))
             },
@@ -181,6 +192,7 @@ mod tests {
                         hits: vec![],
                         tokens_used: 10,
                         confidence: 0.3,
+                        recognition_token_cost: 0,
                     }
                 }))
             },
@@ -192,13 +204,14 @@ mod tests {
                         hits: vec![],
                         tokens_used: 10,
                         confidence: 0.3,
+                        recognition_token_cost: 0,
                     }
                 }))
             },
         ];
 
         let cascade = Cascade::new(layers, CascadeConfig::default());
-        let result = cascade.query("test").unwrap();
+        let result = cascade.query("test", &empty_ctx()).unwrap();
         assert_eq!(
             *order.lock().unwrap(),
             vec![LayerId::L1, LayerId::L2, LayerId::L3]
@@ -219,6 +232,7 @@ mod tests {
                     hits: vec![make_hit("m1")],
                     tokens_used: 50,
                     confidence: 0.95,
+                    recognition_token_cost: 0,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, move |_| {
                     l3_calls_clone.fetch_add(1, Ordering::SeqCst);
@@ -226,6 +240,7 @@ mod tests {
                         hits: vec![make_hit("m2")],
                         tokens_used: 50,
                         confidence: 0.5,
+                        recognition_token_cost: 0,
                     }
                 })),
             ],
@@ -234,7 +249,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let result = cascade.query("test").unwrap();
+        let result = cascade.query("test", &empty_ctx()).unwrap();
 
         assert_eq!(result.stopped_at, Some(LayerId::L1));
         assert_eq!(result.merged_hits.len(), 1);
@@ -250,16 +265,18 @@ mod tests {
                     hits: vec![make_hit("m1")],
                     tokens_used: 50,
                     confidence: 0.4,
+                    recognition_token_cost: 0,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |_| LayerResult::Partial {
                     hits: vec![make_hit("m2")],
                     tokens_used: 50,
                     confidence: 0.6,
+                    recognition_token_cost: 0,
                 })),
             ],
             CascadeConfig::default(),
         );
-        let result = cascade.query("test").unwrap();
+        let result = cascade.query("test", &empty_ctx()).unwrap();
 
         assert!(result.stopped_at.is_none());
         assert_eq!(result.merged_hits.len(), 2);
@@ -273,6 +290,7 @@ mod tests {
                 Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Skipped {
                     reason: "no facts".into(),
                     confidence: 0.0,
+                    recognition_token_cost: 0,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |budget| {
                     // Budget should be full since skip consumes 0 tokens
@@ -281,12 +299,13 @@ mod tests {
                         hits: vec![make_hit("m1")],
                         tokens_used: 100,
                         confidence: 0.7,
+                        recognition_token_cost: 0,
                     }
                 })),
             ],
             CascadeConfig::default(),
         );
-        let result = cascade.query("test").unwrap();
+        let result = cascade.query("test", &empty_ctx()).unwrap();
         assert_eq!(result.merged_hits.len(), 1);
         assert_eq!(result.total_tokens_used, 100);
     }
@@ -299,6 +318,7 @@ mod tests {
                     hits: vec![make_hit("m1")],
                     tokens_used: 80,
                     confidence: 0.3,
+                    recognition_token_cost: 0,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |budget| {
                     assert_eq!(budget, 20);
@@ -306,6 +326,7 @@ mod tests {
                         hits: vec![make_hit("m2")],
                         tokens_used: 20,
                         confidence: 0.5,
+                        recognition_token_cost: 0,
                     }
                 })),
                 // Third layer should not be called — budget exhausted
@@ -318,7 +339,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let result = cascade.query("test").unwrap();
+        let result = cascade.query("test", &empty_ctx()).unwrap();
         assert_eq!(result.total_tokens_used, 100);
         assert_eq!(result.merged_hits.len(), 2);
     }
@@ -331,16 +352,18 @@ mod tests {
                     hits: vec![make_hit("shared"), make_hit("only-l1")],
                     tokens_used: 50,
                     confidence: 0.4,
+                    recognition_token_cost: 0,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |_| LayerResult::Partial {
                     hits: vec![make_hit("shared"), make_hit("only-l3")],
                     tokens_used: 50,
                     confidence: 0.6,
+                    recognition_token_cost: 0,
                 })),
             ],
             CascadeConfig::default(),
         );
-        let result = cascade.query("test").unwrap();
+        let result = cascade.query("test", &empty_ctx()).unwrap();
         // "shared" appears in both but should be deduplicated
         assert_eq!(result.merged_hits.len(), 3);
         let ids: Vec<&str> = result.merged_hits.iter().map(|h| h.id.as_str()).collect();
@@ -362,6 +385,7 @@ mod tests {
                     hits: vec![make_hit("m1")],
                     tokens_used: 50,
                     confidence: 0.95,
+                    recognition_token_cost: 0,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, move |_| {
                     l3_clone.fetch_add(1, Ordering::SeqCst);
@@ -369,6 +393,7 @@ mod tests {
                         hits: vec![make_hit("m2")],
                         tokens_used: 50,
                         confidence: 0.5,
+                        recognition_token_cost: 0,
                     }
                 })),
             ],
@@ -377,7 +402,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let result = cascade.query("test").unwrap();
+        let result = cascade.query("test", &empty_ctx()).unwrap();
         assert_eq!(result.stopped_at, Some(LayerId::L1));
         assert_eq!(l3_calls.load(Ordering::SeqCst), 0);
         assert!((result.max_confidence - 0.95).abs() < f64::EPSILON);
@@ -391,11 +416,13 @@ mod tests {
                     hits: vec![make_hit("m1")],
                     tokens_used: 50,
                     confidence: 0.5, // Below threshold
+                    recognition_token_cost: 0,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |_| LayerResult::Partial {
                     hits: vec![make_hit("m2")],
                     tokens_used: 50,
                     confidence: 0.7,
+                    recognition_token_cost: 0,
                 })),
             ],
             CascadeConfig {
@@ -403,7 +430,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let result = cascade.query("test").unwrap();
+        let result = cascade.query("test", &empty_ctx()).unwrap();
         // Should NOT have stopped — confidence 0.5 < threshold 0.85
         assert!(result.stopped_at.is_none());
         assert_eq!(result.merged_hits.len(), 2);
@@ -418,21 +445,52 @@ mod tests {
                     hits: vec![make_hit("m1")],
                     tokens_used: 30,
                     confidence: 0.3,
+                    recognition_token_cost: 0,
                 })),
                 Box::new(MockLayer::new(LayerId::L2, |_| LayerResult::Partial {
                     hits: vec![make_hit("m2")],
                     tokens_used: 30,
                     confidence: 0.7,
+                    recognition_token_cost: 0,
                 })),
                 Box::new(MockLayer::new(LayerId::L3, |_| LayerResult::Partial {
                     hits: vec![make_hit("m3")],
                     tokens_used: 30,
                     confidence: 0.5,
+                    recognition_token_cost: 0,
                 })),
             ],
             CascadeConfig::default(),
         );
-        let result = cascade.query("test").unwrap();
+        let result = cascade.query("test", &empty_ctx()).unwrap();
         assert!((result.max_confidence - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cascade_result_sums_recognition_cost() {
+        let cascade = Cascade::new(
+            vec![
+                Box::new(MockLayer::new(LayerId::L1, |_| LayerResult::Skipped {
+                    reason: "skipped".into(),
+                    confidence: 0.0,
+                    recognition_token_cost: 0,
+                })),
+                Box::new(MockLayer::new(LayerId::L2, |_| LayerResult::Partial {
+                    hits: vec![make_hit("m1")],
+                    tokens_used: 50,
+                    confidence: 0.5,
+                    recognition_token_cost: 5,
+                })),
+                Box::new(MockLayer::new(LayerId::L3, |_| LayerResult::Partial {
+                    hits: vec![make_hit("m2")],
+                    tokens_used: 50,
+                    confidence: 0.6,
+                    recognition_token_cost: 10,
+                })),
+            ],
+            CascadeConfig::default(),
+        );
+        let result = cascade.query("test", &empty_ctx()).unwrap();
+        assert_eq!(result.total_recognition_token_cost, 15);
     }
 }

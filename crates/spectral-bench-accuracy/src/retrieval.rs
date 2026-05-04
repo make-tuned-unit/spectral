@@ -111,6 +111,9 @@ pub struct CascadeTelemetry {
     pub stopped_at: Option<String>,
     pub max_confidence: f64,
     pub total_tokens_used: usize,
+    /// Total LLM tokens consumed during recognition across all layers.
+    /// Expected to be 0 for all current layers (empirical proof artifact).
+    pub total_recognition_token_cost: usize,
     pub layer_outcomes: Vec<(String, String)>,
 }
 
@@ -121,7 +124,9 @@ pub fn retrieve_cascade(
     config: &RetrievalConfig,
 ) -> Result<(Vec<String>, CascadeTelemetry)> {
     let cascade_config = spectral_cascade::orchestrator::CascadeConfig::default();
-    let result = brain.recall_cascade(question, &cascade_config)?;
+    // Bench has no ambient signal (LongMemEval is synthetic), so empty context is correct.
+    let context = spectral_cascade::RecognitionContext::empty();
+    let result = brain.recall_cascade(question, &context, &cascade_config)?;
 
     let formatted: Vec<String> = result
         .merged_hits
@@ -134,6 +139,7 @@ pub fn retrieve_cascade(
         stopped_at: result.stopped_at.map(|id| id.to_string()),
         max_confidence: result.max_confidence,
         total_tokens_used: result.total_tokens_used,
+        total_recognition_token_cost: result.total_recognition_token_cost,
         layer_outcomes: result
             .layer_outcomes
             .iter()

@@ -15,3 +15,4 @@ pub mod provenance;
 pub mod schema;
 
 pub use error::Error;
+pub use spectral_cascade::RecognitionContext;

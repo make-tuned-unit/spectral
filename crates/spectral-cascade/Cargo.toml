@@ -10,4 +10,8 @@ description = "Cascade orchestrator for Spectral: ordered recognition layers wit
 [dependencies]
 spectral-ingest = { path = "../spectral-ingest" }
 serde = { workspace = true }
+chrono = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

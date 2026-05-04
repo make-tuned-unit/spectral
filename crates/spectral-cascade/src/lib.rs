@@ -4,8 +4,11 @@
 //! L3 constellation) and only falls through to heavier layers when needed.
 //! Token budgets control how much context each layer contributes.
 
+pub mod context;
 pub mod orchestrator;
 pub mod result;
+
+pub use context::RecognitionContext;
 
 use serde::{Deserialize, Serialize};
 use spectral_ingest::MemoryHit;
@@ -48,15 +51,25 @@ pub enum LayerResult {
         hits: Vec<MemoryHit>,
         tokens_used: usize,
         confidence: f64,
+        /// LLM tokens consumed during recognition. Layers that use no
+        /// LLMs (all current layers) report 0.
+        recognition_token_cost: usize,
     },
     /// Layer found partial context; cascade should continue.
     Partial {
         hits: Vec<MemoryHit>,
         tokens_used: usize,
         confidence: f64,
+        /// LLM tokens consumed during recognition.
+        recognition_token_cost: usize,
     },
     /// Layer determined the query doesn't apply to it.
-    Skipped { reason: String, confidence: f64 },
+    Skipped {
+        reason: String,
+        confidence: f64,
+        /// LLM tokens consumed during recognition (typically 0).
+        recognition_token_cost: usize,
+    },
 }
 
 impl LayerResult {
@@ -83,6 +96,23 @@ impl LayerResult {
             | Self::Skipped { confidence, .. } => *confidence,
         }
     }
+
+    pub fn recognition_token_cost(&self) -> usize {
+        match self {
+            Self::Sufficient {
+                recognition_token_cost,
+                ..
+            }
+            | Self::Partial {
+                recognition_token_cost,
+                ..
+            }
+            | Self::Skipped {
+                recognition_token_cost,
+                ..
+            } => *recognition_token_cost,
+        }
+    }
 }
 
 /// A recognition layer in the cascade.
@@ -91,10 +121,13 @@ pub trait Layer: Send + Sync {
     fn id(&self) -> LayerId;
 
     /// Run this layer's query. `budget_remaining` is the token budget
-    /// still available across the cascade.
+    /// still available across the cascade. `context` carries ambient
+    /// state for context-conditional scoring (currently ignored by all
+    /// layers; behavior change ships in subsequent PRs).
     fn query(
         &self,
         query: &str,
         budget_remaining: usize,
+        context: &RecognitionContext,
     ) -> Result<LayerResult, Box<dyn std::error::Error + Send + Sync>>;
 }

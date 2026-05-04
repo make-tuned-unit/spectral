@@ -15,4 +15,9 @@ pub struct CascadeResult {
     pub stopped_at: Option<LayerId>,
     /// Highest confidence reported by any layer.
     pub max_confidence: f64,
+    /// Total LLM tokens consumed during recognition across all layers.
+    /// Current layers (AAAK, Episode, Constellation) all report 0 since
+    /// they use no LLMs — this is the empirical proof artifact for the
+    /// zero-LLM recognition claim.
+    pub total_recognition_token_cost: usize,
 }
