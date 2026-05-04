@@ -1136,6 +1136,7 @@ impl Brain {
                     created_at: seed.created_at.clone(),
                     last_reinforced_at: seed.last_reinforced_at.clone(),
                     episode_id: seed.episode_id.clone(),
+                    compaction_tier: None,
                 };
                 self.spectrogram_analyzer
                     .analyze(&mem, &AnalysisContext::default())
@@ -1448,6 +1449,7 @@ impl Brain {
                 created_at: Some(redacted.started_at.to_rfc3339()),
                 last_reinforced_at: None,
                 episode_id: None,
+                compaction_tier: None,
             };
 
             self.rt
@@ -1613,6 +1615,53 @@ impl Brain {
     ) -> Result<Vec<spectral_ingest::Memory>, Error> {
         self.rt
             .block_on(self.memory_store.list_memories_by_episode(episode_id))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Annotate a memory with contextual who/where/why/how metadata.
+    pub fn annotate(
+        &self,
+        memory_id: &str,
+        input: spectral_ingest::AnnotationInput,
+    ) -> Result<spectral_ingest::MemoryAnnotation, Error> {
+        let annotation = spectral_ingest::MemoryAnnotation {
+            id: format!(
+                "ann-{:016x}",
+                u64::from_be_bytes(
+                    blake3::hash(
+                        format!(
+                            "{memory_id}-{}",
+                            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                        )
+                        .as_bytes()
+                    )
+                    .as_bytes()[..8]
+                        .try_into()
+                        .unwrap()
+                )
+            ),
+            memory_id: memory_id.to_string(),
+            description: input.description,
+            who: input.who,
+            why: input.why,
+            where_: input.where_,
+            when_: input.when_,
+            how: input.how,
+            created_at: Utc::now(),
+        };
+        self.rt
+            .block_on(self.memory_store.write_annotation(&annotation))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        Ok(annotation)
+    }
+
+    /// List all annotations for a memory.
+    pub fn list_annotations(
+        &self,
+        memory_id: &str,
+    ) -> Result<Vec<spectral_ingest::MemoryAnnotation>, Error> {
+        self.rt
+            .block_on(self.memory_store.list_annotations(memory_id))
             .map_err(|e| Error::Schema(e.to_string()))
     }
 

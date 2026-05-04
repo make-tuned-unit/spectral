@@ -28,7 +28,10 @@
 //! - `Some(0)`: disable mmap entirely
 //! - `Some(n)`: use exactly *n* bytes
 
-use crate::{Episode, Fingerprint, Memory, MemoryHit, MemoryStore, SpectrogramRow};
+use crate::{
+    CompactionTier, Episode, Fingerprint, Memory, MemoryAnnotation, MemoryHit, MemoryStore,
+    SpectrogramRow,
+};
 use lru::LruCache;
 use rusqlite::{params, Connection};
 use std::future::Future;
@@ -213,7 +216,22 @@ impl SqliteStore {
                 updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_episodes_started_at ON episodes(started_at);
-            CREATE INDEX IF NOT EXISTS idx_episodes_wing ON episodes(wing);",
+            CREATE INDEX IF NOT EXISTS idx_episodes_wing ON episodes(wing);
+
+            CREATE TABLE IF NOT EXISTS memory_annotations (
+                id          TEXT PRIMARY KEY,
+                memory_id   TEXT NOT NULL,
+                description TEXT NOT NULL,
+                who         TEXT NOT NULL,
+                why         TEXT NOT NULL,
+                where_      TEXT,
+                when_       TEXT NOT NULL,
+                how         TEXT NOT NULL,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_annotations_memory_id
+                ON memory_annotations(memory_id);",
         )?;
         Ok(())
     }
@@ -279,6 +297,21 @@ impl SqliteStore {
             )?;
         }
 
+        // compaction_tier column
+        let mut has_compaction_tier = false;
+        let mut stmt4 = conn.prepare("PRAGMA table_info(memories)")?;
+        let rows4 = stmt4.query_map([], |row| row.get::<_, String>(1))?;
+        for name in rows4 {
+            if name?.as_str() == "compaction_tier" {
+                has_compaction_tier = true;
+            }
+        }
+        if !has_compaction_tier {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN compaction_tier TEXT DEFAULT NULL",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -289,12 +322,12 @@ impl SqliteStore {
 }
 
 /// Standard column list for memory queries.
-const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id";
+const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier";
 
 /// Parse a Memory from a row with the standard column order.
 /// Columns: id(0), key(1), content(2), wing(3), hall(4), signal_score(5),
 /// visibility(6), source(7), device_id(8), confidence(9), created_at(10),
-/// last_reinforced_at(11), episode_id(12)
+/// last_reinforced_at(11), episode_id(12), compaction_tier(13)
 fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
     let device_blob: Option<Vec<u8>> = row.get(8)?;
     let device_id = device_blob.and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
@@ -312,6 +345,10 @@ fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         created_at: row.get(10).ok(),
         last_reinforced_at: row.get(11).ok(),
         episode_id: row.get(12).ok(),
+        compaction_tier: row
+            .get::<_, String>(13)
+            .ok()
+            .and_then(|s| crate::CompactionTier::parse(&s)),
     })
 }
 
@@ -418,6 +455,13 @@ impl MemoryStore for SqliteStore {
                 tx.execute(
                     "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
                     params![ep_id, memory.id],
+                )?;
+            }
+            // Set compaction_tier if provided
+            if let Some(tier) = memory.compaction_tier {
+                tx.execute(
+                    "UPDATE memories SET compaction_tier = ?1 WHERE id = ?2",
+                    params![tier.as_str(), memory.id],
                 )?;
             }
 
@@ -1115,6 +1159,113 @@ impl MemoryStore for SqliteStore {
             Ok(mems)
         })
     }
+
+    fn write_annotation(
+        &self,
+        annotation: &MemoryAnnotation,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let annotation = annotation.clone();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let when_rfc = annotation.when_.to_rfc3339();
+
+            // Idempotent on (memory_id, description, when_): if an identical
+            // annotation already exists, skip the insert.
+            let existing: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM memory_annotations
+                     WHERE memory_id = ?1 AND description = ?2 AND when_ = ?3",
+                    params![annotation.memory_id, annotation.description, when_rfc],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            if existing.is_some() {
+                return Ok(());
+            }
+
+            let who_json = serde_json::to_string(&annotation.who)?;
+            conn.execute(
+                "INSERT INTO memory_annotations
+                 (id, memory_id, description, who, why, where_, when_, how, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    annotation.id,
+                    annotation.memory_id,
+                    annotation.description,
+                    who_json,
+                    annotation.why,
+                    annotation.where_,
+                    when_rfc,
+                    annotation.how,
+                    annotation.created_at.to_rfc3339(),
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn list_annotations(
+        &self,
+        memory_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryAnnotation>>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT id, memory_id, description, who, why, where_, when_, how, created_at
+                 FROM memory_annotations WHERE memory_id = ?1 ORDER BY created_at",
+            )?;
+            let annotations: Vec<MemoryAnnotation> = stmt
+                .query_map(params![memory_id], |row| {
+                    let who_json: String = row.get(3)?;
+                    let who: Vec<crate::EntityRef> =
+                        serde_json::from_str(&who_json).unwrap_or_default();
+                    let when_str: String = row.get(6)?;
+                    let when_ = chrono::DateTime::parse_from_rfc3339(&when_str)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now());
+                    let created_str: String = row.get(8)?;
+                    let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now());
+                    Ok(MemoryAnnotation {
+                        id: row.get(0)?,
+                        memory_id: row.get(1)?,
+                        description: row.get(2)?,
+                        who,
+                        why: row.get(4)?,
+                        where_: row.get(5)?,
+                        when_,
+                        how: row.get(7)?,
+                        created_at,
+                    })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(annotations)
+        })
+    }
+
+    fn set_compaction_tier(
+        &self,
+        memory_id: &str,
+        tier: CompactionTier,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let tier_str = tier.as_str().to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            conn.execute(
+                "UPDATE memories SET compaction_tier = ?1 WHERE id = ?2",
+                params![tier_str, memory_id],
+            )?;
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1138,6 +1289,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            compaction_tier: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -1163,6 +1315,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            compaction_tier: None,
         };
         store.write(&mem1, &[]).await.unwrap();
 
@@ -1180,6 +1333,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            compaction_tier: None,
         };
         store.write(&mem2, &[]).await.unwrap();
 
@@ -1205,6 +1359,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            compaction_tier: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -1236,6 +1391,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            compaction_tier: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1252,6 +1408,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            compaction_tier: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -1293,6 +1450,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            compaction_tier: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1309,6 +1467,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            compaction_tier: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -1351,6 +1510,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            compaction_tier: None,
         }
     }
 
@@ -1584,6 +1744,7 @@ mod tests {
                 created_at: None,
                 last_reinforced_at: None,
                 episode_id: Some("ep-mem-test".into()),
+                compaction_tier: None,
             };
             store.write(&mem, &[]).await.unwrap();
         }
@@ -1905,5 +2066,227 @@ mod tests {
             conn.query_row(&sql, [], memory_from_row).unwrap()
         };
         assert_ne!(mem.episode_id.as_deref(), Some("ep-work"));
+    }
+
+    // ── Annotation + compaction_tier tests ───────────────────────────
+
+    #[tokio::test]
+    async fn write_and_list_annotation() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "test content"), &[])
+            .await
+            .unwrap();
+
+        let ann = MemoryAnnotation {
+            id: "ann-1".into(),
+            memory_id: "m1".into(),
+            description: "Team standup discussion".into(),
+            who: vec![
+                crate::EntityRef {
+                    canonical_id: "person:jesse-sharratt".into(),
+                    display_name: "Jesse Sharratt".into(),
+                },
+                crate::EntityRef {
+                    canonical_id: "project:permagent".into(),
+                    display_name: "Permagent".into(),
+                },
+            ],
+            why: "Reviewing sprint progress".into(),
+            where_: Some("office".into()),
+            when_: chrono::Utc::now(),
+            how: "Verbal discussion in standup".into(),
+            created_at: chrono::Utc::now(),
+        };
+        store.write_annotation(&ann).await.unwrap();
+
+        let annotations = store.list_annotations("m1").await.unwrap();
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(annotations[0].id, "ann-1");
+        assert_eq!(annotations[0].description, "Team standup discussion");
+        assert_eq!(annotations[0].who.len(), 2);
+        assert_eq!(annotations[0].who[0].canonical_id, "person:jesse-sharratt");
+        assert_eq!(annotations[0].who[1].display_name, "Permagent");
+    }
+
+    #[tokio::test]
+    async fn annotation_idempotent_on_same_content() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "test"), &[])
+            .await
+            .unwrap();
+
+        let when_ = chrono::Utc::now();
+        let ann = MemoryAnnotation {
+            id: "ann-idem-1".into(),
+            memory_id: "m1".into(),
+            description: "Same description".into(),
+            who: vec![],
+            why: "same why".into(),
+            where_: None,
+            when_,
+            how: "manual".into(),
+            created_at: chrono::Utc::now(),
+        };
+        store.write_annotation(&ann).await.unwrap();
+
+        // Second call with identical (memory_id, description, when_) but different id
+        let ann2 = MemoryAnnotation {
+            id: "ann-idem-2".into(), // different id
+            memory_id: "m1".into(),
+            description: "Same description".into(), // same
+            who: vec![],
+            why: "same why".into(),
+            where_: None,
+            when_, // same
+            how: "manual".into(),
+            created_at: chrono::Utc::now(),
+        };
+        store.write_annotation(&ann2).await.unwrap();
+
+        // Should still be exactly one row — second was a no-op
+        let annotations = store.list_annotations("m1").await.unwrap();
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(annotations[0].id, "ann-idem-1");
+    }
+
+    #[tokio::test]
+    async fn list_annotations_empty_for_no_annotations() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "test"), &[])
+            .await
+            .unwrap();
+        let annotations = store.list_annotations("m1").await.unwrap();
+        assert!(annotations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_compaction_tier_persists() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "test"), &[])
+            .await
+            .unwrap();
+
+        store
+            .set_compaction_tier("m1", CompactionTier::HourlyRollup)
+            .await
+            .unwrap();
+
+        let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories WHERE id = 'm1'");
+        let conn = store.conn();
+        let mem: Memory = conn.query_row(&sql, [], memory_from_row).unwrap();
+        assert_eq!(mem.compaction_tier, Some(CompactionTier::HourlyRollup));
+    }
+
+    #[tokio::test]
+    async fn compaction_tier_defaults_to_none() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "test"), &[])
+            .await
+            .unwrap();
+
+        let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories WHERE id = 'm1'");
+        let conn = store.conn();
+        let mem: Memory = conn.query_row(&sql, [], memory_from_row).unwrap();
+        assert!(mem.compaction_tier.is_none());
+    }
+
+    #[tokio::test]
+    async fn compaction_tier_invalid_string_produces_none() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "test"), &[])
+            .await
+            .unwrap();
+
+        // Simulate an external write of an invalid tier string
+        {
+            let conn = store.conn();
+            conn.execute(
+                "UPDATE memories SET compaction_tier = 'bogus_tier' WHERE id = 'm1'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories WHERE id = 'm1'");
+        let conn = store.conn();
+        let mem: Memory = conn.query_row(&sql, [], memory_from_row).unwrap();
+        assert!(
+            mem.compaction_tier.is_none(),
+            "invalid tier string should parse as None"
+        );
+    }
+
+    #[tokio::test]
+    async fn entity_ref_serde_round_trip() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "test"), &[])
+            .await
+            .unwrap();
+
+        let ann = MemoryAnnotation {
+            id: "ann-serde".into(),
+            memory_id: "m1".into(),
+            description: "Test serde".into(),
+            who: vec![
+                crate::EntityRef {
+                    canonical_id: "did:chitin:jesse-sharratt".into(),
+                    display_name: "Jesse".into(),
+                },
+                crate::EntityRef {
+                    canonical_id: "project:spectral".into(),
+                    display_name: "Spectral".into(),
+                },
+            ],
+            why: "testing".into(),
+            where_: None,
+            when_: chrono::Utc::now(),
+            how: "automated".into(),
+            created_at: chrono::Utc::now(),
+        };
+        store.write_annotation(&ann).await.unwrap();
+
+        let loaded = store.list_annotations("m1").await.unwrap();
+        assert_eq!(loaded[0].who.len(), 2);
+        assert_eq!(loaded[0].who[0].canonical_id, "did:chitin:jesse-sharratt");
+        assert_eq!(loaded[0].who[0].display_name, "Jesse");
+        assert_eq!(loaded[0].who[1].canonical_id, "project:spectral");
+    }
+
+    #[tokio::test]
+    async fn entity_ref_with_special_characters_in_canonical_id() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "test"), &[])
+            .await
+            .unwrap();
+
+        let ann = MemoryAnnotation {
+            id: "ann-special".into(),
+            memory_id: "m1".into(),
+            description: "Special chars".into(),
+            who: vec![crate::EntityRef {
+                canonical_id: "did:chitin:org:make-tuned-unit:agent:spectral-v2".into(),
+                display_name: "Spectral v2 Agent".into(),
+            }],
+            why: "testing".into(),
+            where_: None,
+            when_: chrono::Utc::now(),
+            how: "automated".into(),
+            created_at: chrono::Utc::now(),
+        };
+        store.write_annotation(&ann).await.unwrap();
+
+        let loaded = store.list_annotations("m1").await.unwrap();
+        assert_eq!(
+            loaded[0].who[0].canonical_id,
+            "did:chitin:org:make-tuned-unit:agent:spectral-v2"
+        );
     }
 }

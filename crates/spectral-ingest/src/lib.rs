@@ -52,6 +52,40 @@ pub struct Memory {
     /// Episode this memory belongs to (if any).
     #[serde(default)]
     pub episode_id: Option<String>,
+    /// Compaction tier for lifecycle management. `None` = untiered.
+    #[serde(default)]
+    pub compaction_tier: Option<CompactionTier>,
+}
+
+/// Compaction tier for memory lifecycle management.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionTier {
+    Raw,
+    HourlyRollup,
+    DailyRollup,
+    WeeklyRollup,
+}
+
+impl CompactionTier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::HourlyRollup => "hourly_rollup",
+            Self::DailyRollup => "daily_rollup",
+            Self::WeeklyRollup => "weekly_rollup",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "raw" => Some(Self::Raw),
+            "hourly_rollup" => Some(Self::HourlyRollup),
+            "daily_rollup" => Some(Self::DailyRollup),
+            "weekly_rollup" => Some(Self::WeeklyRollup),
+            _ => None,
+        }
+    }
 }
 
 fn default_confidence() -> f64 {
@@ -125,6 +159,49 @@ pub struct Episode {
     pub wing: String,
     /// First ~200 chars of the highest-signal memory in the episode.
     pub summary_preview: Option<String>,
+}
+
+// ── Annotation ─────────────────────────────────────────────────────
+
+/// A canonical entity reference. Spectral stores the string as-is and
+/// does not validate format. Convention is consumer-defined (Permagent
+/// uses prefixes like "person:", "project:", "did:chitin:").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntityRef {
+    /// Canonical identifier stored as-provided. Consumer is responsible
+    /// for canonicalization consistency (e.g., format stability, case
+    /// normalization, alias resolution). Spectral does not validate or
+    /// transform this value.
+    pub canonical_id: String,
+    /// Human-readable display name. May change without affecting
+    /// canonical_id resolution. Used for UI rendering only.
+    pub display_name: String,
+}
+
+/// A contextual annotation on a memory. Stores who/where/why/how
+/// metadata produced by external agents (e.g., Permagent's Librarian).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryAnnotation {
+    pub id: String,
+    pub memory_id: String,
+    pub description: String,
+    pub who: Vec<EntityRef>,
+    pub why: String,
+    pub where_: Option<String>,
+    pub when_: chrono::DateTime<chrono::Utc>,
+    pub how: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Input for creating an annotation (without id/created_at).
+#[derive(Debug, Clone)]
+pub struct AnnotationInput {
+    pub description: String,
+    pub who: Vec<EntityRef>,
+    pub why: String,
+    pub where_: Option<String>,
+    pub when_: chrono::DateTime<chrono::Utc>,
+    pub how: String,
 }
 
 // ── SpectrogramRow ─────────────────────────────────────────────────
@@ -309,6 +386,29 @@ pub trait MemoryStore: Send + Sync {
         &self,
         episode_id: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>>;
+
+    // ── Annotations ──
+
+    /// Write an annotation on a memory.
+    fn write_annotation(
+        &self,
+        annotation: &MemoryAnnotation,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// List all annotations for a memory.
+    fn list_annotations(
+        &self,
+        memory_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryAnnotation>>> + Send + '_>>;
+
+    // ── Compaction ──
+
+    /// Set the compaction tier for a memory.
+    fn set_compaction_tier(
+        &self,
+        memory_id: &str,
+        tier: CompactionTier,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 }
 
 // ── TimeBucket ──────────────────────────────────────────────────────
