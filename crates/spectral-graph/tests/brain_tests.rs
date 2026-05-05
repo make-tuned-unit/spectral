@@ -1326,6 +1326,57 @@ fn remember_with_persists_compaction_tier() {
     );
 }
 
+// ── Wing override tests ──────────────────────────────────────────────
+
+#[test]
+fn remember_with_wing_override_bypasses_classifier() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let r = brain
+        .remember_with(
+            "wing-override-test",
+            "Some generic content that classifier would assign to general",
+            RememberOpts {
+                wing: Some("permagent".into()),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        r.wing.as_deref(),
+        Some("permagent"),
+        "wing override should bypass classifier and store as-is"
+    );
+}
+
+#[test]
+fn remember_with_wing_none_uses_classifier() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let r = brain
+        .remember_with(
+            "wing-classifier-test",
+            "Some generic content without wing override",
+            RememberOpts {
+                wing: None,
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    // Classifier determines wing from content — should not be None
+    // (falls through to "general" if no regex matches)
+    assert!(
+        r.wing.is_some(),
+        "wing should be populated by classifier when override is None"
+    );
+}
+
 // ── Ambient-conditional cascade tests ────────────────────────────────
 
 #[test]

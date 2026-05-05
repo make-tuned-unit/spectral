@@ -57,6 +57,11 @@ pub struct IngestOpts {
     /// `compaction_tier.is_some()` as the canonical signal that a memory
     /// belongs to the ambient stream.
     pub compaction_tier: Option<crate::CompactionTier>,
+    /// Wing override. When `Some(value)`, the classifier is bypassed and
+    /// the value is stored as-is (no normalization, no prefix stripping).
+    /// Callers are responsible for passing the canonical slug form.
+    /// When `None`, wing is derived by the classifier from key+content+category.
+    pub wing: Option<String>,
 }
 
 /// Result of the ingestion pipeline.
@@ -105,7 +110,9 @@ pub async fn ingest_with(
     store: &dyn MemoryStore,
     opts: IngestOpts,
 ) -> anyhow::Result<IngestResult> {
-    let wing = classifier::classify_wing(key, content, category, &config.wing_rules);
+    let wing = opts
+        .wing
+        .unwrap_or_else(|| classifier::classify_wing(key, content, category, &config.wing_rules));
     let hall = classifier::classify_hall(content, &config.hall_rules);
     let signal_score = signal::score_memory(content, &hall);
 
