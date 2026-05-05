@@ -315,6 +315,36 @@ pub struct AaakResult {
     pub wings_represented: Vec<String>,
 }
 
+/// Configuration for [`Brain::recall_topk_fts`].
+#[derive(Debug, Clone)]
+pub struct RecallTopKConfig {
+    /// Number of FTS candidates to retrieve. Default 40.
+    pub k: usize,
+    /// Blend signal_score into FTS ranking. Default true.
+    pub apply_signal_score_weighting: bool,
+    /// Apply exponential recency decay. Default true.
+    pub apply_recency_weighting: bool,
+    /// Half-life for recency decay in days. Default 90.0.
+    pub recency_half_life_days: f64,
+    /// Boost top candidate within entity/wing clusters. Default true.
+    pub apply_entity_resolution: bool,
+    /// Collapse `[Memory context]` reference duplicates. Default true.
+    pub apply_context_dedup: bool,
+}
+
+impl Default for RecallTopKConfig {
+    fn default() -> Self {
+        Self {
+            k: 40,
+            apply_signal_score_weighting: true,
+            apply_recency_weighting: true,
+            recency_half_life_days: 90.0,
+            apply_entity_resolution: true,
+            apply_context_dedup: true,
+        }
+    }
+}
+
 /// Result of [`Brain::audit_spectrogram()`].
 #[derive(Debug, Clone)]
 pub struct AuditReport {
@@ -975,6 +1005,66 @@ impl Brain {
     /// Equivalent to `recall(query, Visibility::Private)`.
     pub fn recall_local(&self, query: &str) -> Result<HybridRecallResult, Error> {
         self.recall(query, Visibility::Private)
+    }
+
+    /// Top-K FTS retrieval with additive re-ranking signals. No LLM cost.
+    ///
+    /// Retrieves `config.k` candidates via full-text search, then applies
+    /// configurable re-ranking (signal score weighting, recency decay,
+    /// entity clustering boost, context chain dedup). Returns results
+    /// sorted by final blended score.
+    pub fn recall_topk_fts(
+        &self,
+        query: &str,
+        config: &RecallTopKConfig,
+        visibility: Visibility,
+    ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
+        // Sanitize: strip FTS5 special characters and short words
+        let words: Vec<String> = query
+            .split_whitespace()
+            .filter(|w| w.len() > 1)
+            .map(|w| {
+                w.chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                    .collect::<String>()
+            })
+            .filter(|w| w.len() > 1)
+            .collect();
+
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut candidates = self
+            .rt
+            .block_on(self.memory_store.fts_search(&words, config.k))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
+        // Filter by visibility
+        candidates.retain(|m| str_to_vis(&m.visibility).allows(visibility));
+
+        // Apply re-ranking signals in order
+        if config.apply_signal_score_weighting {
+            crate::ranking::apply_signal_score_weight(&mut candidates, 0.3);
+        }
+
+        if config.apply_recency_weighting {
+            crate::ranking::apply_recency_weight(
+                &mut candidates,
+                config.recency_half_life_days,
+                Utc::now(),
+            );
+        }
+
+        if config.apply_entity_resolution {
+            crate::ranking::boost_entity_clusters(&mut candidates, 0.15);
+        }
+
+        if config.apply_context_dedup {
+            candidates = crate::ranking::dedup_context_chains(candidates);
+        }
+
+        Ok(candidates)
     }
 
     /// Run the cascade: ordered recognition layers (L1 AAAK → L3 TACT)

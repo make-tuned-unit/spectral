@@ -12,6 +12,7 @@ pub mod extract;
 pub mod kuzu_store;
 pub mod ontology;
 pub mod provenance;
+pub mod ranking;
 pub mod schema;
 
 pub use error::Error;
