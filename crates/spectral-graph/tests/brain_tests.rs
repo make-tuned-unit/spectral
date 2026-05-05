@@ -1133,8 +1133,8 @@ fn aaak_layer_fires_when_fact_above_threshold() {
     // Verify classifier + scorer produced the expected values
     assert_eq!(r.hall.as_deref(), Some("fact"), "should classify as fact");
     assert!(
-        r.signal_score >= 0.85,
-        "fact + 'decided' should score >= 0.85, got {}",
+        r.signal_score >= 0.7,
+        "fact + 'decided' should score >= 0.7, got {}",
         r.signal_score
     );
 

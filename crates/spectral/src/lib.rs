@@ -266,6 +266,30 @@ impl Brain {
         self.inner.ingest_document(source, content, visibility)
     }
 
+    /// Probe: given a context string (e.g., recent activity text), find
+    /// memories that are relevant to the current cognitive state.
+    ///
+    /// This is the recognition-mode entry point. Unlike `recall` (which is
+    /// query-initiated: "what do I know about X?"), probe is system-initiated:
+    /// "given what the user is doing, what related knowledge exists?"
+    pub fn probe(&self, context: &str, opts: ProbeOpts) -> Result<Vec<RecognizedMemory>, Error> {
+        self.inner.probe(context, opts)
+    }
+
+    /// Probe recent activity: synthesizes recent activity-wing memories into
+    /// a context string and probes the brain for related knowledge.
+    ///
+    /// This is the ambient-awareness entry point. Consumers call this
+    /// periodically (e.g., on each chat turn) to surface relevant memories
+    /// from the user's recent activity without an explicit query.
+    pub fn probe_recent(
+        &self,
+        window: ProbeWindow,
+        opts: ProbeOpts,
+    ) -> Result<Vec<RecognizedMemory>, Error> {
+        self.inner.probe_recent(window, opts)
+    }
+
     /// Direct access to the underlying graph store.
     pub fn store(&self) -> &spectral_graph::kuzu_store::KuzuStore {
         self.inner.store()

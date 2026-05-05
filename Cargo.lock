@@ -2821,6 +2821,7 @@ dependencies = [
  "spectral-core",
  "spectral-graph",
  "spectral-ingest",
+ "spectral-spectrogram",
  "spectral-tact",
  "tempfile",
  "tokio",
