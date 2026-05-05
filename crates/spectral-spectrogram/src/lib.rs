@@ -11,6 +11,6 @@ pub mod dimensions;
 pub mod matching;
 pub mod types;
 
-pub use analyzer::{AnalysisContext, AnalyzerConfig, SpectrogramAnalyzer};
+pub use analyzer::{AnalysisContext, AnalysisIntrospection, AnalyzerConfig, SpectrogramAnalyzer};
 pub use matching::ResonantMatch;
 pub use types::{ActionType, SpectralFingerprint};

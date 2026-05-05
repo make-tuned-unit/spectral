@@ -315,6 +315,19 @@ pub struct AaakResult {
     pub wings_represented: Vec<String>,
 }
 
+/// Result of [`Brain::audit_spectrogram()`].
+#[derive(Debug, Clone)]
+pub struct AuditReport {
+    pub memory_id: String,
+    pub memory_key: String,
+    pub wing: Option<String>,
+    pub content_excerpt: String,
+    pub fingerprint: spectral_spectrogram::SpectralFingerprint,
+    pub introspection: spectral_spectrogram::AnalysisIntrospection,
+    pub signal_score: f64,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
 /// A Spectral brain: identity + ontology + knowledge graph + memory store.
 ///
 /// # Open a brain
@@ -1699,6 +1712,50 @@ impl Brain {
         self.rt
             .block_on(self.memory_store.list_memories_by_signal(0.0, limit))
             .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// List memories in a specific wing with minimum signal score.
+    pub fn list_wing_memories(
+        &self,
+        wing: &str,
+        min_signal: f64,
+    ) -> Result<Vec<spectral_ingest::Memory>, Error> {
+        self.rt
+            .block_on(self.memory_store.list_wing_memories(wing, min_signal))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Audit a single memory's spectrogram with full introspection.
+    pub fn audit_spectrogram(&self, memory_id: &str) -> Result<AuditReport, Error> {
+        let mems = self
+            .rt
+            .block_on(self.memory_store.list_memories_by_signal(0.0, 10000))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
+        let mem = mems
+            .iter()
+            .find(|m| m.id == memory_id)
+            .ok_or_else(|| Error::Schema(format!("memory not found: {memory_id}")))?;
+
+        let context = AnalysisContext::default();
+        let (fingerprint, introspection) = self
+            .spectrogram_analyzer
+            .analyze_with_introspection(mem, &context);
+
+        Ok(AuditReport {
+            memory_id: mem.id.clone(),
+            memory_key: mem.key.clone(),
+            wing: mem.wing.clone(),
+            content_excerpt: mem.content.chars().take(500).collect(),
+            fingerprint,
+            introspection,
+            signal_score: mem.signal_score,
+            created_at: mem.created_at.as_deref().and_then(|s| {
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                    .ok()
+                    .map(|dt| dt.and_utc())
+            }),
+        })
     }
 
     pub fn aaak(&self, opts: AaakOpts) -> Result<AaakResult, Error> {

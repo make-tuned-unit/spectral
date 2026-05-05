@@ -11,12 +11,17 @@ description = "Accuracy benchmarks for Spectral: LongMemEval_S and other standar
 name = "spectral-bench-accuracy"
 path = "src/main.rs"
 
+[[bin]]
+name = "spectral-audit"
+path = "src/bin/audit.rs"
+
 [dependencies]
 spectral-core = { path = "../spectral-core" }
 spectral-graph = { path = "../spectral-graph" }
 spectral-ingest = { path = "../spectral-ingest" }
 spectral-tact = { path = "../spectral-tact" }
 spectral-cascade = { path = "../spectral-cascade" }
+spectral-spectrogram = { path = "../spectral-spectrogram" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
