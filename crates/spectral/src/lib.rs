@@ -71,8 +71,9 @@ pub use spectral_graph::activity::{
 };
 pub use spectral_graph::brain::{
     AaakOpts, AaakResult, AssertResult, CrossWingRecallResult, EntityPolicy, HybridRecallResult,
-    IngestResult, IngestTextOpts, IngestTextResult, RecallResult, ReinforceOpts, ReinforceResult,
-    RejectedTriple, RejectionReason, RememberOpts, RememberResult, ResonantMemoryHit,
+    IngestResult, IngestTextOpts, IngestTextResult, RecallResult, RecallTopKConfig, ReinforceOpts,
+    ReinforceResult, RejectedTriple, RejectionReason, RememberOpts, RememberResult,
+    ResonantMemoryHit,
 };
 pub use spectral_graph::Error;
 pub use spectral_ingest::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
@@ -288,6 +289,16 @@ impl Brain {
         opts: ProbeOpts,
     ) -> Result<Vec<RecognizedMemory>, Error> {
         self.inner.probe_recent(window, opts)
+    }
+
+    /// Top-K FTS retrieval with additive re-ranking. Zero LLM cost.
+    pub fn recall_topk_fts(
+        &self,
+        query: &str,
+        config: &RecallTopKConfig,
+        visibility: Visibility,
+    ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
+        self.inner.recall_topk_fts(query, config, visibility)
     }
 
     /// Direct access to the underlying graph store.

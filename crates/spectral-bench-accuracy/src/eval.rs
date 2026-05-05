@@ -105,8 +105,10 @@ impl AccuracyEval {
 
         let mut report = EvalReport::new(self.actor.name(), self.judge.name());
         report.retrieval_path = match self.config.retrieval_path {
+            RetrievalPath::TopkFts => "topk_fts".into(),
             RetrievalPath::Tact => "tact".into(),
             RetrievalPath::Graph => "graph".into(),
+            RetrievalPath::Cascade => "cascade".into(),
         };
         let pb = ProgressBar::new(questions.len() as u64);
         pb.set_style(
@@ -231,6 +233,14 @@ impl AccuracyEval {
             (formatted, Vec::new(), Some(telemetry))
         } else {
             match self.config.retrieval_path {
+                RetrievalPath::TopkFts => {
+                    let formatted = retrieval::retrieve_topk_fts(
+                        &brain,
+                        &question.question,
+                        &self.config.retrieval,
+                    )?;
+                    (formatted, Vec::new(), None)
+                }
                 RetrievalPath::Tact => {
                     let result = brain.recall_local(&question.question)?;
                     let hits: Vec<_> = result
@@ -248,6 +258,14 @@ impl AccuracyEval {
                         &self.config.retrieval,
                     )?;
                     (formatted, Vec::new(), None)
+                }
+                RetrievalPath::Cascade => {
+                    let (formatted, telemetry) = retrieval::retrieve_cascade(
+                        &brain,
+                        &question.question,
+                        &self.config.retrieval,
+                    )?;
+                    (formatted, Vec::new(), Some(telemetry))
                 }
             }
         };

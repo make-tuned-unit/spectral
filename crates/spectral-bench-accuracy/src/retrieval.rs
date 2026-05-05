@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use spectral_core::visibility::Visibility;
-use spectral_graph::brain::Brain;
+use spectral_graph::brain::{Brain, RecallTopKConfig};
 use std::collections::HashSet;
 
 /// Configuration for retrieval.
@@ -22,13 +22,15 @@ impl Default for RetrievalConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetrievalPath {
-    /// TACT/FTS recall (default).
+    /// Top-K FTS with re-ranking (default — Phase 1 improvement).
     #[default]
+    TopkFts,
+    /// TACT/FTS recall (legacy).
     Tact,
-    /// Graph traversal: use entity neighborhood to find memories that
-    /// FTS misses due to vocabulary mismatch, then fall back to FTS
-    /// if the graph produces fewer than 5 results.
+    /// Graph traversal.
     Graph,
+    /// Cascade (L1→L2→L3).
+    Cascade,
 }
 
 /// Format a MemoryHit into the standard actor format.
@@ -50,6 +52,38 @@ pub fn retrieve(brain: &Brain, question: &str, config: &RetrievalConfig) -> Resu
 
     let memories: Vec<String> = result
         .memory_hits
+        .into_iter()
+        .take(config.max_results)
+        .map(|hit| format_hit(&hit))
+        .collect();
+
+    Ok(memories)
+}
+
+/// Retrieve via top-K FTS with additive re-ranking. No LLM cost.
+///
+/// Configurable via env vars for ablation:
+/// - `SPECTRAL_DISABLE_SIGNAL_SCORE=1` — disable signal weighting
+/// - `SPECTRAL_DISABLE_RECENCY=1` — disable recency weighting
+/// - `SPECTRAL_DISABLE_ENTITY_RESOLUTION=1` — disable entity clustering
+/// - `SPECTRAL_DISABLE_CONTEXT_DEDUP=1` — disable context chain dedup
+pub fn retrieve_topk_fts(
+    brain: &Brain,
+    question: &str,
+    config: &RetrievalConfig,
+) -> Result<Vec<String>> {
+    let topk_config = RecallTopKConfig {
+        k: config.max_results.max(40),
+        apply_signal_score_weighting: std::env::var("SPECTRAL_DISABLE_SIGNAL_SCORE").is_err(),
+        apply_recency_weighting: std::env::var("SPECTRAL_DISABLE_RECENCY").is_err(),
+        apply_entity_resolution: std::env::var("SPECTRAL_DISABLE_ENTITY_RESOLUTION").is_err(),
+        apply_context_dedup: std::env::var("SPECTRAL_DISABLE_CONTEXT_DEDUP").is_err(),
+        ..RecallTopKConfig::default()
+    };
+
+    let hits = brain.recall_topk_fts(question, &topk_config, Visibility::Private)?;
+
+    let memories: Vec<String> = hits
         .into_iter()
         .take(config.max_results)
         .map(|hit| format_hit(&hit))
