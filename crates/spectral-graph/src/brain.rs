@@ -152,6 +152,11 @@ pub struct RememberOpts {
     /// `compaction_tier.is_some()` as the canonical signal that a memory
     /// belongs to the ambient stream.
     pub compaction_tier: Option<spectral_ingest::CompactionTier>,
+    /// Wing override. When `Some(value)`, the classifier is bypassed and the
+    /// value is stored as-is. Callers pass the canonical slug form (e.g.,
+    /// `"permagent"` not `"project:permagent"`). When `None`, wing is derived
+    /// by the classifier from key+content+category.
+    pub wing: Option<String>,
 }
 
 /// Result of remembering a memory.
@@ -854,6 +859,7 @@ impl Brain {
             created_at: opts.created_at,
             episode_id: opts.episode_id,
             compaction_tier: opts.compaction_tier,
+            wing: opts.wing,
         };
         let result = self
             .rt
