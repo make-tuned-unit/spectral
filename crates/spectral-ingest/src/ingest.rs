@@ -97,6 +97,27 @@ pub async fn ingest(
     .await
 }
 
+/// Strip `[Memory context] - key:` reference chains from the front of content.
+/// These are ingest artifacts from nested memory retrieval and pollute classification.
+fn clean_memory_context_prefixes(content: &str) -> String {
+    let mut cleaned = content.trim().to_string();
+
+    while cleaned.starts_with("[Memory context]") {
+        if let Some(colon_pos) = cleaned.find(": ") {
+            cleaned = cleaned[colon_pos + 2..].trim().to_string();
+        } else {
+            break;
+        }
+    }
+
+    // If stripping left too little content, preserve the original.
+    if cleaned.len() < 20 {
+        return content.to_string();
+    }
+
+    cleaned
+}
+
 /// Run the ingestion pipeline with full metadata control.
 #[allow(clippy::too_many_arguments)]
 pub async fn ingest_with(
@@ -110,6 +131,8 @@ pub async fn ingest_with(
     store: &dyn MemoryStore,
     opts: IngestOpts,
 ) -> anyhow::Result<IngestResult> {
+    let content = clean_memory_context_prefixes(content);
+    let content = content.as_str();
     let wing = opts
         .wing
         .unwrap_or_else(|| classifier::classify_wing(key, content, category, &config.wing_rules));
@@ -269,4 +292,48 @@ fn make_fp_id(id_a: &str, id_b: &str) -> String {
         "{:016x}",
         u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 >= 8 bytes")),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_memory_context_prefixes_strips_single() {
+        let input = "[Memory context] - some_key: Decided to use Rust for the backend";
+        let cleaned = clean_memory_context_prefixes(input);
+        assert_eq!(cleaned, "Decided to use Rust for the backend");
+    }
+
+    #[test]
+    fn clean_memory_context_prefixes_strips_double() {
+        let input = "[Memory context] - outer_key: [Memory context] - inner_key: The actual content of this memory is here";
+        let cleaned = clean_memory_context_prefixes(input);
+        assert_eq!(cleaned, "The actual content of this memory is here");
+    }
+
+    #[test]
+    fn clean_memory_context_prefixes_strips_triple() {
+        let input = "[Memory context] - a: [Memory context] - b: [Memory context] - c: Real cognitive content about architecture decisions";
+        let cleaned = clean_memory_context_prefixes(input);
+        assert_eq!(
+            cleaned,
+            "Real cognitive content about architecture decisions"
+        );
+    }
+
+    #[test]
+    fn clean_memory_context_prefixes_leaves_clean_content() {
+        let input = "Decided to use PostgreSQL for the production database";
+        let cleaned = clean_memory_context_prefixes(input);
+        assert_eq!(cleaned, input);
+    }
+
+    #[test]
+    fn clean_memory_context_prefixes_fallback_when_too_short() {
+        // After stripping, only "hi" remains (< 20 chars) — preserve original
+        let input = "[Memory context] - key: hi";
+        let cleaned = clean_memory_context_prefixes(input);
+        assert_eq!(cleaned, input);
+    }
 }

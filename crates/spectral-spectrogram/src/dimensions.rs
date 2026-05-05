@@ -104,8 +104,12 @@ pub fn decision_polarity(content: &str, at: ActionType) -> f64 {
     raw.clamp(-1.0, 1.0)
 }
 
-/// Count causal connectives per sentence. Capped at 1.0.
+/// Count causal connectives, conditional structures, and multi-step reasoning
+/// markers per sentence. Capped at 1.0.
 pub fn causal_depth(content: &str) -> f64 {
+    let lower = content.to_lowercase();
+
+    // Causal connectives
     let causal_markers = [
         "because",
         "therefore",
@@ -116,18 +120,63 @@ pub fn causal_depth(content: &str) -> f64 {
         "due to",
         "since",
         "consequently",
+        "this means",
+        "in order to",
+        "which means",
+        "resulting in",
+        "hence",
+        "thus",
+        "that's why",
+        "for this reason",
     ];
-    let lower = content.to_lowercase();
-    let count = causal_markers
+
+    // Conditional structures
+    let conditional_markers = [
+        "if ",
+        "when ",
+        "given ",
+        "assuming ",
+        "unless ",
+        "provided that",
+        "in case",
+        "otherwise",
+    ];
+
+    // Multi-step reasoning
+    let sequence_markers = [
+        "first,",
+        "then ",
+        "next,",
+        "finally,",
+        "step ",
+        "after that",
+        "following",
+        "subsequently",
+    ];
+
+    let causal_count = causal_markers
         .iter()
         .filter(|m| lower.contains(**m))
         .count();
+    let conditional_count = conditional_markers
+        .iter()
+        .filter(|m| lower.contains(**m))
+        .count();
+    let sequence_count = sequence_markers
+        .iter()
+        .filter(|m| lower.contains(**m))
+        .count();
+
+    let total = causal_count + conditional_count + sequence_count;
     let sentences = content
         .split(['.', '!', '?'])
         .filter(|s| !s.trim().is_empty())
         .count()
         .max(1);
-    (count as f64 / sentences as f64).min(1.0)
+
+    // Use sigmoid-like scaling: 1 marker per sentence → ~0.5, 2+ → higher
+    let density = total as f64 / sentences as f64;
+    (density / (density + 0.5)).min(1.0)
 }
 
 /// Positive minus negative sentiment words, normalized.
@@ -175,10 +224,12 @@ pub fn emotional_valence(content: &str) -> f64 {
     raw.clamp(-1.0, 1.0)
 }
 
-/// Detect explicit time anchors (dates, relative time references).
+/// Detect explicit time anchors (dates, relative time, durations, time-of-day).
 pub fn temporal_specificity(content: &str) -> f64 {
     let lower = content.to_lowercase();
-    let time_markers = [
+
+    // Relative time references
+    let relative_markers = [
         "yesterday",
         "today",
         "tomorrow",
@@ -186,35 +237,117 @@ pub fn temporal_specificity(content: &str) -> f64 {
         "this week",
         "next week",
         "last month",
-        "deadline",
+        "this month",
+        "next month",
+        "last year",
+        "this year",
+        "next year",
+        "recently",
+        "soon",
+        "later",
+        "earlier",
+        "ago",
+        "in 2 ",
+        "in 3 ",
+        "in a few",
+    ];
+
+    // Time-of-day and scheduling
+    let time_markers = [
         "morning",
         "afternoon",
         "evening",
+        "tonight",
+        "midnight",
+        "deadline",
+        "by the end of",
+        "before the",
+        "after the",
+        "at noon",
+        "scheduled",
+        "meeting",
+    ];
+
+    // Day and month names
+    let calendar_markers = [
         "monday",
         "tuesday",
         "wednesday",
         "thursday",
         "friday",
+        "saturday",
+        "sunday",
         "january",
         "february",
         "march",
         "april",
+        "may ",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
     ];
-    let count = time_markers.iter().filter(|m| lower.contains(**m)).count();
 
-    // Also count date-like patterns (e.g. "2026-04-28", "04/28")
-    let date_count = regex::Regex::new(r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}")
+    // Duration markers
+    let duration_markers = [
+        "for hours",
+        "for days",
+        "for weeks",
+        "for months",
+        "since last",
+        "since the",
+        "over the past",
+        "during the",
+        "throughout",
+        "in the past",
+    ];
+
+    let relative_count = relative_markers
+        .iter()
+        .filter(|m| lower.contains(**m))
+        .count();
+    let time_count = time_markers.iter().filter(|m| lower.contains(**m)).count();
+    let calendar_count = calendar_markers
+        .iter()
+        .filter(|m| lower.contains(**m))
+        .count();
+    let duration_count = duration_markers
+        .iter()
+        .filter(|m| lower.contains(**m))
+        .count();
+
+    // Date-like patterns: "2026-04-28", "04/28", "April 13", "May 5 2026"
+    let date_regex_count = regex::Regex::new(
+        r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{1,2}(?:st|nd|rd|th)?\s+\d{4}",
+    )
+    .unwrap()
+    .find_iter(content)
+    .count();
+
+    // Clock time patterns: "3pm", "at 14:30", "10:00 AM"
+    let clock_count = regex::Regex::new(r"\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm|AM|PM)")
         .unwrap()
         .find_iter(content)
         .count();
 
-    let total = count + date_count;
+    let total = relative_count
+        + time_count
+        + calendar_count
+        + duration_count
+        + date_regex_count
+        + clock_count;
     let sentences = content
         .split(['.', '!', '?'])
         .filter(|s| !s.trim().is_empty())
         .count()
         .max(1);
-    (total as f64 / sentences as f64).min(1.0)
+
+    // Sigmoid-like scaling: 1 marker per sentence → ~0.5, 2+ → higher
+    let density = total as f64 / sentences as f64;
+    (density / (density + 0.5)).min(1.0)
 }
 
 /// Novelty relative to existing terms in the wing. Simple approach: count of
