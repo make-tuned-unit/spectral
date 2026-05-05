@@ -223,6 +223,18 @@ fn decay_applies_to_old_memories() {
         )
         .unwrap();
 
+    // Force signal_score to 0.85 so this test measures decay in
+    // isolation from scoring curve changes.
+    {
+        let db_path = tmp.path().join("memory.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE memories SET signal_score = 0.85 WHERE key = 'old-key'",
+            [],
+        )
+        .unwrap();
+    }
+
     // Backdates created_at to 30 days ago via direct SQL
     {
         let db_path = tmp.path().join("memory.db");
@@ -280,6 +292,18 @@ fn decay_capped_at_50_percent() {
             Visibility::Private,
         )
         .unwrap();
+
+    // Force signal_score to 0.85 so this test measures decay in
+    // isolation from scoring curve changes.
+    {
+        let db_path = tmp.path().join("memory.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE memories SET signal_score = 0.85 WHERE key = 'ancient-key'",
+            [],
+        )
+        .unwrap();
+    }
 
     // Backdate to 5 years ago
     {
