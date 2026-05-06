@@ -324,7 +324,7 @@ pub struct RecallTopKConfig {
     pub apply_signal_score_weighting: bool,
     /// Apply exponential recency decay. Default true.
     pub apply_recency_weighting: bool,
-    /// Half-life for recency decay in days. Default 90.0.
+    /// Half-life for recency decay in days. Default 365.0.
     pub recency_half_life_days: f64,
     /// Boost top candidate within entity/wing clusters. Default true.
     pub apply_entity_resolution: bool,
@@ -338,7 +338,7 @@ impl Default for RecallTopKConfig {
             k: 40,
             apply_signal_score_weighting: true,
             apply_recency_weighting: true,
-            recency_half_life_days: 90.0,
+            recency_half_life_days: 365.0,
             apply_entity_resolution: true,
             apply_context_dedup: true,
         }
@@ -1048,6 +1048,8 @@ impl Brain {
             crate::ranking::apply_signal_score_weight(&mut candidates, 0.3);
         }
 
+        // Tuned 2026-05-06: 90d → 365d softens recency demotion of older-but-still-correct
+        // memories (multi-session synthesis was regressing under aggressive recency)
         if config.apply_recency_weighting {
             crate::ranking::apply_recency_weight(
                 &mut candidates,
@@ -1056,8 +1058,10 @@ impl Brain {
             );
         }
 
+        // Tuned 2026-05-06: 0.15 → 0.05
+        // Entity grouping was pulling cross-session noise into top results
         if config.apply_entity_resolution {
-            crate::ranking::boost_entity_clusters(&mut candidates, 0.15);
+            crate::ranking::boost_entity_clusters(&mut candidates, 0.05);
         }
 
         if config.apply_context_dedup {
