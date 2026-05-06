@@ -676,7 +676,12 @@ impl MemoryStore for SqliteStore {
         query_words: &[String],
         max_results: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>> {
-        let query = query_words.join(" OR ");
+        let query = query_words
+            .iter()
+            .filter(|w| !w.is_empty())
+            .map(|w| format!("\"{}\"", w.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" OR ");
         let conn = self.conn.clone();
 
         Box::pin(async move {

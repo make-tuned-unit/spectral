@@ -33,3 +33,4 @@ unresolved/
 /bench-output/
 *.bench.json
 *.bench.txt
+eval-work/

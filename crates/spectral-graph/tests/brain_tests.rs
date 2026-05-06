@@ -1749,3 +1749,84 @@ fn constellation_layer_empty_context_preserves_query_only_behavior() {
         );
     }
 }
+
+// ── FTS query quoting tests ──────────────────────────────────────────
+
+#[test]
+fn recall_topk_fts_handles_column_syntax_words() {
+    use spectral_graph::brain::RecallTopKConfig;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "k1",
+            "Sarah emailed about the meeting on Tuesday",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    // "day" and "to" previously crashed FTS5 with "no such column" errors
+    let result = brain.recall_topk_fts(
+        "remember the day to email Sarah",
+        &RecallTopKConfig::default(),
+        Visibility::Private,
+    );
+
+    assert!(
+        result.is_ok(),
+        "should not crash on column-syntax words: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn recall_topk_fts_handles_special_chars() {
+    use spectral_graph::brain::RecallTopKConfig;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "k1",
+            "Latest update from Sarah on the project",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let result = brain.recall_topk_fts(
+        "what's the (latest) update from sarah*?",
+        &RecallTopKConfig::default(),
+        Visibility::Private,
+    );
+
+    assert!(
+        result.is_ok(),
+        "should not crash on special chars: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn recall_topk_fts_finds_multi_word_matches() {
+    use spectral_graph::brain::RecallTopKConfig;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember("k1", "Sarah emailed about the meeting", Visibility::Private)
+        .unwrap();
+
+    let result = brain
+        .recall_topk_fts(
+            "Sarah email meeting",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
+        .unwrap();
+
+    assert!(!result.is_empty(), "should find the seeded memory");
+}
