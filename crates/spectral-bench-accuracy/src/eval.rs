@@ -52,13 +52,28 @@ impl Default for EvalConfig {
     }
 }
 
-/// Estimate the cost of running the eval.
+/// Per-call cost estimate for a model.
+fn model_cost_per_call(model: &str) -> f64 {
+    match model {
+        "claude-sonnet-4-6" => 0.04,
+        m if m.starts_with("claude-haiku") => 0.008,
+        _ => 0.0005, // local models, conservative undercount
+    }
+}
+
+/// Estimate the cost of running the eval with given models.
+pub fn estimate_cost_for_models(
+    question_count: usize,
+    actor_model: &str,
+    judge_model: &str,
+) -> f64 {
+    let per_question = model_cost_per_call(actor_model) + model_cost_per_call(judge_model);
+    question_count as f64 * per_question
+}
+
+/// Estimate the cost of running the eval (default Sonnet models).
 pub fn estimate_cost(question_count: usize) -> f64 {
-    // ~2 LLM calls per question (actor + judge), ~10K tokens each
-    // Sonnet 4 pricing: ~$3/M input + $15/M output (rough Apr 2026)
-    // ~10K input + ~0.5K output per call = ~$0.04 per call
-    let calls = question_count * 2;
-    calls as f64 * 0.04
+    estimate_cost_for_models(question_count, "claude-sonnet-4-6", "claude-sonnet-4-6")
 }
 
 /// The main evaluator.
@@ -601,5 +616,36 @@ mod tests {
         assert_eq!(report.correct, 3);
         assert_eq!(report.failures().len(), 1);
         assert!(report.failures()[0].predicted.contains("[error:"));
+    }
+
+    #[test]
+    fn cost_estimation_respects_model() {
+        let sonnet = estimate_cost_for_models(100, "claude-sonnet-4-6", "claude-sonnet-4-6");
+        assert!(
+            (sonnet - 8.0).abs() < 0.01,
+            "100 Sonnet questions = $8, got {sonnet}"
+        );
+
+        let haiku = estimate_cost_for_models(
+            100,
+            "claude-haiku-4-5-20251001",
+            "claude-haiku-4-5-20251001",
+        );
+        assert!(
+            haiku < 2.0,
+            "100 Haiku questions should be < $2, got {haiku}"
+        );
+
+        let local = estimate_cost_for_models(100, "local-gemma", "local-gemma");
+        assert!(
+            (local - 0.1).abs() < 0.01,
+            "100 local questions = $0.10, got {local}"
+        );
+
+        let mixed = estimate_cost_for_models(100, "claude-sonnet-4-6", "claude-haiku-4-5-20251001");
+        assert!(
+            mixed > haiku && mixed < sonnet,
+            "mixed should be between haiku and sonnet"
+        );
     }
 }

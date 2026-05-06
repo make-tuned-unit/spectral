@@ -53,18 +53,20 @@ fn judge_prompt(question: &str, predicted: &str, ground_truth: &str, category: C
     )
 }
 
-/// Judge that calls the Anthropic Messages API.
+/// Judge that calls the Anthropic Messages API (or compatible endpoint).
 pub struct AnthropicJudge {
     api_key: String,
     model: String,
+    base_url: String,
     client: reqwest::blocking::Client,
 }
 
 impl AnthropicJudge {
-    pub fn new(api_key: String, model: String) -> Self {
+    pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             api_key,
             model,
+            base_url,
             client: reqwest::blocking::Client::new(),
         }
     }
@@ -72,7 +74,11 @@ impl AnthropicJudge {
     pub fn from_env() -> Result<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
-        Ok(Self::new(api_key, "claude-sonnet-4-6".into()))
+        Ok(Self::new(
+            api_key,
+            "claude-sonnet-4-6".into(),
+            "https://api.anthropic.com".into(),
+        ))
     }
 }
 
@@ -94,7 +100,7 @@ impl Judge for AnthropicJudge {
 
         let resp = self
             .client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")

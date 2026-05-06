@@ -10,18 +10,20 @@ pub trait Actor: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Actor that calls the Anthropic Messages API.
+/// Actor that calls the Anthropic Messages API (or compatible endpoint).
 pub struct AnthropicActor {
     api_key: String,
     model: String,
+    base_url: String,
     client: reqwest::blocking::Client,
 }
 
 impl AnthropicActor {
-    pub fn new(api_key: String, model: String) -> Self {
+    pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             api_key,
             model,
+            base_url,
             client: reqwest::blocking::Client::new(),
         }
     }
@@ -29,7 +31,11 @@ impl AnthropicActor {
     pub fn from_env() -> Result<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
-        Ok(Self::new(api_key, "claude-sonnet-4-6".into()))
+        Ok(Self::new(
+            api_key,
+            "claude-sonnet-4-6".into(),
+            "https://api.anthropic.com".into(),
+        ))
     }
 }
 
@@ -56,7 +62,7 @@ impl Actor for AnthropicActor {
 
         let resp = self
             .client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
