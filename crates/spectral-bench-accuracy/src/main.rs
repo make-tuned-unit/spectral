@@ -68,6 +68,10 @@ enum Command {
         /// Base URL for API calls
         #[arg(long, default_value = "https://api.anthropic.com")]
         base_url: String,
+
+        /// Maximum memories to pass to actor
+        #[arg(long, default_value = "40")]
+        max_results: usize,
     },
 
     /// Pretty-print a previously saved JSON report
@@ -126,6 +130,7 @@ fn main() -> Result<()> {
             actor_model,
             judge_model,
             base_url,
+            max_results,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
@@ -178,6 +183,7 @@ fn main() -> Result<()> {
                 max_questions,
                 categories: cats,
                 ingest_strategy: strategy,
+                retrieval: RetrievalConfig { max_results },
                 retrieval_path: ret_path,
                 use_cascade,
                 dump_scores_path: dump_scores,
