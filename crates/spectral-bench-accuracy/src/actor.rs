@@ -47,8 +47,20 @@ impl Actor for AnthropicActor {
              Today's date is {question_date}.\n\
              Below are memories retrieved from the conversation, each prefixed \
              with the date it was created.\n\
-             Answer the question accurately based ONLY on these memories.\n\
-             If the answer cannot be determined from the memories, say \"I don't know.\"\n\n\
+             \n\
+             Instructions:\n\
+             1. For counting, listing, or ordering questions: scan ALL memories systematically before answering. \
+             Do not stop after finding the first few items. Enumerate every relevant item across all retrieved \
+             memories, then count or order as the question requires.\n\
+             2. For questions about your current or most recent X: identify the most recent memory mentioning X \
+             and treat that value as definitive, even if older memories mention different values.\n\
+             3. When information appears partial across memories, attempt synthesis from the available evidence \
+             rather than saying \"I don't know.\" Only respond with \"I don't know\" when no memory contains \
+             relevant content for the question.\n\
+             4. When the question asks whether something happened (e.g., \"did I mention X?\"), and X is not \
+             present in any memory, state that clearly and note what IS present in the memories \
+             (e.g., \"You mentioned Y but not X\").\n\
+             \n\
              Memories:\n{memories_text}\n\n\
              Question: {question}\n\n\
              Answer:"
