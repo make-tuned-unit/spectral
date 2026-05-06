@@ -45,8 +45,8 @@ enum Command {
         #[arg(long, default_value = "per_turn")]
         ingest_strategy: String,
 
-        /// Retrieval path: tact (default) or graph
-        #[arg(long, default_value = "tact")]
+        /// Retrieval path: tact, graph, topk_fts (default), or cascade
+        #[arg(long, default_value = "topk_fts")]
         retrieval_path: String,
 
         /// Write per-memory signal score records to this JSONL path
@@ -139,8 +139,21 @@ fn main() -> Result<()> {
             };
 
             let ret_path = match retrieval_path.as_str() {
+                "tact" => retrieval::RetrievalPath::Tact,
                 "graph" => retrieval::RetrievalPath::Graph,
-                _ => retrieval::RetrievalPath::Tact,
+                "topk_fts" => retrieval::RetrievalPath::TopkFts,
+                "cascade" => retrieval::RetrievalPath::Cascade,
+                other => {
+                    eprintln!(
+                        "Unknown retrieval path: {other}. Valid: tact, graph, topk_fts, cascade"
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let ret_path = if use_cascade {
+                retrieval::RetrievalPath::Cascade
+            } else {
+                ret_path
             };
 
             let config = EvalConfig {

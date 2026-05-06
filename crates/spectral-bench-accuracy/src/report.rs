@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 fn default_retrieval_path() -> String {
-    "tact".into()
+    "topk_fts".into()
 }
 
 /// Whether the eval run completed or halted early.
