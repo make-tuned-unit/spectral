@@ -56,6 +56,22 @@ enum Command {
         /// Use cascade retrieval (L1→L2→L3) instead of direct recall
         #[arg(long)]
         use_cascade: bool,
+
+        /// Actor model name
+        #[arg(long, default_value = "claude-sonnet-4-6")]
+        actor_model: String,
+
+        /// Judge model name
+        #[arg(long, default_value = "claude-sonnet-4-6")]
+        judge_model: String,
+
+        /// Base URL for API calls
+        #[arg(long, default_value = "https://api.anthropic.com")]
+        base_url: String,
+
+        /// Maximum memories to pass to actor
+        #[arg(long, default_value = "40")]
+        max_results: usize,
     },
 
     /// Pretty-print a previously saved JSON report
@@ -111,10 +127,15 @@ fn main() -> Result<()> {
             retrieval_path,
             dump_scores,
             use_cascade,
+            actor_model,
+            judge_model,
+            base_url,
+            max_results,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
-            let estimated_cost = eval::estimate_cost(question_count);
+            let estimated_cost =
+                eval::estimate_cost_for_models(question_count, &actor_model, &judge_model);
 
             eprintln!("Dataset: {} questions", ds.len());
             eprintln!("Evaluating: {question_count} questions");
@@ -162,14 +183,17 @@ fn main() -> Result<()> {
                 max_questions,
                 categories: cats,
                 ingest_strategy: strategy,
+                retrieval: RetrievalConfig { max_results },
                 retrieval_path: ret_path,
                 use_cascade,
                 dump_scores_path: dump_scores,
                 ..Default::default()
             };
 
-            let actor = AnthropicActor::from_env()?;
-            let judge = AnthropicJudge::from_env()?;
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
+            let actor = AnthropicActor::new(api_key.clone(), actor_model, base_url.clone());
+            let judge = AnthropicJudge::new(api_key, judge_model, base_url);
 
             let eval = AccuracyEval::new(config, Box::new(actor), Box::new(judge));
             let report = eval.run()?;

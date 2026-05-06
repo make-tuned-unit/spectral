@@ -14,7 +14,7 @@ pub struct RetrievalConfig {
 
 impl Default for RetrievalConfig {
     fn default() -> Self {
-        Self { max_results: 20 }
+        Self { max_results: 40 }
     }
 }
 
@@ -202,6 +202,12 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
     use spectral_graph::brain::{BrainConfig, EntityPolicy, RememberOpts};
+
+    #[test]
+    fn default_max_results_is_40() {
+        let config = RetrievalConfig::default();
+        assert_eq!(config.max_results, 40);
+    }
 
     #[test]
     fn retrieve_includes_created_at_in_format() {
