@@ -1007,8 +1007,29 @@ impl Brain {
         self.recall(query, Visibility::Private)
     }
 
-    /// Direct FTS search bypassing TACT pipeline. Used by cascade and topk_fts
-    /// to avoid TACT's max_results=5 cap.
+    /// Run TACT retrieval with a custom max_results (overriding the Brain's
+    /// default TactConfig). Used by cascade to get K=40 through TACT's tiered
+    /// search (fingerprint → wing → FTS) instead of bypassing it.
+    pub fn tact_retrieve_with_k(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
+        let mut config = self.tact_config.clone();
+        config.max_results = max_results;
+        let result = self
+            .rt
+            .block_on(spectral_tact::retrieve(
+                query,
+                &config,
+                self.memory_store.as_ref(),
+            ))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        Ok(result.memories)
+    }
+
+    /// Direct FTS search bypassing TACT pipeline. Used by topk_fts
+    /// for raw FTS access without TACT classification overhead.
     pub fn fts_search_direct(
         &self,
         words: &[String],

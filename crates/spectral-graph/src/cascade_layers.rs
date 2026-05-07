@@ -137,34 +137,23 @@ impl Default for CascadePipelineConfig {
 
 /// Run the integrated cascade pipeline.
 ///
-/// Single retrieval path: FTS K=40 → ambient boost → signal/recency re-ranking
-/// → episode diversity → context dedup. No redundant FTS calls, no AAAK
-/// contamination, no episode truncation.
+/// TACT retrieval at K=40 → ambient boost → signal/recency re-ranking
+/// → episode diversity → context dedup. TACT provides the full tiered search
+/// (fingerprint → wing → FTS) as the entry point.
 pub fn run_cascade_pipeline(
     brain: &Brain,
     query: &str,
     context: &RecognitionContext,
     config: &CascadePipelineConfig,
 ) -> Result<Vec<MemoryHit>, crate::Error> {
-    // Step 1: FTS retrieval at full K (bypasses TACT's max_results=5 cap)
-    let words: Vec<String> = query
-        .split_whitespace()
-        .filter(|w| w.len() > 1)
-        .map(|w| {
-            w.chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                .collect::<String>()
-        })
-        .filter(|w| w.len() > 1)
-        .collect();
+    // Step 1: TACT retrieval at full K — tiered search (fingerprint → wing → FTS)
+    let mut candidates = brain
+        .tact_retrieve_with_k(query, config.k)
+        .map_err(|e| crate::Error::Schema(e.to_string()))?;
 
-    if words.is_empty() {
+    if candidates.is_empty() {
         return Ok(Vec::new());
     }
-
-    let mut candidates = brain
-        .fts_search_direct(&words, config.k)
-        .map_err(|e| crate::Error::Schema(e.to_string()))?;
 
     // Step 2: Ambient boost from RecognitionContext (production: wing alignment + recency)
     if config.apply_ambient_boost {
