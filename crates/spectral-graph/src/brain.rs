@@ -1071,26 +1071,94 @@ impl Brain {
         Ok(candidates)
     }
 
-    /// Run the cascade: ordered recognition layers (L1 AAAK → L3 TACT)
-    /// with token budgets. Returns per-layer outcomes and merged hits.
+    /// Run the cascade: L1 (AAAK facts) + L3 (primary FTS) + L2 (episode grouping
+    /// from L3's hits). L2 consumes L3's output directly — no redundant FTS call.
     pub fn recall_cascade(
         &self,
         query: &str,
         context: &spectral_cascade::RecognitionContext,
         config: &spectral_cascade::orchestrator::CascadeConfig,
     ) -> Result<spectral_cascade::result::CascadeResult, Error> {
-        let layers: Vec<Box<dyn spectral_cascade::Layer>> = vec![
-            Box::new(crate::cascade_layers::AaakLayer::new(self, 200)),
-            Box::new(crate::cascade_layers::EpisodeLayer::new(self, 1500)),
-            Box::new(crate::cascade_layers::ConstellationLayer::new(
-                self,
-                config.total_budget,
-            )),
-        ];
-        let cascade = spectral_cascade::orchestrator::Cascade::new(layers, config.clone());
-        cascade
-            .query(query, context)
-            .map_err(|e| Error::Schema(e.to_string()))
+        use spectral_cascade::{Layer, LayerResult};
+        use std::collections::HashSet;
+
+        let mut layer_outcomes = Vec::new();
+        let mut all_hits = Vec::new();
+        let mut seen_ids = HashSet::new();
+        let mut tokens_remaining = config.total_budget;
+        let mut stopped_at = None;
+        let mut total_recognition_token_cost: usize = 0;
+
+        // Step 1: L1 (AAAK) — foundational facts, independent of FTS
+        let l1 = crate::cascade_layers::AaakLayer::new(self, 200);
+        let l1_result = l1
+            .query(query, tokens_remaining, context)
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        tokens_remaining = tokens_remaining.saturating_sub(l1_result.tokens_used());
+        total_recognition_token_cost += l1_result.recognition_token_cost();
+        for hit in l1_result.hits() {
+            if seen_ids.insert(hit.id.clone()) {
+                all_hits.push(hit.clone());
+            }
+        }
+        let l1_sufficient = config.stop_on_sufficient
+            && matches!(
+                &l1_result,
+                LayerResult::Sufficient { confidence, .. }
+                    if *confidence >= config.confidence_threshold
+            );
+        if l1_sufficient {
+            stopped_at = Some(l1.id());
+        }
+        layer_outcomes.push((l1.id(), l1_result));
+
+        if stopped_at.is_none() && tokens_remaining > 0 {
+            // Step 2: L3 (primary FTS retrieval) — uses full remaining budget
+            let l3 = crate::cascade_layers::ConstellationLayer::new(self, tokens_remaining);
+            let l3_result = l3
+                .query(query, tokens_remaining, context)
+                .map_err(|e| Error::Schema(e.to_string()))?;
+            let l3_hits: Vec<_> = l3_result.hits().to_vec();
+            tokens_remaining = tokens_remaining.saturating_sub(l3_result.tokens_used());
+            total_recognition_token_cost += l3_result.recognition_token_cost();
+            for hit in l3_result.hits() {
+                if seen_ids.insert(hit.id.clone()) {
+                    all_hits.push(hit.clone());
+                }
+            }
+            layer_outcomes.push((l3.id(), l3_result));
+
+            // Step 3: L2 (episode grouping) — consumes L3's hits, no new FTS call
+            if tokens_remaining > 0 {
+                let l2 = crate::cascade_layers::EpisodeLayer::new(self, tokens_remaining);
+                let l2_result = l2
+                    .group_hits(&l3_hits, tokens_remaining, context)
+                    .map_err(|e| Error::Schema(e.to_string()))?;
+                tokens_remaining = tokens_remaining.saturating_sub(l2_result.tokens_used());
+                total_recognition_token_cost += l2_result.recognition_token_cost();
+                for hit in l2_result.hits() {
+                    if seen_ids.insert(hit.id.clone()) {
+                        all_hits.push(hit.clone());
+                    }
+                }
+                layer_outcomes.push((l2.id(), l2_result));
+            }
+        }
+
+        let total_tokens_used = config.total_budget - tokens_remaining;
+        let max_confidence = layer_outcomes
+            .iter()
+            .map(|(_, r)| r.confidence())
+            .fold(0.0_f64, f64::max);
+
+        Ok(spectral_cascade::result::CascadeResult {
+            layer_outcomes,
+            merged_hits: all_hits,
+            total_tokens_used,
+            stopped_at,
+            max_confidence,
+            total_recognition_token_cost,
+        })
     }
 
     /// Graph-only recall filtered by visibility context.
