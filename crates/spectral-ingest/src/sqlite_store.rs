@@ -40,7 +40,20 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use crate::TimeBucket;
+
 const WING_CACHE_CAPACITY: usize = 32;
+
+/// Parse a timestamp string (SQLite datetime or RFC3339) to epoch seconds.
+fn parse_ts(s: &str) -> Option<f64> {
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.and_utc().timestamp() as f64);
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.timestamp() as f64);
+    }
+    None
+}
 
 /// Configuration for [`SqliteStore`].
 #[derive(Debug, Clone, Default)]
@@ -1269,6 +1282,86 @@ impl MemoryStore for SqliteStore {
                 params![tier_str, memory_id],
             )?;
             Ok(())
+        })
+    }
+
+    fn backfill_fingerprint_time_buckets(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+
+            // Fetch all fingerprints with their anchor/target memory timestamps
+            let mut stmt = conn.prepare(
+                "SELECT f.id, m_anchor.created_at, m_target.created_at
+                 FROM constellation_fingerprints f
+                 JOIN memories m_anchor ON m_anchor.id = f.anchor_memory_id
+                 JOIN memories m_target ON m_target.id = f.target_memory_id
+                 WHERE f.time_delta_bucket = 'unknown' OR f.time_delta_bucket IS NULL",
+            )?;
+
+            let rows: Vec<(String, Option<String>, Option<String>)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let mut updated = 0;
+            let mut update_stmt = conn.prepare(
+                "UPDATE constellation_fingerprints
+                 SET time_delta_bucket = ?1,
+                     fingerprint_hash = ?2
+                 WHERE id = ?3",
+            )?;
+
+            for (fp_id, anchor_ts, target_ts) in &rows {
+                let bucket = match (anchor_ts.as_deref(), target_ts.as_deref()) {
+                    (Some(a), Some(t)) => {
+                        let a_secs = parse_ts(a);
+                        let t_secs = parse_ts(t);
+                        match (a_secs, t_secs) {
+                            (Some(a), Some(t)) => TimeBucket::from_delta_secs(a - t),
+                            _ => TimeBucket::Older,
+                        }
+                    }
+                    _ => TimeBucket::Older,
+                };
+
+                // Also need to recompute the hash with the new bucket.
+                // Fetch anchor_hall, target_hall, wing for this fingerprint.
+                let fp_meta: (String, String, String) = conn.query_row(
+                    "SELECT anchor_hall, target_hall, wing FROM constellation_fingerprints WHERE id = ?1",
+                    params![fp_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+
+                let new_hash = {
+                    use sha2::{Digest, Sha256};
+                    let raw = format!(
+                        "{}|{}|{}|{}",
+                        fp_meta.0,
+                        fp_meta.1,
+                        fp_meta.2,
+                        bucket.as_str()
+                    );
+                    let digest = Sha256::digest(raw.as_bytes());
+                    format!(
+                        "{:016x}",
+                        u64::from_be_bytes(digest[..8].try_into().unwrap())
+                    )
+                };
+
+                update_stmt.execute(params![bucket.as_str(), new_hash, fp_id])?;
+                updated += 1;
+            }
+
+            Ok(updated)
         })
     }
 }

@@ -410,6 +410,13 @@ pub trait MemoryStore: Send + Sync {
         memory_id: &str,
         tier: CompactionTier,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Backfill time_delta_bucket on existing fingerprints.
+    /// Recomputes bucket from anchor/target memory timestamps.
+    /// Returns number of fingerprints updated.
+    fn backfill_fingerprint_time_buckets(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
 }
 
 // ── TimeBucket ──────────────────────────────────────────────────────
