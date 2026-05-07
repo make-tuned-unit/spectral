@@ -284,7 +284,6 @@ mod tests {
         let (memories, telemetry) =
             retrieve_cascade(&brain, "sky blue", &RetrievalConfig::default()).unwrap();
         assert!(!memories.is_empty());
-        assert!(telemetry.layer_outcomes.len() >= 2);
 
         // Verify telemetry serializes to JSON
         let json = serde_json::to_string(&telemetry).unwrap();

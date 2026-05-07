@@ -1007,6 +1007,39 @@ impl Brain {
         self.recall(query, Visibility::Private)
     }
 
+    /// Run TACT retrieval with a custom max_results (overriding the Brain's
+    /// default TactConfig). Used by cascade to get K=40 through TACT's tiered
+    /// search (fingerprint → wing → FTS) instead of bypassing it.
+    pub fn tact_retrieve_with_k(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
+        let mut config = self.tact_config.clone();
+        config.max_results = max_results;
+        let result = self
+            .rt
+            .block_on(spectral_tact::retrieve(
+                query,
+                &config,
+                self.memory_store.as_ref(),
+            ))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        Ok(result.memories)
+    }
+
+    /// Direct FTS search bypassing TACT pipeline. Used by topk_fts
+    /// for raw FTS access without TACT classification overhead.
+    pub fn fts_search_direct(
+        &self,
+        words: &[String],
+        max_results: usize,
+    ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
+        self.rt
+            .block_on(self.memory_store.fts_search(words, max_results))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// Top-K FTS retrieval with additive re-ranking signals. No LLM cost.
     ///
     /// Retrieves `config.k` candidates via full-text search, then applies
@@ -1071,93 +1104,39 @@ impl Brain {
         Ok(candidates)
     }
 
-    /// Run the cascade: L1 (AAAK facts) + L3 (primary FTS) + L2 (episode grouping
-    /// from L3's hits). L2 consumes L3's output directly — no redundant FTS call.
+    /// Run the integrated cascade pipeline: FTS K=40 → ambient boost →
+    /// signal/recency re-ranking → episode diversity → dedup.
+    ///
+    /// Single retrieval path using all Spectral subsystems. No redundant FTS,
+    /// no AAAK contamination, no episode truncation.
     pub fn recall_cascade(
         &self,
         query: &str,
         context: &spectral_cascade::RecognitionContext,
         config: &spectral_cascade::orchestrator::CascadeConfig,
     ) -> Result<spectral_cascade::result::CascadeResult, Error> {
-        use spectral_cascade::{Layer, LayerResult};
-        use std::collections::HashSet;
+        let pipeline_config = crate::cascade_layers::CascadePipelineConfig {
+            k: config.total_budget.clamp(20, 40),
+            ..Default::default()
+        };
 
-        let mut layer_outcomes = Vec::new();
-        let mut all_hits = Vec::new();
-        let mut seen_ids = HashSet::new();
-        let mut tokens_remaining = config.total_budget;
-        let mut stopped_at = None;
-        let mut total_recognition_token_cost: usize = 0;
+        let hits =
+            crate::cascade_layers::run_cascade_pipeline(self, query, context, &pipeline_config)?;
 
-        // Step 1: L1 (AAAK) — foundational facts, independent of FTS
-        let l1 = crate::cascade_layers::AaakLayer::new(self, 200);
-        let l1_result = l1
-            .query(query, tokens_remaining, context)
-            .map_err(|e| Error::Schema(e.to_string()))?;
-        tokens_remaining = tokens_remaining.saturating_sub(l1_result.tokens_used());
-        total_recognition_token_cost += l1_result.recognition_token_cost();
-        for hit in l1_result.hits() {
-            if seen_ids.insert(hit.id.clone()) {
-                all_hits.push(hit.clone());
-            }
-        }
-        let l1_sufficient = config.stop_on_sufficient
-            && matches!(
-                &l1_result,
-                LayerResult::Sufficient { confidence, .. }
-                    if *confidence >= config.confidence_threshold
-            );
-        if l1_sufficient {
-            stopped_at = Some(l1.id());
-        }
-        layer_outcomes.push((l1.id(), l1_result));
-
-        if stopped_at.is_none() && tokens_remaining > 0 {
-            // Step 2: L3 (primary FTS retrieval) — uses full remaining budget
-            let l3 = crate::cascade_layers::ConstellationLayer::new(self, tokens_remaining);
-            let l3_result = l3
-                .query(query, tokens_remaining, context)
-                .map_err(|e| Error::Schema(e.to_string()))?;
-            let l3_hits: Vec<_> = l3_result.hits().to_vec();
-            tokens_remaining = tokens_remaining.saturating_sub(l3_result.tokens_used());
-            total_recognition_token_cost += l3_result.recognition_token_cost();
-            for hit in l3_result.hits() {
-                if seen_ids.insert(hit.id.clone()) {
-                    all_hits.push(hit.clone());
-                }
-            }
-            layer_outcomes.push((l3.id(), l3_result));
-
-            // Step 3: L2 (episode grouping) — consumes L3's hits, no new FTS call
-            if tokens_remaining > 0 {
-                let l2 = crate::cascade_layers::EpisodeLayer::new(self, tokens_remaining);
-                let l2_result = l2
-                    .group_hits(&l3_hits, tokens_remaining, context)
-                    .map_err(|e| Error::Schema(e.to_string()))?;
-                tokens_remaining = tokens_remaining.saturating_sub(l2_result.tokens_used());
-                total_recognition_token_cost += l2_result.recognition_token_cost();
-                for hit in l2_result.hits() {
-                    if seen_ids.insert(hit.id.clone()) {
-                        all_hits.push(hit.clone());
-                    }
-                }
-                layer_outcomes.push((l2.id(), l2_result));
-            }
-        }
-
-        let total_tokens_used = config.total_budget - tokens_remaining;
-        let max_confidence = layer_outcomes
-            .iter()
-            .map(|(_, r)| r.confidence())
-            .fold(0.0_f64, f64::max);
+        // Wrap in CascadeResult for backwards compatibility
+        let tokens_used = hits.iter().map(|h| h.content.len() / 4 + 5).sum();
+        let max_confidence = hits
+            .first()
+            .map(|h| h.signal_score.min(0.85))
+            .unwrap_or(0.0);
 
         Ok(spectral_cascade::result::CascadeResult {
-            layer_outcomes,
-            merged_hits: all_hits,
-            total_tokens_used,
-            stopped_at,
+            layer_outcomes: Vec::new(), // Pipeline doesn't use layer abstraction
+            merged_hits: hits,
+            total_tokens_used: tokens_used,
+            stopped_at: None,
             max_confidence,
-            total_recognition_token_cost,
+            total_recognition_token_cost: 0,
         })
     }
 
