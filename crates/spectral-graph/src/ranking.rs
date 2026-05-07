@@ -148,6 +148,144 @@ pub fn dedup_context_chains(mut candidates: Vec<MemoryHit>) -> Vec<MemoryHit> {
     result
 }
 
+// ── Unified re-ranking pipeline ──────────────────────────────────────
+
+use spectral_cascade::RecognitionContext;
+
+/// Configuration for the unified re-ranking pipeline.
+/// Both topk_fts and cascade call this with different configs.
+#[derive(Debug, Clone)]
+pub struct RerankingConfig {
+    pub apply_signal_score: bool,
+    pub signal_score_weight: f64,
+    pub apply_recency: bool,
+    pub recency_half_life_days: f64,
+    pub apply_entity_boost: bool,
+    pub entity_boost_weight: f64,
+    pub apply_ambient_boost: bool,
+    pub apply_episode_diversity: bool,
+    pub max_per_episode: usize,
+    pub apply_context_dedup: bool,
+}
+
+impl Default for RerankingConfig {
+    fn default() -> Self {
+        Self {
+            apply_signal_score: true,
+            signal_score_weight: 0.3,
+            apply_recency: true,
+            recency_half_life_days: 365.0,
+            apply_entity_boost: false,
+            entity_boost_weight: 0.05,
+            apply_ambient_boost: false,
+            apply_episode_diversity: false,
+            max_per_episode: 5,
+            apply_context_dedup: true,
+        }
+    }
+}
+
+/// Unified re-ranking pipeline. Both retrieval frontends (topk_fts, cascade)
+/// call this after their respective retrieval step.
+///
+/// Signals contribute additively/multiplicatively to a composite score.
+/// No intermediate hard sorts — single sort at the end before post-rank ops.
+pub fn apply_reranking_pipeline(
+    candidates: Vec<MemoryHit>,
+    config: &RerankingConfig,
+    context: &RecognitionContext,
+) -> Vec<MemoryHit> {
+    if candidates.is_empty() {
+        return candidates;
+    }
+
+    // Assign initial composite score from FTS rank position
+    let n = candidates.len() as f64;
+    let mut scores: Vec<f64> = (0..candidates.len())
+        .map(|i| 1.0 - (i as f64 / n))
+        .collect();
+
+    // Signal score blending: composite = (1-w)*fts_rank + w*signal_score
+    if config.apply_signal_score {
+        let w = config.signal_score_weight.clamp(0.0, 1.0);
+        for (i, hit) in candidates.iter().enumerate() {
+            scores[i] = (1.0 - w) * scores[i] + w * hit.signal_score;
+        }
+    }
+
+    // Ambient boost: multiplicative on composite score (identity when context empty)
+    if config.apply_ambient_boost {
+        for (i, hit) in candidates.iter().enumerate() {
+            let boost = crate::cascade_layers::ambient_boost_for_hit(hit, context);
+            scores[i] *= boost;
+        }
+    }
+
+    // Recency decay: multiplicative on composite score
+    if config.apply_recency {
+        let now = Utc::now();
+        for (i, hit) in candidates.iter().enumerate() {
+            let age_days = hit
+                .created_at
+                .as_deref()
+                .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
+                .map(|dt| (now - dt.and_utc()).num_hours() as f64 / 24.0)
+                .unwrap_or(0.0)
+                .max(0.0);
+            let recency_factor = 0.5_f64.powf(age_days / config.recency_half_life_days);
+            scores[i] *= recency_factor;
+        }
+    }
+
+    // Entity boost: additive for top member of each wing cluster
+    if config.apply_entity_boost {
+        let mut wing_groups: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, hit) in candidates.iter().enumerate() {
+            let wing = hit.wing.clone().unwrap_or_default();
+            wing_groups.entry(wing).or_default().push(i);
+        }
+        for indices in wing_groups.values() {
+            if indices.len() < 2 {
+                continue;
+            }
+            let top_idx = *indices
+                .iter()
+                .max_by(|&&a, &&b| {
+                    scores[a]
+                        .partial_cmp(&scores[b])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap();
+            scores[top_idx] += config.entity_boost_weight;
+        }
+    }
+
+    // Single sort by composite score
+    let mut indexed: Vec<(usize, f64)> = scores.into_iter().enumerate().collect();
+    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut sorted: Vec<MemoryHit> = indexed
+        .into_iter()
+        .map(|(i, score)| {
+            let mut hit = candidates[i].clone();
+            hit.signal_score = score; // Store composite as signal_score for downstream
+            hit
+        })
+        .collect();
+
+    // Post-rank: episode diversity (reorder, don't discard)
+    if config.apply_episode_diversity {
+        crate::cascade_layers::apply_episode_diversity(&mut sorted, config.max_per_episode);
+    }
+
+    // Post-rank: context chain dedup
+    if config.apply_context_dedup {
+        sorted = dedup_context_chains(sorted);
+    }
+
+    sorted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +433,105 @@ mod tests {
         assert!(result.iter().any(|h| h.id == "dup1"));
         assert!(result.iter().any(|h| h.id == "clean"));
         assert!(!result.iter().any(|h| h.id == "dup2"));
+    }
+
+    // ── Unified pipeline tests ──────────────────────────────────────
+
+    #[test]
+    fn unified_pipeline_preserves_fts_order_when_signals_equal() {
+        // When all signal_scores are equal, FTS rank order should be preserved
+        let candidates = vec![
+            make_hit("first", 0.6, None, None),
+            make_hit("second", 0.6, None, None),
+            make_hit("third", 0.6, None, None),
+        ];
+
+        let config = RerankingConfig {
+            apply_signal_score: true,
+            signal_score_weight: 0.3,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_ambient_boost: false,
+            apply_episode_diversity: false,
+            apply_context_dedup: false,
+            ..Default::default()
+        };
+
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+
+        // FTS rank dominates (0.7 weight) when signal_scores are equal
+        assert_eq!(result[0].id, "first");
+        assert_eq!(result[1].id, "second");
+        assert_eq!(result[2].id, "third");
+    }
+
+    #[test]
+    fn unified_pipeline_no_role_bias_with_empty_context() {
+        // User and assistant turns with same signal_score should maintain
+        // FTS position — no ambient boost should discriminate
+        let candidates = vec![
+            make_hit("user_turn", 0.6, Some("general"), None),
+            make_hit("assistant_turn", 0.8, Some("general"), None),
+            make_hit("user_turn_2", 0.6, Some("general"), None),
+        ];
+
+        // Config WITH ambient boost but EMPTY context — should be identity
+        let config = RerankingConfig {
+            apply_ambient_boost: true,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let with_ambient = apply_reranking_pipeline(candidates.clone(), &config, &ctx);
+
+        // Config WITHOUT ambient boost
+        let config_no_ambient = RerankingConfig {
+            apply_ambient_boost: false,
+            ..Default::default()
+        };
+        let without_ambient = apply_reranking_pipeline(candidates, &config_no_ambient, &ctx);
+
+        // Should produce identical ordering
+        assert_eq!(with_ambient.len(), without_ambient.len());
+        for (a, b) in with_ambient.iter().zip(without_ambient.iter()) {
+            assert_eq!(
+                a.id, b.id,
+                "ambient boost with empty context should be identity"
+            );
+        }
+    }
+
+    #[test]
+    fn unified_pipeline_signal_score_does_not_dominate() {
+        // High signal_score at FTS position 3 should NOT jump to position 1
+        // with default weight=0.3 (FTS dominates at 0.7 weight)
+        let candidates = vec![
+            make_hit("fts_best", 0.5, None, None),
+            make_hit("fts_second", 0.5, None, None),
+            make_hit("high_signal", 0.9, None, None),
+        ];
+
+        let config = RerankingConfig {
+            apply_signal_score: true,
+            signal_score_weight: 0.3,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_ambient_boost: false,
+            apply_episode_diversity: false,
+            apply_context_dedup: false,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+
+        // At weight=0.3:
+        // fts_best: 0.7*1.0 + 0.3*0.5 = 0.85
+        // fts_second: 0.7*0.67 + 0.3*0.5 = 0.62
+        // high_signal: 0.7*0.33 + 0.3*0.9 = 0.50
+        // FTS rank (position 1) should still dominate
+        assert_eq!(
+            result[0].id, "fts_best",
+            "FTS best should remain #1 at weight=0.3"
+        );
     }
 }

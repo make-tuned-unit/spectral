@@ -1076,32 +1076,25 @@ impl Brain {
         // Filter by visibility
         candidates.retain(|m| str_to_vis(&m.visibility).allows(visibility));
 
-        // Apply re-ranking signals in order
-        if config.apply_signal_score_weighting {
-            crate::ranking::apply_signal_score_weight(&mut candidates, 0.3);
-        }
-
-        // Tuned 2026-05-06: 90d → 365d softens recency demotion of older-but-still-correct
-        // memories (multi-session synthesis was regressing under aggressive recency)
-        if config.apply_recency_weighting {
-            crate::ranking::apply_recency_weight(
-                &mut candidates,
-                config.recency_half_life_days,
-                Utc::now(),
-            );
-        }
-
-        // Tuned 2026-05-06: 0.15 → 0.05
-        // Entity grouping was pulling cross-session noise into top results
-        if config.apply_entity_resolution {
-            crate::ranking::boost_entity_clusters(&mut candidates, 0.05);
-        }
-
-        if config.apply_context_dedup {
-            candidates = crate::ranking::dedup_context_chains(candidates);
-        }
-
-        Ok(candidates)
+        // Unified re-ranking pipeline
+        let reranking_config = crate::ranking::RerankingConfig {
+            apply_signal_score: config.apply_signal_score_weighting,
+            signal_score_weight: 0.3,
+            apply_recency: config.apply_recency_weighting,
+            recency_half_life_days: config.recency_half_life_days,
+            apply_entity_boost: config.apply_entity_resolution,
+            entity_boost_weight: 0.05,
+            apply_ambient_boost: false,
+            apply_episode_diversity: false,
+            max_per_episode: 5,
+            apply_context_dedup: config.apply_context_dedup,
+        };
+        let empty_ctx = spectral_cascade::RecognitionContext::empty();
+        Ok(crate::ranking::apply_reranking_pipeline(
+            candidates,
+            &reranking_config,
+            &empty_ctx,
+        ))
     }
 
     /// Run the integrated cascade pipeline: FTS K=40 → ambient boost →
