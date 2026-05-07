@@ -1021,18 +1021,12 @@ fn recall_cascade_accepts_context() {
         .unwrap();
     assert!(!result.merged_hits.is_empty());
     assert_eq!(result.total_recognition_token_cost, 0);
-    // Verify L1 skipped with empty context
+    // L1 now falls back to high-signal memories with empty context (Partial, not Skipped)
     let l1_outcome = result
         .layer_outcomes
         .iter()
         .find(|(id, _)| *id == spectral_cascade::LayerId::L1);
-    assert!(
-        matches!(
-            l1_outcome.map(|(_, r)| r),
-            Some(LayerResult::Skipped { .. })
-        ),
-        "L1 should skip with empty context"
-    );
+    assert!(l1_outcome.is_some(), "L1 should have been executed");
 
     // Populated context with focus_wing — L1 may fire depending on wing match
     let ctx = RecognitionContext::empty().with_focus_wing("permagent");
@@ -1145,10 +1139,12 @@ fn aaak_layer_fires_when_fact_above_threshold() {
     let ctx = RecognitionContext::empty().with_focus_wing(wing);
     let layer = AaakLayer::new(&brain, 200);
     let result = layer.query("Rust production database", 4096, &ctx).unwrap();
+    // L1 returns Partial with context (not Sufficient) so cascade always continues
     assert!(
-        matches!(result, LayerResult::Sufficient { .. }),
-        "AaakLayer should fire on a fact-hall memory when context wing matches"
+        matches!(result, LayerResult::Partial { .. }),
+        "AaakLayer should return Partial when context wing matches"
     );
+    assert!(!result.hits().is_empty(), "should have hits");
 }
 
 // ── Annotation + ambient data tests ─────────────────────────────────
@@ -1404,15 +1400,12 @@ fn aaak_layer_skips_with_empty_context() {
         .query("PostgreSQL database", 4096, &RecognitionContext::empty())
         .unwrap();
 
-    match result {
-        LayerResult::Skipped { ref reason, .. } => {
-            assert!(
-                reason.contains("no ambient signal"),
-                "expected 'no ambient signal' reason, got: {reason}"
-            );
-        }
-        _ => panic!("AaakLayer should return Skipped with empty context"),
-    }
+    // With empty context, L1 falls back to high-signal memories from any wing
+    // and returns Partial (not Skipped) so cascade continues
+    assert!(
+        matches!(result, LayerResult::Partial { .. }),
+        "AaakLayer should return Partial with empty context (fallback mode)"
+    );
 }
 
 #[test]
@@ -1442,9 +1435,10 @@ fn aaak_layer_fires_when_focus_wing_matches() {
     let result = layer.query("permagent pipeline", 4096, &ctx).unwrap();
 
     assert!(
-        matches!(result, LayerResult::Sufficient { .. }),
-        "AaakLayer should fire when focus_wing matches memory's wing"
+        matches!(result, LayerResult::Partial { .. }),
+        "AaakLayer should return Partial when focus_wing matches memory's wing"
     );
+    assert!(!result.hits().is_empty(), "should have hits");
 }
 
 #[test]
@@ -1492,9 +1486,10 @@ fn aaak_layer_fires_when_recent_activity_wing_matches() {
         .unwrap();
 
     assert!(
-        matches!(result, LayerResult::Sufficient { .. }),
-        "AaakLayer should fire when recent_activity wing matches memory's wing"
+        matches!(result, LayerResult::Partial { .. }),
+        "AaakLayer should return Partial when recent_activity wing matches"
     );
+    assert!(!result.hits().is_empty(), "should have hits");
 }
 
 #[test]

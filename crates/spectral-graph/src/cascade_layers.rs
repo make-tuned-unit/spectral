@@ -111,9 +111,9 @@ fn ambient_boost_for_episode(
 
 /// L1 AAAK layer: returns foundational facts from the brain's memory store.
 ///
-/// Context-driven: fires only when ambient context provides wing signals.
-/// With empty context (bench, ad-hoc queries), returns Skipped so the
-/// cascade falls through to L2/L3.
+/// Context-aware when ambient context provides wing signals. Falls back to
+/// top high-signal memories from any wing when context is empty, so L1
+/// contributes baseline grounding even for bench/ad-hoc queries.
 pub struct AaakLayer<'b> {
     brain: &'b Brain,
     max_tokens: usize,
@@ -150,26 +150,26 @@ impl Layer for AaakLayer<'_> {
             wings
         };
 
-        // No ambient signal — AAAK has no basis to fire
-        if relevant_wings.is_empty() {
-            return Ok(LayerResult::Skipped {
-                reason: "no ambient signal — AAAK requires focus_wing or recent_activity".into(),
-                confidence: 0.0,
-                recognition_token_cost: 0,
-            });
-        }
-
-        // Restore AaakOpts::default() — context filter replaces threshold workaround
         let budget = budget_remaining.min(self.max_tokens);
-        let result = self.brain.aaak(AaakOpts {
-            max_tokens: budget,
-            include_wings: Some(relevant_wings.into_iter().collect()),
-            ..AaakOpts::default()
-        })?;
+
+        // When context provides wing signals, use wing-filtered AAAK
+        // When empty, fall back to high-signal memories from any wing
+        let result = if relevant_wings.is_empty() {
+            self.brain.aaak(AaakOpts {
+                max_tokens: budget,
+                ..AaakOpts::default()
+            })?
+        } else {
+            self.brain.aaak(AaakOpts {
+                max_tokens: budget,
+                include_wings: Some(relevant_wings.into_iter().collect()),
+                ..AaakOpts::default()
+            })?
+        };
 
         if result.fact_count == 0 {
             return Ok(LayerResult::Skipped {
-                reason: "no foundational facts in relevant wings".into(),
+                reason: "no foundational facts matched".into(),
                 confidence: 0.0,
                 recognition_token_cost: 0,
             });
@@ -192,10 +192,13 @@ impl Layer for AaakLayer<'_> {
             episode_id: None,
         };
 
-        Ok(LayerResult::Sufficient {
+        // With empty context, use lower confidence so cascade continues to L3
+        let confidence = if context.is_empty() { 0.5 } else { 0.95 };
+
+        Ok(LayerResult::Partial {
             hits: vec![hit],
             tokens_used: result.estimated_tokens,
-            confidence: 0.95,
+            confidence,
             recognition_token_cost: 0,
         })
     }
@@ -203,11 +206,11 @@ impl Layer for AaakLayer<'_> {
 
 // ── L2: EpisodeLayer ───────────────────────────────────────────────
 
-/// L2 Episode layer: retrieves memories grouped by episode_id.
+/// L2 Episode layer: groups pre-fetched memory hits by episode_id.
 ///
-/// Runs FTS, groups results by episode_id, scores episodes by
-/// sum of constituent signal scores × ambient boost, returns the
-/// top episode's full memory set.
+/// Does NOT call recall_local independently. Instead, receives hits from
+/// L3 (or another source) via `group_hits()` and returns episode-grouped
+/// results with ambient boost applied.
 pub struct EpisodeLayer<'b> {
     brain: &'b Brain,
     max_tokens: usize,
@@ -217,31 +220,22 @@ impl<'b> EpisodeLayer<'b> {
     pub fn new(brain: &'b Brain, max_tokens: usize) -> Self {
         Self { brain, max_tokens }
     }
-}
 
-impl Layer for EpisodeLayer<'_> {
-    fn id(&self) -> LayerId {
-        LayerId::L2
-    }
-
-    fn query(
+    /// Group pre-fetched hits by episode, apply ambient boost, return the
+    /// top episode's full memory set. This is the non-redundant path that
+    /// avoids re-querying FTS.
+    pub fn group_hits(
         &self,
-        query: &str,
+        hits: &[MemoryHit],
         budget_remaining: usize,
         context: &RecognitionContext,
     ) -> Result<LayerResult, Box<dyn std::error::Error + Send + Sync>> {
-        let recall = self
-            .brain
-            .recall_local(query)
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-
-        // Group FTS hits by episode_id, sum signal scores per episode
+        // Group by episode_id, sum signal scores
         let mut episode_scores: HashMap<String, f64> = HashMap::new();
         let mut episode_wings: HashMap<String, String> = HashMap::new();
-        for hit in &recall.memory_hits {
+        for hit in hits {
             if let Some(ref ep_id) = hit.episode_id {
                 *episode_scores.entry(ep_id.clone()).or_default() += hit.signal_score;
-                // Track wing for the episode (first hit's wing wins)
                 if let Some(ref w) = hit.wing {
                     episode_wings
                         .entry(ep_id.clone())
@@ -252,14 +246,13 @@ impl Layer for EpisodeLayer<'_> {
 
         if episode_scores.is_empty() {
             return Ok(LayerResult::Skipped {
-                reason: "no memories with episode_id matched".into(),
+                reason: "no memories with episode_id in provided hits".into(),
                 confidence: 0.0,
                 recognition_token_cost: 0,
             });
         }
 
         // Apply ambient boost to episode scores
-        // Use episode metadata (wing, started_at) from the brain's episode list
         let episodes = self.brain.list_episodes(None, 1000).unwrap_or_default();
         let episode_meta: HashMap<&str, (&str, Option<&str>)> = episodes
             .iter()
@@ -284,7 +277,6 @@ impl Layer for EpisodeLayer<'_> {
             })
             .collect();
 
-        // Sort by boosted score descending
         boosted_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let (top_id, top_score) = boosted_scores[0].clone();
         let second_score = boosted_scores.get(1).map(|x| x.1).unwrap_or(0.0);
@@ -299,15 +291,15 @@ impl Layer for EpisodeLayer<'_> {
         let budget = budget_remaining.min(self.max_tokens);
         let max_chars = budget * 4;
         let mut chars_used = 0;
-        let mut hits = Vec::new();
+        let mut result_hits = Vec::new();
 
         for mem in &episode_memories {
             let hit_chars = mem.content.len() + mem.key.len() + 20;
-            if chars_used + hit_chars > max_chars && !hits.is_empty() {
+            if chars_used + hit_chars > max_chars && !result_hits.is_empty() {
                 break;
             }
             chars_used += hit_chars;
-            hits.push(MemoryHit {
+            result_hits.push(MemoryHit {
                 id: mem.id.clone(),
                 key: mem.key.clone(),
                 content: mem.content.clone(),
@@ -327,7 +319,6 @@ impl Layer for EpisodeLayer<'_> {
 
         let tokens_used = chars_used / 4;
 
-        // Confidence based on relevance ratio
         let ratio = if second_score > 0.0 {
             top_score / second_score
         } else {
@@ -337,14 +328,14 @@ impl Layer for EpisodeLayer<'_> {
         if ratio >= 1.5 {
             let confidence = (ratio / 3.0).min(0.92);
             Ok(LayerResult::Sufficient {
-                hits,
+                hits: result_hits,
                 tokens_used,
                 confidence,
                 recognition_token_cost: 0,
             })
         } else {
             Ok(LayerResult::Partial {
-                hits,
+                hits: result_hits,
                 tokens_used,
                 confidence: 0.5,
                 recognition_token_cost: 0,
@@ -353,13 +344,35 @@ impl Layer for EpisodeLayer<'_> {
     }
 }
 
+/// Legacy Layer trait impl for EpisodeLayer — falls back to independent FTS
+/// when called through the generic orchestrator without pre-fetched hits.
+/// The optimized path is Brain::recall_cascade which calls group_hits directly.
+impl Layer for EpisodeLayer<'_> {
+    fn id(&self) -> LayerId {
+        LayerId::L2
+    }
+
+    fn query(
+        &self,
+        query: &str,
+        budget_remaining: usize,
+        context: &RecognitionContext,
+    ) -> Result<LayerResult, Box<dyn std::error::Error + Send + Sync>> {
+        // Fallback: do independent FTS (legacy behavior for generic orchestrator)
+        let recall = self
+            .brain
+            .recall_local(query)
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+        self.group_hits(&recall.memory_hits, budget_remaining, context)
+    }
+}
+
 // ── L3: ConstellationLayer ─────────────────────────────────────────
 
 /// L3 Constellation/TACT layer: fingerprint + FTS recall.
 ///
-/// Applies ambient boost based on memory wing alignment with context.
-/// Constellation fingerprints have a single wing field (not per-peak),
-/// so alignment is based on each hit's wing matching context wings.
+/// This is the primary FTS retrieval layer. Applies ambient boost based on
+/// memory wing alignment with context.
 pub struct ConstellationLayer<'b> {
     brain: &'b Brain,
     max_tokens: usize,
@@ -420,14 +433,12 @@ impl Layer for ConstellationLayer<'_> {
                 break;
             }
             chars_used += hit_chars;
-            // Store boosted score as the hit's signal_score for downstream ranking
             hit.signal_score = boosted_score;
             hits.push(hit);
         }
 
         let tokens_used = chars_used / 4;
 
-        // Confidence proportional to top hit's boosted score, capped
         let confidence = hits
             .first()
             .map(|h| h.signal_score.min(0.85))
