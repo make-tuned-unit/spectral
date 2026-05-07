@@ -285,13 +285,24 @@ impl AccuracyEval {
             }
         };
         let memory_count = memories.len();
-        let memory_keys: Vec<String> = memories
-            .iter()
-            .filter_map(|m| {
-                let after_brackets = m.split("] ").last()?;
-                after_brackets.split(": ").next().map(|k| k.to_string())
-            })
-            .collect();
+        // Extract keys from raw_hits when available (most reliable).
+        // Fallback: parse from formatted string "[date] [wing/hall] key: content"
+        // using position of second "] " to find key start.
+        let memory_keys: Vec<String> = if !raw_hits.is_empty() {
+            raw_hits.iter().map(|h| h.key.clone()).collect()
+        } else {
+            memories
+                .iter()
+                .filter_map(|m| {
+                    // Find second "] " — after [date] and [wing/hall]
+                    let first_close = m.find("] ")?;
+                    let after_first = &m[first_close + 2..];
+                    let second_close = after_first.find("] ")?;
+                    let key_and_content = &after_first[second_close + 2..];
+                    key_and_content.split(": ").next().map(|k| k.to_string())
+                })
+                .collect()
+        };
 
         // Act
         let question_date = question.question_date.as_deref().unwrap_or("unknown");
