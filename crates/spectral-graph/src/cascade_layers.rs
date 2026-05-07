@@ -147,7 +147,7 @@ pub fn run_cascade_pipeline(
     config: &CascadePipelineConfig,
 ) -> Result<Vec<MemoryHit>, crate::Error> {
     // Step 1: TACT retrieval at full K — tiered search (fingerprint → wing → FTS)
-    let mut candidates = brain
+    let candidates = brain
         .tact_retrieve_with_k(query, config.k)
         .map_err(|e| crate::Error::Schema(e.to_string()))?;
 
@@ -155,42 +155,23 @@ pub fn run_cascade_pipeline(
         return Ok(Vec::new());
     }
 
-    // Step 2: Ambient boost from RecognitionContext (production: wing alignment + recency)
-    if config.apply_ambient_boost {
-        for hit in &mut candidates {
-            let boost = ambient_boost_for_hit(hit, context);
-            hit.signal_score *= boost;
-        }
-        candidates.sort_by(|a, b| {
-            b.signal_score
-                .partial_cmp(&a.signal_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-    }
+    // Step 2: Unified re-ranking pipeline (same implementation as topk_fts)
+    let reranking_config = crate::ranking::RerankingConfig {
+        apply_signal_score: config.apply_signal_reranking,
+        signal_score_weight: 0.3,
+        apply_recency: config.apply_recency,
+        recency_half_life_days: config.recency_half_life_days,
+        apply_entity_boost: false,
+        entity_boost_weight: 0.05,
+        apply_ambient_boost: config.apply_ambient_boost,
+        apply_episode_diversity: config.apply_episode_diversity,
+        max_per_episode: config.max_per_episode,
+        apply_context_dedup: config.apply_context_dedup,
+    };
 
-    // Step 3: Signal score re-ranking (blend FTS rank with stored signal_score)
-    if config.apply_signal_reranking {
-        crate::ranking::apply_signal_score_weight(&mut candidates, 0.3);
-    }
-
-    // Step 4: Recency decay
-    if config.apply_recency {
-        crate::ranking::apply_recency_weight(
-            &mut candidates,
-            config.recency_half_life_days,
-            chrono::Utc::now(),
-        );
-    }
-
-    // Step 5: Episode diversity (cap per-episode to ensure cross-session coverage)
-    if config.apply_episode_diversity {
-        apply_episode_diversity(&mut candidates, config.max_per_episode);
-    }
-
-    // Step 6: Context chain dedup
-    if config.apply_context_dedup {
-        candidates = crate::ranking::dedup_context_chains(candidates);
-    }
-
-    Ok(candidates)
+    Ok(crate::ranking::apply_reranking_pipeline(
+        candidates,
+        &reranking_config,
+        context,
+    ))
 }
