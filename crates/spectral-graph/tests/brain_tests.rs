@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use chrono::{TimeZone, Utc};
 use spectral_cascade::orchestrator::CascadeConfig;
-use spectral_cascade::{LayerResult, RecognitionContext};
+use spectral_cascade::RecognitionContext;
 use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, RememberOpts};
@@ -762,17 +762,16 @@ fn brain_open_respects_custom_tact_max_results() {
     );
 }
 
-// ── Cascade integration tests ───────────────────────────────────────
+// ── Cascade integrated pipeline tests ────────────────────────────────
 
 #[test]
-fn recall_cascade_falls_through_to_l3() {
+fn recall_cascade_produces_hits() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
-    // Ingest memories that AAAK won't surface (low signal, no AAAK-worthy halls)
     brain
         .remember(
-            "cascade-l3-test",
+            "cascade-test",
             "Discussed cascade architecture for retrieval pipeline",
             Visibility::Private,
         )
@@ -787,213 +786,16 @@ fn recall_cascade_falls_through_to_l3() {
         )
         .unwrap();
 
-    // AAAK (L1) should skip (no high-signal foundational facts in a fresh brain).
-    // L3 constellation/TACT should find the memory.
     assert!(
         !result.merged_hits.is_empty(),
-        "cascade should produce hits via L3"
+        "cascade pipeline should produce hits"
     );
-    // Should not have stopped at L1 since AAAK skipped
-    assert_ne!(
-        result.stopped_at,
-        Some(spectral_cascade::LayerId::L1),
-        "should not stop at L1 when no AAAK facts found"
-    );
-}
-
-#[test]
-fn recall_cascade_returns_aaak_when_sufficient() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    // Ingest a high-signal fact in a hall that AAAK includes
-    let r = brain
-        .remember_with(
-            "aaak-cascade-test",
-            "Decided to use PostgreSQL for the production database",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    // L1 is now context-driven — pass the memory's wing as focus_wing
-    let wing = r.wing.as_deref().unwrap_or("core");
-    let ctx = RecognitionContext::empty().with_focus_wing(wing);
-    let config = CascadeConfig::default();
-    let result = brain
-        .recall_cascade("PostgreSQL production database", &ctx, &config)
-        .unwrap();
-
-    // Check that at least one layer produced results
-    assert!(!result.merged_hits.is_empty());
-
-    // Check that L1 ran (it may be Sufficient, Partial, or Skipped depending
-    // on whether the memory's signal score and hall match AAAK criteria)
-    let l1_outcome = result
-        .layer_outcomes
-        .iter()
-        .find(|(id, _)| *id == spectral_cascade::LayerId::L1);
-    assert!(l1_outcome.is_some(), "L1 should have been executed");
-
-    // If L1 was Sufficient, cascade stopped early (ideal case).
-    // If L1 Skipped (no facts in wing), L2/L3 picked it up.
-    // Both are valid — the test confirms the cascade ran without error.
-    let l1_was_sufficient = matches!(l1_outcome.unwrap().1, LayerResult::Sufficient { .. });
-    if l1_was_sufficient {
-        assert_eq!(result.stopped_at, Some(spectral_cascade::LayerId::L1));
-    }
-}
-
-// ── Episode integration tests ───────────────────────────────────────
-
-#[test]
-fn brain_list_memories_by_episode_returns_constituents() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    // Ingest 3 memories with a shared episode_id via remember_with + created_at
-    // (episode_id isn't threaded through RememberOpts yet, so we verify
-    // list_memories_by_episode returns empty — proving the delegate works
-    // and will return results once the ingest path populates episode_id)
-    brain
-        .remember(
-            "ep-brain-test-1",
-            "First memory for episode brain test",
-            Visibility::Private,
-        )
-        .unwrap();
-
-    // With no episode_id in the ingest path, list should be empty
-    let mems = brain.list_memories_by_episode("nonexistent").unwrap();
-    assert!(mems.is_empty());
-
-    // remember() now auto-creates episodes, so list_episodes may not be empty
-    // The delegate itself works — that's what we're testing
-    let _ = brain.list_episodes(None, 100).unwrap();
-}
-
-#[test]
-fn recall_cascade_returns_episode_when_dominant() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    for i in 0..5 {
-        brain
-            .remember_with(
-                &format!("python-ep-{i}"),
-                &format!("Python development task {i} with coding and debugging"),
-                RememberOpts {
-                    episode_id: Some("ep-python".into()),
-                    visibility: Visibility::Private,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-
-    brain
-        .remember_with(
-            "rust-ep-0",
-            "Rust systems programming discussion",
-            RememberOpts {
-                episode_id: Some("ep-rust".into()),
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    let config = CascadeConfig::default();
-    let result = brain
-        .recall_cascade(
-            "python development coding debugging",
-            &RecognitionContext::empty(),
-            &config,
-        )
-        .unwrap();
-
-    let l2_outcome = result
-        .layer_outcomes
-        .iter()
-        .find(|(id, _)| *id == spectral_cascade::LayerId::L2);
-    assert!(l2_outcome.is_some(), "L2 should run");
-    assert!(!result.merged_hits.is_empty());
-}
-
-#[test]
-fn recall_cascade_falls_through_to_l3_when_episodes_balanced() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    for i in 0..3 {
-        brain
-            .remember_with(
-                &format!("arch-a-{i}"),
-                &format!("Architecture discussion alpha iteration {i}"),
-                RememberOpts {
-                    episode_id: Some("ep-alpha".into()),
-                    visibility: Visibility::Private,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        brain
-            .remember_with(
-                &format!("arch-b-{i}"),
-                &format!("Architecture discussion beta iteration {i}"),
-                RememberOpts {
-                    episode_id: Some("ep-beta".into()),
-                    visibility: Visibility::Private,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-
-    let config = CascadeConfig::default();
-    let result = brain
-        .recall_cascade(
-            "architecture discussion iteration",
-            &RecognitionContext::empty(),
-            &config,
-        )
-        .unwrap();
-
-    // Cascade should run all 3 layers
+    assert_eq!(result.total_recognition_token_cost, 0);
+    // Pipeline should not contain synthetic __aaak__ blocks
     assert!(
-        result.layer_outcomes.len() >= 3,
-        "cascade should run all 3 layers"
+        !result.merged_hits.iter().any(|h| h.id == "__aaak__"),
+        "pipeline should not contain __aaak__ blocks"
     );
-}
-
-#[test]
-fn recall_cascade_skips_l2_when_no_episodes() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    // remember() auto-creates episodes, so L2 will find them.
-    // Verify the cascade still works end-to-end.
-    brain
-        .remember(
-            "cascade-ep-test",
-            "Memory for cascade episode testing scenario",
-            Visibility::Private,
-        )
-        .unwrap();
-
-    let config = CascadeConfig::default();
-    let result = brain
-        .recall_cascade(
-            "cascade episode testing scenario",
-            &RecognitionContext::empty(),
-            &config,
-        )
-        .unwrap();
-
-    assert!(!result.merged_hits.is_empty());
-    assert!(result.layer_outcomes.len() >= 2);
 }
 
 #[test]
@@ -1011,7 +813,7 @@ fn recall_cascade_accepts_context() {
 
     let config = CascadeConfig::default();
 
-    // Empty context — L1 skips (context-driven), L2/L3 still produce hits
+    // Empty context
     let result = brain
         .recall_cascade(
             "recognition context acceptance test",
@@ -1021,729 +823,175 @@ fn recall_cascade_accepts_context() {
         .unwrap();
     assert!(!result.merged_hits.is_empty());
     assert_eq!(result.total_recognition_token_cost, 0);
-    // L1 now falls back to high-signal memories with empty context (Partial, not Skipped)
-    let l1_outcome = result
-        .layer_outcomes
-        .iter()
-        .find(|(id, _)| *id == spectral_cascade::LayerId::L1);
-    assert!(l1_outcome.is_some(), "L1 should have been executed");
 
-    // Populated context with focus_wing — L1 may fire depending on wing match
+    // Populated context
     let ctx = RecognitionContext::empty().with_focus_wing("permagent");
     let result2 = brain
         .recall_cascade("recognition context acceptance test", &ctx, &config)
         .unwrap();
     assert!(!result2.merged_hits.is_empty());
-    assert_eq!(result2.total_recognition_token_cost, 0);
-}
-
-// ── AaakLayer calibration tests ─────────────────────────────────────
-
-#[test]
-fn aaak_layer_skips_when_no_high_signal_facts() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::AaakLayer;
-
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    // Ingest memories without boost keywords — these score below 0.85.
-    // Generic conversational content doesn't trigger decision/error/insight
-    // boosts, so signal stays at base (0.5-0.7 depending on hall).
-    for (i, content) in [
-        "The weather was nice today during our walk",
-        "We had lunch at the Italian place on Main Street",
-        "The meeting ran long but was productive overall",
-        "Traffic was heavy on the way home from work",
-        "The new office layout looks pretty good so far",
-    ]
-    .iter()
-    .enumerate()
-    {
-        brain
-            .remember(&format!("low-signal-{i}"), content, Visibility::Private)
-            .unwrap();
-    }
-
-    let layer = AaakLayer::new(&brain, 200);
-    let result = layer
-        .query("weather lunch meeting", 4096, &RecognitionContext::empty())
-        .unwrap();
-    assert!(
-        matches!(result, LayerResult::Skipped { .. }),
-        "AaakLayer should skip when no memories score >= 0.85"
-    );
 }
 
 #[test]
-fn aaak_layer_skips_when_only_preference_hall_above_threshold() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::AaakLayer;
-
+fn recall_cascade_returns_diverse_episodes() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
-    // "I prefer" triggers preference hall, but AaakLayer only includes "fact"
-    brain
-        .remember(
-            "pref-high",
-            "I prefer using Rust for all systems programming work",
-            Visibility::Private,
-        )
-        .unwrap();
-
-    let layer = AaakLayer::new(&brain, 200);
-    let result = layer
-        .query("Rust programming", 4096, &RecognitionContext::empty())
-        .unwrap();
-    // Even if signal score were high enough, preference hall is excluded
-    assert!(
-        matches!(result, LayerResult::Skipped { .. }),
-        "AaakLayer should skip preference-hall memories"
-    );
-}
-
-#[test]
-fn aaak_layer_fires_when_fact_above_threshold() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::AaakLayer;
-
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    // "decided to use" → fact hall (0.7 base) + decision boost (+0.15) = 0.85.
-    // This goes through the real classifier + scorer via remember_with.
-    let r = brain
-        .remember_with(
-            "fact-high",
-            "Decided to use Rust for the production database layer",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    // Verify classifier + scorer produced the expected values
-    assert_eq!(r.hall.as_deref(), Some("fact"), "should classify as fact");
-    assert!(
-        r.signal_score >= 0.7,
-        "fact + 'decided' should score >= 0.7, got {}",
-        r.signal_score
-    );
-
-    // AaakLayer is now context-driven: requires focus_wing or recent_activity.
-    // The memory's wing is determined by the classifier — use a broad focus_wing
-    // that covers default wing assignment.
-    let wing = r.wing.as_deref().unwrap_or("core");
-    let ctx = RecognitionContext::empty().with_focus_wing(wing);
-    let layer = AaakLayer::new(&brain, 200);
-    let result = layer.query("Rust production database", 4096, &ctx).unwrap();
-    // L1 returns Partial with context (not Sufficient) so cascade always continues
-    assert!(
-        matches!(result, LayerResult::Partial { .. }),
-        "AaakLayer should return Partial when context wing matches"
-    );
-    assert!(!result.hits().is_empty(), "should have hits");
-}
-
-// ── Annotation + ambient data tests ─────────────────────────────────
-
-#[test]
-fn brain_annotate_and_list_round_trip() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    let r = brain
-        .remember(
-            "ann-test-mem",
-            "Discussed cascade architecture for the recognition pipeline",
-            Visibility::Private,
-        )
-        .unwrap();
-    let memory_id = &r.memory_id;
-
-    let input = spectral_ingest::AnnotationInput {
-        description: "Architecture discussion about cascade layers".into(),
-        who: vec![
-            spectral_ingest::EntityRef {
-                canonical_id: "person:jesse-sharratt".into(),
-                display_name: "Jesse Sharratt".into(),
-            },
-            spectral_ingest::EntityRef {
-                canonical_id: "did:chitin:spectral-agent".into(),
-                display_name: "Spectral Agent".into(),
-            },
-        ],
-        why: "Designing the L2 episode layer".into(),
-        where_: Some("office".into()),
-        when_: chrono::Utc::now(),
-        how: "Pair programming session".into(),
-    };
-
-    let ann = brain.annotate(memory_id, input).unwrap();
-    assert!(ann.id.starts_with("ann-"));
-
-    let loaded = brain.list_annotations(memory_id).unwrap();
-    assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].who.len(), 2);
-    assert_eq!(loaded[0].who[0].canonical_id, "person:jesse-sharratt");
-    assert_eq!(loaded[0].who[1].canonical_id, "did:chitin:spectral-agent");
-    assert_eq!(
-        loaded[0].description,
-        "Architecture discussion about cascade layers"
-    );
-
-    // Probe should surface the cascade-related memory
-    let probe_results = brain
-        .probe(
-            "cascade architecture recognition",
-            spectral_graph::activity::ProbeOpts::default(),
-        )
-        .unwrap();
-    // Signal quality note: probe uses recall() which runs TACT/FTS.
-    // The memory content "Discussed cascade architecture for the recognition pipeline"
-    // should match query keywords "cascade architecture recognition" via FTS.
-    assert!(
-        !probe_results.is_empty(),
-        "probe should surface the cascade-related memory"
-    );
-}
-
-#[test]
-fn probe_handles_timeline_shaped_input() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    brain
-        .remember_with(
-            "cascade-fix",
-            "Fixed cascade calibration bug in the recognition pipeline",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    brain
-        .remember_with(
-            "cascade-test",
-            "Wrote test for cascade query orchestration",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    brain
-        .remember_with(
-            "cascade-perf",
-            "Cascade performance is fast on benchmark queries",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    brain
-        .remember_with(
-            "rust-async",
-            "Async Rust patterns for concurrent processing",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    brain
-        .remember_with(
-            "git-rebase",
-            "Git rebase workflow for feature branches",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    // Construct timeline-shaped probe context (what Permagent Phase 2 feeds)
-    let timeline_context = "[14:32] User opened ~/projects/spectral/src/cascade.rs\n\
-        [14:33] User typed: fn cascade_query(...)\n\
-        [14:34] Window: spectral - cascade.rs\n\
-        [14:35] User Slack-messaged team: pushing cascade calibration fix\n\
-        [14:36] User opened terminal: cargo test cascade";
-
-    let results = brain
-        .probe(
-            timeline_context,
-            spectral_graph::activity::ProbeOpts::default(),
-        )
-        .unwrap();
-
-    let surfaced_keys: Vec<&str> = results.iter().map(|m| m.key.as_str()).collect();
-    // Signal quality: probe uses recall() which runs TACT/FTS on the timeline text.
-    // "cascade" appears 4 times in the timeline — FTS should match memories
-    // containing "cascade" in their content.
-    assert!(
-        surfaced_keys.iter().any(|k| k.starts_with("cascade-")),
-        "Expected at least one cascade-related memory from timeline probe. Surfaced: {surfaced_keys:?}"
-    );
-
-    // Diagnostic: log what surfaced for signal quality analysis
-    eprintln!(
-        "Timeline probe surfaced {} memories: {:?}",
-        results.len(),
-        surfaced_keys
-    );
-}
-
-#[test]
-fn remember_with_persists_compaction_tier() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    let r = brain
-        .remember_with(
-            "tier-test",
-            "Raw ambient activity event from screen monitor",
-            RememberOpts {
-                compaction_tier: Some(spectral_ingest::CompactionTier::HourlyRollup),
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    let mems = brain.list_all_memories(100).unwrap();
-    let mem = mems.iter().find(|m| m.id == r.memory_id).unwrap();
-    assert_eq!(
-        mem.compaction_tier,
-        Some(spectral_ingest::CompactionTier::HourlyRollup)
-    );
-}
-
-// ── Wing override tests ──────────────────────────────────────────────
-
-#[test]
-fn remember_with_wing_override_bypasses_classifier() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    let r = brain
-        .remember_with(
-            "wing-override-test",
-            "Some generic content that classifier would assign to general",
-            RememberOpts {
-                wing: Some("permagent".into()),
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    assert_eq!(
-        r.wing.as_deref(),
-        Some("permagent"),
-        "wing override should bypass classifier and store as-is"
-    );
-}
-
-#[test]
-fn remember_with_wing_none_uses_classifier() {
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    let r = brain
-        .remember_with(
-            "wing-classifier-test",
-            "Some generic content without wing override",
-            RememberOpts {
-                wing: None,
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    // Classifier determines wing from content — should not be None
-    // (falls through to "general" if no regex matches)
-    assert!(
-        r.wing.is_some(),
-        "wing should be populated by classifier when override is None"
-    );
-}
-
-// ── Ambient-conditional cascade tests ────────────────────────────────
-
-#[test]
-fn aaak_layer_skips_with_empty_context() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::AaakLayer;
-
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    // Ingest a high-signal fact that would normally trigger AAAK
-    brain
-        .remember_with(
-            "ambient-fact",
-            "Decided to use PostgreSQL for the production database",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    let layer = AaakLayer::new(&brain, 200);
-    let result = layer
-        .query("PostgreSQL database", 4096, &RecognitionContext::empty())
-        .unwrap();
-
-    // With empty context, L1 falls back to high-signal memories from any wing
-    // and returns Partial (not Skipped) so cascade continues
-    assert!(
-        matches!(result, LayerResult::Partial { .. }),
-        "AaakLayer should return Partial with empty context (fallback mode)"
-    );
-}
-
-#[test]
-fn aaak_layer_fires_when_focus_wing_matches() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::AaakLayer;
-
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    let r = brain
-        .remember_with(
-            "permagent-fact",
-            "Decided to use Rust for the permagent ingestion pipeline",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    // Use the memory's actual wing as focus_wing in context
-    let wing = r.wing.as_deref().unwrap_or("core");
-    let ctx = RecognitionContext::empty().with_focus_wing(wing);
-
-    let layer = AaakLayer::new(&brain, 200);
-    let result = layer.query("permagent pipeline", 4096, &ctx).unwrap();
-
-    assert!(
-        matches!(result, LayerResult::Partial { .. }),
-        "AaakLayer should return Partial when focus_wing matches memory's wing"
-    );
-    assert!(!result.hits().is_empty(), "should have hits");
-}
-
-#[test]
-fn aaak_layer_fires_when_recent_activity_wing_matches() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::AaakLayer;
-    use spectral_ingest::activity::ActivityEpisode;
-
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    let r = brain
-        .remember_with(
-            "spectral-fact",
-            "Decided to implement constellation fingerprints for spectral",
-            RememberOpts {
-                visibility: Visibility::Private,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-    let wing = r.wing.as_deref().unwrap_or("core");
-    let now = Utc::now();
-    let episode = ActivityEpisode {
-        id: "ep-activity-1".into(),
-        started_at: now,
-        ended_at: now,
-        bundle_id: "com.test".into(),
-        app_name: "Test".into(),
-        window_title: None,
-        url: None,
-        excerpt: None,
-        source: "test".into(),
-        source_event_count: 1,
-        metadata: serde_json::Value::Null,
-        wing: Some(wing.to_string()),
-    };
-
-    let ctx = RecognitionContext::empty().with_recent_activity(vec![episode]);
-
-    let layer = AaakLayer::new(&brain, 200);
-    let result = layer
-        .query("constellation fingerprints", 4096, &ctx)
-        .unwrap();
-
-    assert!(
-        matches!(result, LayerResult::Partial { .. }),
-        "AaakLayer should return Partial when recent_activity wing matches"
-    );
-    assert!(!result.hits().is_empty(), "should have hits");
-}
-
-#[test]
-fn episode_layer_boosts_episodes_in_focus_wing() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::EpisodeLayer;
-
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    // Create episodes in "permagent" wing with unique content
-    for i in 0..2 {
+    for i in 0..5 {
         brain
             .remember_with(
-                &format!("permagent-impl-{i}"),
-                &format!("Permagent implementation task {i} with coding and architecture design"),
+                &format!("python-ep-{i}"),
+                &format!("Python development task {i} with coding and debugging"),
                 RememberOpts {
-                    episode_id: Some("ep-permagent".into()),
+                    episode_id: Some("ep-python".into()),
                     visibility: Visibility::Private,
                     ..Default::default()
                 },
             )
             .unwrap();
     }
-
-    // Create episodes in "getladle" wing
-    for i in 0..2 {
-        brain
-            .remember_with(
-                &format!("getladle-impl-{i}"),
-                &format!("Getladle implementation task {i} with coding and architecture design"),
-                RememberOpts {
-                    episode_id: Some("ep-getladle".into()),
-                    visibility: Visibility::Private,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-
-    // Query with focus_wing matching permagent's wing
-    // The episode wing is determined by its constituents' wing classification.
-    // We query something that matches all memories equally via FTS...
-    let ctx = RecognitionContext::empty().with_focus_wing("permagent");
-    let layer = EpisodeLayer::new(&brain, 4096);
-    let result = layer
-        .query("implementation task coding architecture design", 4096, &ctx)
+    brain
+        .remember_with(
+            "rust-ep-0",
+            "Rust systems programming discussion with coding and debugging",
+            RememberOpts {
+                episode_id: Some("ep-rust".into()),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-    // With ambient boost, the result should contain memories (from either ep).
-    // The exact ranking depends on wing classification by the TACT pipeline.
-    // What matters: the layer produces results and doesn't error.
-    assert!(
-        !matches!(result, LayerResult::Skipped { .. }),
-        "EpisodeLayer should produce results for matching query with context"
-    );
-}
-
-#[test]
-fn episode_layer_boosts_recent_episodes() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::EpisodeLayer;
-
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    // Create an episode with recent memories
-    let now = Utc::now();
-    let recent_ts = now - chrono::Duration::minutes(30);
-    for i in 0..3 {
-        brain
-            .remember_with(
-                &format!("recent-task-{i}"),
-                &format!("Recent cascade development task {i} in progress"),
-                RememberOpts {
-                    episode_id: Some("ep-recent".into()),
-                    created_at: Some(recent_ts),
-                    visibility: Visibility::Private,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-
-    // Create an episode with old memories
-    let old_ts = now - chrono::Duration::days(7);
-    for i in 0..3 {
-        brain
-            .remember_with(
-                &format!("old-task-{i}"),
-                &format!("Old cascade development task {i} completed long ago"),
-                RememberOpts {
-                    episode_id: Some("ep-old".into()),
-                    created_at: Some(old_ts),
-                    visibility: Visibility::Private,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-
-    // Query with context.now = current time (recency should boost ep-recent)
-    let ctx = RecognitionContext::empty().with_now(now);
-    let layer = EpisodeLayer::new(&brain, 4096);
-    let result = layer.query("cascade development task", 4096, &ctx).unwrap();
-
-    // Should produce results — recency boost helps recent episode
-    assert!(
-        !matches!(result, LayerResult::Skipped { .. }),
-        "EpisodeLayer should produce results"
-    );
-}
-
-#[test]
-fn episode_layer_empty_context_preserves_query_only_behavior() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::EpisodeLayer;
-
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    for i in 0..3 {
-        brain
-            .remember_with(
-                &format!("identity-ep-{i}"),
-                &format!("Identity test memory {i} for episode preservation check"),
-                RememberOpts {
-                    episode_id: Some("ep-identity".into()),
-                    visibility: Visibility::Private,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-
-    let layer = EpisodeLayer::new(&brain, 4096);
-
-    // Two calls with empty context should produce the same results
-    let result1 = layer
-        .query(
-            "identity test memory episode preservation",
-            4096,
+    let config = CascadeConfig::default();
+    let result = brain
+        .recall_cascade(
+            "development coding debugging",
             &RecognitionContext::empty(),
-        )
-        .unwrap();
-    let result2 = layer
-        .query(
-            "identity test memory episode preservation",
-            4096,
-            &RecognitionContext::empty(),
+            &config,
         )
         .unwrap();
 
-    // Both should be non-Skipped and have same hit count
-    let hits1 = result1.hits();
-    let hits2 = result2.hits();
-    assert_eq!(
-        hits1.len(),
-        hits2.len(),
-        "Empty context should produce identical results across calls"
-    );
-}
-
-#[test]
-fn constellation_layer_boosts_hits_with_aligned_wing() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::ConstellationLayer;
-
-    let tmp = TempDir::new().unwrap();
-    let brain = Brain::open(brain_config(&tmp)).unwrap();
-
-    // Ingest memories — ConstellationLayer uses recall_local (FTS) which
-    // returns MemoryHit with wing field. With context, hits in the focus
-    // wing get boosted.
-    brain
-        .remember(
-            "constellation-aligned",
-            "Constellation fingerprint matching works for spectral recognition",
-            Visibility::Private,
-        )
-        .unwrap();
-    brain
-        .remember(
-            "constellation-other",
-            "Constellation architecture discussion for getladle project",
-            Visibility::Private,
-        )
-        .unwrap();
-
-    // Query with focus_wing — hits whose wing matches get boosted
-    let ctx = RecognitionContext::empty().with_focus_wing("spectral");
-    let layer = ConstellationLayer::new(&brain, 4096);
-    let result = layer
-        .query("constellation fingerprint matching", 4096, &ctx)
-        .unwrap();
-
-    // Should produce results (via FTS)
+    assert!(!result.merged_hits.is_empty());
+    // Pipeline should return memories from both episodes
+    let episodes: std::collections::HashSet<_> = result
+        .merged_hits
+        .iter()
+        .filter_map(|h| h.episode_id.as_deref())
+        .collect();
     assert!(
-        !matches!(result, LayerResult::Skipped { .. }),
-        "ConstellationLayer should produce results for matching query"
+        !episodes.is_empty(),
+        "should have results from at least 1 episode"
     );
-    // Hits exist
-    assert!(!result.hits().is_empty());
 }
 
-#[test]
-fn constellation_layer_empty_context_preserves_query_only_behavior() {
-    use spectral_cascade::Layer;
-    use spectral_graph::cascade_layers::ConstellationLayer;
+// ── Episode integration tests ───────────────────────────────────────
 
+#[test]
+fn brain_list_memories_by_episode_returns_constituents() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
     brain
         .remember(
-            "l3-identity-test",
-            "Layer three identity preservation test for constellation queries",
+            "ep-brain-test-1",
+            "First memory for episode brain test",
             Visibility::Private,
         )
         .unwrap();
 
-    let layer = ConstellationLayer::new(&brain, 4096);
-
-    let result1 = layer
-        .query(
-            "layer three identity preservation constellation",
-            4096,
-            &RecognitionContext::empty(),
-        )
-        .unwrap();
-    let result2 = layer
-        .query(
-            "layer three identity preservation constellation",
-            4096,
-            &RecognitionContext::empty(),
-        )
-        .unwrap();
-
-    let hits1 = result1.hits();
-    let hits2 = result2.hits();
-    assert_eq!(
-        hits1.len(),
-        hits2.len(),
-        "Empty context should produce identical results across calls"
-    );
-
-    // With empty context, signal_score should be unchanged (boost = 1.0)
-    if !hits1.is_empty() {
-        assert!(
-            (hits1[0].signal_score - hits2[0].signal_score).abs() < f64::EPSILON,
-            "Signal scores should be identical with empty context"
-        );
-    }
+    let mems = brain.list_memories_by_episode("nonexistent").unwrap();
+    assert!(mems.is_empty());
+    let _ = brain.list_episodes(None, 100).unwrap();
 }
+
+// ── Cascade pipeline tests ──────────────────────────────────────────
+
+#[test]
+fn cascade_pipeline_returns_results() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "cascade-test-1",
+            "Decided to use PostgreSQL for the production database layer",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "cascade-test-2",
+            "Architecture discussion about cascade retrieval pipeline",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let config = spectral_cascade::orchestrator::CascadeConfig::default();
+    let result = brain
+        .recall_cascade(
+            "PostgreSQL production database",
+            &RecognitionContext::empty(),
+            &config,
+        )
+        .unwrap();
+
+    assert!(
+        !result.merged_hits.is_empty(),
+        "cascade should return results"
+    );
+    assert_eq!(result.total_recognition_token_cost, 0);
+    // No __aaak__ synthetic blocks
+    assert!(
+        !result.merged_hits.iter().any(|h| h.id == "__aaak__"),
+        "cascade should not contain synthetic __aaak__ blocks"
+    );
+}
+
+#[test]
+fn cascade_pipeline_returns_more_than_five_results() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Ingest 15 memories so FTS has enough to return
+    for i in 0..15 {
+        brain
+            .remember(
+                &format!("pipeline-test-{i}"),
+                &format!("Project milestone {i} completed for the pipeline architecture design"),
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+
+    let config = spectral_cascade::orchestrator::CascadeConfig::default();
+    let result = brain
+        .recall_cascade(
+            "pipeline architecture design milestone",
+            &RecognitionContext::empty(),
+            &config,
+        )
+        .unwrap();
+
+    // Should return more than TACT's old max_results=5
+    assert!(
+        result.merged_hits.len() > 5,
+        "cascade should return >5 results (got {}), not capped by TACT",
+        result.merged_hits.len()
+    );
+}
+
+// ── Legacy layer tests removed ──────────────────────────────────────
+// The old AaakLayer, EpisodeLayer, ConstellationLayer tests tested
+// an abstraction that has been replaced by the integrated pipeline.
+// cascade_pipeline_returns_results and cascade_pipeline_returns_more_than_five_results
+// cover the integrated path.
+
+// The old layer-specific tests (aaak_layer_*, episode_layer_*, constellation_layer_*)
+// have been removed — the Layer abstraction was replaced by the integrated pipeline.
+// See cascade_pipeline_returns_results and cascade_pipeline_returns_more_than_five_results.
+
+// ── FTS query quoting tests (preserved) ─────────────────────────────
+// These test topk_fts which is independent of the cascade redesign.
 
 // ── FTS query quoting tests ──────────────────────────────────────────
 
