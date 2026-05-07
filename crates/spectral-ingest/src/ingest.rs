@@ -254,13 +254,25 @@ async fn generate_fingerprints(
 
     let mut fingerprints = Vec::with_capacity(peers.len());
 
+    // Parse new memory's created_at for time-delta bucket computation
+    let new_created_at = new_memory
+        .created_at
+        .as_deref()
+        .and_then(parse_timestamp_secs);
+
     for peer in &peers {
         if peer.id == new_memory.id {
             continue;
         }
         let peer_hall = peer.hall.as_deref().unwrap_or("none");
         let fp_id = make_fp_id(&peer.id, &new_memory.id);
-        let bucket = TimeBucket::Unknown;
+        let bucket = match (
+            new_created_at,
+            peer.created_at.as_deref().and_then(parse_timestamp_secs),
+        ) {
+            (Some(new_ts), Some(peer_ts)) => TimeBucket::from_delta_secs(new_ts - peer_ts),
+            _ => TimeBucket::Older, // Default to Older (not Unknown) when timestamps unavailable
+        };
         let hash = fingerprint::make_fingerprint_hash(peer_hall, new_hall, wing, bucket);
 
         fingerprints.push(Fingerprint {
@@ -294,9 +306,58 @@ fn make_fp_id(id_a: &str, id_b: &str) -> String {
     )
 }
 
+/// Parse a timestamp string to epoch seconds. Handles both SQLite datetime
+/// format ("YYYY-MM-DD HH:MM:SS") and RFC3339.
+fn parse_timestamp_secs(s: &str) -> Option<f64> {
+    // SQLite datetime format
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.and_utc().timestamp() as f64);
+    }
+    // RFC3339 (from opts.created_at)
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.timestamp() as f64);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_timestamp_secs_sqlite_format() {
+        let ts = parse_timestamp_secs("2024-06-15 12:00:00");
+        assert!(ts.is_some());
+    }
+
+    #[test]
+    fn parse_timestamp_secs_rfc3339_format() {
+        let ts = parse_timestamp_secs("2024-06-15T12:00:00+00:00");
+        assert!(ts.is_some());
+    }
+
+    #[test]
+    fn time_bucket_from_timestamps() {
+        let now = parse_timestamp_secs("2024-06-15 12:00:00").unwrap();
+        let same_day = parse_timestamp_secs("2024-06-15 08:00:00").unwrap();
+        let same_week = parse_timestamp_secs("2024-06-12 12:00:00").unwrap();
+        let same_month = parse_timestamp_secs("2024-06-01 12:00:00").unwrap();
+        let older = parse_timestamp_secs("2024-01-15 12:00:00").unwrap();
+
+        assert_eq!(
+            TimeBucket::from_delta_secs(now - same_day),
+            TimeBucket::SameDay
+        );
+        assert_eq!(
+            TimeBucket::from_delta_secs(now - same_week),
+            TimeBucket::SameWeek
+        );
+        assert_eq!(
+            TimeBucket::from_delta_secs(now - same_month),
+            TimeBucket::SameMonth
+        );
+        assert_eq!(TimeBucket::from_delta_secs(now - older), TimeBucket::Older);
+    }
 
     #[test]
     fn clean_memory_context_prefixes_strips_single() {

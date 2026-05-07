@@ -1448,6 +1448,15 @@ impl Brain {
         Ok(total)
     }
 
+    /// Backfill time_delta_bucket on existing constellation fingerprints.
+    /// Recomputes bucket from anchor/target memory created_at timestamps and
+    /// updates the fingerprint hash to match. Returns count of updated rows.
+    pub fn backfill_fingerprint_time_buckets(&self) -> Result<usize, Error> {
+        self.rt
+            .block_on(self.memory_store.backfill_fingerprint_time_buckets())
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// Reinforce memories that the caller found useful from a recall result.
     ///
     /// Increases signal_score by `strength` (clamped to 1.0) and updates
