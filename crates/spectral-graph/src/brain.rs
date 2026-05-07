@@ -1028,6 +1028,51 @@ impl Brain {
         Ok(result.memories)
     }
 
+    /// Combined TACT + FTS retrieval for cascade. Calls TACT first, then
+    /// supplements with raw FTS if TACT returned fewer than K results.
+    /// Deduplicates by memory key across both sources.
+    pub fn cascade_retrieve(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
+        // Step 1: TACT retrieval
+        let mut hits = self.tact_retrieve_with_k(query, k)?;
+
+        // Step 2: If TACT returned fewer than K, supplement with FTS
+        if hits.len() < k {
+            let words: Vec<String> = query
+                .split_whitespace()
+                .filter(|w| w.len() > 1)
+                .map(|w| {
+                    w.chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                        .collect::<String>()
+                })
+                .filter(|w| w.len() > 1)
+                .collect();
+
+            if !words.is_empty() {
+                let fts_hits = self.fts_search_direct(&words, k)?;
+
+                // Dedup: only add FTS hits not already in TACT results
+                let existing_keys: std::collections::HashSet<String> =
+                    hits.iter().map(|h| h.key.clone()).collect();
+
+                for fts_hit in fts_hits {
+                    if hits.len() >= k {
+                        break;
+                    }
+                    if !existing_keys.contains(&fts_hit.key) {
+                        hits.push(fts_hit);
+                    }
+                }
+            }
+        }
+
+        Ok(hits)
+    }
+
     /// Direct FTS search bypassing TACT pipeline. Used by topk_fts
     /// for raw FTS access without TACT classification overhead.
     pub fn fts_search_direct(

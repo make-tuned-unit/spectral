@@ -146,9 +146,10 @@ pub fn run_cascade_pipeline(
     context: &RecognitionContext,
     config: &CascadePipelineConfig,
 ) -> Result<Vec<MemoryHit>, crate::Error> {
-    // Step 1: TACT retrieval at full K — tiered search (fingerprint → wing → FTS)
+    // Step 1: TACT + FTS combined retrieval — TACT for classified queries,
+    // FTS supplement when TACT returns fewer than K results
     let candidates = brain
-        .tact_retrieve_with_k(query, config.k)
+        .cascade_retrieve(query, config.k)
         .map_err(|e| crate::Error::Schema(e.to_string()))?;
 
     if candidates.is_empty() {
