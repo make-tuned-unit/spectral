@@ -165,6 +165,8 @@ pub fn run_cascade_pipeline(
         apply_entity_boost: false,
         entity_boost_weight: 0.05,
         apply_ambient_boost: config.apply_ambient_boost,
+        apply_declarative_boost: true,
+        declarative_weight: 0.10,
         apply_episode_diversity: config.apply_episode_diversity,
         max_per_episode: config.max_per_episode,
         apply_context_dedup: config.apply_context_dedup,
