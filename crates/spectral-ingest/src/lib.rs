@@ -481,6 +481,35 @@ pub trait MemoryStore: Send + Sync {
         &self,
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>>;
+
+    // ── Co-retrieval ──
+
+    /// Return memories most frequently co-retrieved with the given memory_id,
+    /// ordered by co_count DESC. Returns up to `limit` results.
+    fn related_memories(
+        &self,
+        memory_id: &str,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RelatedMemory>>> + Send + '_>>;
+
+    /// Rebuild the co_retrieval_pairs index from scratch using retrieval_events.
+    /// Returns the number of pairs written.
+    fn rebuild_co_retrieval_index(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+}
+
+// ── RelatedMemory ──────────────────────────────────────────────────
+
+/// A memory co-retrieved with another memory, with frequency count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelatedMemory {
+    /// The related memory's ID.
+    pub memory_id: String,
+    /// Number of times the two memories co-occurred in retrievals.
+    pub co_count: u64,
+    /// Full memory if cheap to join. `None` in v1 — caller fetches via `get_memory`.
+    pub memory: Option<Memory>,
 }
 
 // ── RetrievalEvent ──────────────────────────────────────────────────

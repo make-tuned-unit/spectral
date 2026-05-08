@@ -30,7 +30,7 @@
 
 use crate::{
     CompactionTier, Episode, Fingerprint, Memory, MemoryAnnotation, MemoryHit, MemoryStore,
-    RetrievalEvent, SpectrogramRow,
+    RelatedMemory, RetrievalEvent, SpectrogramRow,
 };
 use lru::LruCache;
 use rusqlite::{params, Connection};
@@ -377,6 +377,21 @@ impl SqliteStore {
                 "ALTER TABLE memories ADD COLUMN description_generated_at TEXT DEFAULT NULL",
             )?;
         }
+
+        // co_retrieval_pairs table
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS co_retrieval_pairs (
+                memory_id_a TEXT NOT NULL,
+                memory_id_b TEXT NOT NULL,
+                co_count    INTEGER NOT NULL DEFAULT 0,
+                last_updated TEXT NOT NULL,
+                PRIMARY KEY (memory_id_a, memory_id_b)
+            );
+            CREATE INDEX IF NOT EXISTS idx_co_retrieval_a
+                ON co_retrieval_pairs(memory_id_a);
+            CREATE INDEX IF NOT EXISTS idx_co_retrieval_b
+                ON co_retrieval_pairs(memory_id_b);",
+        )?;
 
         Ok(())
     }
@@ -1572,6 +1587,92 @@ impl MemoryStore for SqliteStore {
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
+        })
+    }
+
+    fn related_memories(
+        &self,
+        memory_id: &str,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RelatedMemory>>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT memory_id_b AS related_id, co_count FROM co_retrieval_pairs \
+                     WHERE memory_id_a = ?1 \
+                 UNION ALL \
+                 SELECT memory_id_a AS related_id, co_count FROM co_retrieval_pairs \
+                     WHERE memory_id_b = ?1 \
+                 ORDER BY co_count DESC LIMIT ?2",
+            )?;
+            let rows: Vec<RelatedMemory> = stmt
+                .query_map(params![memory_id, limit as i64], |row| {
+                    Ok(RelatedMemory {
+                        memory_id: row.get(0)?,
+                        co_count: row.get::<_, i64>(1)? as u64,
+                        memory: None,
+                    })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+    }
+
+    fn rebuild_co_retrieval_index(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+
+            // Read all retrieval events
+            let mut stmt = conn.prepare("SELECT memory_ids_json FROM retrieval_events")?;
+            let events: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            // Aggregate co-retrieval counts
+            let mut pair_counts: std::collections::HashMap<(String, String), i64> =
+                std::collections::HashMap::new();
+
+            for json in &events {
+                let ids: Vec<String> = match serde_json::from_str(json) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                // Generate all pairs (i, j) where i < j lexicographically
+                for i in 0..ids.len() {
+                    for j in (i + 1)..ids.len() {
+                        let (a, b) = if ids[i] < ids[j] {
+                            (ids[i].clone(), ids[j].clone())
+                        } else {
+                            (ids[j].clone(), ids[i].clone())
+                        };
+                        *pair_counts.entry((a, b)).or_insert(0) += 1;
+                    }
+                }
+            }
+
+            // Truncate and rewrite
+            conn.execute("DELETE FROM co_retrieval_pairs", [])?;
+
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut insert_stmt = conn.prepare(
+                "INSERT INTO co_retrieval_pairs (memory_id_a, memory_id_b, co_count, last_updated) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+
+            let mut written = 0;
+            for ((a, b), count) in &pair_counts {
+                insert_stmt.execute(params![a, b, count, now])?;
+                written += 1;
+            }
+
+            Ok(written)
         })
     }
 }
@@ -2884,5 +2985,135 @@ mod tests {
 
         let undescribed = store.list_undescribed(2).await.unwrap();
         assert_eq!(undescribed.len(), 2);
+    }
+
+    // ── Co-retrieval index tests ────────────────────────────────────
+
+    async fn insert_retrieval_event(store: &SqliteStore, memory_ids: &[&str]) {
+        let ids_json = serde_json::to_string(&memory_ids).unwrap();
+        let event = RetrievalEvent {
+            query_hash: "test_hash".into(),
+            timestamp: "2024-01-01T00:00:00Z".into(),
+            memory_ids_json: ids_json,
+            method: "cascade".into(),
+            wing: None,
+            question_type: None,
+        };
+        store.log_retrieval_event(&event).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rebuild_co_retrieval_index_from_empty() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let count = store.rebuild_co_retrieval_index().await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn rebuild_co_retrieval_index_single_event_no_pairs() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_retrieval_event(&store, &["m1"]).await;
+        let count = store.rebuild_co_retrieval_index().await.unwrap();
+        assert_eq!(count, 0, "single memory in event produces no pairs");
+    }
+
+    #[tokio::test]
+    async fn rebuild_co_retrieval_index_pairs_from_one_event() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_retrieval_event(&store, &["m1", "m2", "m3"]).await;
+        let count = store.rebuild_co_retrieval_index().await.unwrap();
+        // 3 memories → C(3,2) = 3 pairs
+        assert_eq!(count, 3);
+
+        let related = store.related_memories("m1", 10).await.unwrap();
+        assert_eq!(related.len(), 2);
+        assert!(related.iter().all(|r| r.co_count == 1));
+    }
+
+    #[tokio::test]
+    async fn rebuild_co_retrieval_index_aggregates_across_events() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_retrieval_event(&store, &["m1", "m2"]).await;
+        insert_retrieval_event(&store, &["m1", "m2", "m3"]).await;
+        let count = store.rebuild_co_retrieval_index().await.unwrap();
+        // Event 1: (m1,m2). Event 2: (m1,m2),(m1,m3),(m2,m3). Unique pairs: 3.
+        assert_eq!(count, 3);
+
+        let related = store.related_memories("m1", 10).await.unwrap();
+        // m2 co-occurred with m1 in both events → co_count=2
+        let m2_entry = related.iter().find(|r| r.memory_id == "m2").unwrap();
+        assert_eq!(m2_entry.co_count, 2);
+        // m3 co-occurred with m1 in one event → co_count=1
+        let m3_entry = related.iter().find(|r| r.memory_id == "m3").unwrap();
+        assert_eq!(m3_entry.co_count, 1);
+    }
+
+    #[tokio::test]
+    async fn rebuild_co_retrieval_index_normalizes_pair_order() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        // Event has m2 before m1 — should still normalize to (m1, m2)
+        insert_retrieval_event(&store, &["m2", "m1"]).await;
+        let count = store.rebuild_co_retrieval_index().await.unwrap();
+        assert_eq!(count, 1);
+
+        // Query from either side should work
+        let from_m1 = store.related_memories("m1", 10).await.unwrap();
+        assert_eq!(from_m1.len(), 1);
+        assert_eq!(from_m1[0].memory_id, "m2");
+
+        let from_m2 = store.related_memories("m2", 10).await.unwrap();
+        assert_eq!(from_m2.len(), 1);
+        assert_eq!(from_m2[0].memory_id, "m1");
+    }
+
+    #[tokio::test]
+    async fn rebuild_co_retrieval_index_idempotent() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_retrieval_event(&store, &["m1", "m2"]).await;
+
+        let count1 = store.rebuild_co_retrieval_index().await.unwrap();
+        let count2 = store.rebuild_co_retrieval_index().await.unwrap();
+        assert_eq!(count1, count2, "rebuild should be idempotent");
+
+        let related = store.related_memories("m1", 10).await.unwrap();
+        assert_eq!(related[0].co_count, 1, "counts should not accumulate");
+    }
+
+    #[tokio::test]
+    async fn related_memories_orders_by_co_count_desc() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        // m1+m2 co-occur 3 times, m1+m3 once
+        for _ in 0..3 {
+            insert_retrieval_event(&store, &["m1", "m2"]).await;
+        }
+        insert_retrieval_event(&store, &["m1", "m3"]).await;
+        store.rebuild_co_retrieval_index().await.unwrap();
+
+        let related = store.related_memories("m1", 10).await.unwrap();
+        assert_eq!(related.len(), 2);
+        assert_eq!(related[0].memory_id, "m2");
+        assert_eq!(related[0].co_count, 3);
+        assert_eq!(related[1].memory_id, "m3");
+        assert_eq!(related[1].co_count, 1);
+    }
+
+    #[tokio::test]
+    async fn related_memories_respects_limit() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_retrieval_event(&store, &["m1", "m2", "m3", "m4", "m5", "m6"]).await;
+        store.rebuild_co_retrieval_index().await.unwrap();
+
+        let related = store.related_memories("m1", 2).await.unwrap();
+        assert_eq!(related.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn related_memories_returns_empty_for_unknown_id() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_retrieval_event(&store, &["m1", "m2"]).await;
+        store.rebuild_co_retrieval_index().await.unwrap();
+
+        let related = store.related_memories("unknown", 10).await.unwrap();
+        assert!(related.is_empty());
     }
 }
