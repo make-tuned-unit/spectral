@@ -188,12 +188,7 @@ pub fn run_cascade_pipeline(
     // Log retrieval event for future co-access mining / pattern detection.
     let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();
     let event = spectral_ingest::RetrievalEvent {
-        query_hash: format!(
-            "{:016x}",
-            blake3::hash(query.as_bytes()).as_bytes()[..8]
-                .iter()
-                .fold(0u64, |acc, &b| (acc << 8) | b as u64)
-        ),
+        query_hash: spectral_ingest::hash_query(query),
         timestamp: chrono::Utc::now().to_rfc3339(),
         memory_ids_json: serde_json::to_string(&memory_ids).unwrap_or_default(),
         method: "cascade".into(),

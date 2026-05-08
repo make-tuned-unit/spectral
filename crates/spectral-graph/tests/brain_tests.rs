@@ -5,7 +5,7 @@ use spectral_cascade::orchestrator::CascadeConfig;
 use spectral_cascade::RecognitionContext;
 use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
-use spectral_graph::brain::{Brain, BrainConfig, RememberOpts};
+use spectral_graph::brain::{Brain, BrainConfig, RecallTopKConfig, RememberOpts};
 use spectral_tact::TactConfig;
 use tempfile::TempDir;
 
@@ -1143,10 +1143,45 @@ fn cascade_logs_retrieval_event() {
         .recall_cascade("jogging morning health", &context, &config)
         .unwrap();
 
-    // Verify retrieval event was logged
-    let count = brain.count_retrieval_events().unwrap();
+    // Verify retrieval event was logged with correct method
+    let count = brain.count_retrieval_events_by_method("cascade").unwrap();
     assert!(
         count >= 1,
-        "cascade should log a retrieval event, found {count}"
+        "cascade should log a retrieval event with method='cascade', found {count}"
+    );
+}
+
+#[test]
+fn topk_fts_logs_retrieval_event() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "fts-event-test",
+            "I recently purchased a new camera for photography",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let _ = brain
+        .recall_topk_fts(
+            "camera photography",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let count = brain.count_retrieval_events_by_method("topk_fts").unwrap();
+    assert!(
+        count >= 1,
+        "topk_fts should log a retrieval event with method='topk_fts', found {count}"
+    );
+
+    // cascade events should still be zero (we only used topk_fts)
+    let cascade_count = brain.count_retrieval_events_by_method("cascade").unwrap();
+    assert_eq!(
+        cascade_count, 0,
+        "no cascade events should exist when only topk_fts was used"
     );
 }

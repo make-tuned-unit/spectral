@@ -1143,12 +1143,7 @@ impl Brain {
         // Best-effort retrieval event logging
         let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();
         let event = spectral_ingest::RetrievalEvent {
-            query_hash: format!(
-                "{:016x}",
-                blake3::hash(query.as_bytes()).as_bytes()[..8]
-                    .iter()
-                    .fold(0u64, |acc, &b| (acc << 8) | b as u64)
-            ),
+            query_hash: spectral_ingest::hash_query(query),
             timestamp: chrono::Utc::now().to_rfc3339(),
             memory_ids_json: serde_json::to_string(&memory_ids).unwrap_or_default(),
             method: "topk_fts".into(),
@@ -1340,9 +1335,15 @@ impl Brain {
 
     /// Count retrieval events in the database (for testing the feedback loop).
     pub fn count_retrieval_events(&self) -> Result<usize, Error> {
-        // Query via raw SQL through the store's connection
         self.rt
             .block_on(self.memory_store.count_retrieval_events())
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Count retrieval events filtered by method (for testing).
+    pub fn count_retrieval_events_by_method(&self, method: &str) -> Result<usize, Error> {
+        self.rt
+            .block_on(self.memory_store.count_retrieval_events_by_method(method))
             .map_err(|e| Error::Schema(e.to_string()))
     }
 

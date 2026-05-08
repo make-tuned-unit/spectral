@@ -1426,6 +1426,23 @@ impl MemoryStore for SqliteStore {
             Ok(count as usize)
         })
     }
+
+    fn count_retrieval_events_by_method(
+        &self,
+        method: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let method = method.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM retrieval_events WHERE method = ?1",
+                params![method],
+                |row| row.get(0),
+            )?;
+            Ok(count as usize)
+        })
+    }
 }
 
 #[cfg(test)]

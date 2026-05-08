@@ -430,6 +430,12 @@ pub trait MemoryStore: Send + Sync {
     fn count_retrieval_events(
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
+    /// Count retrieval events filtered by method (for testing).
+    fn count_retrieval_events_by_method(
+        &self,
+        method: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
 }
 
 // ── RetrievalEvent ──────────────────────────────────────────────────
@@ -453,6 +459,14 @@ pub struct RetrievalEvent {
     pub wing: Option<String>,
     /// Question type from routing (if cascade): "Counting", "Temporal", etc.
     pub question_type: Option<String>,
+}
+
+/// Hash a query string for retrieval event grouping.
+///
+/// Returns full blake3 hex (64 chars). Used as a grouping key for
+/// co-access mining, not a security primitive.
+pub fn hash_query(query: &str) -> String {
+    blake3::hash(query.as_bytes()).to_hex().to_string()
 }
 
 // ── TimeBucket ──────────────────────────────────────────────────────
