@@ -1354,6 +1354,27 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
+    /// Fetch a memory by ID. Returns None if not found.
+    pub fn get_memory(&self, id: &str) -> Result<Option<spectral_ingest::Memory>, Error> {
+        self.rt
+            .block_on(self.memory_store.get_memory(id))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Set the description field on a memory and update description_generated_at to now.
+    pub fn set_description(&self, id: &str, description: &str) -> Result<(), Error> {
+        self.rt
+            .block_on(self.memory_store.set_description(id, description))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// List memories where description IS NULL, ordered by created_at DESC.
+    pub fn list_undescribed(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
+        self.rt
+            .block_on(self.memory_store.list_undescribed(limit))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// Direct access to the ontology.
     pub fn ontology(&self) -> &Ontology {
         &self.ontology
@@ -1411,6 +1432,8 @@ impl Brain {
                     episode_id: seed.episode_id.clone(),
                     compaction_tier: None,
                     declarative_density: seed.declarative_density,
+                    description: None,
+                    description_generated_at: None,
                 };
                 self.spectrogram_analyzer
                     .analyze(&mem, &AnalysisContext::default())
@@ -1476,6 +1499,7 @@ impl Brain {
                         last_reinforced_at: mem.last_reinforced_at.clone(),
                         episode_id: mem.episode_id.clone(),
                         declarative_density: mem.declarative_density,
+                        description: mem.description.clone(),
                     },
                     resonance_score: rmatch.resonance_score,
                     matched_dimensions: rmatch.matched_dimensions.clone(),
@@ -1791,6 +1815,8 @@ impl Brain {
                 episode_id: None,
                 compaction_tier: None,
                 declarative_density: None, // Activity episodes don't need density
+                description: None,
+                description_generated_at: None,
             };
 
             self.rt

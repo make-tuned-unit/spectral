@@ -771,6 +771,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: Some(episode.into()),
             declarative_density: None,
+            description: None,
         }
     }
 

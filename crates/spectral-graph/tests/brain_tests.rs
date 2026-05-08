@@ -1185,3 +1185,68 @@ fn topk_fts_logs_retrieval_event() {
         "no cascade events should exist when only topk_fts was used"
     );
 }
+
+#[test]
+fn brain_set_and_get_description_roundtrip() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let result = brain
+        .remember(
+            "desc-test",
+            "I prefer dark mode in all my editors",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    // Before setting description
+    let mem = brain.get_memory(&result.memory_id).unwrap().unwrap();
+    assert!(mem.description.is_none());
+    assert!(mem.description_generated_at.is_none());
+
+    // Set description
+    brain
+        .set_description(&result.memory_id, "User's editor preference for dark mode")
+        .unwrap();
+
+    // After setting description
+    let mem = brain.get_memory(&result.memory_id).unwrap().unwrap();
+    assert_eq!(
+        mem.description.as_deref(),
+        Some("User's editor preference for dark mode")
+    );
+    assert!(mem.description_generated_at.is_some());
+}
+
+#[test]
+fn brain_list_undescribed_excludes_described() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let r1 = brain
+        .remember("ud1", "I like Rust", Visibility::Private)
+        .unwrap();
+    let _r2 = brain
+        .remember("ud2", "I use Neovim", Visibility::Private)
+        .unwrap();
+    let _r3 = brain
+        .remember("ud3", "My favorite color is blue", Visibility::Private)
+        .unwrap();
+
+    // Describe one
+    brain
+        .set_description(&r1.memory_id, "Language preference")
+        .unwrap();
+
+    let undescribed = brain.list_undescribed(100).unwrap();
+    let ids: Vec<&str> = undescribed.iter().map(|m| m.id.as_str()).collect();
+    assert!(
+        !ids.contains(&r1.memory_id.as_str()),
+        "described memory should be excluded"
+    );
+    assert_eq!(
+        undescribed.len(),
+        2,
+        "should have exactly 2 undescribed memories"
+    );
+}
