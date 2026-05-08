@@ -1130,6 +1130,8 @@ impl Brain {
             apply_entity_boost: config.apply_entity_resolution,
             entity_boost_weight: 0.05,
             apply_ambient_boost: false,
+            apply_declarative_boost: false,
+            declarative_weight: 0.10,
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: config.apply_context_dedup,
