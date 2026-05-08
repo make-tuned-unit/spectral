@@ -225,6 +225,8 @@ pub async fn ingest_with(
         episode_id,
         compaction_tier: opts.compaction_tier,
         declarative_density: None, // Computed by Brain after ingest
+        description: None,
+        description_generated_at: None,
     };
 
     let fingerprints = if signal_score >= config.signal_threshold {

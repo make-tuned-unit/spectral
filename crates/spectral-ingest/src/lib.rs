@@ -60,6 +60,12 @@ pub struct Memory {
     /// sentences). `None` = not yet computed (pre-backfill memories).
     #[serde(default)]
     pub declarative_density: Option<f64>,
+    /// Prose description of this memory (written by external agents like Librarian).
+    #[serde(default)]
+    pub description: Option<String>,
+    /// When the description was generated (ISO-8601).
+    #[serde(default)]
+    pub description_generated_at: Option<String>,
 }
 
 /// Compaction tier for memory lifecycle management.
@@ -153,6 +159,9 @@ pub struct MemoryHit {
     /// Pre-computed declarative density. `None` = not yet computed.
     #[serde(default)]
     pub declarative_density: Option<f64>,
+    /// Prose description of this memory (written by external agents like Librarian).
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 // ── Episode ────────────────────────────────────────────────────────
@@ -450,6 +459,28 @@ pub trait MemoryStore: Send + Sync {
         &self,
         method: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
+    // ── Description ──
+
+    /// Fetch a memory by ID. Returns None if not found.
+    fn get_memory(
+        &self,
+        id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Memory>>> + Send + '_>>;
+
+    /// Set the description field on a memory and update description_generated_at to now.
+    /// Returns Ok(()) on success, Err if memory not found or DB error.
+    fn set_description(
+        &self,
+        id: &str,
+        description: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// List memories where description IS NULL, ordered by created_at DESC, limited.
+    fn list_undescribed(
+        &self,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>>;
 }
 
 // ── RetrievalEvent ──────────────────────────────────────────────────

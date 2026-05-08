@@ -197,6 +197,7 @@ mod tests {
                 last_reinforced_at: None,
                 episode_id: None,
                 declarative_density: None,
+                description: None,
                 hits: 3,
             },
             MemoryHit {
@@ -214,6 +215,7 @@ mod tests {
                 last_reinforced_at: None,
                 episode_id: None,
                 declarative_density: None,
+                description: None,
                 hits: 1,
             },
         ];

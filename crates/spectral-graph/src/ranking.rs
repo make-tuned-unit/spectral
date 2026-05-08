@@ -363,6 +363,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             declarative_density: None,
+            description: None,
         }
     }
 
@@ -449,6 +450,7 @@ mod tests {
                 last_reinforced_at: None,
                 episode_id: None,
                 declarative_density: None,
+                description: None,
             },
             MemoryHit {
                 id: "dup2".into(),
@@ -466,6 +468,7 @@ mod tests {
                 last_reinforced_at: None,
                 episode_id: None,
                 declarative_density: None,
+                description: None,
             },
             MemoryHit {
                 id: "clean".into(),
@@ -483,6 +486,7 @@ mod tests {
                 last_reinforced_at: None,
                 episode_id: None,
                 declarative_density: None,
+                description: None,
             },
         ];
 
@@ -676,6 +680,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             declarative_density: None,
+            description: None,
         }
     }
 

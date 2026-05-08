@@ -357,6 +357,27 @@ impl SqliteStore {
             )?;
         }
 
+        // description + description_generated_at columns
+        let mut has_description = false;
+        let mut has_description_generated_at = false;
+        let mut stmt6 = conn.prepare("PRAGMA table_info(memories)")?;
+        let rows6 = stmt6.query_map([], |row| row.get::<_, String>(1))?;
+        for name in rows6 {
+            match name?.as_str() {
+                "description" => has_description = true,
+                "description_generated_at" => has_description_generated_at = true,
+                _ => {}
+            }
+        }
+        if !has_description {
+            conn.execute_batch("ALTER TABLE memories ADD COLUMN description TEXT DEFAULT NULL")?;
+        }
+        if !has_description_generated_at {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN description_generated_at TEXT DEFAULT NULL",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -367,13 +388,13 @@ impl SqliteStore {
 }
 
 /// Standard column list for memory queries.
-const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier, declarative_density";
+const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier, declarative_density, description, description_generated_at";
 
 /// Parse a Memory from a row with the standard column order.
 /// Columns: id(0), key(1), content(2), wing(3), hall(4), signal_score(5),
 /// visibility(6), source(7), device_id(8), confidence(9), created_at(10),
 /// last_reinforced_at(11), episode_id(12), compaction_tier(13),
-/// declarative_density(14)
+/// declarative_density(14), description(15), description_generated_at(16)
 fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
     let device_blob: Option<Vec<u8>> = row.get(8)?;
     let device_id = device_blob.and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
@@ -396,6 +417,8 @@ fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
             .ok()
             .and_then(|s| crate::CompactionTier::parse(&s)),
         declarative_density: row.get(14).ok(),
+        description: row.get(15).ok(),
+        description_generated_at: row.get(16).ok(),
     })
 }
 
@@ -418,6 +441,7 @@ fn memory_hit_from_row(row: &rusqlite::Row, hits: usize) -> rusqlite::Result<Mem
         last_reinforced_at: row.get(11).ok(),
         episode_id: row.get(12).ok(),
         declarative_density: row.get(14).ok(),
+        description: row.get(15).ok(),
     })
 }
 
@@ -1489,6 +1513,67 @@ impl MemoryStore for SqliteStore {
             Ok(count as usize)
         })
     }
+
+    fn get_memory(
+        &self,
+        id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Memory>>> + Send + '_>> {
+        let id = id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories WHERE id = ?1");
+            match conn.query_row(&sql, params![id], memory_from_row) {
+                Ok(mem) => Ok(Some(mem)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        })
+    }
+
+    fn set_description(
+        &self,
+        id: &str,
+        description: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let id = id.to_string();
+        let description = description.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let rows_affected = conn.execute(
+                "UPDATE memories SET description = ?1, \
+                     description_generated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') \
+                 WHERE id = ?2",
+                params![description, id],
+            )?;
+            if rows_affected == 0 {
+                anyhow::bail!("memory not found: {id}");
+            }
+            Ok(())
+        })
+    }
+
+    fn list_undescribed(
+        &self,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let sql = format!(
+                "SELECT {MEMORY_COLUMNS} FROM memories \
+                 WHERE description IS NULL \
+                 ORDER BY created_at DESC LIMIT ?1"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows: Vec<Memory> = stmt
+                .query_map(params![limit as i64], memory_from_row)?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1514,6 +1599,8 @@ mod tests {
             episode_id: None,
             compaction_tier: None,
             declarative_density: None,
+            description: None,
+            description_generated_at: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -1541,6 +1628,8 @@ mod tests {
             episode_id: None,
             compaction_tier: None,
             declarative_density: None,
+            description: None,
+            description_generated_at: None,
         };
         store.write(&mem1, &[]).await.unwrap();
 
@@ -1560,6 +1649,8 @@ mod tests {
             episode_id: None,
             compaction_tier: None,
             declarative_density: None,
+            description: None,
+            description_generated_at: None,
         };
         store.write(&mem2, &[]).await.unwrap();
 
@@ -1587,6 +1678,8 @@ mod tests {
             episode_id: None,
             compaction_tier: None,
             declarative_density: None,
+            description: None,
+            description_generated_at: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -1620,6 +1713,8 @@ mod tests {
             episode_id: None,
             compaction_tier: None,
             declarative_density: None,
+            description: None,
+            description_generated_at: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1638,6 +1733,8 @@ mod tests {
             episode_id: None,
             compaction_tier: None,
             declarative_density: None,
+            description: None,
+            description_generated_at: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -1681,6 +1778,8 @@ mod tests {
             episode_id: None,
             compaction_tier: None,
             declarative_density: None,
+            description: None,
+            description_generated_at: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1699,6 +1798,8 @@ mod tests {
             episode_id: None,
             compaction_tier: None,
             declarative_density: None,
+            description: None,
+            description_generated_at: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -1743,6 +1844,8 @@ mod tests {
             episode_id: None,
             compaction_tier: None,
             declarative_density: None,
+            description: None,
+            description_generated_at: None,
         }
     }
 
@@ -1978,6 +2081,8 @@ mod tests {
                 episode_id: Some("ep-mem-test".into()),
                 compaction_tier: None,
                 declarative_density: None,
+                description: None,
+                description_generated_at: None,
             };
             store.write(&mem, &[]).await.unwrap();
         }
@@ -2674,5 +2779,110 @@ mod tests {
             .unwrap();
         assert!(wing.is_none());
         assert!(qtype.is_none());
+    }
+
+    // ── Description tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_memory_returns_some_for_existing() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = make_mem("m1", "k1", "test_wing");
+        store.write(&mem, &[]).await.unwrap();
+
+        let fetched = store.get_memory("m1").await.unwrap();
+        assert!(fetched.is_some());
+        let fetched = fetched.unwrap();
+        assert_eq!(fetched.id, "m1");
+        assert_eq!(fetched.key, "k1");
+        assert!(fetched.description.is_none());
+        assert!(fetched.description_generated_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_memory_returns_none_for_missing() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let fetched = store.get_memory("nonexistent").await.unwrap();
+        assert!(fetched.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_description_writes_field_and_timestamp() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = make_mem("m1", "k1", "test_wing");
+        store.write(&mem, &[]).await.unwrap();
+
+        store
+            .set_description("m1", "A detailed description")
+            .await
+            .unwrap();
+
+        let fetched = store.get_memory("m1").await.unwrap().unwrap();
+        assert_eq!(
+            fetched.description.as_deref(),
+            Some("A detailed description")
+        );
+        let ts = fetched.description_generated_at.as_ref().unwrap();
+        // Verify ISO-8601 format (ends with Z)
+        assert!(ts.ends_with('Z'), "timestamp should be ISO-8601: {ts}");
+        assert!(
+            ts.contains('T'),
+            "timestamp should contain T separator: {ts}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_description_returns_err_for_missing_memory() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let result = store.set_description("nonexistent", "desc").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn set_description_overwrites_existing() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = make_mem("m1", "k1", "test_wing");
+        store.write(&mem, &[]).await.unwrap();
+
+        store.set_description("m1", "first").await.unwrap();
+        let first = store.get_memory("m1").await.unwrap().unwrap();
+        let _ts1 = first.description_generated_at.clone().unwrap();
+
+        store.set_description("m1", "second").await.unwrap();
+        let second = store.get_memory("m1").await.unwrap().unwrap();
+        assert_eq!(second.description.as_deref(), Some("second"));
+        // Timestamp should be updated (or at least present)
+        assert!(second.description_generated_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn list_undescribed_returns_only_null_descriptions() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.write(&make_mem("m1", "k1", "w"), &[]).await.unwrap();
+        store.write(&make_mem("m2", "k2", "w"), &[]).await.unwrap();
+        store.write(&make_mem("m3", "k3", "w"), &[]).await.unwrap();
+
+        // Describe one
+        store.set_description("m1", "described").await.unwrap();
+
+        let undescribed = store.list_undescribed(100).await.unwrap();
+        assert_eq!(undescribed.len(), 2);
+        let ids: Vec<&str> = undescribed.iter().map(|m| m.id.as_str()).collect();
+        assert!(!ids.contains(&"m1"));
+        assert!(ids.contains(&"m2"));
+        assert!(ids.contains(&"m3"));
+    }
+
+    #[tokio::test]
+    async fn list_undescribed_respects_limit() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        for i in 0..5 {
+            store
+                .write(&make_mem(&format!("m{i}"), &format!("k{i}"), "w"), &[])
+                .await
+                .unwrap();
+        }
+
+        let undescribed = store.list_undescribed(2).await.unwrap();
+        assert_eq!(undescribed.len(), 2);
     }
 }
