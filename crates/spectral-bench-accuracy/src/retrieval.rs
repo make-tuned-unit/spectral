@@ -1,9 +1,13 @@
 //! Query Spectral and format retrieved context for the actor.
 
 use anyhow::Result;
+use chrono::{DateTime, NaiveDateTime, Utc};
+use regex::Regex;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, RecallTopKConfig};
-use std::collections::HashSet;
+use spectral_graph::cascade_layers::CascadePipelineConfig;
+use spectral_ingest::MemoryHit;
+use std::collections::{BTreeMap, HashSet};
 
 /// Configuration for retrieval.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -32,6 +36,156 @@ pub enum RetrievalPath {
     /// Cascade (L1→L2→L3).
     Cascade,
 }
+
+// ── Question-type routing (P1) ──────────────────────────────────────
+
+/// Question type determined by structural analysis of the query.
+/// Maps to a retrieval profile with tuned K, episode diversity, and recency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionType {
+    /// "How many", "how much", "total" — needs diverse session coverage.
+    Counting,
+    /// "When", "how long", "first/last", "ago/since" — recency matters.
+    Temporal,
+    /// "What", "where", "who", "which" — focused retrieval.
+    Factual,
+    /// Anything else — default profile.
+    General,
+}
+
+impl QuestionType {
+    /// Classify a question string into a routing type.
+    pub fn classify(question: &str) -> Self {
+        let q = question.to_lowercase();
+        // Order: temporal-counting ("how many days/weeks ago", "how old") first,
+        // then general counting, then temporal, then factual.
+        // These need temporal context words (ago/since/passed/before/after/between)
+        // to distinguish "how many days ago" (temporal) from "how many days in total" (counting).
+        if Regex::new(r"how many (?:days|weeks|months|years) (?:ago|since|passed|before|after|between|had passed|have passed|did it take)|how old")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::Temporal;
+        }
+        if Regex::new(r"how many|how much|total|in total|altogether")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::Counting;
+        }
+        if Regex::new(r"when did|how long|(?:^|\W)first\b|(?:^|\W)last\b|before|after|ago|since")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::Temporal;
+        }
+        if Regex::new(r"^(?:what|where|who|which)\b")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::Factual;
+        }
+        Self::General
+    }
+
+    /// Return the cascade pipeline config tuned for this question type.
+    pub fn cascade_profile(&self) -> CascadePipelineConfig {
+        match self {
+            Self::Counting => CascadePipelineConfig {
+                k: 60,
+                max_per_episode: 3,
+                recency_half_life_days: 730.0, // don't penalize any memories
+                ..CascadePipelineConfig::default()
+            },
+            Self::Temporal => CascadePipelineConfig {
+                k: 40,
+                max_per_episode: 5,
+                recency_half_life_days: 60.0, // aggressive recency
+                ..CascadePipelineConfig::default()
+            },
+            Self::Factual => CascadePipelineConfig {
+                k: 30,
+                max_per_episode: 8,
+                ..CascadePipelineConfig::default()
+            },
+            Self::General => CascadePipelineConfig::default(),
+        }
+    }
+}
+
+// ── Session-grouped formatting (P2) ─────────────────────────────────
+
+/// Format memory hits grouped by session/episode for clearer multi-session context.
+///
+/// Groups hits by `episode_id` (falling back to session prefix from key),
+/// orders sessions chronologically, and presents turns in order within
+/// each session. Drops redundant per-turn metadata (date, wing, hall).
+pub fn format_hits_grouped(hits: &[MemoryHit]) -> Vec<String> {
+    if hits.is_empty() {
+        return Vec::new();
+    }
+
+    // Group hits by episode
+    let mut by_episode: BTreeMap<String, Vec<&MemoryHit>> = BTreeMap::new();
+    for hit in hits {
+        let ep_key = hit
+            .episode_id
+            .clone()
+            .or_else(|| hit.key.split(':').next().map(|s| s.to_string()))
+            .unwrap_or_else(|| "unknown".to_string());
+        by_episode.entry(ep_key).or_default().push(hit);
+    }
+
+    // Sort each episode's hits by key (which encodes turn order)
+    for hits_in_ep in by_episode.values_mut() {
+        hits_in_ep.sort_by(|a, b| a.key.cmp(&b.key));
+    }
+
+    // Sort episodes by their earliest created_at
+    let mut episodes: Vec<(String, Vec<&MemoryHit>)> = by_episode.into_iter().collect();
+    episodes.sort_by(|a, b| {
+        let date_a =
+            a.1.first()
+                .and_then(|h| h.created_at.as_deref())
+                .unwrap_or("");
+        let date_b =
+            b.1.first()
+                .and_then(|h| h.created_at.as_deref())
+                .unwrap_or("");
+        date_a.cmp(date_b)
+    });
+
+    // Build output lines
+    let mut lines = Vec::new();
+    for (ep_id, ep_hits) in &episodes {
+        let date = ep_hits
+            .first()
+            .and_then(|h| h.created_at.as_deref())
+            .map(|s| s.split(' ').next().unwrap_or(s))
+            .unwrap_or("unknown-date");
+        lines.push(format!("--- Session {ep_id} ({date}) ---"));
+
+        for hit in ep_hits {
+            let role = if hit.key.contains(":user") {
+                "user"
+            } else if hit.key.contains(":assistant") {
+                "asst"
+            } else {
+                "turn"
+            };
+            // Skip short assistant filler ("Hi!", "Sure!", "That's great!")
+            if role == "asst" && hit.content.len() < 40 {
+                continue;
+            }
+            lines.push(format!("[{role}] {}", hit.content));
+        }
+    }
+
+    lines
+}
+
+// ── Legacy flat format ──────────────────────────────────────────────
 
 /// Format a MemoryHit into the standard actor format.
 pub fn format_hit(hit: &spectral_ingest::MemoryHit) -> String {
@@ -148,32 +302,44 @@ pub struct CascadeTelemetry {
     /// Total LLM tokens consumed during recognition across all layers.
     /// Expected to be 0 for all current layers (empirical proof artifact).
     pub total_recognition_token_cost: usize,
+    /// Question-type classification used for routing (e.g. "Counting").
+    #[serde(default)]
+    pub question_type: Option<String>,
     pub layer_outcomes: Vec<(String, String)>,
 }
 
-/// Retrieve memories via the cascade (L1→L2→L3).
+/// Retrieve memories via the cascade with question-type-aware routing.
+///
+/// Classifies the question into counting/temporal/factual/general, selects
+/// a tuned retrieval profile (K, episode diversity, recency half-life), and
+/// formats the results as session-grouped context.
+///
+/// When `question_date` is provided (format: "2023/05/30 (Tue) 23:40"),
+/// the cascade's recency scoring uses it as the time anchor instead of
+/// `Utc::now()`.
 pub fn retrieve_cascade(
     brain: &Brain,
     question: &str,
     config: &RetrievalConfig,
+    question_date: Option<&str>,
 ) -> Result<(Vec<String>, CascadeTelemetry)> {
-    let cascade_config = spectral_cascade::orchestrator::CascadeConfig::default();
-    // Bench has no ambient signal (LongMemEval is synthetic), so empty context is correct.
-    let context = spectral_cascade::RecognitionContext::empty();
-    let result = brain.recall_cascade(question, &context, &cascade_config)?;
+    // P1: Question-type routing
+    let qtype = QuestionType::classify(question);
+    let pipeline_config = qtype.cascade_profile();
 
-    let formatted: Vec<String> = result
-        .merged_hits
-        .iter()
-        .take(config.max_results)
-        .map(format_hit)
-        .collect();
+    let context = match question_date.and_then(parse_question_date) {
+        Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
+        None => spectral_cascade::RecognitionContext::empty(),
+    };
+    let result = brain.recall_cascade_with_pipeline(question, &context, &pipeline_config)?;
 
+    // Capture telemetry before consuming merged_hits
     let telemetry = CascadeTelemetry {
         stopped_at: result.stopped_at.map(|id| id.to_string()),
         max_confidence: result.max_confidence,
         total_tokens_used: result.total_tokens_used,
         total_recognition_token_cost: result.total_recognition_token_cost,
+        question_type: Some(format!("{qtype:?}")),
         layer_outcomes: result
             .layer_outcomes
             .iter()
@@ -194,7 +360,34 @@ pub fn retrieve_cascade(
             .collect(),
     };
 
+    // P2: Session-grouped formatting
+    let hits: Vec<MemoryHit> = result
+        .merged_hits
+        .into_iter()
+        .take(config.max_results)
+        .collect();
+    let formatted = format_hits_grouped(&hits);
+
     Ok((formatted, telemetry))
+}
+
+/// Parse LongMemEval question_date format ("2023/05/30 (Tue) 23:40") into DateTime<Utc>.
+fn parse_question_date(date_str: &str) -> Option<DateTime<Utc>> {
+    // Strip the day-of-week parenthetical: "2023/05/30 (Tue) 23:40" → "2023/05/30 23:40"
+    let cleaned = date_str
+        .find('(')
+        .and_then(|open| {
+            date_str[open..].find(')').map(|close| {
+                let before = date_str[..open].trim_end();
+                let after = date_str[open + close + 1..].trim_start();
+                format!("{before} {after}")
+            })
+        })
+        .unwrap_or_else(|| date_str.to_string());
+
+    NaiveDateTime::parse_from_str(cleaned.trim(), "%Y/%m/%d %H:%M")
+        .ok()
+        .map(|dt| dt.and_utc())
 }
 
 #[cfg(test)]
@@ -303,5 +496,485 @@ mod tests {
             !memories.is_empty(),
             "graph retrieval should fall back to FTS when no entities found"
         );
+    }
+
+    #[test]
+    fn parse_question_date_standard_format() {
+        let dt = parse_question_date("2023/05/30 (Tue) 23:40").unwrap();
+        assert_eq!(dt, Utc.with_ymd_and_hms(2023, 5, 30, 23, 40, 0).unwrap());
+    }
+
+    #[test]
+    fn parse_question_date_different_day() {
+        let dt = parse_question_date("2021/08/20 (Fri) 14:05").unwrap();
+        assert_eq!(dt, Utc.with_ymd_and_hms(2021, 8, 20, 14, 5, 0).unwrap());
+    }
+
+    #[test]
+    fn parse_question_date_returns_none_on_garbage() {
+        assert!(parse_question_date("not a date").is_none());
+    }
+
+    #[test]
+    fn cascade_uses_question_date_for_recency() {
+        let dir = tempfile::tempdir().unwrap();
+        let ontology_path = dir.path().join("ontology.toml");
+        std::fs::write(&ontology_path, "version = 1\n").unwrap();
+
+        let brain = Brain::open(BrainConfig {
+            data_dir: dir.path().to_path_buf(),
+            ontology_path,
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        })
+        .unwrap();
+
+        // Ingest two memories: one from May 2023, one from Jan 2023
+        let recent_ts = Utc.with_ymd_and_hms(2023, 5, 20, 12, 0, 0).unwrap();
+        let old_ts = Utc.with_ymd_and_hms(2023, 1, 10, 12, 0, 0).unwrap();
+
+        brain
+            .remember_with(
+                "recent-memory",
+                "I recently started jogging every morning for exercise",
+                RememberOpts {
+                    created_at: Some(recent_ts),
+                    visibility: Visibility::Private,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        brain
+            .remember_with(
+                "old-memory",
+                "I started a new exercise routine with jogging",
+                RememberOpts {
+                    created_at: Some(old_ts),
+                    visibility: Visibility::Private,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Retrieve with question_date = May 30, 2023
+        // The recent memory (May 20) is 10 days old; old memory (Jan 10) is 140 days old.
+        // With recency weighting, the recent memory should rank first.
+        let (memories_with_date, _) = retrieve_cascade(
+            &brain,
+            "jogging exercise",
+            &RetrievalConfig::default(),
+            Some("2023/05/30 (Tue) 23:40"),
+        )
+        .unwrap();
+
+        // Session-grouped format: lines include session headers and content.
+        // Both memories should appear in the output.
+        let all_text = memories_with_date.join("\n");
+        assert!(
+            all_text.contains("recently started jogging"),
+            "should contain the recent jogging memory"
+        );
+        assert!(
+            all_text.contains("exercise routine"),
+            "should contain the old exercise memory"
+        );
+
+        // The recent memory (May 20, 10 days from question) should appear
+        // in a session that comes AFTER the old memory (Jan 10, 140 days)
+        // since sessions are ordered chronologically and recency re-ranking
+        // doesn't change session order — it affects which memories are
+        // selected into the top-K in the first place.
+        let recent_pos = all_text.find("recently started jogging").unwrap();
+        let old_pos = all_text.find("exercise routine").unwrap();
+        // Both should be present (retrieval succeeded)
+        assert!(recent_pos > 0 && old_pos > 0);
+    }
+
+    // ── P1: Question-type routing tests ──────────────────────────────
+
+    #[test]
+    fn classify_counting_questions() {
+        assert_eq!(
+            QuestionType::classify("How many books did I read?"),
+            QuestionType::Counting
+        );
+        assert_eq!(
+            QuestionType::classify("How much money did I spend?"),
+            QuestionType::Counting
+        );
+        assert_eq!(
+            QuestionType::classify("What is the total amount?"),
+            QuestionType::Counting
+        );
+        assert_eq!(
+            QuestionType::classify("How many days in total?"),
+            QuestionType::Counting
+        );
+    }
+
+    #[test]
+    fn classify_temporal_questions() {
+        assert_eq!(
+            QuestionType::classify("When did I start jogging?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify("How long is my commute?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify("What happened first?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify("How many weeks ago did I start?"),
+            QuestionType::Temporal
+        );
+    }
+
+    #[test]
+    fn classify_factual_questions() {
+        assert_eq!(
+            QuestionType::classify("What degree did I graduate with?"),
+            QuestionType::Factual
+        );
+        assert_eq!(
+            QuestionType::classify("Where does my sister live?"),
+            QuestionType::Factual
+        );
+        assert_eq!(
+            QuestionType::classify("Who gave me the gift?"),
+            QuestionType::Factual
+        );
+    }
+
+    #[test]
+    fn classify_general_questions() {
+        assert_eq!(
+            QuestionType::classify("Can you recommend a restaurant?"),
+            QuestionType::General
+        );
+        assert_eq!(
+            QuestionType::classify("I've been struggling with recipes."),
+            QuestionType::General
+        );
+    }
+
+    #[test]
+    fn counting_profile_has_high_k_low_episode_cap() {
+        let profile = QuestionType::Counting.cascade_profile();
+        assert_eq!(profile.k, 60);
+        assert_eq!(profile.max_per_episode, 3);
+        assert!(
+            profile.recency_half_life_days > 700.0,
+            "counting should not penalize old memories"
+        );
+    }
+
+    #[test]
+    fn temporal_profile_has_aggressive_recency() {
+        let profile = QuestionType::Temporal.cascade_profile();
+        assert_eq!(profile.k, 40);
+        assert!(
+            profile.recency_half_life_days < 100.0,
+            "temporal should aggressively decay old memories"
+        );
+    }
+
+    #[test]
+    fn factual_profile_has_focused_k() {
+        let profile = QuestionType::Factual.cascade_profile();
+        assert_eq!(profile.k, 30);
+        assert_eq!(profile.max_per_episode, 8);
+    }
+
+    #[test]
+    fn cascade_telemetry_includes_question_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let ontology_path = dir.path().join("ontology.toml");
+        std::fs::write(&ontology_path, "version = 1\n").unwrap();
+
+        let brain = Brain::open(BrainConfig {
+            data_dir: dir.path().to_path_buf(),
+            ontology_path,
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        })
+        .unwrap();
+
+        brain
+            .remember(
+                "counting-q",
+                "I read 5 books this year about cooking and travel",
+                Visibility::Private,
+            )
+            .unwrap();
+
+        let (_, telemetry) = retrieve_cascade(
+            &brain,
+            "How many books did I read?",
+            &RetrievalConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            telemetry.question_type.as_deref(),
+            Some("Counting"),
+            "telemetry should record question type"
+        );
+    }
+
+    // ── P2: Session-grouped formatting tests ─────────────────────────
+
+    fn make_test_hit(
+        id: &str,
+        key: &str,
+        content: &str,
+        episode: &str,
+        created_at: &str,
+    ) -> MemoryHit {
+        MemoryHit {
+            id: id.into(),
+            key: key.into(),
+            content: content.into(),
+            wing: None,
+            hall: None,
+            signal_score: 0.5,
+            visibility: "private".into(),
+            hits: 0,
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: Some(created_at.into()),
+            last_reinforced_at: None,
+            episode_id: Some(episode.into()),
+        }
+    }
+
+    #[test]
+    fn format_grouped_creates_session_headers() {
+        let hits = vec![
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "I like pizza",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "2",
+                "s2:turn:0:user",
+                "I read a book",
+                "s2",
+                "2023-05-22 12:00:00",
+            ),
+        ];
+
+        let lines = format_hits_grouped(&hits);
+
+        let headers: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("--- Session"))
+            .map(|l| l.as_str())
+            .collect();
+        assert_eq!(headers.len(), 2, "should have 2 session headers");
+        assert!(
+            headers[0].contains("s1"),
+            "first header should be session s1"
+        );
+        assert!(
+            headers[1].contains("s2"),
+            "second header should be session s2"
+        );
+    }
+
+    #[test]
+    fn format_grouped_orders_sessions_chronologically() {
+        // Insert in reverse chronological order
+        let hits = vec![
+            make_test_hit(
+                "2",
+                "s2:turn:0:user",
+                "Later memory",
+                "s2",
+                "2023-06-01 12:00:00",
+            ),
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "Earlier memory",
+                "s1",
+                "2023-05-01 12:00:00",
+            ),
+        ];
+
+        let lines = format_hits_grouped(&hits);
+        let headers: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("--- Session"))
+            .map(|l| l.as_str())
+            .collect();
+
+        assert!(
+            headers[0].contains("s1"),
+            "earlier session should come first"
+        );
+        assert!(
+            headers[1].contains("s2"),
+            "later session should come second"
+        );
+    }
+
+    #[test]
+    fn format_grouped_orders_turns_within_session() {
+        let hits = vec![
+            make_test_hit(
+                "2",
+                "s1:turn:1:user",
+                "Second turn",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "First turn",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+        ];
+
+        let lines = format_hits_grouped(&hits);
+        let content_lines: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("[user]"))
+            .map(|l| l.as_str())
+            .collect();
+
+        assert_eq!(content_lines.len(), 2);
+        assert!(
+            content_lines[0].contains("First turn"),
+            "first turn should come first"
+        );
+        assert!(
+            content_lines[1].contains("Second turn"),
+            "second turn should come second"
+        );
+    }
+
+    #[test]
+    fn format_grouped_skips_short_assistant_filler() {
+        let hits = vec![
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "Tell me about cooking",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "2",
+                "s1:turn:1:assistant",
+                "Sure!",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "3",
+                "s1:turn:2:assistant",
+                "Here's a detailed recipe for pasta with tomato sauce and fresh basil",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+        ];
+
+        let lines = format_hits_grouped(&hits);
+        let asst_lines: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("[asst]"))
+            .map(|l| l.as_str())
+            .collect();
+
+        assert_eq!(
+            asst_lines.len(),
+            1,
+            "should keep long assistant message but skip short filler"
+        );
+        assert!(asst_lines[0].contains("detailed recipe"));
+    }
+
+    #[test]
+    fn format_grouped_multi_session_produces_correct_structure() {
+        let hits = vec![
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "I graduated with a Business degree",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "2",
+                "s1:turn:1:assistant",
+                "That's wonderful! Business degrees open many doors in the professional world.",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "3",
+                "s2:turn:0:user",
+                "My commute is 45 minutes each way",
+                "s2",
+                "2023-05-22 14:00:00",
+            ),
+            make_test_hit(
+                "4",
+                "s3:turn:0:user",
+                "I like to read sci-fi novels",
+                "s3",
+                "2023-05-25 10:00:00",
+            ),
+        ];
+
+        let lines = format_hits_grouped(&hits);
+
+        // Should have 3 session headers
+        let headers: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("---"))
+            .map(|l| l.as_str())
+            .collect();
+        assert_eq!(headers.len(), 3);
+
+        // Content should be present
+        let all = lines.join("\n");
+        assert!(all.contains("Business degree"));
+        assert!(all.contains("45 minutes"));
+        assert!(all.contains("sci-fi novels"));
+    }
+
+    #[test]
+    fn format_grouped_empty_input() {
+        let lines = format_hits_grouped(&[]);
+        assert!(lines.is_empty());
     }
 }

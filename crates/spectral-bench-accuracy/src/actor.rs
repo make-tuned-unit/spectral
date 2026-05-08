@@ -45,29 +45,28 @@ impl Actor for AnthropicActor {
         let prompt = format!(
             "You are answering a question based on a long conversation history.\n\
              Today's date is {question_date}.\n\
-             Below are memories retrieved from the conversation, each prefixed \
-             with the date it was created.\n\
+             Below are memories retrieved from the conversation, organized by session. \
+             Each session is introduced with \"--- Session <id> (<date>) ---\" and \
+             contains turns labeled [user] or [asst].\n\
              \n\
              Instructions:\n\
              1. For counting, listing, or ordering questions: the answer may be distributed across \
-             multiple distinct conversation sessions. Each session has a unique prefix in the memory \
-             keys (the part before the first colon). Identify each distinct session prefix in the \
-             retrieved memories, then enumerate items from EVERY session before counting or ordering. \
-             Do not stop after finding items in one or two sessions.\n\
-             2. For questions about your current or most recent X: identify the most recent memory \
-             mentioning X and treat that value as definitive, even if older memories mention different \
+             multiple sessions. Scan EVERY session header below, extract relevant items from each, \
+             then count or list all of them. Do not stop after the first or second session.\n\
+             2. For questions about your current or most recent X: identify the most recent session \
+             mentioning X and treat that value as definitive, even if older sessions mention different \
              values.\n\
-             3. When information appears partial across memories, attempt synthesis from the available \
+             3. When information appears partial across sessions, attempt synthesis from the available \
              evidence rather than saying \"I don't know.\" Only respond with \"I don't know\" when no \
-             memory contains relevant content for the question.\n\
+             session contains relevant content for the question.\n\
              4. When the question asks whether something happened (e.g., \"did I mention X?\"), and X \
-             is not present in any memory, state that clearly and note what IS present in the memories \
+             is not present in any session, state that clearly and note what IS present \
              (e.g., \"You mentioned Y but not X\").\n\
              5. When multiple distinct entities or locations match the question (e.g., multiple stores, \
              multiple vehicles), do not pick the first one mentioned. Identify which entity the question \
-             is specifically asking about and verify against the most relevant memories before answering.\n\
-             6. For questions requiring arithmetic across memories (computing differences, sums, ages, \
-             totals): identify the relevant numerical values from the memories and perform the calculation \
+             is specifically asking about and verify against the most relevant sessions before answering.\n\
+             6. For questions requiring arithmetic across sessions (computing differences, sums, ages, \
+             totals): identify the relevant numerical values from each session and perform the calculation \
              explicitly. Show the values used and the result.\n\
              \n\
              Memories:\n{memories_text}\n\n\

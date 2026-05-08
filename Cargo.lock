@@ -2814,6 +2814,7 @@ dependencies = [
  "chrono",
  "clap",
  "indicatif 0.17.11",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
