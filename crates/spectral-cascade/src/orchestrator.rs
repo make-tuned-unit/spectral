@@ -127,6 +127,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            declarative_density: None,
         }
     }
 

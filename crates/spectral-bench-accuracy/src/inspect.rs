@@ -193,6 +193,7 @@ mod tests {
             created_at: Some("2023-02-15 23:50:00".into()),
             last_reinforced_at: None,
             episode_id: None,
+            declarative_density: None,
         }];
 
         let mut buf = Vec::new();

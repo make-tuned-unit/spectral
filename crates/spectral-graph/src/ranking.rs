@@ -263,11 +263,16 @@ pub fn apply_reranking_pipeline(
         }
     }
 
-    // Declarative density: additive boost for first-person declarative content
+    // Declarative density: additive boost for first-person declarative content.
+    // Uses stored density from ingest when available; falls back to per-query
+    // computation for un-backfilled memories (declarative_density = NULL).
     if config.apply_declarative_boost {
         let w = config.declarative_weight.clamp(0.0, 0.2);
         for (i, hit) in candidates.iter().enumerate() {
-            scores[i] += w * declarative_density(&hit.content);
+            let density = hit
+                .declarative_density
+                .unwrap_or_else(|| declarative_density(&hit.content));
+            scores[i] += w * density;
         }
     }
 
@@ -357,6 +362,7 @@ mod tests {
             created_at: created_at.map(|s| s.into()),
             last_reinforced_at: None,
             episode_id: None,
+            declarative_density: None,
         }
     }
 
@@ -442,6 +448,7 @@ mod tests {
                 created_at: None,
                 last_reinforced_at: None,
                 episode_id: None,
+                declarative_density: None,
             },
             MemoryHit {
                 id: "dup2".into(),
@@ -458,6 +465,7 @@ mod tests {
                 created_at: None,
                 last_reinforced_at: None,
                 episode_id: None,
+                declarative_density: None,
             },
             MemoryHit {
                 id: "clean".into(),
@@ -474,6 +482,7 @@ mod tests {
                 created_at: None,
                 last_reinforced_at: None,
                 episode_id: None,
+                declarative_density: None,
             },
         ];
 
@@ -666,6 +675,7 @@ mod tests {
             created_at: None,
             last_reinforced_at: None,
             episode_id: None,
+            declarative_density: None,
         }
     }
 
@@ -807,6 +817,81 @@ mod tests {
         assert!(
             score_diff > 0.05,
             "score difference should be meaningful with 90-day half-life, got {score_diff:.4}"
+        );
+    }
+
+    #[test]
+    fn stored_density_used_when_available() {
+        // Hit with pre-computed density should use that value, not recompute
+        let mut hit = make_hit_with_content(
+            "stored",
+            0.5,
+            "No first-person content here at all in this sentence.",
+        );
+        // The content has zero declarative density if computed
+        assert!(declarative_density(&hit.content) < 0.01);
+        // But we store a high density artificially
+        hit.declarative_density = Some(0.9);
+
+        let candidates = vec![hit];
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_ambient_boost: false,
+            apply_declarative_boost: true,
+            declarative_weight: 0.10,
+            apply_episode_diversity: false,
+            apply_context_dedup: false,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+
+        // Score should include the stored 0.9 density, not the computed 0.0
+        // FTS base for 1 candidate = 1.0, declarative boost = 0.10 * 0.9 = 0.09
+        assert!(
+            result[0].signal_score > 1.05,
+            "should use stored density 0.9, got score {}",
+            result[0].signal_score
+        );
+    }
+
+    #[test]
+    fn null_density_falls_back_to_computation() {
+        let hit = make_hit_with_content(
+            "computed",
+            0.5,
+            "I graduated with a degree. I like my commute. My job is great.",
+        );
+        assert!(hit.declarative_density.is_none());
+        let computed = declarative_density(&hit.content);
+        assert!(
+            computed > 0.5,
+            "content should have high declarative density"
+        );
+
+        let candidates = vec![hit];
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_ambient_boost: false,
+            apply_declarative_boost: true,
+            declarative_weight: 0.10,
+            apply_episode_diversity: false,
+            apply_context_dedup: false,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+
+        // Should fall back to computing density from content
+        let expected_boost = 0.10 * computed;
+        assert!(
+            result[0].signal_score > 1.0 + expected_boost * 0.5,
+            "should fall back to computed density, got score {}",
+            result[0].signal_score
         );
     }
 }
