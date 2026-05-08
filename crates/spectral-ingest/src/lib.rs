@@ -56,6 +56,10 @@ pub struct Memory {
     /// Compaction tier for lifecycle management. `None` = untiered.
     #[serde(default)]
     pub compaction_tier: Option<CompactionTier>,
+    /// Pre-computed declarative density (ratio of first-person declarative
+    /// sentences). `None` = not yet computed (pre-backfill memories).
+    #[serde(default)]
+    pub declarative_density: Option<f64>,
 }
 
 /// Compaction tier for memory lifecycle management.
@@ -146,6 +150,9 @@ pub struct MemoryHit {
     /// Episode this memory belongs to (if any).
     #[serde(default)]
     pub episode_id: Option<String>,
+    /// Pre-computed declarative density. `None` = not yet computed.
+    #[serde(default)]
+    pub declarative_density: Option<f64>,
 }
 
 // ── Episode ────────────────────────────────────────────────────────
@@ -430,6 +437,13 @@ pub trait MemoryStore: Send + Sync {
     fn count_retrieval_events(
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
+    /// Set the declarative_density for a memory.
+    fn set_declarative_density(
+        &self,
+        memory_id: &str,
+        density: f64,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 
     /// Count retrieval events filtered by method (for testing).
     fn count_retrieval_events_by_method(

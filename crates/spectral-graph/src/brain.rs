@@ -919,6 +919,13 @@ impl Brain {
             ))
             .map_err(|e| Error::Schema(e.to_string()))?;
 
+        // Compute and store declarative density
+        let density = crate::ranking::declarative_density(content);
+        let _ = self.rt.block_on(
+            self.memory_store
+                .set_declarative_density(&result.memory.id, density),
+        );
+
         // Compute and store spectrogram if enabled
         if self.enable_spectrogram {
             let context = AnalysisContext::default();
@@ -1403,6 +1410,7 @@ impl Brain {
                     last_reinforced_at: seed.last_reinforced_at.clone(),
                     episode_id: seed.episode_id.clone(),
                     compaction_tier: None,
+                    declarative_density: seed.declarative_density,
                 };
                 self.spectrogram_analyzer
                     .analyze(&mem, &AnalysisContext::default())
@@ -1467,6 +1475,7 @@ impl Brain {
                         created_at: mem.created_at.clone(),
                         last_reinforced_at: mem.last_reinforced_at.clone(),
                         episode_id: mem.episode_id.clone(),
+                        declarative_density: mem.declarative_density,
                     },
                     resonance_score: rmatch.resonance_score,
                     matched_dimensions: rmatch.matched_dimensions.clone(),
@@ -1517,6 +1526,42 @@ impl Brain {
                     ))
                     .map_err(|e| Error::Schema(e.to_string()))?;
                 total += 1;
+            }
+        }
+        Ok(total)
+    }
+
+    /// Backfill declarative_density for memories that don't have one.
+    /// Computes density from content and stores the result. Returns count updated.
+    pub fn backfill_declarative_density(&self) -> Result<usize, Error> {
+        // Fetch memories with NULL declarative_density in batches
+        let mut total = 0;
+        loop {
+            let memories = self
+                .rt
+                .block_on(async { self.memory_store.list_memories_by_signal(0.0, 200).await })
+                .map_err(|e| Error::Schema(e.to_string()))?;
+
+            let batch: Vec<_> = memories
+                .into_iter()
+                .filter(|m| m.declarative_density.is_none())
+                .collect();
+
+            if batch.is_empty() {
+                break;
+            }
+
+            for mem in &batch {
+                let density = crate::ranking::declarative_density(&mem.content);
+                self.rt
+                    .block_on(self.memory_store.set_declarative_density(&mem.id, density))
+                    .map_err(|e| Error::Schema(e.to_string()))?;
+                total += 1;
+            }
+
+            // If we processed fewer than 200, we've seen all memories
+            if batch.len() < 200 {
+                break;
             }
         }
         Ok(total)
@@ -1745,6 +1790,7 @@ impl Brain {
                 last_reinforced_at: None,
                 episode_id: None,
                 compaction_tier: None,
+                declarative_density: None, // Activity episodes don't need density
             };
 
             self.rt

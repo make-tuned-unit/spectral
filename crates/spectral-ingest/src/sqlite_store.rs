@@ -327,6 +327,21 @@ impl SqliteStore {
                 ON retrieval_events(query_hash);",
         )?;
 
+        // declarative_density column
+        let mut has_declarative_density = false;
+        let mut stmt5 = conn.prepare("PRAGMA table_info(memories)")?;
+        let rows5 = stmt5.query_map([], |row| row.get::<_, String>(1))?;
+        for name in rows5 {
+            if name?.as_str() == "declarative_density" {
+                has_declarative_density = true;
+            }
+        }
+        if !has_declarative_density {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN declarative_density REAL DEFAULT NULL",
+            )?;
+        }
+
         // compaction_tier column
         let mut has_compaction_tier = false;
         let mut stmt4 = conn.prepare("PRAGMA table_info(memories)")?;
@@ -352,12 +367,13 @@ impl SqliteStore {
 }
 
 /// Standard column list for memory queries.
-const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier";
+const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier, declarative_density";
 
 /// Parse a Memory from a row with the standard column order.
 /// Columns: id(0), key(1), content(2), wing(3), hall(4), signal_score(5),
 /// visibility(6), source(7), device_id(8), confidence(9), created_at(10),
-/// last_reinforced_at(11), episode_id(12), compaction_tier(13)
+/// last_reinforced_at(11), episode_id(12), compaction_tier(13),
+/// declarative_density(14)
 fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
     let device_blob: Option<Vec<u8>> = row.get(8)?;
     let device_id = device_blob.and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
@@ -379,6 +395,7 @@ fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
             .get::<_, String>(13)
             .ok()
             .and_then(|s| crate::CompactionTier::parse(&s)),
+        declarative_density: row.get(14).ok(),
     })
 }
 
@@ -400,6 +417,7 @@ fn memory_hit_from_row(row: &rusqlite::Row, hits: usize) -> rusqlite::Result<Mem
         created_at: row.get(10).ok(),
         last_reinforced_at: row.get(11).ok(),
         episode_id: row.get(12).ok(),
+        declarative_density: row.get(14).ok(),
     })
 }
 
@@ -492,6 +510,13 @@ impl MemoryStore for SqliteStore {
                 tx.execute(
                     "UPDATE memories SET compaction_tier = ?1 WHERE id = ?2",
                     params![tier.as_str(), memory.id],
+                )?;
+            }
+            // Set declarative_density if provided
+            if let Some(dd) = memory.declarative_density {
+                tx.execute(
+                    "UPDATE memories SET declarative_density = ?1 WHERE id = ?2",
+                    params![dd, memory.id],
                 )?;
             }
 
@@ -623,7 +648,8 @@ impl MemoryStore for SqliteStore {
                 )
                 SELECT m.id, m.key, m.content, m.wing, m.hall, m.signal_score,
                        m.visibility, m.source, m.device_id, m.confidence,
-                       m.created_at, m.last_reinforced_at, ms.hits
+                       m.created_at, m.last_reinforced_at, ms.hits,
+                       m.declarative_density
                 FROM memory_scores ms
                 JOIN memories m ON m.id = ms.memory_id
                 ORDER BY ms.hits DESC",
@@ -647,7 +673,10 @@ impl MemoryStore for SqliteStore {
 
             let rows = stmt.query_map(param_refs.as_slice(), |row| {
                 let hits: i64 = row.get(12)?;
-                memory_hit_from_row(row, hits as usize)
+                let mut hit = memory_hit_from_row(row, hits as usize)?;
+                // Column 13 in this query is declarative_density (not compaction_tier)
+                hit.declarative_density = row.get(13).ok();
+                Ok(hit)
             })?;
 
             let mut results = Vec::new();
@@ -1284,6 +1313,23 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    fn set_declarative_density(
+        &self,
+        memory_id: &str,
+        density: f64,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            conn.execute(
+                "UPDATE memories SET declarative_density = ?1 WHERE id = ?2",
+                params![density, memory_id],
+            )?;
+            Ok(())
+        })
+    }
+
     fn set_compaction_tier(
         &self,
         memory_id: &str,
@@ -1467,6 +1513,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             compaction_tier: None,
+            declarative_density: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -1493,6 +1540,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             compaction_tier: None,
+            declarative_density: None,
         };
         store.write(&mem1, &[]).await.unwrap();
 
@@ -1511,6 +1559,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             compaction_tier: None,
+            declarative_density: None,
         };
         store.write(&mem2, &[]).await.unwrap();
 
@@ -1537,6 +1586,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             compaction_tier: None,
+            declarative_density: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -1569,6 +1619,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             compaction_tier: None,
+            declarative_density: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1586,6 +1637,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             compaction_tier: None,
+            declarative_density: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -1628,6 +1680,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             compaction_tier: None,
+            declarative_density: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1645,6 +1698,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             compaction_tier: None,
+            declarative_density: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -1688,6 +1742,7 @@ mod tests {
             last_reinforced_at: None,
             episode_id: None,
             compaction_tier: None,
+            declarative_density: None,
         }
     }
 
@@ -1922,6 +1977,7 @@ mod tests {
                 last_reinforced_at: None,
                 episode_id: Some("ep-mem-test".into()),
                 compaction_tier: None,
+                declarative_density: None,
             };
             store.write(&mem, &[]).await.unwrap();
         }

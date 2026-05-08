@@ -770,6 +770,7 @@ mod tests {
             created_at: Some(created_at.into()),
             last_reinforced_at: None,
             episode_id: Some(episode.into()),
+            declarative_density: None,
         }
     }
 
