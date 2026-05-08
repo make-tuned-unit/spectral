@@ -320,7 +320,7 @@ pub struct CascadeTelemetry {
 pub fn retrieve_cascade(
     brain: &Brain,
     question: &str,
-    config: &RetrievalConfig,
+    _config: &RetrievalConfig,
     question_date: Option<&str>,
 ) -> Result<(Vec<String>, CascadeTelemetry)> {
     // P1: Question-type routing
