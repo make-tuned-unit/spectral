@@ -543,18 +543,8 @@ mod tests {
         // context.now (2023-05-30), the May memory is 10 days old while the
         // January memory is 140 days old — a meaningful difference.
         let candidates = vec![
-            make_hit(
-                "old_jan",
-                0.6,
-                None,
-                Some("2023-01-10 12:00:00"),
-            ),
-            make_hit(
-                "recent_may",
-                0.6,
-                None,
-                Some("2023-05-20 12:00:00"),
-            ),
+            make_hit("old_jan", 0.6, None, Some("2023-01-10 12:00:00")),
+            make_hit("recent_may", 0.6, None, Some("2023-05-20 12:00:00")),
         ];
 
         let config = RerankingConfig {

@@ -145,8 +145,14 @@ pub fn format_hits_grouped(hits: &[MemoryHit]) -> Vec<String> {
     // Sort episodes by their earliest created_at
     let mut episodes: Vec<(String, Vec<&MemoryHit>)> = by_episode.into_iter().collect();
     episodes.sort_by(|a, b| {
-        let date_a = a.1.first().and_then(|h| h.created_at.as_deref()).unwrap_or("");
-        let date_b = b.1.first().and_then(|h| h.created_at.as_deref()).unwrap_or("");
+        let date_a =
+            a.1.first()
+                .and_then(|h| h.created_at.as_deref())
+                .unwrap_or("");
+        let date_b =
+            b.1.first()
+                .and_then(|h| h.created_at.as_deref())
+                .unwrap_or("");
         date_a.cmp(date_b)
     });
 
@@ -325,11 +331,7 @@ pub fn retrieve_cascade(
         Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
         None => spectral_cascade::RecognitionContext::empty(),
     };
-    let result = brain.recall_cascade_with_pipeline(
-        question,
-        &context,
-        &pipeline_config,
-    )?;
+    let result = brain.recall_cascade_with_pipeline(question, &context, &pipeline_config)?;
 
     // Capture telemetry before consuming merged_hits
     let telemetry = CascadeTelemetry {
@@ -601,31 +603,70 @@ mod tests {
 
     #[test]
     fn classify_counting_questions() {
-        assert_eq!(QuestionType::classify("How many books did I read?"), QuestionType::Counting);
-        assert_eq!(QuestionType::classify("How much money did I spend?"), QuestionType::Counting);
-        assert_eq!(QuestionType::classify("What is the total amount?"), QuestionType::Counting);
-        assert_eq!(QuestionType::classify("How many days in total?"), QuestionType::Counting);
+        assert_eq!(
+            QuestionType::classify("How many books did I read?"),
+            QuestionType::Counting
+        );
+        assert_eq!(
+            QuestionType::classify("How much money did I spend?"),
+            QuestionType::Counting
+        );
+        assert_eq!(
+            QuestionType::classify("What is the total amount?"),
+            QuestionType::Counting
+        );
+        assert_eq!(
+            QuestionType::classify("How many days in total?"),
+            QuestionType::Counting
+        );
     }
 
     #[test]
     fn classify_temporal_questions() {
-        assert_eq!(QuestionType::classify("When did I start jogging?"), QuestionType::Temporal);
-        assert_eq!(QuestionType::classify("How long is my commute?"), QuestionType::Temporal);
-        assert_eq!(QuestionType::classify("What happened first?"), QuestionType::Temporal);
-        assert_eq!(QuestionType::classify("How many weeks ago did I start?"), QuestionType::Temporal);
+        assert_eq!(
+            QuestionType::classify("When did I start jogging?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify("How long is my commute?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify("What happened first?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify("How many weeks ago did I start?"),
+            QuestionType::Temporal
+        );
     }
 
     #[test]
     fn classify_factual_questions() {
-        assert_eq!(QuestionType::classify("What degree did I graduate with?"), QuestionType::Factual);
-        assert_eq!(QuestionType::classify("Where does my sister live?"), QuestionType::Factual);
-        assert_eq!(QuestionType::classify("Who gave me the gift?"), QuestionType::Factual);
+        assert_eq!(
+            QuestionType::classify("What degree did I graduate with?"),
+            QuestionType::Factual
+        );
+        assert_eq!(
+            QuestionType::classify("Where does my sister live?"),
+            QuestionType::Factual
+        );
+        assert_eq!(
+            QuestionType::classify("Who gave me the gift?"),
+            QuestionType::Factual
+        );
     }
 
     #[test]
     fn classify_general_questions() {
-        assert_eq!(QuestionType::classify("Can you recommend a restaurant?"), QuestionType::General);
-        assert_eq!(QuestionType::classify("I've been struggling with recipes."), QuestionType::General);
+        assert_eq!(
+            QuestionType::classify("Can you recommend a restaurant?"),
+            QuestionType::General
+        );
+        assert_eq!(
+            QuestionType::classify("I've been struggling with recipes."),
+            QuestionType::General
+        );
     }
 
     #[test]
@@ -633,14 +674,20 @@ mod tests {
         let profile = QuestionType::Counting.cascade_profile();
         assert_eq!(profile.k, 60);
         assert_eq!(profile.max_per_episode, 3);
-        assert!(profile.recency_half_life_days > 700.0, "counting should not penalize old memories");
+        assert!(
+            profile.recency_half_life_days > 700.0,
+            "counting should not penalize old memories"
+        );
     }
 
     #[test]
     fn temporal_profile_has_aggressive_recency() {
         let profile = QuestionType::Temporal.cascade_profile();
         assert_eq!(profile.k, 40);
-        assert!(profile.recency_half_life_days < 100.0, "temporal should aggressively decay old memories");
+        assert!(
+            profile.recency_half_life_days < 100.0,
+            "temporal should aggressively decay old memories"
+        );
     }
 
     #[test]
@@ -674,7 +721,11 @@ mod tests {
         .unwrap();
 
         brain
-            .remember("counting-q", "I read 5 books this year about cooking and travel", Visibility::Private)
+            .remember(
+                "counting-q",
+                "I read 5 books this year about cooking and travel",
+                Visibility::Private,
+            )
             .unwrap();
 
         let (_, telemetry) = retrieve_cascade(
@@ -694,7 +745,13 @@ mod tests {
 
     // ── P2: Session-grouped formatting tests ─────────────────────────
 
-    fn make_test_hit(id: &str, key: &str, content: &str, episode: &str, created_at: &str) -> MemoryHit {
+    fn make_test_hit(
+        id: &str,
+        key: &str,
+        content: &str,
+        episode: &str,
+        created_at: &str,
+    ) -> MemoryHit {
         MemoryHit {
             id: id.into(),
             key: key.into(),
@@ -716,76 +773,196 @@ mod tests {
     #[test]
     fn format_grouped_creates_session_headers() {
         let hits = vec![
-            make_test_hit("1", "s1:turn:0:user", "I like pizza", "s1", "2023-05-20 12:00:00"),
-            make_test_hit("2", "s2:turn:0:user", "I read a book", "s2", "2023-05-22 12:00:00"),
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "I like pizza",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "2",
+                "s2:turn:0:user",
+                "I read a book",
+                "s2",
+                "2023-05-22 12:00:00",
+            ),
         ];
 
         let lines = format_hits_grouped(&hits);
 
-        let headers: Vec<&str> = lines.iter().filter(|l| l.starts_with("--- Session")).map(|l| l.as_str()).collect();
+        let headers: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("--- Session"))
+            .map(|l| l.as_str())
+            .collect();
         assert_eq!(headers.len(), 2, "should have 2 session headers");
-        assert!(headers[0].contains("s1"), "first header should be session s1");
-        assert!(headers[1].contains("s2"), "second header should be session s2");
+        assert!(
+            headers[0].contains("s1"),
+            "first header should be session s1"
+        );
+        assert!(
+            headers[1].contains("s2"),
+            "second header should be session s2"
+        );
     }
 
     #[test]
     fn format_grouped_orders_sessions_chronologically() {
         // Insert in reverse chronological order
         let hits = vec![
-            make_test_hit("2", "s2:turn:0:user", "Later memory", "s2", "2023-06-01 12:00:00"),
-            make_test_hit("1", "s1:turn:0:user", "Earlier memory", "s1", "2023-05-01 12:00:00"),
+            make_test_hit(
+                "2",
+                "s2:turn:0:user",
+                "Later memory",
+                "s2",
+                "2023-06-01 12:00:00",
+            ),
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "Earlier memory",
+                "s1",
+                "2023-05-01 12:00:00",
+            ),
         ];
 
         let lines = format_hits_grouped(&hits);
-        let headers: Vec<&str> = lines.iter().filter(|l| l.starts_with("--- Session")).map(|l| l.as_str()).collect();
+        let headers: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("--- Session"))
+            .map(|l| l.as_str())
+            .collect();
 
-        assert!(headers[0].contains("s1"), "earlier session should come first");
-        assert!(headers[1].contains("s2"), "later session should come second");
+        assert!(
+            headers[0].contains("s1"),
+            "earlier session should come first"
+        );
+        assert!(
+            headers[1].contains("s2"),
+            "later session should come second"
+        );
     }
 
     #[test]
     fn format_grouped_orders_turns_within_session() {
         let hits = vec![
-            make_test_hit("2", "s1:turn:1:user", "Second turn", "s1", "2023-05-20 12:00:00"),
-            make_test_hit("1", "s1:turn:0:user", "First turn", "s1", "2023-05-20 12:00:00"),
+            make_test_hit(
+                "2",
+                "s1:turn:1:user",
+                "Second turn",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "First turn",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
         ];
 
         let lines = format_hits_grouped(&hits);
-        let content_lines: Vec<&str> = lines.iter().filter(|l| l.starts_with("[user]")).map(|l| l.as_str()).collect();
+        let content_lines: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("[user]"))
+            .map(|l| l.as_str())
+            .collect();
 
         assert_eq!(content_lines.len(), 2);
-        assert!(content_lines[0].contains("First turn"), "first turn should come first");
-        assert!(content_lines[1].contains("Second turn"), "second turn should come second");
+        assert!(
+            content_lines[0].contains("First turn"),
+            "first turn should come first"
+        );
+        assert!(
+            content_lines[1].contains("Second turn"),
+            "second turn should come second"
+        );
     }
 
     #[test]
     fn format_grouped_skips_short_assistant_filler() {
         let hits = vec![
-            make_test_hit("1", "s1:turn:0:user", "Tell me about cooking", "s1", "2023-05-20 12:00:00"),
-            make_test_hit("2", "s1:turn:1:assistant", "Sure!", "s1", "2023-05-20 12:00:00"),
-            make_test_hit("3", "s1:turn:2:assistant", "Here's a detailed recipe for pasta with tomato sauce and fresh basil", "s1", "2023-05-20 12:00:00"),
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "Tell me about cooking",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "2",
+                "s1:turn:1:assistant",
+                "Sure!",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "3",
+                "s1:turn:2:assistant",
+                "Here's a detailed recipe for pasta with tomato sauce and fresh basil",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
         ];
 
         let lines = format_hits_grouped(&hits);
-        let asst_lines: Vec<&str> = lines.iter().filter(|l| l.starts_with("[asst]")).map(|l| l.as_str()).collect();
+        let asst_lines: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("[asst]"))
+            .map(|l| l.as_str())
+            .collect();
 
-        assert_eq!(asst_lines.len(), 1, "should keep long assistant message but skip short filler");
+        assert_eq!(
+            asst_lines.len(),
+            1,
+            "should keep long assistant message but skip short filler"
+        );
         assert!(asst_lines[0].contains("detailed recipe"));
     }
 
     #[test]
     fn format_grouped_multi_session_produces_correct_structure() {
         let hits = vec![
-            make_test_hit("1", "s1:turn:0:user", "I graduated with a Business degree", "s1", "2023-05-20 12:00:00"),
-            make_test_hit("2", "s1:turn:1:assistant", "That's wonderful! Business degrees open many doors in the professional world.", "s1", "2023-05-20 12:00:00"),
-            make_test_hit("3", "s2:turn:0:user", "My commute is 45 minutes each way", "s2", "2023-05-22 14:00:00"),
-            make_test_hit("4", "s3:turn:0:user", "I like to read sci-fi novels", "s3", "2023-05-25 10:00:00"),
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                "I graduated with a Business degree",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "2",
+                "s1:turn:1:assistant",
+                "That's wonderful! Business degrees open many doors in the professional world.",
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "3",
+                "s2:turn:0:user",
+                "My commute is 45 minutes each way",
+                "s2",
+                "2023-05-22 14:00:00",
+            ),
+            make_test_hit(
+                "4",
+                "s3:turn:0:user",
+                "I like to read sci-fi novels",
+                "s3",
+                "2023-05-25 10:00:00",
+            ),
         ];
 
         let lines = format_hits_grouped(&hits);
 
         // Should have 3 session headers
-        let headers: Vec<&str> = lines.iter().filter(|l| l.starts_with("---")).map(|l| l.as_str()).collect();
+        let headers: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("---"))
+            .map(|l| l.as_str())
+            .collect();
         assert_eq!(headers.len(), 3);
 
         // Content should be present
