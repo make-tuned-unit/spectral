@@ -361,10 +361,13 @@ pub fn retrieve_cascade(
     };
 
     // P2: Session-grouped formatting
+    // Use the profile's K as the limit — the question-type routing already
+    // determined the right K (60 for counting, 30 for factual, etc).
+    // CLI --max-results only applies to non-cascade paths.
     let hits: Vec<MemoryHit> = result
         .merged_hits
         .into_iter()
-        .take(config.max_results)
+        .take(pipeline_config.k)
         .collect();
     let formatted = format_hits_grouped(&hits);
 
