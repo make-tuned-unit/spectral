@@ -1133,6 +1133,36 @@ impl Brain {
         })
     }
 
+    /// Run the cascade pipeline with a caller-supplied pipeline config.
+    ///
+    /// Unlike `recall_cascade` which derives config from `CascadeConfig`,
+    /// this method accepts a `CascadePipelineConfig` directly, allowing
+    /// the bench harness to pass question-type-tuned profiles.
+    pub fn recall_cascade_with_pipeline(
+        &self,
+        query: &str,
+        context: &spectral_cascade::RecognitionContext,
+        pipeline_config: &crate::cascade_layers::CascadePipelineConfig,
+    ) -> Result<spectral_cascade::result::CascadeResult, Error> {
+        let hits =
+            crate::cascade_layers::run_cascade_pipeline(self, query, context, pipeline_config)?;
+
+        let tokens_used = hits.iter().map(|h| h.content.len() / 4 + 5).sum();
+        let max_confidence = hits
+            .first()
+            .map(|h| h.signal_score.min(0.85))
+            .unwrap_or(0.0);
+
+        Ok(spectral_cascade::result::CascadeResult {
+            layer_outcomes: Vec::new(),
+            merged_hits: hits,
+            total_tokens_used: tokens_used,
+            stopped_at: None,
+            max_confidence,
+            total_recognition_token_cost: 0,
+        })
+    }
+
     /// Graph-only recall filtered by visibility context.
     pub fn recall_graph(
         &self,

@@ -242,9 +242,14 @@ impl AccuracyEval {
         let brain = ingest::ingest_question(question, &brain_dir, self.config.ingest_strategy)?;
 
         // Retrieve — get raw hits for score dumping, formatted strings for actor
+        let question_date = question.question_date.as_deref();
         let (memories, raw_hits, cascade_telemetry) = if self.config.use_cascade {
-            let (formatted, telemetry) =
-                retrieval::retrieve_cascade(&brain, &question.question, &self.config.retrieval)?;
+            let (formatted, telemetry) = retrieval::retrieve_cascade(
+                &brain,
+                &question.question,
+                &self.config.retrieval,
+                question_date,
+            )?;
             (formatted, Vec::new(), Some(telemetry))
         } else {
             match self.config.retrieval_path {
@@ -279,6 +284,7 @@ impl AccuracyEval {
                         &brain,
                         &question.question,
                         &self.config.retrieval,
+                        question_date,
                     )?;
                     (formatted, Vec::new(), Some(telemetry))
                 }
@@ -286,15 +292,21 @@ impl AccuracyEval {
         };
         let memory_count = memories.len();
         // Extract keys from raw_hits when available (most reliable).
-        // Fallback: parse from formatted string "[date] [wing/hall] key: content"
-        // using position of second "] " to find key start.
+        // Fallback: extract session IDs from "--- Session <id> ---" headers
+        // or keys from "[date] [wing/hall] key: content" flat format.
         let memory_keys: Vec<String> = if !raw_hits.is_empty() {
             raw_hits.iter().map(|h| h.key.clone()).collect()
         } else {
             memories
                 .iter()
                 .filter_map(|m| {
-                    // Find second "] " — after [date] and [wing/hall]
+                    // Session-grouped format: "--- Session <id> (<date>) ---"
+                    if m.starts_with("--- Session ") {
+                        let rest = m.strip_prefix("--- Session ")?;
+                        let id = rest.split(' ').next()?;
+                        return Some(id.to_string());
+                    }
+                    // Flat format: "[date] [wing/hall] key: content"
                     let first_close = m.find("] ")?;
                     let after_first = &m[first_close + 2..];
                     let second_close = after_first.find("] ")?;

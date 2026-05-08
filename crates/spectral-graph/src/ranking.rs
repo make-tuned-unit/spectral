@@ -223,7 +223,7 @@ pub fn apply_reranking_pipeline(
 
     // Recency decay: multiplicative on composite score
     if config.apply_recency {
-        let now = Utc::now();
+        let now = context.now;
         for (i, hit) in candidates.iter().enumerate() {
             let age_days = hit
                 .created_at
@@ -289,6 +289,7 @@ pub fn apply_reranking_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn make_hit(id: &str, score: f64, wing: Option<&str>, created_at: Option<&str>) -> MemoryHit {
         MemoryHit {
@@ -532,6 +533,59 @@ mod tests {
         assert_eq!(
             result[0].id, "fts_best",
             "FTS best should remain #1 at weight=0.3"
+        );
+    }
+
+    #[test]
+    fn recency_uses_context_now_not_utc_now() {
+        // Memories from 2023. If recency uses Utc::now() (2026), both are
+        // ~1000 days old and get near-identical decay. If it correctly uses
+        // context.now (2023-05-30), the May memory is 10 days old while the
+        // January memory is 140 days old — a meaningful difference.
+        let candidates = vec![
+            make_hit(
+                "old_jan",
+                0.6,
+                None,
+                Some("2023-01-10 12:00:00"),
+            ),
+            make_hit(
+                "recent_may",
+                0.6,
+                None,
+                Some("2023-05-20 12:00:00"),
+            ),
+        ];
+
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: true,
+            recency_half_life_days: 90.0,
+            apply_entity_boost: false,
+            apply_ambient_boost: false,
+            apply_episode_diversity: false,
+            apply_context_dedup: false,
+            ..Default::default()
+        };
+
+        // Context with now = 2023-05-30 (question date)
+        let question_now = Utc.with_ymd_and_hms(2023, 5, 30, 23, 40, 0).unwrap();
+        let ctx = spectral_cascade::RecognitionContext::empty().with_now(question_now);
+        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+
+        // recent_may is 10 days old → high recency factor
+        // old_jan is 140 days old → much lower recency factor
+        // Despite old_jan being first in FTS order, recent_may should rank first
+        assert_eq!(
+            result[0].id, "recent_may",
+            "recent memory should rank first when context.now is question_date"
+        );
+
+        // Verify the scores actually differ meaningfully
+        let score_diff = result[0].signal_score - result[1].signal_score;
+        assert!(
+            score_diff > 0.05,
+            "score difference should be meaningful with 90-day half-life, got {score_diff:.4}"
         );
     }
 }

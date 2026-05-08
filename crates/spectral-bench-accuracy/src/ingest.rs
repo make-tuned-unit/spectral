@@ -282,7 +282,7 @@ mod tests {
         let brain = ingest_question(&test_question(), dir.path(), IngestStrategy::PerTurn).unwrap();
 
         let (memories, telemetry) =
-            retrieve_cascade(&brain, "sky blue", &RetrievalConfig::default()).unwrap();
+            retrieve_cascade(&brain, "sky blue", &RetrievalConfig::default(), None).unwrap();
         assert!(!memories.is_empty());
 
         // Verify telemetry serializes to JSON
