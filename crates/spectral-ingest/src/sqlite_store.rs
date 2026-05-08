@@ -30,7 +30,7 @@
 
 use crate::{
     CompactionTier, Episode, Fingerprint, Memory, MemoryAnnotation, MemoryHit, MemoryStore,
-    SpectrogramRow,
+    RetrievalEvent, SpectrogramRow,
 };
 use lru::LruCache;
 use rusqlite::{params, Connection};
@@ -309,6 +309,23 @@ impl SqliteStore {
                  CREATE INDEX IF NOT EXISTS idx_memories_episode_id ON memories(episode_id);",
             )?;
         }
+
+        // retrieval_events table (recall→recognition feedback loop)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS retrieval_events (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_hash      TEXT NOT NULL,
+                timestamp       TEXT NOT NULL,
+                memory_ids_json TEXT NOT NULL,
+                method          TEXT NOT NULL,
+                wing            TEXT,
+                question_type   TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_retrieval_events_ts
+                ON retrieval_events(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_retrieval_events_query_hash
+                ON retrieval_events(query_hash);",
+        )?;
 
         // compaction_tier column
         let mut has_compaction_tier = false;
@@ -1362,6 +1379,51 @@ impl MemoryStore for SqliteStore {
             }
 
             Ok(updated)
+        })
+    }
+
+    fn log_retrieval_event(
+        &self,
+        event: &RetrievalEvent,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let query_hash = event.query_hash.clone();
+        let timestamp = event.timestamp.clone();
+        let memory_ids_json = event.memory_ids_json.clone();
+        let method = event.method.clone();
+        let wing = event.wing.clone();
+        let question_type = event.question_type.clone();
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            conn.execute(
+                "INSERT INTO retrieval_events \
+                    (query_hash, timestamp, memory_ids_json, method, wing, question_type) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    query_hash,
+                    timestamp,
+                    memory_ids_json,
+                    method,
+                    wing,
+                    question_type
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn count_retrieval_events(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM retrieval_events", [], |row| {
+                    row.get(0)
+                })?;
+            Ok(count as usize)
         })
     }
 }
@@ -2447,5 +2509,97 @@ mod tests {
             conn.query_row(&sql, [], memory_from_row).unwrap()
         };
         assert!(mem.compaction_tier.is_none());
+    }
+
+    // ── Retrieval event tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn log_retrieval_event_inserts_row() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let event = RetrievalEvent {
+            query_hash: "abc123".into(),
+            timestamp: "2023-05-30T23:40:00Z".into(),
+            memory_ids_json: "[\"m1\",\"m2\"]".into(),
+            method: "cascade".into(),
+            wing: Some("permagent".into()),
+            question_type: Some("Counting".into()),
+        };
+        store.log_retrieval_event(&event).await.unwrap();
+
+        // Verify the row exists
+        let conn = store.conn();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM retrieval_events WHERE query_hash = 'abc123'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Verify all fields
+        let (method, wing, qtype): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT method, wing, question_type FROM retrieval_events WHERE query_hash = 'abc123'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(method, "cascade");
+        assert_eq!(wing.as_deref(), Some("permagent"));
+        assert_eq!(qtype.as_deref(), Some("Counting"));
+    }
+
+    #[tokio::test]
+    async fn log_retrieval_event_duplicate_queries_create_separate_rows() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let event = RetrievalEvent {
+            query_hash: "same_hash".into(),
+            timestamp: "2023-05-30T10:00:00Z".into(),
+            memory_ids_json: "[\"m1\"]".into(),
+            method: "topk_fts".into(),
+            wing: None,
+            question_type: None,
+        };
+        store.log_retrieval_event(&event).await.unwrap();
+        store.log_retrieval_event(&event).await.unwrap();
+
+        let conn = store.conn();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM retrieval_events WHERE query_hash = 'same_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 2,
+            "each retrieval should create a separate event row"
+        );
+    }
+
+    #[tokio::test]
+    async fn log_retrieval_event_with_null_optionals() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let event = RetrievalEvent {
+            query_hash: "hash_no_wing".into(),
+            timestamp: "2023-06-01T00:00:00Z".into(),
+            memory_ids_json: "[]".into(),
+            method: "probe".into(),
+            wing: None,
+            question_type: None,
+        };
+        store.log_retrieval_event(&event).await.unwrap();
+
+        let conn = store.conn();
+        let (wing, qtype): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT wing, question_type FROM retrieval_events WHERE query_hash = 'hash_no_wing'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(wing.is_none());
+        assert!(qtype.is_none());
     }
 }

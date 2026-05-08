@@ -172,9 +172,35 @@ pub fn run_cascade_pipeline(
         apply_context_dedup: config.apply_context_dedup,
     };
 
-    Ok(crate::ranking::apply_reranking_pipeline(
-        candidates,
-        &reranking_config,
-        context,
-    ))
+    let results = crate::ranking::apply_reranking_pipeline(candidates, &reranking_config, context);
+
+    // ── Recall→Recognition feedback: auto-reinforce + event logging ──
+    // Both are best-effort: failures never block retrieval.
+
+    // Auto-reinforce returned memories with a small strength nudge.
+    // Repeated retrievals accumulate; this makes the Archivist's
+    // decay/boost loop functional without caller-explicit reinforcement.
+    const AUTO_REINFORCE_STRENGTH: f64 = 0.01;
+    for hit in &results {
+        let _ = brain.reinforce_by_id(&hit.key, AUTO_REINFORCE_STRENGTH);
+    }
+
+    // Log retrieval event for future co-access mining / pattern detection.
+    let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();
+    let event = spectral_ingest::RetrievalEvent {
+        query_hash: format!(
+            "{:016x}",
+            blake3::hash(query.as_bytes()).as_bytes()[..8]
+                .iter()
+                .fold(0u64, |acc, &b| (acc << 8) | b as u64)
+        ),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        memory_ids_json: serde_json::to_string(&memory_ids).unwrap_or_default(),
+        method: "cascade".into(),
+        wing: results.first().and_then(|h| h.wing.clone()),
+        question_type: None, // Set by bench caller if applicable
+    };
+    let _ = brain.log_retrieval_event(&event);
+
+    Ok(results)
 }

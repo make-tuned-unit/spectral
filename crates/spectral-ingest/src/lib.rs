@@ -417,6 +417,42 @@ pub trait MemoryStore: Send + Sync {
     fn backfill_fingerprint_time_buckets(
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
+    // ── Retrieval events ──
+
+    /// Log a retrieval event. Best-effort: failures should never block retrieval.
+    fn log_retrieval_event(
+        &self,
+        event: &RetrievalEvent,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Count total retrieval events (for testing/diagnostics).
+    fn count_retrieval_events(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+}
+
+// ── RetrievalEvent ──────────────────────────────────────────────────
+
+/// A recorded retrieval event for the recall→recognition feedback loop.
+///
+/// Captures what was retrieved, when, how, and for what query — enabling
+/// downstream analysis of retrieval patterns, co-access mining, and
+/// signal score evolution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalEvent {
+    /// Hash of the query string (for grouping similar queries without storing raw text).
+    pub query_hash: String,
+    /// ISO-8601 timestamp of retrieval.
+    pub timestamp: String,
+    /// Memory IDs returned by the retrieval (JSON array).
+    pub memory_ids_json: String,
+    /// Retrieval method: "cascade", "topk_fts", "tact", "graph", "probe".
+    pub method: String,
+    /// Classified wing (if any).
+    pub wing: Option<String>,
+    /// Question type from routing (if cascade): "Counting", "Temporal", etc.
+    pub question_type: Option<String>,
 }
 
 // ── TimeBucket ──────────────────────────────────────────────────────

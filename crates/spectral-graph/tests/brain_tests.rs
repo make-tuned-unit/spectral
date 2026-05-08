@@ -1073,3 +1073,80 @@ fn recall_topk_fts_finds_multi_word_matches() {
 
     assert!(!result.is_empty(), "should find the seeded memory");
 }
+
+// ── Recall→Recognition feedback loop tests ──────────────────────────
+
+#[test]
+fn cascade_auto_reinforces_returned_memories() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember_with(
+            "reinforce-test",
+            "Alice decided to use Rust for the auth service project",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    // Read initial signal_score
+    let initial = brain.recall_local("auth service Rust").unwrap();
+    assert!(!initial.memory_hits.is_empty());
+    let initial_score = initial.memory_hits[0].signal_score;
+
+    // Run cascade recall — should auto-reinforce
+    let context = RecognitionContext::empty();
+    let config = CascadeConfig::default();
+    let result = brain
+        .recall_cascade("auth service Rust", &context, &config)
+        .unwrap();
+    assert!(!result.merged_hits.is_empty());
+
+    // Read signal_score again — should have been nudged by ~0.01
+    let after = brain.recall_local("auth service Rust").unwrap();
+    assert!(!after.memory_hits.is_empty());
+    let after_score = after.memory_hits[0].signal_score;
+
+    // Signal score should have increased (auto-reinforce strength = 0.01)
+    assert!(
+        after_score > initial_score,
+        "signal_score should increase after cascade retrieval: before={initial_score}, after={after_score}"
+    );
+    // But not by too much (only 0.01)
+    let delta = after_score - initial_score;
+    assert!(
+        delta < 0.05,
+        "auto-reinforce should be small (0.01), got delta={delta}"
+    );
+}
+
+#[test]
+fn cascade_logs_retrieval_event() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "event-test",
+            "I started jogging every morning for better health",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    // Cascade recall should log a retrieval event
+    let context = RecognitionContext::empty();
+    let config = CascadeConfig::default();
+    let _ = brain
+        .recall_cascade("jogging morning health", &context, &config)
+        .unwrap();
+
+    // Verify retrieval event was logged
+    let count = brain.count_retrieval_events().unwrap();
+    assert!(
+        count >= 1,
+        "cascade should log a retrieval event, found {count}"
+    );
+}
