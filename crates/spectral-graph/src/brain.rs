@@ -1137,11 +1137,22 @@ impl Brain {
             apply_context_dedup: config.apply_context_dedup,
         };
         let empty_ctx = spectral_cascade::RecognitionContext::empty();
-        Ok(crate::ranking::apply_reranking_pipeline(
-            candidates,
-            &reranking_config,
-            &empty_ctx,
-        ))
+        let results =
+            crate::ranking::apply_reranking_pipeline(candidates, &reranking_config, &empty_ctx);
+
+        // Best-effort retrieval event logging
+        let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();
+        let event = spectral_ingest::RetrievalEvent {
+            query_hash: spectral_ingest::hash_query(query),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            memory_ids_json: serde_json::to_string(&memory_ids).unwrap_or_default(),
+            method: "topk_fts".into(),
+            wing: None,
+            question_type: None,
+        };
+        let _ = self.log_retrieval_event(&event);
+
+        Ok(results)
     }
 
     /// Run the integrated cascade pipeline: FTS K=40 → ambient boost →
@@ -1320,6 +1331,20 @@ impl Brain {
     /// Direct access to the underlying graph store.
     pub fn store(&self) -> &KuzuStore {
         &self.store
+    }
+
+    /// Count retrieval events in the database (for testing the feedback loop).
+    pub fn count_retrieval_events(&self) -> Result<usize, Error> {
+        self.rt
+            .block_on(self.memory_store.count_retrieval_events())
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Count retrieval events filtered by method (for testing).
+    pub fn count_retrieval_events_by_method(&self, method: &str) -> Result<usize, Error> {
+        self.rt
+            .block_on(self.memory_store.count_retrieval_events_by_method(method))
+            .map_err(|e| Error::Schema(e.to_string()))
     }
 
     /// Direct access to the ontology.
@@ -1531,6 +1556,26 @@ impl Brain {
             memories_reinforced,
             memories_not_found,
         })
+    }
+
+    /// Reinforce a single memory by key. Convenience for auto-reinforce.
+    /// Returns Ok(()) on success or if memory not found (best-effort).
+    pub(crate) fn reinforce_by_id(&self, key: &str, strength: f64) -> Result<(), Error> {
+        let _ = self
+            .rt
+            .block_on(self.memory_store.reinforce_memory(key, strength))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Log a retrieval event (best-effort). Failures are silently ignored.
+    pub(crate) fn log_retrieval_event(
+        &self,
+        event: &spectral_ingest::RetrievalEvent,
+    ) -> Result<(), Error> {
+        self.rt
+            .block_on(self.memory_store.log_retrieval_event(event))
+            .map_err(|e| Error::Schema(e.to_string()))
     }
 
     /// Extract triples from natural-language text, validate against ontology,

@@ -5,7 +5,7 @@ use spectral_cascade::orchestrator::CascadeConfig;
 use spectral_cascade::RecognitionContext;
 use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
-use spectral_graph::brain::{Brain, BrainConfig, RememberOpts};
+use spectral_graph::brain::{Brain, BrainConfig, RecallTopKConfig, RememberOpts};
 use spectral_tact::TactConfig;
 use tempfile::TempDir;
 
@@ -1072,4 +1072,116 @@ fn recall_topk_fts_finds_multi_word_matches() {
         .unwrap();
 
     assert!(!result.is_empty(), "should find the seeded memory");
+}
+
+// ── Recall→Recognition feedback loop tests ──────────────────────────
+
+#[test]
+fn cascade_auto_reinforces_returned_memories() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember_with(
+            "reinforce-test",
+            "Alice decided to use Rust for the auth service project",
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    // Read initial signal_score
+    let initial = brain.recall_local("auth service Rust").unwrap();
+    assert!(!initial.memory_hits.is_empty());
+    let initial_score = initial.memory_hits[0].signal_score;
+
+    // Run cascade recall — should auto-reinforce
+    let context = RecognitionContext::empty();
+    let config = CascadeConfig::default();
+    let result = brain
+        .recall_cascade("auth service Rust", &context, &config)
+        .unwrap();
+    assert!(!result.merged_hits.is_empty());
+
+    // Read signal_score again — should have been nudged by ~0.01
+    let after = brain.recall_local("auth service Rust").unwrap();
+    assert!(!after.memory_hits.is_empty());
+    let after_score = after.memory_hits[0].signal_score;
+
+    // Signal score should have increased (auto-reinforce strength = 0.01)
+    assert!(
+        after_score > initial_score,
+        "signal_score should increase after cascade retrieval: before={initial_score}, after={after_score}"
+    );
+    // But not by too much (only 0.01)
+    let delta = after_score - initial_score;
+    assert!(
+        delta < 0.05,
+        "auto-reinforce should be small (0.01), got delta={delta}"
+    );
+}
+
+#[test]
+fn cascade_logs_retrieval_event() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "event-test",
+            "I started jogging every morning for better health",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    // Cascade recall should log a retrieval event
+    let context = RecognitionContext::empty();
+    let config = CascadeConfig::default();
+    let _ = brain
+        .recall_cascade("jogging morning health", &context, &config)
+        .unwrap();
+
+    // Verify retrieval event was logged with correct method
+    let count = brain.count_retrieval_events_by_method("cascade").unwrap();
+    assert!(
+        count >= 1,
+        "cascade should log a retrieval event with method='cascade', found {count}"
+    );
+}
+
+#[test]
+fn topk_fts_logs_retrieval_event() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "fts-event-test",
+            "I recently purchased a new camera for photography",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let _ = brain
+        .recall_topk_fts(
+            "camera photography",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let count = brain.count_retrieval_events_by_method("topk_fts").unwrap();
+    assert!(
+        count >= 1,
+        "topk_fts should log a retrieval event with method='topk_fts', found {count}"
+    );
+
+    // cascade events should still be zero (we only used topk_fts)
+    let cascade_count = brain.count_retrieval_events_by_method("cascade").unwrap();
+    assert_eq!(
+        cascade_count, 0,
+        "no cascade events should exist when only topk_fts was used"
+    );
 }
