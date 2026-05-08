@@ -1156,6 +1156,7 @@ impl Brain {
             method: "topk_fts".into(),
             wing: None,
             question_type: None,
+            session_id: None,
         };
         let _ = self.log_retrieval_event(&event);
 
@@ -1391,6 +1392,24 @@ impl Brain {
     pub fn rebuild_co_retrieval_index(&self) -> Result<usize, Error> {
         self.rt
             .block_on(self.memory_store.rebuild_co_retrieval_index())
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// List retrieval events for a given session, ordered by timestamp ASC.
+    pub fn events_for_session(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<spectral_ingest::RetrievalEvent>, Error> {
+        self.rt
+            .block_on(self.memory_store.events_for_session(session_id, limit))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// List unique memory IDs that surfaced in a session, ordered by first appearance.
+    pub fn memories_for_session(&self, session_id: &str) -> Result<Vec<String>, Error> {
+        self.rt
+            .block_on(self.memory_store.memories_for_session(session_id))
             .map_err(|e| Error::Schema(e.to_string()))
     }
 

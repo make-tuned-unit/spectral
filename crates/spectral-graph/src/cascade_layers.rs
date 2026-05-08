@@ -194,6 +194,7 @@ pub fn run_cascade_pipeline(
         method: "cascade".into(),
         wing: results.first().and_then(|h| h.wing.clone()),
         question_type: None, // Set by bench caller if applicable
+        session_id: context.session_id.clone(),
     };
     let _ = brain.log_retrieval_event(&event);
 

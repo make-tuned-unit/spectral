@@ -393,6 +393,23 @@ impl SqliteStore {
                 ON co_retrieval_pairs(memory_id_b);",
         )?;
 
+        // session_id column on retrieval_events
+        let mut has_session_id = false;
+        let mut stmt7 = conn.prepare("PRAGMA table_info(retrieval_events)")?;
+        let rows7 = stmt7.query_map([], |row| row.get::<_, String>(1))?;
+        for name in rows7 {
+            if name?.as_str() == "session_id" {
+                has_session_id = true;
+            }
+        }
+        if !has_session_id {
+            conn.execute_batch(
+                "ALTER TABLE retrieval_events ADD COLUMN session_id TEXT DEFAULT NULL;
+                 CREATE INDEX IF NOT EXISTS idx_retrieval_events_session
+                     ON retrieval_events(session_id);",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -1477,21 +1494,23 @@ impl MemoryStore for SqliteStore {
         let method = event.method.clone();
         let wing = event.wing.clone();
         let question_type = event.question_type.clone();
+        let session_id = event.session_id.clone();
         let conn = self.conn.clone();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             conn.execute(
                 "INSERT INTO retrieval_events \
-                    (query_hash, timestamp, memory_ids_json, method, wing, question_type) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (query_hash, timestamp, memory_ids_json, method, wing, question_type, session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     query_hash,
                     timestamp,
                     memory_ids_json,
                     method,
                     wing,
-                    question_type
+                    question_type,
+                    session_id
                 ],
             )?;
             Ok(())
@@ -1681,6 +1700,72 @@ impl MemoryStore for SqliteStore {
             tx.commit()?;
 
             Ok(pair_counts.len())
+        })
+    }
+
+    fn events_for_session(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RetrievalEvent>>> + Send + '_>> {
+        let session_id = session_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT query_hash, timestamp, memory_ids_json, method, wing, question_type, session_id \
+                 FROM retrieval_events WHERE session_id = ?1 \
+                 ORDER BY timestamp ASC LIMIT ?2",
+            )?;
+            let rows: Vec<RetrievalEvent> = stmt
+                .query_map(params![session_id, limit as i64], |row| {
+                    Ok(RetrievalEvent {
+                        query_hash: row.get(0)?,
+                        timestamp: row.get(1)?,
+                        memory_ids_json: row.get(2)?,
+                        method: row.get(3)?,
+                        wing: row.get(4)?,
+                        question_type: row.get(5)?,
+                        session_id: row.get(6)?,
+                    })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+    }
+
+    fn memories_for_session(
+        &self,
+        session_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>> {
+        let session_id = session_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT memory_ids_json FROM retrieval_events \
+                 WHERE session_id = ?1 ORDER BY timestamp ASC",
+            )?;
+            let jsons: Vec<String> = stmt
+                .query_map(params![session_id], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let mut seen = std::collections::HashSet::new();
+            let mut result = Vec::new();
+            for json in &jsons {
+                let ids: Vec<String> = match serde_json::from_str(json) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                for id in ids {
+                    if seen.insert(id.clone()) {
+                        result.push(id);
+                    }
+                }
+            }
+            Ok(result)
         })
     }
 }
@@ -2810,6 +2895,7 @@ mod tests {
             method: "cascade".into(),
             wing: Some("permagent".into()),
             question_type: Some("Counting".into()),
+            session_id: None,
         };
         store.log_retrieval_event(&event).await.unwrap();
 
@@ -2847,6 +2933,7 @@ mod tests {
             method: "topk_fts".into(),
             wing: None,
             question_type: None,
+            session_id: None,
         };
         store.log_retrieval_event(&event).await.unwrap();
         store.log_retrieval_event(&event).await.unwrap();
@@ -2875,6 +2962,7 @@ mod tests {
             method: "probe".into(),
             wing: None,
             question_type: None,
+            session_id: None,
         };
         store.log_retrieval_event(&event).await.unwrap();
 
@@ -3006,6 +3094,7 @@ mod tests {
             method: "cascade".into(),
             wing: None,
             question_type: None,
+            session_id: None,
         };
         store.log_retrieval_event(&event).await.unwrap();
     }
@@ -3123,5 +3212,153 @@ mod tests {
 
         let related = store.related_memories("unknown", 10).await.unwrap();
         assert!(related.is_empty());
+    }
+
+    // ── Session retrieval tests ─────────────────────────────────────
+
+    fn make_session_event(session: Option<&str>, ts: &str, ids: &[&str]) -> RetrievalEvent {
+        RetrievalEvent {
+            query_hash: "h".into(),
+            timestamp: ts.into(),
+            memory_ids_json: serde_json::to_string(&ids).unwrap(),
+            method: "cascade".into(),
+            wing: None,
+            question_type: None,
+            session_id: session.map(|s| s.into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn log_event_with_session_id() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let event = make_session_event(Some("sess-1"), "2024-01-01T00:00:00Z", &["m1"]);
+        store.log_retrieval_event(&event).await.unwrap();
+
+        let conn = store.conn();
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT session_id FROM retrieval_events LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sid.as_deref(), Some("sess-1"));
+    }
+
+    #[tokio::test]
+    async fn log_event_without_session_id_stores_null() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let event = make_session_event(None, "2024-01-01T00:00:00Z", &["m1"]);
+        store.log_retrieval_event(&event).await.unwrap();
+
+        let conn = store.conn();
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT session_id FROM retrieval_events LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(sid.is_none());
+    }
+
+    #[tokio::test]
+    async fn events_for_session_returns_only_matching() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        for i in 0..3 {
+            let e = make_session_event(Some("A"), &format!("2024-01-0{i}T00:00:00Z"), &["m1"]);
+            store.log_retrieval_event(&e).await.unwrap();
+        }
+        for i in 0..2 {
+            let e = make_session_event(Some("B"), &format!("2024-02-0{i}T00:00:00Z"), &["m2"]);
+            store.log_retrieval_event(&e).await.unwrap();
+        }
+
+        let events = store.events_for_session("A", 100).await.unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| e.session_id.as_deref() == Some("A")));
+    }
+
+    #[tokio::test]
+    async fn events_for_session_orders_by_timestamp_asc() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        // Insert out of order
+        store
+            .log_retrieval_event(&make_session_event(
+                Some("S"),
+                "2024-01-03T00:00:00Z",
+                &["m1"],
+            ))
+            .await
+            .unwrap();
+        store
+            .log_retrieval_event(&make_session_event(
+                Some("S"),
+                "2024-01-01T00:00:00Z",
+                &["m2"],
+            ))
+            .await
+            .unwrap();
+        store
+            .log_retrieval_event(&make_session_event(
+                Some("S"),
+                "2024-01-02T00:00:00Z",
+                &["m3"],
+            ))
+            .await
+            .unwrap();
+
+        let events = store.events_for_session("S", 100).await.unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events[0].timestamp < events[1].timestamp);
+        assert!(events[1].timestamp < events[2].timestamp);
+    }
+
+    #[tokio::test]
+    async fn events_for_session_respects_limit() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        for i in 0..5 {
+            let e = make_session_event(Some("S"), &format!("2024-01-0{i}T00:00:00Z"), &["m1"]);
+            store.log_retrieval_event(&e).await.unwrap();
+        }
+
+        let events = store.events_for_session("S", 2).await.unwrap();
+        assert_eq!(events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn events_for_session_returns_empty_for_unknown() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let e = make_session_event(Some("X"), "2024-01-01T00:00:00Z", &["m1"]);
+        store.log_retrieval_event(&e).await.unwrap();
+
+        let events = store.events_for_session("unknown", 100).await.unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn memories_for_session_dedupes_across_events() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let e1 = make_session_event(Some("S"), "2024-01-01T00:00:00Z", &["m1", "m2"]);
+        let e2 = make_session_event(Some("S"), "2024-01-02T00:00:00Z", &["m2", "m3"]);
+        store.log_retrieval_event(&e1).await.unwrap();
+        store.log_retrieval_event(&e2).await.unwrap();
+
+        let mems = store.memories_for_session("S").await.unwrap();
+        assert_eq!(mems.len(), 3, "m2 should appear only once");
+        // m1, m2 from first event; m3 from second (m2 deduped)
+        assert_eq!(mems, vec!["m1", "m2", "m3"]);
+    }
+
+    #[tokio::test]
+    async fn memories_for_session_orders_by_first_seen() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let e1 = make_session_event(Some("S"), "2024-01-01T00:00:00Z", &["m1"]);
+        let e2 = make_session_event(Some("S"), "2024-01-02T00:00:00Z", &["m2"]);
+        store.log_retrieval_event(&e1).await.unwrap();
+        store.log_retrieval_event(&e2).await.unwrap();
+
+        let mems = store.memories_for_session("S").await.unwrap();
+        assert_eq!(mems, vec!["m1", "m2"], "m1 should come before m2");
     }
 }

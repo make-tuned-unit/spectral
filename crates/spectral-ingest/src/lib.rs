@@ -497,6 +497,22 @@ pub trait MemoryStore: Send + Sync {
     fn rebuild_co_retrieval_index(
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
+    // ── Session queries ──
+
+    /// List retrieval events for a given session, ordered by timestamp ASC.
+    fn events_for_session(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RetrievalEvent>>> + Send + '_>>;
+
+    /// List unique memory IDs that surfaced in retrievals for a given session,
+    /// ordered by first appearance.
+    fn memories_for_session(
+        &self,
+        session_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>>;
 }
 
 // ── RelatedMemory ──────────────────────────────────────────────────
@@ -533,6 +549,9 @@ pub struct RetrievalEvent {
     pub wing: Option<String>,
     /// Question type from routing (if cascade): "Counting", "Temporal", etc.
     pub question_type: Option<String>,
+    /// Session/conversation ID for grouping retrievals. Consumer-managed opaque string.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// Hash a query string for retrieval event grouping.
