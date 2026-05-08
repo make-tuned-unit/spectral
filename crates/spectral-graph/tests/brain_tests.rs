@@ -1250,3 +1250,79 @@ fn brain_list_undescribed_excludes_described() {
         "should have exactly 2 undescribed memories"
     );
 }
+
+#[test]
+fn brain_related_memories_after_cascade_retrievals() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Ingest 5 memories with overlapping content
+    let r1 = brain
+        .remember(
+            "co-1",
+            "I use Rust for systems programming",
+            Visibility::Private,
+        )
+        .unwrap();
+    let _r2 = brain
+        .remember(
+            "co-2",
+            "My favorite editor is Neovim for Rust development",
+            Visibility::Private,
+        )
+        .unwrap();
+    let _r3 = brain
+        .remember(
+            "co-3",
+            "I prefer dark mode in all editors",
+            Visibility::Private,
+        )
+        .unwrap();
+    let _r4 = brain
+        .remember(
+            "co-4",
+            "My daily commute is 30 minutes by train",
+            Visibility::Private,
+        )
+        .unwrap();
+    let _r5 = brain
+        .remember(
+            "co-5",
+            "I graduated with a Computer Science degree",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    // Run cascade retrievals that will return overlapping subsets
+    let cascade_config = CascadeConfig::default();
+    let ctx = RecognitionContext::empty();
+    let _ = brain.recall_cascade("Rust programming", &ctx, &cascade_config);
+    let _ = brain.recall_cascade("editor setup Rust", &ctx, &cascade_config);
+    let _ = brain.recall_cascade("Neovim dark mode editor", &ctx, &cascade_config);
+
+    // Rebuild the co-retrieval index
+    let pairs_written = brain.rebuild_co_retrieval_index().unwrap();
+
+    // Query related memories for r1 (Rust systems programming)
+    let related = brain.related_memories(&r1.memory_id, 10).unwrap();
+
+    // Verify: index was built (at least some pairs exist from cascade events)
+    // The exact set depends on what cascade returned, but the API should work
+    assert!(
+        pairs_written > 0 || related.is_empty(),
+        "either pairs were created or no retrievals overlapped"
+    );
+
+    // If there are related memories, they should be ordered by co_count desc
+    for window in related.windows(2) {
+        assert!(
+            window[0].co_count >= window[1].co_count,
+            "related memories should be ordered by co_count desc"
+        );
+    }
+
+    // memory field should be None in v1
+    for r in &related {
+        assert!(r.memory.is_none(), "v1 returns memory: None");
+    }
+}

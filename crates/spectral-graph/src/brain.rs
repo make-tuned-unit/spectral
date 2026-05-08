@@ -1375,6 +1375,25 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
+    /// Return memories most frequently co-retrieved with the given memory_id.
+    pub fn related_memories(
+        &self,
+        memory_id: &str,
+        limit: usize,
+    ) -> Result<Vec<spectral_ingest::RelatedMemory>, Error> {
+        self.rt
+            .block_on(self.memory_store.related_memories(memory_id, limit))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Rebuild the co_retrieval_pairs index from retrieval_events data.
+    /// Returns the number of pairs written.
+    pub fn rebuild_co_retrieval_index(&self) -> Result<usize, Error> {
+        self.rt
+            .block_on(self.memory_store.rebuild_co_retrieval_index())
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// Direct access to the ontology.
     pub fn ontology(&self) -> &Ontology {
         &self.ontology
