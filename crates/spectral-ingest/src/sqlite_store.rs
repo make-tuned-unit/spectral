@@ -1621,19 +1621,22 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    /// Rebuild is wrapped in a transaction so the DELETE + INSERT sequence
+    /// is atomic — concurrent `related_memories` queries never see an empty table.
     fn rebuild_co_retrieval_index(
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
         let conn = self.conn.clone();
         Box::pin(async move {
-            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
-            // Read all retrieval events
+            // Read all retrieval events (before the transaction — read-only)
             let mut stmt = conn.prepare("SELECT memory_ids_json FROM retrieval_events")?;
             let events: Vec<String> = stmt
                 .query_map([], |row| row.get::<_, String>(0))?
                 .filter_map(|r| r.ok())
                 .collect();
+            drop(stmt);
 
             // Aggregate co-retrieval counts
             let mut pair_counts: std::collections::HashMap<(String, String), i64> =
@@ -1657,22 +1660,27 @@ impl MemoryStore for SqliteStore {
                 }
             }
 
-            // Truncate and rewrite
-            conn.execute("DELETE FROM co_retrieval_pairs", [])?;
+            // Atomic truncate-and-rewrite
+            let tx = conn.transaction()?;
+
+            tx.execute("DELETE FROM co_retrieval_pairs", [])?;
 
             let now = chrono::Utc::now().to_rfc3339();
-            let mut insert_stmt = conn.prepare(
-                "INSERT INTO co_retrieval_pairs (memory_id_a, memory_id_b, co_count, last_updated) \
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?;
+            {
+                let mut insert_stmt = tx.prepare(
+                    "INSERT INTO co_retrieval_pairs \
+                         (memory_id_a, memory_id_b, co_count, last_updated) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                )?;
 
-            let mut written = 0;
-            for ((a, b), count) in &pair_counts {
-                insert_stmt.execute(params![a, b, count, now])?;
-                written += 1;
+                for ((a, b), count) in &pair_counts {
+                    insert_stmt.execute(params![a, b, count, now])?;
+                }
             }
 
-            Ok(written)
+            tx.commit()?;
+
+            Ok(pair_counts.len())
         })
     }
 }
