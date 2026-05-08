@@ -641,7 +641,7 @@ mod tests {
         // The sentences "What should I do" and "How can I improve" DO contain "I",
         // and after split they DON'T contain "?". So density = 1.0 here.
         // This is acceptable — the function is a heuristic, not a parser.
-        assert!(d >= 0.0 && d <= 1.0);
+        assert!((0.0..=1.0).contains(&d));
     }
 
     #[test]
