@@ -592,10 +592,7 @@ mod tests {
     fn declarative_density_mixed_content() {
         // 1 declarative ("I went to the store") + 1 non-declarative ("The weather was nice")
         let d = declarative_density("I went to the store. The weather was nice.");
-        assert!(
-            (d - 0.5).abs() < 0.01,
-            "expected ~0.5, got {d}"
-        );
+        assert!((d - 0.5).abs() < 0.01, "expected ~0.5, got {d}");
     }
 
     #[test]
@@ -610,7 +607,7 @@ mod tests {
     #[test]
     fn declarative_density_assistant_style() {
         let d = declarative_density(
-            "Here are some tips for cooking. First, preheat the oven. Then add the ingredients."
+            "Here are some tips for cooking. First, preheat the oven. Then add the ingredients.",
         );
         assert!(
             d < 0.01,
@@ -620,7 +617,9 @@ mod tests {
 
     #[test]
     fn declarative_density_all_first_person() {
-        let d = declarative_density("I graduated with a Business degree. I commute 45 minutes. My favorite color is blue.");
+        let d = declarative_density(
+            "I graduated with a Business degree. I commute 45 minutes. My favorite color is blue.",
+        );
         assert!(
             (d - 1.0).abs() < 0.01,
             "all first-person declarative should score ~1.0, got {d}"
