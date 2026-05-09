@@ -310,6 +310,21 @@ impl Brain {
     pub fn ontology(&self) -> &spectral_graph::ontology::Ontology {
         self.inner.ontology()
     }
+
+    /// Fetch a memory by ID. Returns None if not found.
+    pub fn get_memory(&self, id: &str) -> Result<Option<spectral_ingest::Memory>, Error> {
+        self.inner.get_memory(id)
+    }
+
+    /// Set the description field on a memory and update description_generated_at.
+    pub fn set_description(&self, id: &str, description: &str) -> Result<(), Error> {
+        self.inner.set_description(id, description)
+    }
+
+    /// List memories where description IS NULL, ordered by created_at DESC.
+    pub fn list_undescribed(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
+        self.inner.list_undescribed(limit)
+    }
 }
 
 // ── BrainBuilder ────────────────────────────────────────────────────

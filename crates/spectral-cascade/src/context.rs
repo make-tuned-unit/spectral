@@ -33,6 +33,10 @@ pub struct RecognitionContext {
     /// Optional persona block — who is asking, in what role.
     /// Defaults to None. Reserved for future multi-persona scenarios.
     pub persona: Option<String>,
+
+    /// Optional session/conversation ID. Plumbed into retrieval event
+    /// logging so events can be queried per-session.
+    pub session_id: Option<String>,
 }
 
 impl RecognitionContext {
@@ -44,7 +48,14 @@ impl RecognitionContext {
             now: Utc::now(),
             focus_wing: None,
             persona: None,
+            session_id: None,
         }
+    }
+
+    /// Builder: set session ID.
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     /// Builder: set the time anchor (useful for tests and replay).

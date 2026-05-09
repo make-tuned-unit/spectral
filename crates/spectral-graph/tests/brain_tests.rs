@@ -1326,3 +1326,75 @@ fn brain_related_memories_after_cascade_retrievals() {
         assert!(r.memory.is_none(), "v1 returns memory: None");
     }
 }
+
+#[test]
+fn cascade_with_session_id_logs_session_attribution() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "sess-mem-1",
+            "I enjoy hiking in the mountains",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let ctx = RecognitionContext::empty().with_session("test-session-42");
+    let cascade_config = CascadeConfig::default();
+    let _ = brain.recall_cascade("hiking mountains", &ctx, &cascade_config);
+
+    let events = brain.events_for_session("test-session-42", 100).unwrap();
+    assert!(
+        !events.is_empty(),
+        "cascade with session should produce at least one event"
+    );
+    assert_eq!(events[0].session_id.as_deref(), Some("test-session-42"));
+    assert_eq!(events[0].method, "cascade");
+}
+
+#[test]
+fn memories_for_session_aggregates_across_cascades() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    brain
+        .remember(
+            "agg-1",
+            "I prefer Python for data science work",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "agg-2",
+            "My favorite IDE is VS Code with extensions",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "agg-3",
+            "I commute by bicycle every morning",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let ctx = RecognitionContext::empty().with_session("agg-session");
+    let cascade_config = CascadeConfig::default();
+
+    // Two cascades in the same session with different queries
+    let _ = brain.recall_cascade("Python data science", &ctx, &cascade_config);
+    let _ = brain.recall_cascade("IDE VS Code editor", &ctx, &cascade_config);
+
+    let session_mems = brain.memories_for_session("agg-session").unwrap();
+
+    // Should have deduplicated memory IDs from both cascades
+    let unique_count = session_mems.len();
+    let as_set: std::collections::HashSet<&str> = session_mems.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        unique_count,
+        as_set.len(),
+        "memories_for_session should return unique IDs"
+    );
+}
