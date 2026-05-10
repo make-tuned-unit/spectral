@@ -30,6 +30,7 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 clap = { version = "4", features = ["derive"] }
+rand = { workspace = true }
 indicatif = "0.17"
 
 [dev-dependencies]

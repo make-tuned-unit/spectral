@@ -72,6 +72,14 @@ enum Command {
         /// Maximum memories to pass to actor
         #[arg(long, default_value = "40")]
         max_results: usize,
+
+        /// Number of warm-up queries to run before each test question (0 disables)
+        #[arg(long, default_value = "0")]
+        warmup_queries: usize,
+
+        /// Enable co-retrieval boost in cascade ranking
+        #[arg(long)]
+        enable_co_retrieval: bool,
     },
 
     /// Pretty-print a previously saved JSON report
@@ -131,6 +139,8 @@ fn main() -> Result<()> {
             judge_model,
             base_url,
             max_results,
+            warmup_queries,
+            enable_co_retrieval,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
@@ -187,6 +197,8 @@ fn main() -> Result<()> {
                 retrieval_path: ret_path,
                 use_cascade,
                 dump_scores_path: dump_scores,
+                warmup_queries,
+                enable_co_retrieval,
                 ..Default::default()
             };
 

@@ -391,7 +391,7 @@ pub struct Brain {
     runtime_entities: Mutex<Vec<crate::ontology::OntologyEntity>>,
     ontology_path: PathBuf,
     store: KuzuStore,
-    memory_store: Box<dyn MemoryStore>,
+    memory_store: Arc<dyn MemoryStore>,
     llm_client: Option<Box<dyn LlmClient>>,
     entity_policy: EntityPolicy,
     enable_spectrogram: bool,
@@ -430,7 +430,7 @@ impl Brain {
         let sqlite_config = spectral_ingest::sqlite_store::SqliteStoreConfig {
             mmap_size: config.sqlite_mmap_size,
         };
-        let memory_store: Box<dyn MemoryStore> = Box::new(
+        let memory_store: Arc<dyn MemoryStore> = Arc::new(
             SqliteStore::open_with_config(&memory_db_path, &sqlite_config)
                 .map_err(|e| Error::Schema(e.to_string()))?,
         );
@@ -1142,6 +1142,10 @@ impl Brain {
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: config.apply_context_dedup,
+            apply_co_retrieval_boost: false,
+            co_retrieval_weight: 0.15,
+            co_retrieval_top_k: 10,
+            co_retrieval_store: None,
         };
         let empty_ctx = spectral_cascade::RecognitionContext::empty();
         let results =
@@ -1339,6 +1343,11 @@ impl Brain {
     /// Direct access to the underlying graph store.
     pub fn store(&self) -> &KuzuStore {
         &self.store
+    }
+
+    /// Shared reference to the memory store (for co-retrieval queries in cascade).
+    pub(crate) fn memory_store_arc(&self) -> Arc<dyn MemoryStore> {
+        self.memory_store.clone()
     }
 
     /// Count retrieval events in the database (for testing the feedback loop).

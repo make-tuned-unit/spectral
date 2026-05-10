@@ -118,6 +118,12 @@ pub struct CascadePipelineConfig {
     pub max_per_episode: usize,
     /// Apply context chain dedup. Default true.
     pub apply_context_dedup: bool,
+    /// Enable co-retrieval boost from historical retrieval patterns. Default false.
+    pub apply_co_retrieval_boost: bool,
+    /// Weight for co-retrieval boost. Default 0.15.
+    pub co_retrieval_weight: f64,
+    /// Number of top candidates to anchor co-retrieval lookup. Default 10.
+    pub co_retrieval_top_k: usize,
 }
 
 impl Default for CascadePipelineConfig {
@@ -131,6 +137,9 @@ impl Default for CascadePipelineConfig {
             apply_episode_diversity: true,
             max_per_episode: 5,
             apply_context_dedup: true,
+            apply_co_retrieval_boost: false,
+            co_retrieval_weight: 0.15,
+            co_retrieval_top_k: 10,
         }
     }
 }
@@ -157,6 +166,11 @@ pub fn run_cascade_pipeline(
     }
 
     // Step 2: Unified re-ranking pipeline (same implementation as topk_fts)
+    let co_retrieval_store = if config.apply_co_retrieval_boost {
+        Some(brain.memory_store_arc())
+    } else {
+        None
+    };
     let reranking_config = crate::ranking::RerankingConfig {
         apply_signal_score: config.apply_signal_reranking,
         signal_score_weight: 0.3,
@@ -170,6 +184,10 @@ pub fn run_cascade_pipeline(
         apply_episode_diversity: config.apply_episode_diversity,
         max_per_episode: config.max_per_episode,
         apply_context_dedup: config.apply_context_dedup,
+        apply_co_retrieval_boost: config.apply_co_retrieval_boost,
+        co_retrieval_weight: config.co_retrieval_weight,
+        co_retrieval_top_k: config.co_retrieval_top_k,
+        co_retrieval_store,
     };
 
     let results = crate::ranking::apply_reranking_pipeline(candidates, &reranking_config, context);

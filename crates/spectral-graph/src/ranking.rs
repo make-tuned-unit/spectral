@@ -190,9 +190,31 @@ pub fn dedup_context_chains(mut candidates: Vec<MemoryHit>) -> Vec<MemoryHit> {
 
 use spectral_cascade::RecognitionContext;
 
+/// Poll a boxed future that is expected to complete synchronously (e.g., SQLite queries).
+/// Avoids the need for a tokio runtime when the future resolves on first poll.
+fn poll_sync<T>(mut fut: std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + '_>>) -> T {
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    fn noop_raw_waker() -> RawWaker {
+        fn no_op(_: *const ()) {}
+        fn clone(p: *const ()) -> RawWaker {
+            RawWaker::new(p, &VTABLE)
+        }
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+        RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+
+    let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+    let mut cx = Context::from_waker(&waker);
+    match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(val) => val,
+        Poll::Pending => panic!("poll_sync: future did not complete synchronously"),
+    }
+}
+
 /// Configuration for the unified re-ranking pipeline.
 /// Both topk_fts and cascade call this with different configs.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RerankingConfig {
     pub apply_signal_score: bool,
     pub signal_score_weight: f64,
@@ -206,6 +228,28 @@ pub struct RerankingConfig {
     pub apply_episode_diversity: bool,
     pub max_per_episode: usize,
     pub apply_context_dedup: bool,
+    /// Enable co-retrieval boost from historical retrieval patterns.
+    pub apply_co_retrieval_boost: bool,
+    /// Weight for co-retrieval boost: composite *= 1 + weight * normalized_count.
+    pub co_retrieval_weight: f64,
+    /// Number of top candidates to use as anchors for co-retrieval lookup.
+    pub co_retrieval_top_k: usize,
+    /// Memory store for querying co-retrieval pairs. None disables the boost.
+    pub co_retrieval_store: Option<std::sync::Arc<dyn spectral_ingest::MemoryStore>>,
+}
+
+impl std::fmt::Debug for RerankingConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RerankingConfig")
+            .field("apply_co_retrieval_boost", &self.apply_co_retrieval_boost)
+            .field("co_retrieval_weight", &self.co_retrieval_weight)
+            .field("co_retrieval_top_k", &self.co_retrieval_top_k)
+            .field(
+                "co_retrieval_store",
+                &self.co_retrieval_store.as_ref().map(|_| "Some(...)"),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for RerankingConfig {
@@ -223,6 +267,10 @@ impl Default for RerankingConfig {
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: true,
+            apply_co_retrieval_boost: false,
+            co_retrieval_weight: 0.15,
+            co_retrieval_top_k: 10,
+            co_retrieval_store: None,
         }
     }
 }
@@ -316,6 +364,44 @@ pub fn apply_reranking_pipeline(
         }
     }
 
+    // Co-retrieval boost: multiplicative, anchored on current top-K candidates.
+    // Rewards memories that historically co-retrieve with the current best results.
+    if config.apply_co_retrieval_boost {
+        if let Some(ref store) = config.co_retrieval_store {
+            // Identify current top-K by score so far
+            let mut ranked: Vec<(usize, f64)> = scores.iter().copied().enumerate().collect();
+            ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let anchor_ids: Vec<&str> = ranked
+                .iter()
+                .take(config.co_retrieval_top_k)
+                .map(|&(i, _)| candidates[i].id.as_str())
+                .collect();
+
+            // Query co-retrieval pairs for each anchor, aggregate co_count per related ID.
+            // SqliteStore futures complete synchronously on first poll (mutex + SQL).
+            let mut co_counts: std::collections::HashMap<String, u64> =
+                std::collections::HashMap::new();
+            for anchor_id in &anchor_ids {
+                let fut = store.related_memories(anchor_id, 50);
+                let related = poll_sync(fut).unwrap_or_default();
+                for r in related {
+                    *co_counts.entry(r.memory_id).or_insert(0) += r.co_count;
+                }
+            }
+
+            // Normalize and apply multiplicative boost
+            let max_count = co_counts.values().copied().max().unwrap_or(0) as f64;
+            if max_count > 0.0 {
+                for (i, hit) in candidates.iter().enumerate() {
+                    if let Some(&count) = co_counts.get(&hit.id) {
+                        let normalized = count as f64 / max_count;
+                        scores[i] *= 1.0 + config.co_retrieval_weight * normalized;
+                    }
+                }
+            }
+        }
+    }
+
     // Single sort by composite score
     let mut indexed: Vec<(usize, f64)> = scores.into_iter().enumerate().collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -345,6 +431,7 @@ pub fn apply_reranking_pipeline(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use spectral_ingest::MemoryStore as _;
 
     fn make_hit(id: &str, score: f64, wing: Option<&str>, created_at: Option<&str>) -> MemoryHit {
         MemoryHit {
@@ -897,6 +984,209 @@ mod tests {
             result[0].signal_score > 1.0 + expected_boost * 0.5,
             "should fall back to computed density, got score {}",
             result[0].signal_score
+        );
+    }
+
+    // ── Co-retrieval boost tests ────────────────────────────────────
+
+    /// Helper: build an in-memory SqliteStore with co-retrieval pairs prepopulated
+    /// via retrieval events + rebuild.
+    fn store_with_co_retrieval_pairs(
+        pairs: &[(&str, &str, i64)],
+    ) -> std::sync::Arc<dyn spectral_ingest::MemoryStore> {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store = spectral_ingest::sqlite_store::SqliteStore::open_in_memory().unwrap();
+
+        // For each pair with count N, log N events containing both memories
+        for &(a, b, count) in pairs {
+            for _ in 0..count {
+                let event = spectral_ingest::RetrievalEvent {
+                    query_hash: "test".into(),
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                    memory_ids_json: serde_json::to_string(&[a, b]).unwrap(),
+                    method: "cascade".into(),
+                    wing: None,
+                    question_type: None,
+                    session_id: None,
+                };
+                rt.block_on(store.log_retrieval_event(&event)).unwrap();
+            }
+        }
+        rt.block_on(store.rebuild_co_retrieval_index()).unwrap();
+
+        std::sync::Arc::new(store)
+    }
+
+    #[test]
+    fn co_retrieval_boost_disabled_by_default_no_ranking_change() {
+        let candidates = vec![
+            make_hit("m1", 0.9, None, None),
+            make_hit("m2", 0.5, None, None),
+        ];
+        let config = RerankingConfig::default(); // apply_co_retrieval_boost: false
+        let ctx = spectral_cascade::RecognitionContext::empty();
+
+        let result = apply_reranking_pipeline(candidates.clone(), &config, &ctx);
+        let baseline = apply_reranking_pipeline(candidates, &RerankingConfig::default(), &ctx);
+
+        assert_eq!(result.len(), baseline.len());
+        for (a, b) in result.iter().zip(baseline.iter()) {
+            assert_eq!(a.id, b.id);
+        }
+    }
+
+    #[test]
+    fn co_retrieval_boost_no_op_when_index_empty() {
+        let store = store_with_co_retrieval_pairs(&[]);
+        let candidates = vec![
+            make_hit("m1", 0.9, None, None),
+            make_hit("m2", 0.5, None, None),
+        ];
+        let config_on = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_co_retrieval_boost: true,
+            co_retrieval_store: Some(store.clone()),
+            ..Default::default()
+        };
+        let config_off = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+
+        let result_on = apply_reranking_pipeline(candidates.clone(), &config_on, &ctx);
+        let result_off = apply_reranking_pipeline(candidates, &config_off, &ctx);
+
+        // Same ranking — empty index means no boost
+        for (a, b) in result_on.iter().zip(result_off.iter()) {
+            assert_eq!(a.id, b.id);
+        }
+    }
+
+    #[test]
+    fn co_retrieval_boost_lifts_related_memories() {
+        // 5 candidates so FTS position gaps are small (0.2 per position).
+        // m1 is the anchor (highest FTS). m5 (last) has high co-retrieval with m1.
+        // Without boost: m1 > m2 > m3 > m4 > m5.
+        // With boost: m5 gets a 1.5x multiplier on its FTS score, lifting it.
+        let store = store_with_co_retrieval_pairs(&[("m1", "m5", 10)]);
+
+        // Verify the store has the data
+        {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let related = rt.block_on(store.related_memories("m1", 50)).unwrap();
+            assert!(
+                !related.is_empty(),
+                "store should have co-retrieval data for m1"
+            );
+            assert_eq!(related[0].memory_id, "m5");
+        }
+        let candidates = vec![
+            make_hit("m1", 0.5, None, None),
+            make_hit("m2", 0.5, None, None),
+            make_hit("m3", 0.5, None, None),
+            make_hit("m4", 0.5, None, None),
+            make_hit("m5", 0.5, None, None),
+        ];
+
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_co_retrieval_boost: true,
+            co_retrieval_weight: 3.0, // 300% boost: m5 goes from 0.2 to 0.8, past m3 (0.6) and m4 (0.4)
+            co_retrieval_top_k: 1,
+            co_retrieval_store: Some(store),
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+
+        let result_boosted = apply_reranking_pipeline(candidates.clone(), &config, &ctx);
+        let result_baseline = apply_reranking_pipeline(
+            candidates,
+            &RerankingConfig {
+                apply_signal_score: false,
+                apply_recency: false,
+                ..Default::default()
+            },
+            &ctx,
+        );
+
+        // Baseline: m5 is last
+        assert_eq!(result_baseline.last().unwrap().id, "m5");
+        // With boost: m5 should have moved up from its original last position
+        let m5_pos = result_boosted.iter().position(|h| h.id == "m5").unwrap();
+        assert!(
+            m5_pos < result_boosted.len() - 1,
+            "m5 should be lifted from last position, got position {m5_pos}"
+        );
+    }
+
+    #[test]
+    fn co_retrieval_boost_normalizes_correctly() {
+        // Two related memories with different co_counts
+        let store = store_with_co_retrieval_pairs(&[("m1", "m2", 10), ("m1", "m3", 5)]);
+        let candidates = vec![
+            make_hit("m1", 0.5, None, None),
+            make_hit("m2", 0.5, None, None),
+            make_hit("m3", 0.5, None, None),
+        ];
+
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_co_retrieval_boost: true,
+            co_retrieval_weight: 0.15,
+            co_retrieval_top_k: 1,
+            co_retrieval_store: Some(store),
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+
+        // m2 should get full boost (count=10, normalized=1.0)
+        // m3 should get half boost (count=5, normalized=0.5)
+        assert!(
+            result.iter().find(|h| h.id == "m2").unwrap().signal_score
+                > result.iter().find(|h| h.id == "m3").unwrap().signal_score,
+            "m2 should rank higher than m3 due to higher co-count"
+        );
+    }
+
+    #[test]
+    fn co_retrieval_boost_respects_anchor_top_k() {
+        // Only anchor on top-1 (m1). m1 has co-retrieval with m3.
+        // m2 has co-retrieval with m4 but m2 isn't in anchor set (top_k=1).
+        let store = store_with_co_retrieval_pairs(&[("m1", "m3", 10), ("m2", "m4", 10)]);
+        let candidates = vec![
+            make_hit("m1", 0.9, None, None),
+            make_hit("m2", 0.5, None, None),
+            make_hit("m3", 0.5, None, None),
+            make_hit("m4", 0.5, None, None),
+        ];
+
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_co_retrieval_boost: true,
+            co_retrieval_weight: 0.50,
+            co_retrieval_top_k: 1, // Only m1 is anchor
+            co_retrieval_store: Some(store),
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+
+        // m3 should be boosted (co-retrieved with anchor m1)
+        // m4 should NOT be boosted (m2 not in anchor set)
+        let m3_score = result.iter().find(|h| h.id == "m3").unwrap().signal_score;
+        let m4_score = result.iter().find(|h| h.id == "m4").unwrap().signal_score;
+        assert!(
+            m3_score > m4_score,
+            "m3 boosted by anchor m1, m4 not: m3={m3_score}, m4={m4_score}"
         );
     }
 }

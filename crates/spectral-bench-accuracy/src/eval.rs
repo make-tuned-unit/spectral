@@ -32,6 +32,10 @@ pub struct EvalConfig {
     pub dump_scores_path: Option<PathBuf>,
     /// Save partial results every N questions.
     pub checkpoint_interval: usize,
+    /// Number of warm-up queries to run before each test question (0 disables).
+    pub warmup_queries: usize,
+    /// Enable co-retrieval boost in cascade ranking.
+    pub enable_co_retrieval: bool,
 }
 
 impl Default for EvalConfig {
@@ -48,6 +52,8 @@ impl Default for EvalConfig {
             use_cascade: false,
             dump_scores_path: None,
             checkpoint_interval: 10,
+            warmup_queries: 0,
+            enable_co_retrieval: false,
         }
     }
 }
@@ -241,15 +247,29 @@ impl AccuracyEval {
         // Ingest
         let brain = ingest::ingest_question(question, &brain_dir, self.config.ingest_strategy)?;
 
+        // Warm-up: populate retrieval history for co-retrieval signal
+        if self.config.warmup_queries > 0 {
+            retrieval::run_warmup(&brain, self.config.warmup_queries);
+        }
+
         // Retrieve — get raw hits for score dumping, formatted strings for actor
         let question_date = question.question_date.as_deref();
         let (memories, raw_hits, cascade_telemetry) = if self.config.use_cascade {
-            let (formatted, telemetry) = retrieval::retrieve_cascade(
-                &brain,
-                &question.question,
-                &self.config.retrieval,
-                question_date,
-            )?;
+            let (formatted, telemetry) = if self.config.enable_co_retrieval {
+                retrieval::retrieve_cascade_with_co_retrieval(
+                    &brain,
+                    &question.question,
+                    &self.config.retrieval,
+                    question_date,
+                )?
+            } else {
+                retrieval::retrieve_cascade(
+                    &brain,
+                    &question.question,
+                    &self.config.retrieval,
+                    question_date,
+                )?
+            };
             (formatted, Vec::new(), Some(telemetry))
         } else {
             match self.config.retrieval_path {
@@ -280,12 +300,21 @@ impl AccuracyEval {
                     (formatted, Vec::new(), None)
                 }
                 RetrievalPath::Cascade => {
-                    let (formatted, telemetry) = retrieval::retrieve_cascade(
-                        &brain,
-                        &question.question,
-                        &self.config.retrieval,
-                        question_date,
-                    )?;
+                    let (formatted, telemetry) = if self.config.enable_co_retrieval {
+                        retrieval::retrieve_cascade_with_co_retrieval(
+                            &brain,
+                            &question.question,
+                            &self.config.retrieval,
+                            question_date,
+                        )?
+                    } else {
+                        retrieval::retrieve_cascade(
+                            &brain,
+                            &question.question,
+                            &self.config.retrieval,
+                            question_date,
+                        )?
+                    };
                     (formatted, Vec::new(), Some(telemetry))
                 }
             }

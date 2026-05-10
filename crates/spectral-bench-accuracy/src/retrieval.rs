@@ -374,6 +374,115 @@ pub fn retrieve_cascade(
     Ok((formatted, telemetry))
 }
 
+/// Retrieve memories via cascade with co-retrieval boost enabled.
+///
+/// Same as `retrieve_cascade` but enables the co-retrieval signal in ranking.
+pub fn retrieve_cascade_with_co_retrieval(
+    brain: &Brain,
+    question: &str,
+    _config: &RetrievalConfig,
+    question_date: Option<&str>,
+) -> Result<(Vec<String>, CascadeTelemetry)> {
+    let qtype = QuestionType::classify(question);
+    let mut pipeline_config = qtype.cascade_profile();
+    pipeline_config.apply_co_retrieval_boost = true;
+
+    let context = match question_date.and_then(parse_question_date) {
+        Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
+        None => spectral_cascade::RecognitionContext::empty(),
+    };
+    let result = brain.recall_cascade_with_pipeline(question, &context, &pipeline_config)?;
+
+    let telemetry = CascadeTelemetry {
+        stopped_at: result.stopped_at.map(|id| id.to_string()),
+        max_confidence: result.max_confidence,
+        total_tokens_used: result.total_tokens_used,
+        total_recognition_token_cost: result.total_recognition_token_cost,
+        question_type: Some(format!("{qtype:?}")),
+        layer_outcomes: result
+            .layer_outcomes
+            .iter()
+            .map(|(id, r)| {
+                let status = match r {
+                    spectral_cascade::LayerResult::Sufficient { confidence, .. } => {
+                        format!("sufficient(confidence={confidence:.2})")
+                    }
+                    spectral_cascade::LayerResult::Partial { confidence, .. } => {
+                        format!("partial(confidence={confidence:.2})")
+                    }
+                    spectral_cascade::LayerResult::Skipped { reason, .. } => {
+                        format!("skipped({reason})")
+                    }
+                };
+                (id.to_string(), status)
+            })
+            .collect(),
+    };
+
+    let hits: Vec<MemoryHit> = result
+        .merged_hits
+        .into_iter()
+        .take(pipeline_config.k)
+        .collect();
+    let formatted = format_hits_grouped(&hits);
+
+    Ok((formatted, telemetry))
+}
+
+/// Generate warm-up queries from haystack memories to populate retrieval history.
+///
+/// Extracts the first 10 words from a reproducible random subset of memories.
+/// These queries are run through cascade before the real test question so that
+/// co-retrieval pairs exist for the boost to operate on.
+pub fn generate_warmup_queries(brain: &Brain, n: usize) -> Vec<String> {
+    use rand::seq::SliceRandom;
+    use rand::SeedableRng;
+
+    let memories = match brain.list_all_memories(500) {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+
+    if memories.is_empty() {
+        return Vec::new();
+    }
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    let sample_size = n.min(memories.len());
+    let sampled: Vec<&spectral_ingest::Memory> =
+        memories.choose_multiple(&mut rng, sample_size).collect();
+
+    sampled
+        .iter()
+        .map(|m| {
+            m.content
+                .split_whitespace()
+                .take(10)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|q| q.len() > 5)
+        .collect()
+}
+
+/// Run warm-up queries through cascade to populate retrieval_events,
+/// then rebuild the co-retrieval index.
+pub fn run_warmup(brain: &Brain, warmup_queries: usize) {
+    if warmup_queries == 0 {
+        return;
+    }
+
+    let queries = generate_warmup_queries(brain, warmup_queries);
+    let ctx = spectral_cascade::RecognitionContext::empty();
+    let config = CascadePipelineConfig::default();
+
+    for query in &queries {
+        let _ = brain.recall_cascade_with_pipeline(query, &ctx, &config);
+    }
+
+    let _ = brain.rebuild_co_retrieval_index();
+}
+
 /// Parse LongMemEval question_date format ("2023/05/30 (Tue) 23:40") into DateTime<Utc>.
 fn parse_question_date(date_str: &str) -> Option<DateTime<Utc>> {
     // Strip the day-of-week parenthetical: "2023/05/30 (Tue) 23:40" → "2023/05/30 23:40"
