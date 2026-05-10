@@ -192,6 +192,13 @@ use spectral_cascade::RecognitionContext;
 
 /// Poll a boxed future that is expected to complete synchronously (e.g., SQLite queries).
 /// Avoids the need for a tokio runtime when the future resolves on first poll.
+///
+/// SAFETY: This function only works if `fut` resolves on first poll.
+/// MemoryStore implementations called from the ranking pipeline MUST use
+/// only in-memory, sync-equivalent operations. Adding any await that
+/// requires I/O (network, disk, lock contention) will cause this to panic
+/// at runtime. If actually-async behavior is needed, refactor
+/// apply_reranking_pipeline to be async instead.
 fn poll_sync<T>(mut fut: std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + '_>>) -> T {
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
