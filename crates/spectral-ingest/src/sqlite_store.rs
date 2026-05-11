@@ -30,7 +30,7 @@
 
 use crate::{
     CompactionTier, Episode, Fingerprint, Memory, MemoryAnnotation, MemoryHit, MemoryStore,
-    RelatedMemory, RetrievalEvent, SpectrogramRow,
+    RelatedMemory, RetrievalEvent, SpectrogramRow, WriteOutcome,
 };
 use lru::LruCache;
 use rusqlite::{params, Connection};
@@ -410,6 +410,22 @@ impl SqliteStore {
             )?;
         }
 
+        // content_hash column for write dedup
+        let mut has_content_hash = false;
+        let mut stmt8 = conn.prepare("PRAGMA table_info(memories)")?;
+        let rows8 = stmt8.query_map([], |row| row.get::<_, String>(1))?;
+        for name in rows8 {
+            if name?.as_str() == "content_hash" {
+                has_content_hash = true;
+            }
+        }
+        if !has_content_hash {
+            conn.execute_batch("ALTER TABLE memories ADD COLUMN content_hash TEXT DEFAULT NULL")?;
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash)",
+        )?;
+
         Ok(())
     }
 
@@ -420,7 +436,7 @@ impl SqliteStore {
 }
 
 /// Standard column list for memory queries.
-const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier, declarative_density, description, description_generated_at";
+const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier, declarative_density, description, description_generated_at, content_hash";
 
 /// Parse a Memory from a row with the standard column order.
 /// Columns: id(0), key(1), content(2), wing(3), hall(4), signal_score(5),
@@ -451,6 +467,7 @@ fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         declarative_density: row.get(14).ok(),
         description: row.get(15).ok(),
         description_generated_at: row.get(16).ok(),
+        content_hash: row.get(17).ok(),
     })
 }
 
@@ -482,7 +499,7 @@ impl MemoryStore for SqliteStore {
         &self,
         memory: &Memory,
         fingerprints: &[Fingerprint],
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<WriteOutcome>> + Send + '_>> {
         let memory = memory.clone();
         let fingerprints = fingerprints.to_vec();
         let conn = self.conn.clone();
@@ -491,120 +508,182 @@ impl MemoryStore for SqliteStore {
         Box::pin(async move {
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
-            // Wrap memory + all fingerprints in a single transaction for atomicity and performance.
+            // Compute content hash of incoming content.
+            let incoming_hash = blake3::hash(memory.content.as_bytes()).to_hex().to_string();
+
+            // Wrap in a single transaction for atomicity.
             let tx = conn.transaction()?;
 
-            if memory.created_at.is_some() {
-                tx.execute(
-                    "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
-                                           source, device_id, confidence, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                     ON CONFLICT(key) DO UPDATE SET
-                        content = excluded.content,
-                        wing = excluded.wing,
-                        hall = excluded.hall,
-                        signal_score = excluded.signal_score,
-                        visibility = excluded.visibility,
-                        source = excluded.source,
-                        device_id = excluded.device_id,
-                        confidence = excluded.confidence,
-                        created_at = excluded.created_at,
-                        updated_at = datetime('now')",
-                    params![
-                        memory.id,
-                        memory.key,
-                        memory.content,
-                        memory.wing,
-                        memory.hall,
-                        memory.signal_score,
-                        memory.visibility,
-                        memory.source,
-                        memory.device_id.as_ref().map(|b| b.as_slice()),
-                        memory.confidence,
-                        memory.created_at,
-                    ],
-                )?;
-            } else {
-                tx.execute(
-                    "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
-                                           source, device_id, confidence)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                     ON CONFLICT(key) DO UPDATE SET
-                        content = excluded.content,
-                        wing = excluded.wing,
-                        hall = excluded.hall,
-                        signal_score = excluded.signal_score,
-                        visibility = excluded.visibility,
-                        source = excluded.source,
-                        device_id = excluded.device_id,
-                        confidence = excluded.confidence,
-                        updated_at = datetime('now')",
-                    params![
-                        memory.id,
-                        memory.key,
-                        memory.content,
-                        memory.wing,
-                        memory.hall,
-                        memory.signal_score,
-                        memory.visibility,
-                        memory.source,
-                        memory.device_id.as_ref().map(|b| b.as_slice()),
-                        memory.confidence,
-                    ],
-                )?;
-            }
+            // Probe for existing row.
+            let existing: Option<(Option<String>, String)> = tx
+                .query_row(
+                    "SELECT content_hash, content FROM memories WHERE key = ?1",
+                    params![memory.key],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
 
-            // Set episode_id if provided
-            if let Some(ref ep_id) = memory.episode_id {
-                tx.execute(
-                    "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
-                    params![ep_id, memory.id],
-                )?;
-            }
-            // Set compaction_tier if provided
-            if let Some(tier) = memory.compaction_tier {
-                tx.execute(
-                    "UPDATE memories SET compaction_tier = ?1 WHERE id = ?2",
-                    params![tier.as_str(), memory.id],
-                )?;
-            }
-            // Set declarative_density if provided
-            if let Some(dd) = memory.declarative_density {
-                tx.execute(
-                    "UPDATE memories SET declarative_density = ?1 WHERE id = ?2",
-                    params![dd, memory.id],
-                )?;
-            }
+            let outcome = match existing {
+                None => {
+                    // Case 1: No existing row — insert.
+                    if memory.created_at.is_some() {
+                        tx.execute(
+                            "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
+                                                   source, device_id, confidence, created_at, content_hash)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                            params![
+                                memory.id,
+                                memory.key,
+                                memory.content,
+                                memory.wing,
+                                memory.hall,
+                                memory.signal_score,
+                                memory.visibility,
+                                memory.source,
+                                memory.device_id.as_ref().map(|b| b.as_slice()),
+                                memory.confidence,
+                                memory.created_at,
+                                incoming_hash,
+                            ],
+                        )?;
+                    } else {
+                        tx.execute(
+                            "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
+                                                   source, device_id, confidence, content_hash)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                            params![
+                                memory.id,
+                                memory.key,
+                                memory.content,
+                                memory.wing,
+                                memory.hall,
+                                memory.signal_score,
+                                memory.visibility,
+                                memory.source,
+                                memory.device_id.as_ref().map(|b| b.as_slice()),
+                                memory.confidence,
+                                incoming_hash,
+                            ],
+                        )?;
+                    }
 
-            for fp in &fingerprints {
-                tx.execute(
-                    "INSERT OR IGNORE INTO constellation_fingerprints
-                     (id, fingerprint_hash, anchor_memory_id, target_memory_id,
-                      wing, anchor_hall, target_hall, time_delta_bucket, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
-                    params![
-                        fp.id,
-                        fp.hash,
-                        fp.anchor_memory_id,
-                        fp.target_memory_id,
-                        fp.wing,
-                        fp.anchor_hall,
-                        fp.target_hall,
-                        fp.time_delta_bucket,
-                    ],
-                )?;
-            }
+                    // Set episode_id if provided
+                    if let Some(ref ep_id) = memory.episode_id {
+                        tx.execute(
+                            "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
+                            params![ep_id, memory.id],
+                        )?;
+                    }
+                    // Set compaction_tier if provided
+                    if let Some(tier) = memory.compaction_tier {
+                        tx.execute(
+                            "UPDATE memories SET compaction_tier = ?1 WHERE id = ?2",
+                            params![tier.as_str(), memory.id],
+                        )?;
+                    }
+                    // Set declarative_density if provided
+                    if let Some(dd) = memory.declarative_density {
+                        tx.execute(
+                            "UPDATE memories SET declarative_density = ?1 WHERE id = ?2",
+                            params![dd, memory.id],
+                        )?;
+                    }
+
+                    // Write fingerprints for new memory.
+                    for fp in &fingerprints {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO constellation_fingerprints
+                             (id, fingerprint_hash, anchor_memory_id, target_memory_id,
+                              wing, anchor_hall, target_hall, time_delta_bucket, created_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+                            params![
+                                fp.id,
+                                fp.hash,
+                                fp.anchor_memory_id,
+                                fp.target_memory_id,
+                                fp.wing,
+                                fp.anchor_hall,
+                                fp.target_hall,
+                                fp.time_delta_bucket,
+                            ],
+                        )?;
+                    }
+
+                    WriteOutcome::Inserted
+                }
+                Some((existing_hash, existing_content)) => {
+                    // Resolve effective hash: use stored hash, or compute from existing content if NULL.
+                    let effective_existing_hash = existing_hash.unwrap_or_else(|| {
+                        blake3::hash(existing_content.as_bytes())
+                            .to_hex()
+                            .to_string()
+                    });
+
+                    if effective_existing_hash == incoming_hash {
+                        // Case 2: Same content — true no-op. Preserve all fields.
+                        // Backfill content_hash if it was NULL.
+                        tx.execute(
+                            "UPDATE memories SET content_hash = ?1 WHERE key = ?2 AND content_hash IS NULL",
+                            params![incoming_hash, memory.key],
+                        )?;
+                        // Skip fingerprint rewrites entirely.
+                        WriteOutcome::NoOp
+                    } else {
+                        // Case 3: Content differs — update content only, preserve everything else.
+                        tx.execute(
+                            "UPDATE memories SET content = ?1, content_hash = ?2, updated_at = datetime('now') WHERE key = ?3",
+                            params![memory.content, incoming_hash, memory.key],
+                        )?;
+
+                        // Rewrite fingerprints (content changed, so fingerprints may differ).
+                        // Get the memory id for the existing row.
+                        let mem_id: String = tx.query_row(
+                            "SELECT id FROM memories WHERE key = ?1",
+                            params![memory.key],
+                            |row| row.get(0),
+                        )?;
+                        // Delete old fingerprints for this memory.
+                        tx.execute(
+                            "DELETE FROM constellation_fingerprints WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
+                            params![mem_id],
+                        )?;
+                        // Write new fingerprints.
+                        for fp in &fingerprints {
+                            tx.execute(
+                                "INSERT OR IGNORE INTO constellation_fingerprints
+                                 (id, fingerprint_hash, anchor_memory_id, target_memory_id,
+                                  wing, anchor_hall, target_hall, time_delta_bucket, created_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+                                params![
+                                    fp.id,
+                                    fp.hash,
+                                    fp.anchor_memory_id,
+                                    fp.target_memory_id,
+                                    fp.wing,
+                                    fp.anchor_hall,
+                                    fp.target_hall,
+                                    fp.time_delta_bucket,
+                                ],
+                            )?;
+                        }
+
+                        WriteOutcome::ContentUpdated
+                    }
+                }
+            };
 
             tx.commit()?;
 
             // Invalidate wing cache for the written memory's wing.
-            if let Some(ref wing) = memory.wing {
-                if let Ok(mut cache) = wing_cache.lock() {
-                    cache.pop(wing);
+            if outcome != WriteOutcome::NoOp {
+                if let Some(ref wing) = memory.wing {
+                    if let Ok(mut cache) = wing_cache.lock() {
+                        cache.pop(wing);
+                    }
                 }
             }
 
-            Ok(())
+            Ok(outcome)
         })
     }
 
@@ -1768,6 +1847,32 @@ impl MemoryStore for SqliteStore {
             Ok(result)
         })
     }
+
+    fn backfill_content_hashes(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt =
+                conn.prepare("SELECT id, content FROM memories WHERE content_hash IS NULL")?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            let count = rows.len();
+            for (id, content) in &rows {
+                let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                conn.execute(
+                    "UPDATE memories SET content_hash = ?1 WHERE id = ?2",
+                    params![hash, id],
+                )?;
+            }
+            Ok(count)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1795,6 +1900,7 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -1804,7 +1910,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upsert_overwrites() {
+    async fn upsert_overwrites_content_preserves_signal() {
         let store = SqliteStore::open_in_memory().unwrap();
         let mem1 = Memory {
             id: "m1".into(),
@@ -1824,8 +1930,13 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         };
-        store.write(&mem1, &[]).await.unwrap();
+        let outcome1 = store.write(&mem1, &[]).await.unwrap();
+        assert_eq!(outcome1, WriteOutcome::Inserted);
+
+        // Reinforce to bump signal_score
+        store.reinforce_memory("k", 0.2).await.unwrap();
 
         let mem2 = Memory {
             id: "m2".into(),
@@ -1845,12 +1956,20 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         };
-        store.write(&mem2, &[]).await.unwrap();
+        let outcome2 = store.write(&mem2, &[]).await.unwrap();
+        assert_eq!(outcome2, WriteOutcome::ContentUpdated);
 
         let results = store.list_wing_memories("w", 0.0).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].content, "v2");
+        // signal_score should be preserved (0.6 + 0.2 = 0.8 from reinforce), not overwritten
+        assert!(
+            (results[0].signal_score - 0.8).abs() < 0.01,
+            "signal_score should be preserved at 0.8, got {}",
+            results[0].signal_score
+        );
     }
 
     #[tokio::test]
@@ -1874,6 +1993,7 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -1909,6 +2029,7 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1929,6 +2050,7 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -1974,6 +2096,7 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -1994,6 +2117,7 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -2040,6 +2164,7 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         }
     }
 
@@ -2277,6 +2402,7 @@ mod tests {
                 declarative_density: None,
                 description: None,
                 description_generated_at: None,
+                content_hash: None,
             };
             store.write(&mem, &[]).await.unwrap();
         }
@@ -3360,5 +3486,470 @@ mod tests {
 
         let mems = store.memories_for_session("S").await.unwrap();
         assert_eq!(mems, vec!["m1", "m2"], "m1 should come before m2");
+    }
+
+    // ── WriteOutcome / content-hash dedup tests ─────────────────────
+
+    #[tokio::test]
+    async fn write_inserts_new_memory() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "k1".into(),
+            content: "hello world".into(),
+            wing: Some("w".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        let outcome = store.write(&mem, &[]).await.unwrap();
+        assert_eq!(outcome, WriteOutcome::Inserted);
+
+        // Row exists with correct content_hash
+        let conn = store.conn();
+        let hash: String = conn
+            .query_row(
+                "SELECT content_hash FROM memories WHERE key = 'k1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let expected = blake3::hash(b"hello world").to_hex().to_string();
+        assert_eq!(hash, expected);
+    }
+
+    #[tokio::test]
+    async fn write_noop_on_identical_content_preserves_signal_score() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "k1".into(),
+            content: "stable content".into(),
+            wing: Some("w".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.6,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        store.write(&mem, &[]).await.unwrap();
+
+        // Reinforce to bump signal_score to 0.8
+        store.reinforce_memory("k1", 0.2).await.unwrap();
+        let after_reinforce: f64 = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT signal_score FROM memories WHERE key = 'k1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert!((after_reinforce - 0.8).abs() < 0.01);
+
+        // Re-write identical content (stale signal_score 0.6 in struct)
+        let outcome = store.write(&mem, &[]).await.unwrap();
+        assert_eq!(outcome, WriteOutcome::NoOp);
+
+        // signal_score should still be 0.8
+        let final_score: f64 = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT signal_score FROM memories WHERE key = 'k1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            (final_score - 0.8).abs() < 0.01,
+            "signal_score should be preserved at 0.8, got {final_score}"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_noop_does_not_touch_updated_at() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "k1".into(),
+            content: "stable".into(),
+            wing: Some("w".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        store.write(&mem, &[]).await.unwrap();
+
+        let original_updated_at: Option<String> = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT updated_at FROM memories WHERE key = 'k1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+
+        // Sleep 1 second then re-write identical content
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let outcome = store.write(&mem, &[]).await.unwrap();
+        assert_eq!(outcome, WriteOutcome::NoOp);
+
+        let after_updated_at: Option<String> = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT updated_at FROM memories WHERE key = 'k1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(original_updated_at, after_updated_at);
+    }
+
+    #[tokio::test]
+    async fn write_content_change_updates_in_place() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem1 = Memory {
+            id: "m1".into(),
+            key: "k1".into(),
+            content: "v1".into(),
+            wing: Some("w".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        store.write(&mem1, &[]).await.unwrap();
+
+        let original_updated_at: Option<String> = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT updated_at FROM memories WHERE key = 'k1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let mem2 = Memory {
+            id: "m2".into(),
+            key: "k1".into(),
+            content: "v2".into(),
+            wing: Some("w".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.9,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        let outcome = store.write(&mem2, &[]).await.unwrap();
+        assert_eq!(outcome, WriteOutcome::ContentUpdated);
+
+        let conn = store.conn();
+        let (content, hash, updated_at): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT content, content_hash, updated_at FROM memories WHERE key = 'k1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "v2");
+        let expected_hash = blake3::hash(b"v2").to_hex().to_string();
+        assert_eq!(hash, expected_hash);
+        assert_ne!(updated_at, original_updated_at, "updated_at should advance");
+    }
+
+    #[tokio::test]
+    async fn write_content_change_preserves_signal_score_and_other_fields() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "k1".into(),
+            content: "original".into(),
+            wing: Some("w".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.5,
+            visibility: "private".into(),
+            source: Some("test_source".into()),
+            device_id: None,
+            confidence: 0.9,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        store.write(&mem, &[]).await.unwrap();
+
+        // Reinforce to bump signal_score
+        store.reinforce_memory("k1", 0.3).await.unwrap();
+
+        // Write with new content but different signal_score/wing/hall in struct
+        let mem2 = Memory {
+            id: "m2".into(),
+            key: "k1".into(),
+            content: "updated content".into(),
+            wing: Some("different_wing".into()),
+            hall: Some("different_hall".into()),
+            signal_score: 0.1, // caller passes stale/wrong score
+            visibility: "public".into(),
+            source: Some("new_source".into()),
+            device_id: None,
+            confidence: 0.5,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        let outcome = store.write(&mem2, &[]).await.unwrap();
+        assert_eq!(outcome, WriteOutcome::ContentUpdated);
+
+        let conn = store.conn();
+        let (content, signal_score, wing, hall, visibility, source): (
+            String,
+            f64,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT content, signal_score, wing, hall, visibility, source FROM memories WHERE key = 'k1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "updated content");
+        // signal_score preserved: 0.5 + 0.3 = 0.8
+        assert!(
+            (signal_score - 0.8).abs() < 0.01,
+            "signal_score should be preserved at 0.8, got {signal_score}"
+        );
+        // All other fields should be preserved from original insert
+        assert_eq!(wing.as_deref(), Some("w"));
+        assert_eq!(hall.as_deref(), Some("fact"));
+        assert_eq!(visibility, "private");
+        assert_eq!(source.as_deref(), Some("test_source"));
+    }
+
+    #[tokio::test]
+    async fn write_null_hash_row_routes_correctly_noop() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        // Insert a row with NULL content_hash (simulating pre-backfill state)
+        {
+            let conn = store.conn();
+            conn.execute(
+                "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility)
+                 VALUES ('m1', 'k1', 'legacy content', 'w', 'fact', 0.7, 'private')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Write identical content
+        let mem = Memory {
+            id: "m_new".into(),
+            key: "k1".into(),
+            content: "legacy content".into(),
+            wing: Some("w".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.5,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        let outcome = store.write(&mem, &[]).await.unwrap();
+        assert_eq!(outcome, WriteOutcome::NoOp);
+
+        // content_hash should now be populated (backfilled)
+        let hash: Option<String> = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT content_hash FROM memories WHERE key = 'k1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert!(hash.is_some(), "content_hash should be backfilled on NoOp");
+        let expected = blake3::hash(b"legacy content").to_hex().to_string();
+        assert_eq!(hash.unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn write_null_hash_row_with_different_content_updates() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        // Insert a row with NULL content_hash
+        {
+            let conn = store.conn();
+            conn.execute(
+                "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility)
+                 VALUES ('m1', 'k1', 'old content', 'w', 'fact', 0.7, 'private')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Write different content
+        let mem = Memory {
+            id: "m_new".into(),
+            key: "k1".into(),
+            content: "new content".into(),
+            wing: Some("w".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.5,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        let outcome = store.write(&mem, &[]).await.unwrap();
+        assert_eq!(outcome, WriteOutcome::ContentUpdated);
+
+        let conn = store.conn();
+        let (content, hash): (String, String) = conn
+            .query_row(
+                "SELECT content, content_hash FROM memories WHERE key = 'k1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "new content");
+        let expected = blake3::hash(b"new content").to_hex().to_string();
+        assert_eq!(hash, expected);
+    }
+
+    #[tokio::test]
+    async fn backfill_content_hashes_populates_null_rows() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        // Insert rows with NULL hashes via direct SQL
+        {
+            let conn = store.conn();
+            for i in 1..=3 {
+                conn.execute(
+                    "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility)
+                     VALUES (?1, ?2, ?3, 'w', 'fact', 0.5, 'private')",
+                    params![format!("m{i}"), format!("k{i}"), format!("content {i}")],
+                )
+                .unwrap();
+            }
+        }
+
+        let count = store.backfill_content_hashes().await.unwrap();
+        assert_eq!(count, 3);
+
+        // Verify all rows now have hashes
+        let conn = store.conn();
+        for i in 1..=3 {
+            let hash: Option<String> = conn
+                .query_row(
+                    "SELECT content_hash FROM memories WHERE key = ?1",
+                    params![format!("k{i}")],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let expected = blake3::hash(format!("content {i}").as_bytes())
+                .to_hex()
+                .to_string();
+            assert_eq!(hash, Some(expected));
+        }
+    }
+
+    #[tokio::test]
+    async fn backfill_is_idempotent() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        {
+            let conn = store.conn();
+            conn.execute(
+                "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility)
+                 VALUES ('m1', 'k1', 'hello', 'w', 'fact', 0.5, 'private')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let count1 = store.backfill_content_hashes().await.unwrap();
+        assert_eq!(count1, 1);
+
+        let count2 = store.backfill_content_hashes().await.unwrap();
+        assert_eq!(count2, 0, "second backfill should find no NULL rows");
     }
 }

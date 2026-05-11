@@ -66,6 +66,9 @@ pub struct Memory {
     /// When the description was generated (ISO-8601).
     #[serde(default)]
     pub description_generated_at: Option<String>,
+    /// Content hash for dedup (blake3 hex of content). `None` for pre-backfill rows.
+    #[serde(default)]
+    pub content_hash: Option<String>,
 }
 
 /// Compaction tier for memory lifecycle management.
@@ -105,6 +108,16 @@ fn default_confidence() -> f64 {
 
 fn default_visibility_str() -> String {
     "private".to_string()
+}
+
+// ── WriteOutcome ────────────────────────────────────────────────────
+
+/// Outcome of a memory write operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Inserted,
+    NoOp,
+    ContentUpdated,
 }
 
 // ── Fingerprint ─────────────────────────────────────────────────────
@@ -252,7 +265,7 @@ pub trait MemoryStore: Send + Sync {
         &self,
         memory: &Memory,
         fingerprints: &[Fingerprint],
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<WriteOutcome>> + Send + '_>>;
 
     /// List memories in the given wing with signal_score >= threshold.
     fn list_wing_memories(
@@ -513,6 +526,12 @@ pub trait MemoryStore: Send + Sync {
         &self,
         session_id: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>>;
+
+    /// Backfill content_hash for all rows with NULL content_hash.
+    /// Returns count of rows updated. Idempotent — safe to re-run.
+    fn backfill_content_hashes(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
 }
 
 // ── RelatedMemory ──────────────────────────────────────────────────
