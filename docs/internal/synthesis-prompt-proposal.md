@@ -196,11 +196,10 @@ The highest-confidence change is B (concise answers) — verbose actor outputs a
 
 ---
 
-## 5. Implementation plan (pending approval)
+## 5. Review outcome
 
-1. Add instructions 7 and 8 to actor prompt in `actor.rs`
-2. Replace instruction 6 with temporal-specific version in `actor.rs`
-3. Add category-specific rubrics in `judge.rs`
-4. Update `judge_prompt_renders_per_category` test to cover new rubrics
-5. Run `cargo test -p spectral-bench-accuracy`
-6. Run full verification: `cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace --lib --tests`
+**Approved:** A (preference-priority), B (concise answers), C-modified (as new instruction 9, instruction 6 unchanged).
+
+**Deferred to follow-up PR:** D (judge rubrics). Reasoning: lowest-confidence/lowest-impact change; shipping with A+B+C muddies attribution since we won't re-run $40 benches to bisect. Cleaner to evaluate D as a standalone experiment after the next bench checkpoint.
+
+**Modification to C:** Original proposal replaced instruction 6. Reviewer correctly noted this drops coverage on non-temporal cross-session arithmetic (counting, summing, totals). Fix: keep instruction 6 intact, add temporal guidance as new instruction 9.
