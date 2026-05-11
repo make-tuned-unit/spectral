@@ -2816,6 +2816,7 @@ dependencies = [
  "indicatif 0.17.11",
  "regex",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "spectral-cascade",

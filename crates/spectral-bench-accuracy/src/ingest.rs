@@ -52,7 +52,7 @@ pub fn ingest_question(
         wing_rules: None,
         hall_rules: None,
         device_id: None,
-        enable_spectrogram: false,
+        enable_spectrogram: true,
         entity_policy: EntityPolicy::Strict,
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),
@@ -289,5 +289,65 @@ mod tests {
         let json = serde_json::to_string(&telemetry).unwrap();
         assert!(json.contains("max_confidence"));
         assert!(json.contains("total_tokens_used"));
+    }
+
+    #[test]
+    fn ingest_computes_spectrograms() {
+        let dir = tempfile::tempdir().unwrap();
+        let _brain =
+            ingest_question(&test_question(), dir.path(), IngestStrategy::PerTurn).unwrap();
+
+        // Open the SQLite database and verify spectrograms were computed
+        let db_path = dir.path().join("memory.db");
+        let conn = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+
+        let mem_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
+        let spec_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_spectrogram", [], |r| r.get(0))
+            .unwrap();
+
+        assert!(mem_count > 0, "should have ingested memories");
+        assert_eq!(
+            spec_count, mem_count,
+            "every memory should have a spectrogram (got {spec_count}/{mem_count})"
+        );
+    }
+
+    #[test]
+    fn ingest_populates_wings_and_halls() {
+        let dir = tempfile::tempdir().unwrap();
+        let _brain =
+            ingest_question(&test_question(), dir.path(), IngestStrategy::PerTurn).unwrap();
+
+        let db_path = dir.path().join("memory.db");
+        let conn = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+
+        let null_wings: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE wing IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let null_halls: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE hall IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(null_wings, 0, "all memories should have a wing assigned");
+        assert_eq!(null_halls, 0, "all memories should have a hall assigned");
     }
 }
