@@ -68,6 +68,18 @@ impl Actor for AnthropicActor {
              6. For questions requiring arithmetic across sessions (computing differences, sums, ages, \
              totals): identify the relevant numerical values from each session and perform the calculation \
              explicitly. Show the values used and the result.\n\
+             7. For questions about preferences, favorites, or personal choices: prioritize the user's \
+             explicit statements (\"I prefer X\", \"my favorite is Y\", \"I chose Z\") over inferred or \
+             contextual information. If the user stated a preference directly, that is the answer.\n\
+             8. Be direct and concise. State the answer clearly without hedging or qualifying \
+             (e.g., \"Paris\" not \"Based on the conversation history, it appears that the answer \
+             might be Paris\"). If the answer is a number, state just the number. If the answer \
+             is a name, state just the name.\n\
+             9. For questions requiring dates, durations, or temporal calculations: use the session \
+             dates shown in \"--- Session <id> (<date>) ---\" headers as the time reference for \
+             events in that session. When computing time differences (days, weeks, months between \
+             events), identify the relevant session dates and calculate explicitly. Today's date \
+             is provided above — use it for \"how long ago\" or \"how old\" calculations.\n\
              \n\
              Memories:\n{memories_text}\n\n\
              Question: {question}\n\n\
