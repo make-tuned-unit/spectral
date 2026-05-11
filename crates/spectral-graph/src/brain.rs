@@ -170,6 +170,7 @@ pub struct RememberResult {
     pub source: Option<String>,
     pub device_id: Option<DeviceId>,
     pub confidence: f64,
+    pub write_outcome: spectral_ingest::WriteOutcome,
 }
 
 /// Options for `Brain::ingest_text()`.
@@ -953,6 +954,7 @@ impl Brain {
             source: result.memory.source,
             device_id: result.memory.device_id.map(DeviceId::from_bytes),
             confidence: result.memory.confidence,
+            write_outcome: result.write_outcome,
         })
     }
 
@@ -1395,6 +1397,14 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
+    /// Backfill content_hash for all rows with NULL content_hash.
+    /// Returns count of rows updated. Idempotent — safe to re-run.
+    pub fn backfill_content_hashes(&self) -> Result<usize, Error> {
+        self.rt
+            .block_on(self.memory_store.backfill_content_hashes())
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// List retrieval events for a given session, ordered by timestamp ASC.
     pub fn events_for_session(
         &self,
@@ -1472,6 +1482,7 @@ impl Brain {
                     declarative_density: seed.declarative_density,
                     description: None,
                     description_generated_at: None,
+                    content_hash: None,
                 };
                 self.spectrogram_analyzer
                     .analyze(&mem, &AnalysisContext::default())
@@ -1855,9 +1866,11 @@ impl Brain {
                 declarative_density: None, // Activity episodes don't need density
                 description: None,
                 description_generated_at: None,
+                content_hash: None, // Computed by store.write()
             };
 
-            self.rt
+            let _outcome = self
+                .rt
                 .block_on(self.memory_store.write(&memory, &[]))
                 .map_err(|e| Error::Schema(e.to_string()))?;
             stats.episodes_inserted += 1;

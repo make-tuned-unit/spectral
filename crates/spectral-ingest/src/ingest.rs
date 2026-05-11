@@ -69,6 +69,7 @@ pub struct IngestOpts {
 pub struct IngestResult {
     pub memory: Memory,
     pub fingerprints: Vec<Fingerprint>,
+    pub write_outcome: crate::WriteOutcome,
 }
 
 /// Run the ingestion pipeline: classify, score, generate fingerprints, write.
@@ -227,6 +228,7 @@ pub async fn ingest_with(
         declarative_density: None, // Computed by Brain after ingest
         description: None,
         description_generated_at: None,
+        content_hash: None, // Computed by store.write()
     };
 
     let fingerprints = if signal_score >= config.signal_threshold {
@@ -235,11 +237,12 @@ pub async fn ingest_with(
         Vec::new()
     };
 
-    store.write(&memory, &fingerprints).await?;
+    let write_outcome = store.write(&memory, &fingerprints).await?;
 
     Ok(IngestResult {
         memory,
         fingerprints,
+        write_outcome,
     })
 }
 
