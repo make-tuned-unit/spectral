@@ -1,7 +1,7 @@
 # Phase 2a Bench Result
 
 **Date:** 2026-05-10
-**Code SHA:** `7c4fd76` (branch `fix/bench-phase2a-spectrogram-preflight`)
+**Code SHA:** `4d4fe0c` (branch `fix/bench-phase2a-spectrogram-preflight`)
 **Dataset:** `longmemeval_s.json` (SHA-256: `08d8dad4...7e117894`, 278 MB)
 **Retrieval path:** cascade
 **Actor/Judge model:** claude-sonnet-4-6
@@ -33,13 +33,34 @@ time_delta_bucket NULL: 0, unknown: 0
 
 All pre-flight checks PASS.
 
+## Full-dataset pre-flight (--all, 500 questions)
+
+```
+Total memories: 246,787
+Wings:  general 175,368 | alice 30,839 | acme 10,391 | apollo 9,596
+        vega 7,902 | travel 5,669 | charity 3,886 | polaris 1,935 | infra 1,201
+Halls:  event 122,672 | advice 46,862 | preference 37,770 | fact 36,550 | discovery 2,933
+Spectrograms: 246,787/246,787 (100%)
+Fingerprints: 32,310,002
+  same_week: 13,306,307 | same_day: 11,215,505 | same_month: 5,618,774 | older: 2,169,416
+  NULL: 0 | unknown: 0
+Failed questions: 0
+```
+
+All PASS across all 500 questions.
+
+## Output path
+
+- `docs/internal/` exists and is writeable
+- `docs/internal/phase2a-report.json` does not exist (no backup needed)
+
 ## Bench result
 
 **Status:** PENDING — requires ANTHROPIC_API_KEY
 
 Run command:
 ```bash
-ANTHROPIC_API_KEY=<key> cargo run --release --bin spectral-bench-accuracy -- run \
+ANTHROPIC_API_KEY=<key> target/release/spectral-bench-accuracy run \
   --dataset /Users/jessesharratt/spectral-local-bench/longmemeval/longmemeval_s.json \
   --retrieval-path cascade \
   --confirm-cost \
