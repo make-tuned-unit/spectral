@@ -204,20 +204,33 @@ descriptions, not Spectral queries.
 
 ---
 
-## Open questions
+## Open questions (resolved)
 
-1. **Batch size for descriptions:** 10 per cycle? 50? The LLM
-   cost is ~$0.001/description. At 500 memories post-ingest,
-   that's $0.50 — negligible. Batch size affects latency of the
-   Librarian cycle, not cost.
+See Decisions section below.
 
-2. **Priority between new and old memories:** Should the Librarian
-   describe the newest memories first (most likely to be recalled
-   soon) or oldest first (longest without descriptions)?
-   Recommendation: newest first (ORDER BY created_at DESC in
-   list_undescribed).
+---
 
-3. **Consolidation trigger:** When should consolidation be
-   activated? After a threshold of memories per wing? After a
-   time period? This is deferred until the archivist's
-   consolidation pass is implemented.
+## Decisions
+
+Decided 2026-05-10. These are binding — proceed as specified when
+implementation begins.
+
+### Q1: Batch size for descriptions
+
+**Decision: 25 per cycle**, configurable via
+`librarian.description_batch_size`. Cost per cycle: ~$0.025.
+Short enough to interrupt cleanly between cycles.
+
+### Q2: Priority between new and old memories
+
+**Decision: Newest first.** `ORDER BY created_at DESC` in
+`list_undescribed`. Add `librarian.description_strategy` config
+with values `"newest"` | `"oldest"` | `"round_robin"` (default
+`"newest"`) for future flexibility.
+
+### Q3: Consolidation trigger
+
+**Decision: Defer.** Keep `consolidation_candidates` in the
+`PendingJobs` struct and API surface, but hardcode return 0
+until the archivist's consolidation pass is implemented.
+Revisit the trigger design when that pass exists.

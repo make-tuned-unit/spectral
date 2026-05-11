@@ -250,15 +250,43 @@ Batching is an optimization for throughput, not a requirement.
 
 ---
 
-## Open questions
+## Open questions (resolved)
 
-1. **Tool call granularity:** Should tool calls be separate memories
-   or embedded in the assistant turn's content? Separate gives better
-   retrieval granularity; embedded preserves context.
+See Decisions section below.
 
-2. **Redaction:** Permagent already has redaction policies. Should
-   Spectral's `RedactionPolicy` also run, or trust Permagent's output?
+---
 
-3. **Signal score override:** Should Permagent influence signal scores
-   (e.g., marking user-stated preferences as high-signal)? Or let
-   Spectral's `DefaultSignalScorer` handle it?
+## Decisions
+
+Decided 2026-05-10. These are binding — proceed as specified when
+implementation begins.
+
+### Q1: Tool call granularity
+
+**Decision: Separate memories.** Tool calls have distinct retrieval
+value, different signal properties, and often different wing/hall
+than the surrounding chat. Permagent filters trivial tool calls
+(pwd, ls, etc.) client-side before ingest.
+
+### Q2: Redaction
+
+**Decision: Trust Permagent's output.** Add
+`RememberOpts::skip_redaction: bool` (default false), set to true
+for `source: "permagent"`. Document that source-tagged ingests
+bypass `RedactionPolicy` and the upstream caller owns redaction
+responsibility.
+
+### Q3: Signal score
+
+**Decision: Hybrid.** `DefaultSignalScorer` runs first. Add
+`signal_hint: Option<f64>` in [0.0, 1.0] on `PermagentTurn`.
+Spectral additively boosts the computed score with a configurable
+weight, clamped to a max. Permagent influences signal scoring
+without overriding it.
+
+### Idempotency
+
+**Decision: Skip-if-exists by default.** Add `replace: bool` to
+`PermagentTurn` (default false). When false, if a memory with the
+same key exists, the ingest is a no-op. When true, overwrite the
+existing memory by key. No version history — latest write wins.
