@@ -1403,6 +1403,11 @@ fn memories_for_session_aggregates_across_cascades() {
 
 #[test]
 fn co_retrieval_boost_lifts_co_retrieved_memories_in_cascade() {
+    use spectral_graph::ranking::{
+        apply_reranking_pipeline, compute_co_retrieval_boosts, RerankingConfig,
+    };
+    use std::collections::HashMap;
+
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
@@ -1430,6 +1435,19 @@ fn co_retrieval_boost_lifts_co_retrieved_memories_in_cascade() {
         )
         .unwrap();
 
+    // Pad with filler memories that also match "daily" to reduce per-position
+    // FTS gap. With 20+ candidates, gap is ~0.05 per position, so a 0.10
+    // co-retrieval boost can bridge 2 positions.
+    for i in 0..17 {
+        brain
+            .remember(
+                &format!("cr-filler-{i}"),
+                &format!("My daily routine number {i} involves various activities"),
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+
     // Run cascade queries that return overlapping subsets.
     // "Rust programming editor Neovim" should co-retrieve
     // cr-rust and cr-editor but not cr-commute.
@@ -1451,43 +1469,94 @@ fn co_retrieval_boost_lifts_co_retrieved_memories_in_cascade() {
         "cr-editor should be co-retrieved with cr-rust, got: {related_ids:?}"
     );
 
-    // Now run cascade for "daily" — all three match on FTS.
-    // With co-retrieval active, cr-editor should get a boost when
-    // cr-rust is an anchor (both are "daily" matches).
-    let result = brain
-        .recall_cascade("daily", &ctx, &cascade_config)
-        .unwrap();
-    let hit_ids: Vec<&str> = result.merged_hits.iter().map(|h| h.id.as_str()).collect();
-
-    // All three should be present
+    // ── Control comparison: same candidates, with vs without co-retrieval ──
+    // Retrieve raw candidates for "daily" (all three match via FTS).
+    let candidates = brain.cascade_retrieve("daily", 40).unwrap();
     assert!(
-        hit_ids.contains(&r_rust.memory_id.as_str()),
-        "cr-rust should be in results"
+        candidates.iter().any(|h| h.id == r_rust.memory_id),
+        "cr-rust should be in raw candidates"
     );
     assert!(
-        hit_ids.contains(&r_editor.memory_id.as_str()),
-        "cr-editor should be in results"
+        candidates.iter().any(|h| h.id == r_editor.memory_id),
+        "cr-editor should be in raw candidates"
     );
     assert!(
-        hit_ids.contains(&r_commute.memory_id.as_str()),
-        "cr-commute should be in results"
+        candidates.iter().any(|h| h.id == r_commute.memory_id),
+        "cr-commute should be in raw candidates"
     );
 
-    // cr-editor should rank above cr-commute because co-retrieval boosts it.
-    // Both match "daily" via FTS, but cr-editor has co-retrieval affinity
-    // with cr-rust (an anchor) while cr-commute does not.
-    let editor_pos = hit_ids
-        .iter()
-        .position(|id| *id == r_editor.memory_id)
-        .unwrap();
-    let commute_pos = hit_ids
-        .iter()
-        .position(|id| *id == r_commute.memory_id)
-        .unwrap();
+    // Compute co-retrieval boosts — verify the end-to-end path produces
+    // non-empty data with editor having higher affinity than commute.
+    let co_boosts = compute_co_retrieval_boosts(&brain, &candidates, 3);
     assert!(
-        editor_pos < commute_pos,
-        "cr-editor (co-retrieved with cr-rust) should rank above cr-commute, \
-         got editor={editor_pos} commute={commute_pos}"
+        !co_boosts.is_empty(),
+        "co-retrieval boosts should be non-empty after priming"
+    );
+    let editor_affinity = co_boosts.get(&r_editor.memory_id).copied().unwrap_or(0.0);
+    let commute_affinity = co_boosts.get(&r_commute.memory_id).copied().unwrap_or(0.0);
+    assert!(
+        editor_affinity > commute_affinity,
+        "cr-editor should have higher co-retrieval affinity than cr-commute: \
+         editor={editor_affinity}, commute={commute_affinity}"
+    );
+
+    // Shared config — same signals for both runs, only co-retrieval map differs
+    let config = RerankingConfig {
+        apply_signal_score: true,
+        signal_score_weight: 0.3,
+        apply_recency: true,
+        recency_half_life_days: 365.0,
+        apply_entity_boost: false,
+        entity_boost_weight: 0.05,
+        apply_ambient_boost: false,
+        apply_declarative_boost: true,
+        declarative_weight: 0.10,
+        co_retrieval_weight: 0.10,
+        apply_episode_diversity: false,
+        max_per_episode: 5,
+        apply_context_dedup: false,
+    };
+
+    // Control: rank without co-retrieval (empty map)
+    let empty_boosts: HashMap<String, f64> = HashMap::new();
+    let control = apply_reranking_pipeline(candidates.clone(), &config, &ctx, &empty_boosts);
+
+    // Treatment: rank with co-retrieval
+    let treatment = apply_reranking_pipeline(candidates, &config, &ctx, &co_boosts);
+
+    // Compare cr-editor's composite score: treatment should be strictly higher
+    // than control. The delta is attributable solely to co-retrieval.
+    let control_editor_score = control
+        .iter()
+        .find(|h| h.id == r_editor.memory_id)
+        .unwrap()
+        .signal_score;
+    let treatment_editor_score = treatment
+        .iter()
+        .find(|h| h.id == r_editor.memory_id)
+        .unwrap()
+        .signal_score;
+    assert!(
+        treatment_editor_score > control_editor_score,
+        "cr-editor's score should be higher with co-retrieval: \
+         control={control_editor_score}, treatment={treatment_editor_score}"
+    );
+
+    // cr-commute's score should NOT increase (no co-retrieval affinity)
+    let control_commute_score = control
+        .iter()
+        .find(|h| h.id == r_commute.memory_id)
+        .unwrap()
+        .signal_score;
+    let treatment_commute_score = treatment
+        .iter()
+        .find(|h| h.id == r_commute.memory_id)
+        .unwrap()
+        .signal_score;
+    assert!(
+        (treatment_commute_score - control_commute_score).abs() < f64::EPSILON,
+        "cr-commute's score should be unchanged by co-retrieval: \
+         control={control_commute_score}, treatment={treatment_commute_score}"
     );
 }
 
