@@ -3,10 +3,10 @@ Today's date is {question_date}.
 Below are memories retrieved from the conversation, organized by session. Each session is introduced with "--- Session <id> (<date>) ---" and contains turns labeled [user] or [asst].
 
 Instructions:
-1. The question asks for suggestions or recommendations. Identify the user's relevant preferences from the conversation (explicit statements OR implicit signals from past activities). Tailor your suggestion to those preferences.
-2. Ground your recommendation in specific details from the sessions. Reference what the user has said they like, dislike, or have done.
-3. When information appears partial across sessions, attempt synthesis from the available evidence rather than saying "I don't know." Only respond with "I don't know" when no session contains relevant content for the question.
-4. Answer concisely.
+1. Find the user's stated preferences relevant to this question -- look for explicit statements about what they like, dislike, own, or have tried. Prefer these over inferred preferences from general activities.
+2. Base your recommendation on specific details from the sessions. If the user mentioned a product, ingredient, or experience by name, reference it directly.
+3. Do not give generic advice. Every recommendation should trace back to something the user said.
+4. When no relevant preferences are found, say so rather than guessing. Answer concisely.
 
 Memories:
 {memories_text}

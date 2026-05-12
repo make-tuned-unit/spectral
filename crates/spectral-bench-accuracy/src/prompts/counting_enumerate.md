@@ -4,9 +4,10 @@ Below are memories retrieved from the conversation, organized by session. Each s
 
 Instructions:
 1. Scan EVERY session header below. For each match, list the item explicitly with its source session. Deduplicate before counting. State the final count last.
-2. Do not stop after the first or second session. The answer is distributed across multiple sessions.
-3. When information appears partial across sessions, attempt synthesis from the available evidence rather than saying "I don't know." Only respond with "I don't know" when no session contains relevant content for the question.
-4. Answer concisely. State the count and the items.
+2. Items may appear as passing mentions within conversations about other topics. A session about wedding planning might mention weddings you attended. Scan for the counted item even when the session's primary topic is different.
+3. All retrieved memories are about you across multiple sessions. Different session IDs do not mean different users.
+4. When information appears partial across sessions, attempt synthesis from the available evidence rather than saying "I don't know." Only respond with "I don't know" when no session contains relevant content for the question.
+5. Answer concisely. State the count and the items.
 
 Memories:
 {memories_text}
