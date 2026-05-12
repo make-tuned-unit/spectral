@@ -45,9 +45,11 @@ enum Command {
         #[arg(long, default_value = "per_turn")]
         ingest_strategy: String,
 
-        /// Retrieval path: tact, graph, topk_fts (default), or cascade
-        #[arg(long, default_value = "topk_fts")]
-        retrieval_path: String,
+        /// Retrieval path: tact, graph, topk_fts, or cascade.
+        /// When explicitly set, overrides per-question shape routing.
+        /// When omitted with --use-cascade, shape routing is active.
+        #[arg(long)]
+        retrieval_path: Option<String>,
 
         /// Write per-memory signal score records to this JSONL path
         #[arg(long)]
@@ -159,7 +161,8 @@ fn main() -> Result<()> {
                 _ => ingest::IngestStrategy::PerTurn,
             };
 
-            let ret_path = match retrieval_path.as_str() {
+            // Parse explicit retrieval path if provided.
+            let explicit_path = retrieval_path.as_ref().map(|rp| match rp.as_str() {
                 "tact" => retrieval::RetrievalPath::Tact,
                 "graph" => retrieval::RetrievalPath::Graph,
                 "topk_fts" => retrieval::RetrievalPath::TopkFts,
@@ -170,11 +173,19 @@ fn main() -> Result<()> {
                     );
                     std::process::exit(1);
                 }
-            };
-            let ret_path = if use_cascade {
-                retrieval::RetrievalPath::Cascade
-            } else {
-                ret_path
+            });
+
+            // Precedence for retrieval routing:
+            // 1. Explicit --retrieval-path X → all questions use X (shape routing disabled).
+            // 2. --use-cascade without explicit path → shape routing active.
+            // 3. Neither → default (topk_fts).
+            let (ret_path, retrieval_path_override) = match (explicit_path, use_cascade) {
+                (Some(path), _) => (path, Some(path)),
+                (None, true) => (retrieval::RetrievalPath::Cascade, None),
+                (None, false) => (
+                    retrieval::RetrievalPath::TopkFts,
+                    Some(retrieval::RetrievalPath::TopkFts),
+                ),
             };
 
             let config = EvalConfig {
@@ -187,6 +198,7 @@ fn main() -> Result<()> {
                 retrieval_path: ret_path,
                 use_cascade,
                 dump_scores_path: dump_scores,
+                retrieval_path_override,
                 ..Default::default()
             };
 
