@@ -186,6 +186,48 @@ pub fn dedup_context_chains(mut candidates: Vec<MemoryHit>) -> Vec<MemoryHit> {
     result
 }
 
+// ── Co-retrieval boost ──────────────────────────────────────────────
+
+/// Compute co-retrieval boost map for candidates using top-N anchors.
+///
+/// Takes the first `anchor_count` candidates (by FTS rank) as anchors,
+/// queries `Brain::related_memories` for each, and sums `co_count` per
+/// candidate across all anchors. Returns normalized [0.0, 1.0] affinity
+/// scores keyed by memory ID. Empty map when co_retrieval_pairs index
+/// is empty or anchors have no data.
+pub fn compute_co_retrieval_boosts(
+    brain: &crate::brain::Brain,
+    candidates: &[MemoryHit],
+    anchor_count: usize,
+) -> std::collections::HashMap<String, f64> {
+    use std::collections::HashMap;
+
+    let mut affinity: HashMap<String, f64> = HashMap::new();
+
+    if candidates.is_empty() {
+        return affinity;
+    }
+
+    let anchors = &candidates[..anchor_count.min(candidates.len())];
+    for anchor in anchors {
+        if let Ok(related) = brain.related_memories(&anchor.id, 50) {
+            for rel in related {
+                *affinity.entry(rel.memory_id).or_default() += rel.co_count as f64;
+            }
+        }
+    }
+
+    // Normalize to [0.0, 1.0]
+    let max_val = affinity.values().copied().fold(0.0_f64, f64::max);
+    if max_val > 0.0 {
+        for v in affinity.values_mut() {
+            *v /= max_val;
+        }
+    }
+
+    affinity
+}
+
 // ── Unified re-ranking pipeline ──────────────────────────────────────
 
 use spectral_cascade::RecognitionContext;
@@ -203,6 +245,7 @@ pub struct RerankingConfig {
     pub apply_ambient_boost: bool,
     pub apply_declarative_boost: bool,
     pub declarative_weight: f64,
+    pub co_retrieval_weight: f64,
     pub apply_episode_diversity: bool,
     pub max_per_episode: usize,
     pub apply_context_dedup: bool,
@@ -220,6 +263,7 @@ impl Default for RerankingConfig {
             apply_ambient_boost: false,
             apply_declarative_boost: false,
             declarative_weight: 0.10,
+            co_retrieval_weight: 0.10,
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: true,
@@ -232,10 +276,14 @@ impl Default for RerankingConfig {
 ///
 /// Signals contribute additively/multiplicatively to a composite score.
 /// No intermediate hard sorts — single sort at the end before post-rank ops.
+///
+/// `co_retrieval_boosts` is a pre-computed map of memory_id -> normalized
+/// affinity [0.0, 1.0]. Empty map = no co-retrieval data (identity behavior).
 pub fn apply_reranking_pipeline(
     candidates: Vec<MemoryHit>,
     config: &RerankingConfig,
     context: &RecognitionContext,
+    co_retrieval_boosts: &std::collections::HashMap<String, f64>,
 ) -> Vec<MemoryHit> {
     if candidates.is_empty() {
         return candidates;
@@ -273,6 +321,16 @@ pub fn apply_reranking_pipeline(
                 .declarative_density
                 .unwrap_or_else(|| declarative_density(&hit.content));
             scores[i] += w * density;
+        }
+    }
+
+    // Co-retrieval boost: additive based on pre-computed affinity map
+    if !co_retrieval_boosts.is_empty() {
+        let w = config.co_retrieval_weight;
+        for (i, hit) in candidates.iter().enumerate() {
+            if let Some(&affinity) = co_retrieval_boosts.get(&hit.id) {
+                scores[i] += w * affinity;
+            }
         }
     }
 
@@ -345,6 +403,11 @@ pub fn apply_reranking_pipeline(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use std::collections::HashMap;
+
+    fn empty_co_boosts() -> HashMap<String, f64> {
+        HashMap::new()
+    }
 
     fn make_hit(id: &str, score: f64, wing: Option<&str>, created_at: Option<&str>) -> MemoryHit {
         MemoryHit {
@@ -522,7 +585,7 @@ mod tests {
         };
 
         let ctx = spectral_cascade::RecognitionContext::empty();
-        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+        let result = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
 
         // FTS rank dominates (0.7 weight) when signal_scores are equal
         assert_eq!(result[0].id, "first");
@@ -546,14 +609,16 @@ mod tests {
             ..Default::default()
         };
         let ctx = spectral_cascade::RecognitionContext::empty();
-        let with_ambient = apply_reranking_pipeline(candidates.clone(), &config, &ctx);
+        let with_ambient =
+            apply_reranking_pipeline(candidates.clone(), &config, &ctx, &empty_co_boosts());
 
         // Config WITHOUT ambient boost
         let config_no_ambient = RerankingConfig {
             apply_ambient_boost: false,
             ..Default::default()
         };
-        let without_ambient = apply_reranking_pipeline(candidates, &config_no_ambient, &ctx);
+        let without_ambient =
+            apply_reranking_pipeline(candidates, &config_no_ambient, &ctx, &empty_co_boosts());
 
         // Should produce identical ordering
         assert_eq!(with_ambient.len(), without_ambient.len());
@@ -586,7 +651,7 @@ mod tests {
             ..Default::default()
         };
         let ctx = spectral_cascade::RecognitionContext::empty();
-        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+        let result = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
 
         // At weight=0.3:
         // fts_best: 0.7*1.0 + 0.3*0.5 = 0.85
@@ -726,7 +791,8 @@ mod tests {
         };
         let ctx = spectral_cascade::RecognitionContext::empty();
 
-        let result = apply_reranking_pipeline(candidates.clone(), &config_with, &ctx);
+        let result =
+            apply_reranking_pipeline(candidates.clone(), &config_with, &ctx, &empty_co_boosts());
         assert_eq!(
             result[0].id, "user_declarative",
             "user turn with first-person declarative should rank first with boost"
@@ -737,7 +803,8 @@ mod tests {
             apply_declarative_boost: false,
             ..config_with
         };
-        let result_no = apply_reranking_pipeline(candidates, &config_without, &ctx);
+        let result_no =
+            apply_reranking_pipeline(candidates, &config_without, &ctx, &empty_co_boosts());
         assert_eq!(
             result_no[0].id, "assistant_top",
             "without declarative boost, FTS order preserved"
@@ -771,7 +838,7 @@ mod tests {
             ..Default::default()
         };
         let ctx = spectral_cascade::RecognitionContext::empty();
-        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+        let result = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
 
         // FTS position 1 gets 0.6*1.0 = 0.60 FTS + 0.3*0.5 = 0.15 signal + 0.0 decl = 0.75
         // FTS position 3 gets 0.6*0.33 = 0.20 FTS + 0.3*0.5 = 0.15 signal + 0.1*1.0 = 0.45
@@ -807,7 +874,7 @@ mod tests {
         // Context with now = 2023-05-30 (question date)
         let question_now = Utc.with_ymd_and_hms(2023, 5, 30, 23, 40, 0).unwrap();
         let ctx = spectral_cascade::RecognitionContext::empty().with_now(question_now);
-        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+        let result = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
 
         // recent_may is 10 days old → high recency factor
         // old_jan is 140 days old → much lower recency factor
@@ -851,7 +918,7 @@ mod tests {
             ..Default::default()
         };
         let ctx = spectral_cascade::RecognitionContext::empty();
-        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+        let result = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
 
         // Score should include the stored 0.9 density, not the computed 0.0
         // FTS base for 1 candidate = 1.0, declarative boost = 0.10 * 0.9 = 0.09
@@ -889,7 +956,7 @@ mod tests {
             ..Default::default()
         };
         let ctx = spectral_cascade::RecognitionContext::empty();
-        let result = apply_reranking_pipeline(candidates, &config, &ctx);
+        let result = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
 
         // Should fall back to computing density from content
         let expected_boost = 0.10 * computed;
@@ -898,5 +965,155 @@ mod tests {
             "should fall back to computed density, got score {}",
             result[0].signal_score
         );
+    }
+
+    // ── Co-retrieval boost tests ──────────────────────────────────
+
+    #[test]
+    fn co_retrieval_boost_changes_ranking() {
+        // Two candidates at adjacent FTS positions with equal signal_score.
+        // Pad with filler to reduce per-position FTS gap.
+        let mut candidates = vec![
+            make_hit("no_affinity", 0.5, None, None),
+            make_hit("high_affinity", 0.5, None, None),
+        ];
+        for i in 2..20 {
+            candidates.push(make_hit(&format!("filler_{i}"), 0.5, None, None));
+        }
+
+        let mut co_boosts = HashMap::new();
+        co_boosts.insert("high_affinity".into(), 1.0);
+
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_ambient_boost: false,
+            apply_declarative_boost: false,
+            apply_episode_diversity: false,
+            apply_context_dedup: false,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let result = apply_reranking_pipeline(candidates, &config, &ctx, &co_boosts);
+
+        assert_eq!(
+            result[0].id, "high_affinity",
+            "candidate with co-retrieval affinity should rank first"
+        );
+    }
+
+    #[test]
+    fn co_retrieval_boost_is_directional() {
+        // Same setup, reversed affinities — ordering should reverse.
+        let mut candidates = vec![
+            make_hit("a", 0.5, None, None),
+            make_hit("b", 0.5, None, None),
+        ];
+        for i in 2..20 {
+            candidates.push(make_hit(&format!("filler_{i}"), 0.5, None, None));
+        }
+
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_ambient_boost: false,
+            apply_declarative_boost: false,
+            apply_episode_diversity: false,
+            apply_context_dedup: false,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+
+        // A has affinity, B does not
+        let mut boosts_a = HashMap::new();
+        boosts_a.insert("a".into(), 1.0);
+        let result_a = apply_reranking_pipeline(candidates.clone(), &config, &ctx, &boosts_a);
+        assert_eq!(
+            result_a[0].id, "a",
+            "a should rank first when it has affinity"
+        );
+
+        // B has affinity, A does not
+        let mut boosts_b = HashMap::new();
+        boosts_b.insert("b".into(), 1.0);
+        let result_b = apply_reranking_pipeline(candidates, &config, &ctx, &boosts_b);
+        assert_eq!(
+            result_b[0].id, "b",
+            "b should rank first when affinities reversed"
+        );
+    }
+
+    #[test]
+    fn co_retrieval_empty_map_is_identity() {
+        let candidates = vec![
+            make_hit("first", 0.6, None, None),
+            make_hit("second", 0.6, None, None),
+            make_hit("third", 0.6, None, None),
+        ];
+
+        let config = RerankingConfig {
+            apply_signal_score: true,
+            signal_score_weight: 0.3,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_ambient_boost: false,
+            apply_episode_diversity: false,
+            apply_context_dedup: false,
+            co_retrieval_weight: 0.10, // weight is set but map is empty
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+
+        let with_empty_map =
+            apply_reranking_pipeline(candidates.clone(), &config, &ctx, &empty_co_boosts());
+        let with_no_map = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
+
+        for (a, b) in with_empty_map.iter().zip(with_no_map.iter()) {
+            assert_eq!(a.id, b.id, "empty co-retrieval map should be identity");
+        }
+    }
+
+    #[test]
+    fn co_retrieval_and_ambient_boost_compose() {
+        // Candidate A: wing match (ambient boost) but no co-retrieval
+        // Candidate B: no wing match but high co-retrieval
+        // Neither should completely dominate
+        let candidates = vec![
+            make_hit("ambient_hit", 0.5, Some("focused_wing"), None),
+            make_hit("co_ret_hit", 0.5, Some("other_wing"), None),
+            make_hit("neutral", 0.5, None, None),
+        ];
+
+        let mut co_boosts = HashMap::new();
+        co_boosts.insert("co_ret_hit".into(), 1.0);
+
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_ambient_boost: true,
+            apply_declarative_boost: false,
+            apply_episode_diversity: false,
+            apply_context_dedup: false,
+            co_retrieval_weight: 0.10,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty().with_focus_wing("focused_wing");
+        let result = apply_reranking_pipeline(candidates, &config, &ctx, &co_boosts);
+
+        // Both ambient_hit and co_ret_hit should be in top 2
+        let top_2_ids: Vec<&str> = result.iter().take(2).map(|h| h.id.as_str()).collect();
+        assert!(
+            top_2_ids.contains(&"ambient_hit"),
+            "ambient-boosted hit should be in top 2"
+        );
+        assert!(
+            top_2_ids.contains(&"co_ret_hit"),
+            "co-retrieval-boosted hit should be in top 2"
+        );
+        // Neutral should be last
+        assert_eq!(result[2].id, "neutral", "neutral should rank last");
     }
 }

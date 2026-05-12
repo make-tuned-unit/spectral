@@ -1,9 +1,9 @@
 # Co-Retrieval Signal in Cascade Ranking
 
-**Date**: 2026-05-11
+**Date**: 2026-05-12
 **Branch**: `feat/co-retrieval-ranking-signal`
 **Backlog**: Item #2, Tier 1
-**Status**: Proposal. Implementation follows after approval.
+**Status**: Proposal v2. Addressing review feedback.
 
 ---
 
@@ -45,27 +45,26 @@ Current pipeline order in `apply_reranking_pipeline()`:
 
 ```
 4. Declarative density (additive)
-4.5 Co-retrieval boost (additive)    ← NEW
+4.5 Co-retrieval boost (additive)    <-- NEW
 5. Recency decay (multiplicative)
 ```
 
 **Rationale**: Co-retrieval should fire after ambient boost and declarative density (both establish baseline relevance signals) but before recency decay (which is multiplicative and should apply to the co-retrieval-adjusted score). Placing it before the final sort ensures the signal contributes to the composite score alongside all other signals.
 
-## New RerankingConfig Fields
+## New RerankingConfig Field
 
 ```rust
 pub struct RerankingConfig {
     // ... existing fields ...
-    pub apply_co_retrieval_boost: bool,
     pub co_retrieval_weight: f64,
 }
 ```
 
-**Default**: `apply_co_retrieval_boost: false`, `co_retrieval_weight: 0.05`.
+**Default**: `co_retrieval_weight: 0.10`.
 
-**Why `false` by default?** The `topk_fts` path doesn't currently pass co-retrieval data. Only callers that explicitly compute co-retrieval boosts should enable it. The cascade pipeline enables it in its `RerankingConfig` construction.
+No `apply_co_retrieval_boost: bool` flag. An empty `co_retrieval_boosts` map passed to the pipeline is the disable signal. The bool flag would be redundant ceremony.
 
-**Why 0.05?** Same magnitude as `entity_boost_weight`. This is a weak signal — enough to break ties and lift marginally-ranked candidates by 1-2 positions, not enough to override FTS rank or signal score. Conservative start; bench validates whether to increase.
+**Why 0.10?** At 0.05, a candidate scoring ~0.7 gets a ~7% relative boost — likely below the threshold to cross K=20 cutoff positions that change actor consumption. At 0.10, the relative boost is ~14%, enough to move candidates 2-3 positions. Still bounded: max 0.10 additive vs FTS range 0.0-1.0. If bench shows more headroom, 0.15-0.20 is available without risking FTS override.
 
 ## Pipeline Function Signature Change
 
@@ -78,7 +77,7 @@ pub fn apply_reranking_pipeline(
 ) -> Vec<MemoryHit>
 ```
 
-**Why a separate parameter, not on RerankingConfig?** Co-retrieval boosts are runtime data (pre-computed from DB queries), not configuration. Mixing runtime data into a config struct is architecturally unclean. An empty HashMap means "no co-retrieval data available" — identical to `apply_co_retrieval_boost: false`.
+**Why a separate parameter, not on RerankingConfig?** Co-retrieval boosts are runtime data (pre-computed from DB queries), not configuration. Mixing runtime data into a config struct is architecturally unclean. An empty HashMap means "no co-retrieval data available" — the stage becomes a no-op.
 
 **Helper function** for callers:
 
@@ -99,11 +98,11 @@ Lives in `ranking.rs` alongside other ranking functions. Both `run_cascade_pipel
 
 | Condition | Behavior |
 |-----------|----------|
-| Empty `co_retrieval_pairs` table (fresh install) | `related_memories` returns empty vecs → empty boost map → no effect |
-| `apply_co_retrieval_boost: false` | Stage skipped entirely |
+| Empty `co_retrieval_pairs` table (fresh install) | `related_memories` returns empty vecs -> empty boost map -> no effect |
 | Empty boost map passed | Stage is a no-op (all candidates get +0.0) |
 | Anchor has no co-retrieval data | That anchor contributes nothing to the map |
 | Candidate not in map | Gets +0.0 (identity) |
+| Zero candidates | `compute_co_retrieval_boosts` returns empty map without panic |
 
 **No new failure modes.** `related_memories` is already battle-tested (PR #76). The boost computation is pure arithmetic.
 
@@ -111,57 +110,43 @@ Lives in `ranking.rs` alongside other ranking functions. Both `run_cascade_pipel
 
 ### Unit tests (in `ranking.rs`)
 
-**(a) Co-retrieval boost changes ranking.** Two candidates at similar FTS rank. One has high co-retrieval affinity with anchors (pre-computed map value 1.0), the other has none (0.0). With co-retrieval enabled, the high-affinity candidate should rank higher.
+**(a) Co-retrieval boost changes ranking.** Two candidates at similar FTS rank. One has high co-retrieval affinity (map value 1.0), the other has none (0.0). With co-retrieval, the high-affinity candidate ranks higher.
 
-**(b) Empty map produces identical results.** Run pipeline with `apply_co_retrieval_boost: true` and an empty `HashMap`. Compare output to `apply_co_retrieval_boost: false`. Ordering must be identical.
+**(a2) Co-retrieval boost is directional.** Same setup as (a), but reverse the affinities (candidate that had 1.0 now has 0.0, and vice versa). Verify ordering reverses. Proves the boost actually moves things, not an artifact of initial ordering.
 
-**(c) Co-retrieval and ambient boost compose without swamping.** Candidate A has high ambient boost (wing match) but no co-retrieval. Candidate B has no ambient boost but high co-retrieval. Neither signal should completely dominate — both candidates should be present in the top results, with relative ordering determined by the composite.
+**(b) Empty map produces identical results.** Run pipeline with non-empty co-retrieval weight and an empty HashMap. Compare output to pipeline with same config. Ordering must be identical — empty map is identity.
+
+**(c) Co-retrieval and ambient boost compose without swamping.** Candidate A has high ambient boost (wing match) but no co-retrieval. Candidate B has no ambient boost but high co-retrieval. Neither signal completely dominates — both present in top results, relative ordering determined by composite.
 
 ### Integration test (in `brain_tests.rs`)
 
-**(d) End-to-end co-retrieval in cascade.** Ingest memories, create retrieval events that establish co-retrieval pairs, rebuild index, then run cascade. Verify that co-retrieved memories rank higher than they would without the signal.
+**(d) End-to-end co-retrieval in cascade.** Ingest memories, create retrieval events establishing co-retrieval pairs, rebuild index, run cascade. Verify co-retrieved memories rank higher than without the signal.
 
-### Compute helper test
+### Compute helper tests
 
 **(e) `compute_co_retrieval_boosts` normalization.** Verify output is normalized to [0.0, 1.0]. Verify anchor_count > candidates.len() doesn't panic.
 
+**(e2) Empty candidates.** `compute_co_retrieval_boosts(brain, &[], 3)` returns empty map without panic.
+
 ## Telemetry
 
-No new field on `MemoryHit`. The co-retrieval boost is folded into the composite `signal_score` alongside all other signals. Adding a per-hit `co_retrieval_boost_applied: f64` would require a schema change to `MemoryHit` for a debugging signal that's only useful during development.
-
-Instead: the fact that `apply_co_retrieval_boost: true` is set in `RerankingConfig` is sufficient to know the signal was active. For deeper debugging, log the boost map size and max value in the pipeline (a one-line debug log, not a schema change).
-
-## CascadePipelineConfig Change
-
-```rust
-pub struct CascadePipelineConfig {
-    // ... existing fields ...
-    pub apply_co_retrieval_boost: bool,
-}
-```
-
-Default `true`. The cascade pipeline is the primary beneficiary of this signal.
+No new field on `MemoryHit`. The co-retrieval boost is folded into the composite `signal_score` alongside all other signals. For deeper debugging, the boost map size and max value can be logged at the pipeline level (a one-line debug log, not a schema change).
 
 ## Call Site Changes
 
 ### `run_cascade_pipeline` (cascade_layers.rs)
 
 ```rust
-// After retrieval, before pipeline:
-let co_boosts = if config.apply_co_retrieval_boost {
-    crate::ranking::compute_co_retrieval_boosts(brain, &candidates, 3)
-} else {
-    HashMap::new()
-};
-// ... pass co_boosts to apply_reranking_pipeline
+let co_boosts = crate::ranking::compute_co_retrieval_boosts(brain, &candidates, 3);
 ```
 
 ### `recall_topk_fts` (brain.rs)
 
 ```rust
-// topk_fts doesn't use co-retrieval in v1 (no ambient context)
-let co_boosts = HashMap::new();
+let co_boosts = crate::ranking::compute_co_retrieval_boosts(self, &candidates, 3);
 ```
+
+Both paths compute co-retrieval boosts. Co-retrieval is query-pattern affinity, not ambient context — excluding it from topk_fts would create a confound on bench (can't tell if Temporal stays flat because co-retrieval doesn't help or because we never enabled it).
 
 ### Ranking tests
 
