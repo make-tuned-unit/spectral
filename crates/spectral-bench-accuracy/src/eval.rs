@@ -32,6 +32,10 @@ pub struct EvalConfig {
     pub dump_scores_path: Option<PathBuf>,
     /// Save partial results every N questions.
     pub checkpoint_interval: usize,
+    /// When Some, overrides per-question shape routing — all questions use this path.
+    /// When None and use_cascade is true, shape routing is active.
+    #[serde(default)]
+    pub retrieval_path_override: Option<RetrievalPath>,
 }
 
 impl Default for EvalConfig {
@@ -48,6 +52,7 @@ impl Default for EvalConfig {
             use_cascade: false,
             dump_scores_path: None,
             checkpoint_interval: 10,
+            retrieval_path_override: None,
         }
     }
 }
@@ -95,6 +100,8 @@ struct SingleResult {
     raw_hits: Vec<spectral_ingest::MemoryHit>,
     /// Cascade telemetry (populated when use_cascade is true).
     cascade_telemetry: Option<retrieval::CascadeTelemetry>,
+    /// Strategy routing telemetry.
+    strategy_telemetry: Option<crate::report::StrategyTelemetry>,
 }
 
 impl AccuracyEval {
@@ -184,6 +191,7 @@ impl AccuracyEval {
                         r.memory_keys,
                         r.duration_ms,
                         r.cascade_telemetry,
+                        r.strategy_telemetry,
                     );
                 }
                 Err(e) => {
@@ -201,6 +209,7 @@ impl AccuracyEval {
                         0,
                         Vec::new(),
                         0,
+                        None,
                         None,
                     );
 
@@ -241,53 +250,70 @@ impl AccuracyEval {
         // Ingest
         let brain = ingest::ingest_question(question, &brain_dir, self.config.ingest_strategy)?;
 
+        // Classify question shape for routing
+        let qtype = retrieval::QuestionType::classify(&question.question);
+
+        // Determine effective retrieval path for this question.
+        //
+        // Precedence:
+        // 1. Explicit --retrieval-path override → all questions use that path.
+        // 2. --use-cascade without explicit path → shape routing (Temporal→topk_fts, rest→cascade).
+        // 3. Neither → use config.retrieval_path default (topk_fts).
+        let effective_path = if let Some(override_path) = self.config.retrieval_path_override {
+            override_path
+        } else if self.config.use_cascade {
+            qtype.retrieval_path()
+        } else {
+            self.config.retrieval_path
+        };
+
+        let strategy_telemetry = if self.config.use_cascade {
+            Some(crate::report::StrategyTelemetry {
+                shape: format!("{qtype:?}"),
+                prompt_template: qtype.prompt_template().to_string(),
+                retrieval_path_chosen: format!("{effective_path:?}"),
+            })
+        } else {
+            None
+        };
+
         // Retrieve — get raw hits for score dumping, formatted strings for actor
         let question_date = question.question_date.as_deref();
-        let (memories, raw_hits, cascade_telemetry) = if self.config.use_cascade {
-            let (formatted, telemetry) = retrieval::retrieve_cascade(
-                &brain,
-                &question.question,
-                &self.config.retrieval,
-                question_date,
-            )?;
-            (formatted, Vec::new(), Some(telemetry))
-        } else {
-            match self.config.retrieval_path {
-                RetrievalPath::TopkFts => {
-                    let formatted = retrieval::retrieve_topk_fts(
-                        &brain,
-                        &question.question,
-                        &self.config.retrieval,
-                    )?;
-                    (formatted, Vec::new(), None)
-                }
-                RetrievalPath::Tact => {
-                    let result = brain.recall_local(&question.question)?;
-                    let hits: Vec<_> = result
-                        .memory_hits
-                        .into_iter()
-                        .take(self.config.retrieval.max_results)
-                        .collect();
-                    let formatted: Vec<String> = hits.iter().map(retrieval::format_hit).collect();
-                    (formatted, hits, None)
-                }
-                RetrievalPath::Graph => {
-                    let formatted = retrieval::retrieve_graph(
-                        &brain,
-                        &question.question,
-                        &self.config.retrieval,
-                    )?;
-                    (formatted, Vec::new(), None)
-                }
-                RetrievalPath::Cascade => {
-                    let (formatted, telemetry) = retrieval::retrieve_cascade(
-                        &brain,
-                        &question.question,
-                        &self.config.retrieval,
-                        question_date,
-                    )?;
-                    (formatted, Vec::new(), Some(telemetry))
-                }
+        let (memories, raw_hits, cascade_telemetry) = match effective_path {
+            RetrievalPath::TopkFts => {
+                let formatted = retrieval::retrieve_topk_fts(
+                    &brain,
+                    &question.question,
+                    &self.config.retrieval,
+                )?;
+                (formatted, Vec::new(), None)
+            }
+            RetrievalPath::Tact => {
+                let result = brain.recall_local(&question.question)?;
+                let hits: Vec<_> = result
+                    .memory_hits
+                    .into_iter()
+                    .take(self.config.retrieval.max_results)
+                    .collect();
+                let formatted: Vec<String> = hits.iter().map(retrieval::format_hit).collect();
+                (formatted, hits, None)
+            }
+            RetrievalPath::Graph => {
+                let formatted = retrieval::retrieve_graph(
+                    &brain,
+                    &question.question,
+                    &self.config.retrieval,
+                )?;
+                (formatted, Vec::new(), None)
+            }
+            RetrievalPath::Cascade => {
+                let (formatted, telemetry) = retrieval::retrieve_cascade(
+                    &brain,
+                    &question.question,
+                    &self.config.retrieval,
+                    question_date,
+                )?;
+                (formatted, Vec::new(), Some(telemetry))
             }
         };
         let memory_count = memories.len();
@@ -317,10 +343,10 @@ impl AccuracyEval {
         };
 
         // Act
-        let question_date = question.question_date.as_deref().unwrap_or("unknown");
+        let question_date_str = question.question_date.as_deref().unwrap_or("unknown");
         let predicted = self
             .actor
-            .answer(&question.question, question_date, &memories)?;
+            .answer(&question.question, question_date_str, &memories, qtype)?;
 
         // Judge
         let answer_text = question.answer_text();
@@ -340,6 +366,7 @@ impl AccuracyEval {
             duration_ms: start.elapsed().as_millis() as u64,
             raw_hits,
             cascade_telemetry,
+            strategy_telemetry,
         })
     }
 
@@ -390,7 +417,13 @@ mod tests {
     /// Actor that always returns an error.
     struct FailingActor;
     impl Actor for FailingActor {
-        fn answer(&self, _q: &str, _d: &str, _m: &[String]) -> anyhow::Result<String> {
+        fn answer(
+            &self,
+            _q: &str,
+            _d: &str,
+            _m: &[String],
+            _shape: crate::retrieval::QuestionType,
+        ) -> anyhow::Result<String> {
             Err(anyhow::anyhow!("API returned 401: unauthorized"))
         }
         fn name(&self) -> &str {
@@ -412,7 +445,13 @@ mod tests {
         }
     }
     impl Actor for FailNthActor {
-        fn answer(&self, _q: &str, _d: &str, _m: &[String]) -> anyhow::Result<String> {
+        fn answer(
+            &self,
+            _q: &str,
+            _d: &str,
+            _m: &[String],
+            _shape: crate::retrieval::QuestionType,
+        ) -> anyhow::Result<String> {
             let mut count = self.call_count.lock().unwrap();
             let current = *count;
             *count += 1;

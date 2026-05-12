@@ -40,59 +40,122 @@ pub enum RetrievalPath {
 // ── Question-type routing (P1) ──────────────────────────────────────
 
 /// Question type determined by structural analysis of the query.
-/// Maps to a retrieval profile with tuned K, episode diversity, and recency.
+/// Maps to a retrieval profile, actor prompt template, and retrieval path.
+///
+/// Two-level classification:
+/// - Level 1: top-level shape (Counting, Temporal, Factual, General)
+/// - Level 2: sub-shape within Counting, Factual, and General
+///
+/// Temporal intentionally has NO sub-gate. Date arithmetic is a single
+/// coherent strategy; adding TemporalCurrentState would fragment it
+/// without evidence of benefit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QuestionType {
-    /// "How many", "how much", "total" — needs diverse session coverage.
+    /// "How many", "how much", "total" — exhaustive session scan, no recency signal.
     Counting,
-    /// "When", "how long", "first/last", "ago/since" — recency matters.
+    /// "How many ... currently/still" — current count, recency-priority.
+    CountingCurrentState,
+    /// Date arithmetic, ordering, duration. No sub-gate — single coherent strategy.
     Temporal,
-    /// "What", "where", "who", "which" — focused retrieval.
+    /// "What is", "where", "who" — single-entity retrieval.
     Factual,
-    /// Anything else — default profile.
+    /// "What is my current X" — most-recent-wins factual.
+    FactualCurrentState,
+    /// "Suggest/recommend/tips/advice" — preference inference.
+    GeneralPreference,
+    /// "Remind me/going back to/we discussed" — assistant recall.
+    GeneralRecall,
+    /// Catch-all fallback.
     General,
 }
 
 impl QuestionType {
     /// Classify a question string into a routing type.
+    ///
+    /// Level 1: existing top-level classifier (Counting/Temporal/Factual/General).
+    /// Level 2: sub-gates for Counting (recency), Factual (recency), General (preference/recall).
+    /// Temporal has no sub-gate by design.
     pub fn classify(question: &str) -> Self {
         let q = question.to_lowercase();
-        // Order: temporal-counting ("how many days/weeks ago", "how old") first,
-        // then general counting, then temporal, then factual.
-        // These need temporal context words (ago/since/passed/before/after/between)
-        // to distinguish "how many days ago" (temporal) from "how many days in total" (counting).
+
+        // ── Level 1: top-level shape (unchanged from original) ──
+
+        // Temporal-counting ("how many days/weeks ago", "how old") → Temporal
         if Regex::new(r"how many (?:days|weeks|months|years) (?:ago|since|passed|before|after|between|had passed|have passed|did it take)|how old")
             .unwrap()
             .is_match(&q)
         {
             return Self::Temporal;
         }
+
+        // General counting → Counting (with sub-gate)
         if Regex::new(r"how many|how much|total|in total|altogether")
             .unwrap()
             .is_match(&q)
         {
+            // Level 2: recency sub-gate for Counting
+            if Regex::new(r"\b(currently|right now|most recent|latest|newest|do i still|now)\b")
+                .unwrap()
+                .is_match(&q)
+            {
+                return Self::CountingCurrentState;
+            }
             return Self::Counting;
         }
+
+        // Temporal
         if Regex::new(r"when did|how long|(?:^|\W)first\b|(?:^|\W)last\b|before|after|ago|since")
             .unwrap()
             .is_match(&q)
         {
             return Self::Temporal;
         }
+
+        // Factual (with sub-gate)
         if Regex::new(r"^(?:what|where|who|which)\b")
             .unwrap()
             .is_match(&q)
         {
+            // Level 2: recency sub-gate for Factual
+            if Regex::new(r"\b(currently|right now|most recent|latest|newest|do i still|now)\b")
+                .unwrap()
+                .is_match(&q)
+            {
+                return Self::FactualCurrentState;
+            }
             return Self::Factual;
         }
+
+        // ── Level 2: General sub-gates ──
+
+        if Regex::new(r"\b(suggest|recommend|tips?|advice|recommendations?|what should i)\b")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::GeneralPreference;
+        }
+        if Regex::new(r"\bany (tips?|advice|suggestions?|ideas?|thoughts?|recommendations?)\b")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::GeneralPreference;
+        }
+        if Regex::new(r"\b(remind me|going back to|previous|earlier conversation|we (discussed|talked about)|can you remind me)\b")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::GeneralRecall;
+        }
+
         Self::General
     }
 
     /// Return the cascade pipeline config tuned for this question type.
+    /// Sub-shapes inherit their parent shape's profile.
     pub fn cascade_profile(&self) -> CascadePipelineConfig {
         match self {
-            Self::Counting => CascadePipelineConfig {
+            Self::Counting | Self::CountingCurrentState => CascadePipelineConfig {
                 k: 60,
                 max_per_episode: 3,
                 recency_half_life_days: 730.0, // don't penalize any memories
@@ -104,12 +167,51 @@ impl QuestionType {
                 recency_half_life_days: 60.0, // aggressive recency
                 ..CascadePipelineConfig::default()
             },
-            Self::Factual => CascadePipelineConfig {
+            Self::Factual | Self::FactualCurrentState => CascadePipelineConfig {
                 k: 30,
                 max_per_episode: 8,
                 ..CascadePipelineConfig::default()
             },
-            Self::General => CascadePipelineConfig::default(),
+            Self::GeneralPreference | Self::GeneralRecall | Self::General => {
+                CascadePipelineConfig::default()
+            }
+        }
+    }
+
+    /// Per-question retrieval path. Temporal routes to topk_fts (cascade hurts
+    /// temporal by -15pp); all other shapes use cascade.
+    pub fn retrieval_path(&self) -> RetrievalPath {
+        match self {
+            Self::Temporal => RetrievalPath::TopkFts,
+            _ => RetrievalPath::Cascade,
+        }
+    }
+
+    /// Prompt template filename for this question type.
+    pub fn prompt_template(&self) -> &'static str {
+        match self {
+            Self::Counting => "counting_enumerate.md",
+            Self::CountingCurrentState => "counting_current_state.md",
+            Self::Temporal => "temporal.md",
+            Self::Factual => "factual_direct.md",
+            Self::FactualCurrentState => "factual_current_state.md",
+            Self::GeneralPreference => "preference.md",
+            Self::GeneralRecall => "assistant_recall.md",
+            Self::General => "generic_fallback.md",
+        }
+    }
+
+    /// The prompt template content (compiled in via include_str!).
+    pub fn prompt_content(&self) -> &'static str {
+        match self {
+            Self::Counting => include_str!("prompts/counting_enumerate.md"),
+            Self::CountingCurrentState => include_str!("prompts/counting_current_state.md"),
+            Self::Temporal => include_str!("prompts/temporal.md"),
+            Self::Factual => include_str!("prompts/factual_direct.md"),
+            Self::FactualCurrentState => include_str!("prompts/factual_current_state.md"),
+            Self::GeneralPreference => include_str!("prompts/preference.md"),
+            Self::GeneralRecall => include_str!("prompts/assistant_recall.md"),
+            Self::General => include_str!("prompts/generic_fallback.md"),
         }
     }
 }
@@ -625,6 +727,18 @@ mod tests {
     }
 
     #[test]
+    fn classify_counting_current_state() {
+        assert_eq!(
+            QuestionType::classify("How many pets do I currently have?"),
+            QuestionType::CountingCurrentState
+        );
+        assert_eq!(
+            QuestionType::classify("How many do I still have right now?"),
+            QuestionType::CountingCurrentState
+        );
+    }
+
+    #[test]
     fn classify_temporal_questions() {
         assert_eq!(
             QuestionType::classify("When did I start jogging?"),
@@ -640,6 +754,16 @@ mod tests {
         );
         assert_eq!(
             QuestionType::classify("How many weeks ago did I start?"),
+            QuestionType::Temporal
+        );
+    }
+
+    #[test]
+    fn classify_temporal_no_subgate_even_with_recency_words() {
+        // Temporal has no sub-gate by design. Recency words in a temporal
+        // question should not produce TemporalCurrentState (which doesn't exist).
+        assert_eq!(
+            QuestionType::classify("How many days ago did I most recently visit?"),
             QuestionType::Temporal
         );
     }
@@ -661,11 +785,47 @@ mod tests {
     }
 
     #[test]
-    fn classify_general_questions() {
+    fn classify_factual_current_state() {
+        assert_eq!(
+            QuestionType::classify("What is my most recent address?"),
+            QuestionType::FactualCurrentState
+        );
+        assert_eq!(
+            QuestionType::classify("What car do I currently drive?"),
+            QuestionType::FactualCurrentState
+        );
+    }
+
+    #[test]
+    fn classify_general_preference() {
         assert_eq!(
             QuestionType::classify("Can you recommend a restaurant?"),
-            QuestionType::General
+            QuestionType::GeneralPreference
         );
+        assert_eq!(
+            QuestionType::classify("Any tips for cooking pasta?"),
+            QuestionType::GeneralPreference
+        );
+        assert_eq!(
+            QuestionType::classify("Do you have any suggestions for my trip?"),
+            QuestionType::GeneralPreference
+        );
+    }
+
+    #[test]
+    fn classify_general_recall() {
+        assert_eq!(
+            QuestionType::classify("Can you remind me what we discussed about budgets?"),
+            QuestionType::GeneralRecall
+        );
+        assert_eq!(
+            QuestionType::classify("Going back to our earlier conversation about housing"),
+            QuestionType::GeneralRecall
+        );
+    }
+
+    #[test]
+    fn classify_general_fallback() {
         assert_eq!(
             QuestionType::classify("I've been struggling with recipes."),
             QuestionType::General
@@ -684,6 +844,14 @@ mod tests {
     }
 
     #[test]
+    fn counting_current_state_inherits_parent_profile() {
+        let parent = QuestionType::Counting.cascade_profile();
+        let child = QuestionType::CountingCurrentState.cascade_profile();
+        assert_eq!(parent.k, child.k);
+        assert_eq!(parent.max_per_episode, child.max_per_episode);
+    }
+
+    #[test]
     fn temporal_profile_has_aggressive_recency() {
         let profile = QuestionType::Temporal.cascade_profile();
         assert_eq!(profile.k, 40);
@@ -698,6 +866,38 @@ mod tests {
         let profile = QuestionType::Factual.cascade_profile();
         assert_eq!(profile.k, 30);
         assert_eq!(profile.max_per_episode, 8);
+    }
+
+    #[test]
+    fn factual_current_state_inherits_parent_profile() {
+        let parent = QuestionType::Factual.cascade_profile();
+        let child = QuestionType::FactualCurrentState.cascade_profile();
+        assert_eq!(parent.k, child.k);
+        assert_eq!(parent.max_per_episode, child.max_per_episode);
+    }
+
+    #[test]
+    fn temporal_routes_to_topk_fts() {
+        assert_eq!(
+            QuestionType::Temporal.retrieval_path(),
+            RetrievalPath::TopkFts
+        );
+    }
+
+    #[test]
+    fn non_temporal_routes_to_cascade() {
+        assert_eq!(
+            QuestionType::Counting.retrieval_path(),
+            RetrievalPath::Cascade
+        );
+        assert_eq!(
+            QuestionType::General.retrieval_path(),
+            RetrievalPath::Cascade
+        );
+        assert_eq!(
+            QuestionType::GeneralPreference.retrieval_path(),
+            RetrievalPath::Cascade
+        );
     }
 
     #[test]

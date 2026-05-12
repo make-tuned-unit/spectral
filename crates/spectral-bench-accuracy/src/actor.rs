@@ -1,11 +1,19 @@
 //! Actor LLM trait — given a question and retrieved memories, produce an answer.
 
+use crate::retrieval::QuestionType;
 use anyhow::Result;
 
 /// Actor that synthesizes an answer from retrieved memories.
 pub trait Actor: Send + Sync {
-    /// Given a question, the question's date context, and retrieved memories, produce an answer.
-    fn answer(&self, question: &str, question_date: &str, memories: &[String]) -> Result<String>;
+    /// Given a question, the question's date context, retrieved memories, and
+    /// classified question shape, produce an answer.
+    fn answer(
+        &self,
+        question: &str,
+        question_date: &str,
+        memories: &[String],
+        shape: QuestionType,
+    ) -> Result<String>;
     /// Identifier for the report.
     fn name(&self) -> &str;
 }
@@ -40,51 +48,19 @@ impl AnthropicActor {
 }
 
 impl Actor for AnthropicActor {
-    fn answer(&self, question: &str, question_date: &str, memories: &[String]) -> Result<String> {
+    fn answer(
+        &self,
+        question: &str,
+        question_date: &str,
+        memories: &[String],
+        shape: QuestionType,
+    ) -> Result<String> {
         let memories_text = memories.join("\n");
-        let prompt = format!(
-            "You are answering a question based on a long conversation history.\n\
-             Today's date is {question_date}.\n\
-             Below are memories retrieved from the conversation, organized by session. \
-             Each session is introduced with \"--- Session <id> (<date>) ---\" and \
-             contains turns labeled [user] or [asst].\n\
-             \n\
-             Instructions:\n\
-             1. For counting, listing, or ordering questions: the answer may be distributed across \
-             multiple sessions. Scan EVERY session header below, extract relevant items from each, \
-             then count or list all of them. Do not stop after the first or second session.\n\
-             2. For questions about your current or most recent X: identify the most recent session \
-             mentioning X and treat that value as definitive, even if older sessions mention different \
-             values.\n\
-             3. When information appears partial across sessions, attempt synthesis from the available \
-             evidence rather than saying \"I don't know.\" Only respond with \"I don't know\" when no \
-             session contains relevant content for the question.\n\
-             4. When the question asks whether something happened (e.g., \"did I mention X?\"), and X \
-             is not present in any session, state that clearly and note what IS present \
-             (e.g., \"You mentioned Y but not X\").\n\
-             5. When multiple distinct entities or locations match the question (e.g., multiple stores, \
-             multiple vehicles), do not pick the first one mentioned. Identify which entity the question \
-             is specifically asking about and verify against the most relevant sessions before answering.\n\
-             6. For questions requiring arithmetic across sessions (computing differences, sums, ages, \
-             totals): identify the relevant numerical values from each session and perform the calculation \
-             explicitly. Show the values used and the result.\n\
-             7. For questions about preferences, favorites, or personal choices: prioritize the user's \
-             explicit statements (\"I prefer X\", \"my favorite is Y\", \"I chose Z\") over inferred or \
-             contextual information. If the user stated a preference directly, that is the answer.\n\
-             8. Be direct and concise. State the answer clearly without hedging or qualifying \
-             (e.g., \"Paris\" not \"Based on the conversation history, it appears that the answer \
-             might be Paris\"). If the answer is a number, state just the number. If the answer \
-             is a name, state just the name.\n\
-             9. For questions requiring dates, durations, or temporal calculations: use the session \
-             dates shown in \"--- Session <id> (<date>) ---\" headers as the time reference for \
-             events in that session. When computing time differences (days, weeks, months between \
-             events), identify the relevant session dates and calculate explicitly. Today's date \
-             is provided above — use it for \"how long ago\" or \"how old\" calculations.\n\
-             \n\
-             Memories:\n{memories_text}\n\n\
-             Question: {question}\n\n\
-             Answer:"
-        );
+        let template = shape.prompt_content();
+        let prompt = template
+            .replace("{question_date}", question_date)
+            .replace("{memories_text}", &memories_text)
+            .replace("{question}", question);
 
         let body = serde_json::json!({
             "model": self.model,
@@ -148,6 +124,7 @@ impl Actor for MockActor {
         _question: &str,
         _question_date: &str,
         _memories: &[String],
+        _shape: QuestionType,
     ) -> Result<String> {
         Ok(self.response.clone())
     }
