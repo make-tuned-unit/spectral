@@ -129,3 +129,15 @@ The ACTOR_MISS pattern is "embedded reference in different primary context" -- n
 - Increasing K: the 9 ACTOR_MISS cases already had all answer sessions retrieved. More candidates won't help and would increase noise.
 - L2 episodes (backlog #12): not relevant -- the failures are at the actor recognition level, not the retrieval grouping level.
 - Multi-step actor patterns: premature. Single-pass with better recognition criteria should be tried first.
+
+## Diagnosis evolution
+
+This investigation went through three diagnostic hypotheses:
+
+1. **Cognitive overload** (PR #91 v1): Actor abandons enumeration mid-task because instruction 1 packs too many subtasks. **Refuted** -- the actor completes enumeration and states confident counts. It doesn't abandon.
+
+2. **Indirect-reference recognition** (PR #92 triage): Actor misses items described with different words than the question uses. **Partially correct but imprecise** -- the weddings walkthrough showed the references are actually direct and explicit ("Emily finally got to tie the knot with Sarah"), not indirect.
+
+3. **Embedded-reference-in-different-primary-context** (this doc): The correct framing. Items are explicitly stated but are subordinate clauses in conversations about a different primary topic. The actor tracks the primary topic and doesn't register subordinate mentions. **This is the diagnosis that drives the prompt refinement in PR #91 v2.**
+
+The "indirect-reference recognition" framing from PR #92 is superseded by this document's "embedded-reference" framing. Both PRs remain useful -- PR #92 established the 9/10 ACTOR_MISS breakdown, this PR identified the specific mechanism.
