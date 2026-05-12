@@ -1141,13 +1141,19 @@ impl Brain {
             apply_ambient_boost: false,
             apply_declarative_boost: false,
             declarative_weight: 0.10,
+            co_retrieval_weight: 0.10,
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: config.apply_context_dedup,
         };
         let empty_ctx = spectral_cascade::RecognitionContext::empty();
-        let results =
-            crate::ranking::apply_reranking_pipeline(candidates, &reranking_config, &empty_ctx);
+        let co_boosts = crate::ranking::compute_co_retrieval_boosts(self, &candidates, 3);
+        let results = crate::ranking::apply_reranking_pipeline(
+            candidates,
+            &reranking_config,
+            &empty_ctx,
+            &co_boosts,
+        );
 
         // Best-effort retrieval event logging
         let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();

@@ -1398,3 +1398,281 @@ fn memories_for_session_aggregates_across_cascades() {
         "memories_for_session should return unique IDs"
     );
 }
+
+// ── Co-retrieval ranking integration tests ──────────────────────────
+
+#[test]
+fn co_retrieval_boost_lifts_co_retrieved_memories_in_cascade() {
+    use spectral_graph::ranking::{
+        apply_reranking_pipeline, compute_co_retrieval_boosts, RerankingConfig,
+    };
+    use std::collections::HashMap;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Ingest: "rust" and "editor" memories are topically close.
+    // "commute" memory is unrelated but will match FTS on "daily".
+    let r_rust = brain
+        .remember(
+            "cr-rust",
+            "I use Rust for systems programming daily",
+            Visibility::Private,
+        )
+        .unwrap();
+    let r_editor = brain
+        .remember(
+            "cr-editor",
+            "My daily editor for Rust is Neovim",
+            Visibility::Private,
+        )
+        .unwrap();
+    let r_commute = brain
+        .remember(
+            "cr-commute",
+            "My daily commute takes thirty minutes by train",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    // Pad with filler memories that also match "daily" to reduce per-position
+    // FTS gap. With 20+ candidates, gap is ~0.05 per position, so a 0.10
+    // co-retrieval boost can bridge 2 positions.
+    for i in 0..17 {
+        brain
+            .remember(
+                &format!("cr-filler-{i}"),
+                &format!("My daily routine number {i} involves various activities"),
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+
+    // Run cascade queries that return overlapping subsets.
+    // "Rust programming editor Neovim" should co-retrieve
+    // cr-rust and cr-editor but not cr-commute.
+    let cascade_config = CascadeConfig::default();
+    let ctx = RecognitionContext::empty();
+    for _ in 0..5 {
+        let _ = brain.recall_cascade("Rust programming editor Neovim", &ctx, &cascade_config);
+    }
+
+    // Rebuild co-retrieval index from the cascade events
+    let pairs = brain.rebuild_co_retrieval_index().unwrap();
+    assert!(pairs > 0, "should have at least one co-retrieval pair");
+
+    // Verify: cr-rust and cr-editor are co-retrieved (using memory_id, not key)
+    let related = brain.related_memories(&r_rust.memory_id, 10).unwrap();
+    let related_ids: Vec<&str> = related.iter().map(|r| r.memory_id.as_str()).collect();
+    assert!(
+        related_ids.contains(&r_editor.memory_id.as_str()),
+        "cr-editor should be co-retrieved with cr-rust, got: {related_ids:?}"
+    );
+
+    // ── Control comparison: same candidates, with vs without co-retrieval ──
+    // Retrieve raw candidates for "daily" (all three match via FTS).
+    let candidates = brain.cascade_retrieve("daily", 40).unwrap();
+    assert!(
+        candidates.iter().any(|h| h.id == r_rust.memory_id),
+        "cr-rust should be in raw candidates"
+    );
+    assert!(
+        candidates.iter().any(|h| h.id == r_editor.memory_id),
+        "cr-editor should be in raw candidates"
+    );
+    assert!(
+        candidates.iter().any(|h| h.id == r_commute.memory_id),
+        "cr-commute should be in raw candidates"
+    );
+
+    // Compute co-retrieval boosts — verify the end-to-end path produces
+    // non-empty data with editor having higher affinity than commute.
+    let co_boosts = compute_co_retrieval_boosts(&brain, &candidates, 3);
+    assert!(
+        !co_boosts.is_empty(),
+        "co-retrieval boosts should be non-empty after priming"
+    );
+    let editor_affinity = co_boosts.get(&r_editor.memory_id).copied().unwrap_or(0.0);
+    let commute_affinity = co_boosts.get(&r_commute.memory_id).copied().unwrap_or(0.0);
+    assert!(
+        editor_affinity > commute_affinity,
+        "cr-editor should have higher co-retrieval affinity than cr-commute: \
+         editor={editor_affinity}, commute={commute_affinity}"
+    );
+
+    // Shared config — same signals for both runs, only co-retrieval map differs
+    let config = RerankingConfig {
+        apply_signal_score: true,
+        signal_score_weight: 0.3,
+        apply_recency: true,
+        recency_half_life_days: 365.0,
+        apply_entity_boost: false,
+        entity_boost_weight: 0.05,
+        apply_ambient_boost: false,
+        apply_declarative_boost: true,
+        declarative_weight: 0.10,
+        co_retrieval_weight: 0.10,
+        apply_episode_diversity: false,
+        max_per_episode: 5,
+        apply_context_dedup: false,
+    };
+
+    // Control: rank without co-retrieval (empty map)
+    let empty_boosts: HashMap<String, f64> = HashMap::new();
+    let control = apply_reranking_pipeline(candidates.clone(), &config, &ctx, &empty_boosts);
+
+    // Treatment: rank with co-retrieval
+    let treatment = apply_reranking_pipeline(candidates, &config, &ctx, &co_boosts);
+
+    // Compare cr-editor's composite score: treatment should be strictly higher
+    // than control. The delta is attributable solely to co-retrieval.
+    let control_editor_score = control
+        .iter()
+        .find(|h| h.id == r_editor.memory_id)
+        .unwrap()
+        .signal_score;
+    let treatment_editor_score = treatment
+        .iter()
+        .find(|h| h.id == r_editor.memory_id)
+        .unwrap()
+        .signal_score;
+    assert!(
+        treatment_editor_score > control_editor_score,
+        "cr-editor's score should be higher with co-retrieval: \
+         control={control_editor_score}, treatment={treatment_editor_score}"
+    );
+
+    // cr-commute's score should NOT increase (no co-retrieval affinity)
+    let control_commute_score = control
+        .iter()
+        .find(|h| h.id == r_commute.memory_id)
+        .unwrap()
+        .signal_score;
+    let treatment_commute_score = treatment
+        .iter()
+        .find(|h| h.id == r_commute.memory_id)
+        .unwrap()
+        .signal_score;
+    assert!(
+        (treatment_commute_score - control_commute_score).abs() < f64::EPSILON,
+        "cr-commute's score should be unchanged by co-retrieval: \
+         control={control_commute_score}, treatment={treatment_commute_score}"
+    );
+}
+
+#[test]
+fn compute_co_retrieval_boosts_normalization_and_edge_cases() {
+    use spectral_graph::ranking::compute_co_retrieval_boosts;
+    use spectral_ingest::MemoryHit;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // (e2) Empty candidates returns empty map without panic
+    let empty: Vec<MemoryHit> = Vec::new();
+    let boosts = compute_co_retrieval_boosts(&brain, &empty, 3);
+    assert!(
+        boosts.is_empty(),
+        "empty candidates should produce empty map"
+    );
+
+    // Ingest memories and generate co-retrieval data via cascade queries
+    brain
+        .remember("norm-a", "I like apples for breakfast", Visibility::Private)
+        .unwrap();
+    brain
+        .remember(
+            "norm-b",
+            "I like bananas for breakfast",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember("norm-c", "I like cherries for dessert", Visibility::Private)
+        .unwrap();
+
+    // Cascade queries that co-retrieve a+b more often than a+c.
+    // "breakfast" matches a+b but not c; "like" matches all three.
+    let cascade_config = CascadeConfig::default();
+    let ctx = RecognitionContext::empty();
+    for _ in 0..5 {
+        let _ = brain.recall_cascade("breakfast apples bananas", &ctx, &cascade_config);
+    }
+    for _ in 0..2 {
+        let _ = brain.recall_cascade("cherries dessert apples", &ctx, &cascade_config);
+    }
+    brain.rebuild_co_retrieval_index().unwrap();
+
+    // Build synthetic candidate list with norm-a as anchor (FTS position 0)
+    fn make_candidate(id: &str, content: &str) -> MemoryHit {
+        MemoryHit {
+            id: id.into(),
+            key: id.into(),
+            content: content.into(),
+            wing: None,
+            hall: None,
+            signal_score: 0.5,
+            visibility: "private".into(),
+            hits: 0,
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            declarative_density: None,
+            description: None,
+        }
+    }
+
+    let candidates = vec![
+        make_candidate("norm-a", "I like apples for breakfast"),
+        make_candidate("norm-b", "I like bananas for breakfast"),
+        make_candidate("norm-c", "I like cherries for dessert"),
+    ];
+
+    // (e) Normalization: values in [0.0, 1.0]
+    let boosts = compute_co_retrieval_boosts(&brain, &candidates, 1);
+    for (id, &val) in &boosts {
+        assert!(
+            (0.0..=1.0).contains(&val),
+            "boost for {id} should be in [0.0, 1.0], got {val}"
+        );
+    }
+
+    // If both b and c have boosts, b should be >= c (more co-retrievals)
+    let b_boost = boosts.get("norm-b").copied().unwrap_or(0.0);
+    let c_boost = boosts.get("norm-c").copied().unwrap_or(0.0);
+    assert!(
+        b_boost >= c_boost,
+        "norm-b (more co-retrievals) should have >= boost than norm-c, \
+         got b={b_boost} c={c_boost}"
+    );
+
+    // If there are any boosts, max should be 1.0 (normalized)
+    if !boosts.is_empty() {
+        let max_boost = boosts.values().copied().fold(0.0_f64, f64::max);
+        assert!(
+            (max_boost - 1.0).abs() < f64::EPSILON,
+            "max boost should be 1.0 after normalization, got {max_boost}"
+        );
+    }
+
+    // (e) anchor_count > candidates.len() doesn't panic
+    let boosts_big_anchor = compute_co_retrieval_boosts(&brain, &candidates, 100);
+    // Should not panic; results depend on data
+    let _ = boosts_big_anchor;
+
+    // (e) No co-retrieval data returns empty map
+    let tmp2 = TempDir::new().unwrap();
+    let brain2 = Brain::open(brain_config(&tmp2)).unwrap();
+    brain2
+        .remember("fresh-1", "Some content here", Visibility::Private)
+        .unwrap();
+    let fresh_candidates = vec![make_candidate("fresh-1", "Some content here")];
+    let empty_boosts = compute_co_retrieval_boosts(&brain2, &fresh_candidates, 3);
+    assert!(
+        empty_boosts.is_empty(),
+        "fresh brain with no co-retrieval data should return empty map"
+    );
+}

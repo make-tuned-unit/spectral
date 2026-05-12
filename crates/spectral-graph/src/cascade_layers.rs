@@ -167,12 +167,20 @@ pub fn run_cascade_pipeline(
         apply_ambient_boost: config.apply_ambient_boost,
         apply_declarative_boost: true,
         declarative_weight: 0.10,
+        co_retrieval_weight: 0.10,
         apply_episode_diversity: config.apply_episode_diversity,
         max_per_episode: config.max_per_episode,
         apply_context_dedup: config.apply_context_dedup,
     };
 
-    let results = crate::ranking::apply_reranking_pipeline(candidates, &reranking_config, context);
+    let co_boosts = crate::ranking::compute_co_retrieval_boosts(brain, &candidates, 3);
+
+    let results = crate::ranking::apply_reranking_pipeline(
+        candidates,
+        &reranking_config,
+        context,
+        &co_boosts,
+    );
 
     // ── Recall→Recognition feedback: auto-reinforce + event logging ──
     // Both are best-effort: failures never block retrieval.
