@@ -299,11 +299,8 @@ impl AccuracyEval {
                 (formatted, hits, None)
             }
             RetrievalPath::Graph => {
-                let formatted = retrieval::retrieve_graph(
-                    &brain,
-                    &question.question,
-                    &self.config.retrieval,
-                )?;
+                let formatted =
+                    retrieval::retrieve_graph(&brain, &question.question, &self.config.retrieval)?;
                 (formatted, Vec::new(), None)
             }
             RetrievalPath::Cascade => {
@@ -344,9 +341,9 @@ impl AccuracyEval {
 
         // Act
         let question_date_str = question.question_date.as_deref().unwrap_or("unknown");
-        let predicted = self
-            .actor
-            .answer(&question.question, question_date_str, &memories, qtype)?;
+        let predicted =
+            self.actor
+                .answer(&question.question, question_date_str, &memories, qtype)?;
 
         // Judge
         let answer_text = question.answer_text();

@@ -182,7 +182,10 @@ fn main() -> Result<()> {
             let (ret_path, retrieval_path_override) = match (explicit_path, use_cascade) {
                 (Some(path), _) => (path, Some(path)),
                 (None, true) => (retrieval::RetrievalPath::Cascade, None),
-                (None, false) => (retrieval::RetrievalPath::TopkFts, Some(retrieval::RetrievalPath::TopkFts)),
+                (None, false) => (
+                    retrieval::RetrievalPath::TopkFts,
+                    Some(retrieval::RetrievalPath::TopkFts),
+                ),
             };
 
             let config = EvalConfig {
