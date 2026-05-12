@@ -130,6 +130,29 @@ The ACTOR_MISS pattern is "embedded reference in different primary context" -- n
 - L2 episodes (backlog #12): not relevant -- the failures are at the actor recognition level, not the retrieval grouping level.
 - Multi-step actor patterns: premature. Single-pass with better recognition criteria should be tried first.
 
+## Section 5a -- Within-Turn Partial Extraction (PR #99 addendum)
+
+**Added**: 2026-05-12, based on PR #99 failure classification (post-PR #97 + #98).
+
+PR #99 identified a sub-pattern of GENUINE_MISS that is distinct from the cross-session "embedded-reference-in-different-primary-context" pattern documented above.
+
+### Failure #3: Bike expenses (gpt4_d84a3211)
+
+The actor quoted "$40 bike lights" from answer_2880eb6c_2 but missed "$25 chain replacement" mentioned **in the same user turn**:
+
+> "The mechanic told me I needed to replace the chain, which I did, and it cost me $25. While I was there, I also got a new set of bike lights installed, which were $40."
+
+The actor extracted the $40 but not the $25 from the same sentence pair. This is **within-turn attention drop**, not cross-session topic filtering. The actor also missed "$120 Bell Zephyr helmet" from answer_2880eb6c_1, where the price is embedded as a parenthetical in a sentence about the bike shop.
+
+### Implication for intervention design
+
+This finding broadens the failure mode beyond the original framing:
+
+- **Cross-session topic filtering** (weddings, tanks): addressed by per-session extraction (isolating sessions removes cross-session topic interference). Documented in Section 4 above.
+- **Within-turn partial extraction** (bike expenses): NOT addressed by per-session extraction. Even processing answer_2880eb6c_2 in isolation, the actor would face the same within-turn miss. The failure is at the sentence-pair level, not the session level.
+
+Per-session extraction (suggested in PR #99 Section 6) would address the weddings/tanks pattern but not the bike expenses pattern. The within-turn miss requires either multi-pass extraction within a single session or structured output that forces per-sentence scanning.
+
 ## Diagnosis evolution
 
 This investigation went through three diagnostic hypotheses:
