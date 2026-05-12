@@ -1,8 +1,8 @@
-# Actor Prompt Refinement Proposal
+# Actor Prompt Refinement Proposal (v2)
 
 **Date**: 2026-05-12
 **Branch**: `feat/refine-actor-prompts-v1`
-**Status**: Proposal. Implementation after approval.
+**Status**: Implementing approved refinements.
 
 ---
 
@@ -19,125 +19,76 @@
 | **counting_enumerate.md** | **63.3%** | **30** |
 | factual_current_state.md | 50.0% | 2 |
 
-Two templates have both low accuracy AND high sample count: `counting_enumerate.md` (63.3%, n=30) and `preference.md` (66.7%, n=18). These are the refinement targets.
+## Structural Comparison (general knowledge, retained)
 
-## Structural Comparison
+High-accuracy prompts (temporal 93%, assistant_recall 86%) share three properties:
 
-### What high-accuracy prompts have in common
+1. **Single primary task.** Instruction 1 names one thing to do.
+2. **Defined output shape.** The answer format is specified.
+3. **Explicit null-result handling.** The actor knows what to do when evidence is absent.
 
-**temporal.md (93%)** and **assistant_recall.md (86%)** share three properties:
+These are valid general principles for prompt design. However, the v1 proposal incorrectly diagnosed counting_enumerate.md's failure mode as "cognitive overload from too many subtasks." The investigation in PR #93 refuted this.
 
-1. **Single primary task.** Instruction 1 names one thing to do:
-   - temporal: "identify session dates, then perform the calculation"
-   - assistant_recall: "find the relevant session and quote/paraphrase"
+## Corrected Diagnosis
 
-2. **Defined output shape.** Instruction 4 says exactly what the answer looks like:
-   - temporal: "State the date(s) or duration"
-   - assistant_recall: "Answer concisely" (after instruction 1 already said "quote or paraphrase")
+### counting_enumerate.md (63.3%, 9 ACTOR_MISS out of 10 failures)
 
-3. **Explicit null-result handling.** Both tell the actor what to do when evidence is absent:
-   - temporal: "attempt synthesis... Only respond 'I don't know' when no session contains relevant content"
-   - assistant_recall: "state clearly what IS present" / "You mentioned Y but not X"
+**Not cognitive overload.** The actor completes enumeration and states confident final counts. It doesn't abandon mid-task or run out of generation budget.
 
-### What counting_enumerate.md gets wrong
+**Actual failure mode: embedded-reference-in-different-primary-context.** Validated on the weddings case (PR #93 walkthrough): all 3 answer sessions were retrieved. Session answer_e7b0637e_2 contains "My friend Emily finally got to tie the knot with her partner Sarah" and session answer_e7b0637e_3 contains "the bride, Jen, looked stunning." Both are explicit, direct references. The actor missed them because all three sessions are primarily about the user planning their own wedding. The attended-wedding references are subordinate clauses within wedding-planning conversations.
 
-**Instruction 1 packs four subtasks into one sentence:**
-> "Scan EVERY session header below. For each match, list the item explicitly with its source session. Deduplicate before counting. State the final count last."
+**Secondary failure: session-user confusion.** Failure #2 (camping): actor says "the camping references belong to other users" because different session IDs look like different user IDs.
 
-This is scan + list-with-attribution + deduplicate + count = 4 operations. The actor starts enumerating, gets bogged down in attribution, and either stops mid-task or produces an undercount.
+### preference.md (66.7%, 5 ACTOR_MISS + 3 RETRIEVAL_MISS out of 8 failures)
 
-**Evidence from 11 failures (all counting):**
-- 8/11 find most items but miss 1-2 (undercount by 1 consistently)
-- 2/11 produce false negatives ("no information about X" when X is present)
-- 1/11 attributes user's own memories to "other users"
+**ACTOR_MISS (5/8):** Answer session retrieved but actor generates generic recommendations instead of grounding in the user's specific stated preferences. The "implicit signals from past activities" clause is too broad.
 
-The common thread: the actor allocates generation budget to per-item attribution (session IDs, dates, context) and runs out of attention before completing the scan. Listing with source is a nice-to-have that actively hurts the primary task (getting the count right).
+**RETRIEVAL_MISS (3/8):** Answer sessions absent from retrieval due to FTS vocabulary gap ("homegrown ingredients" vs "basil and mint"; "battery life" vs "power bank"; "coffee creamer recipe" vs "flavored creamer with almond milk"). Not addressable by prompt changes. Deferred to backlog item #8 (compiled-truth boost) once Permagent's Librarian populates descriptions.
 
-**Instruction 2 ("Do not stop after the first or second session")** is a symptom-patch for instruction 1's overload. If the primary task were lighter, the actor wouldn't need to be told not to stop.
+## Changes to counting_enumerate.md
 
-### What preference.md gets wrong
+Two instructions added to the existing prompt. Current task structure preserved (scan-list-dedup-count); recognition criteria refined.
 
-**Instruction 1 is two tasks with a permissive scope:**
-> "Identify the user's relevant preferences from the conversation (explicit statements OR implicit signals from past activities). Tailor your suggestion to those preferences."
+**Added instruction 2** (embedded-reference recognition):
+> "Items may appear as passing mentions within conversations about other topics. A session about wedding planning might mention weddings you attended. Scan for the counted item even when the session's primary topic is different."
 
-The "implicit signals from past activities" clause is too broad. The actor latches onto any activity mentioned in any session and generates a recommendation from general knowledge rather than the specific preference stated in the conversation.
+Targets the dominant failure mode directly. Tells the actor what to look for differently rather than asking it to look again.
 
-**Evidence from 8 failures:**
-- 4/8 produce generic recommendations ignoring specific user statements (guitar advice, battery tips, cookie ingredients, dinner ingredients)
-- 2/8 pull wrong context entirely (cocktails when user wants AI papers, Ozark when user wants comedy)
-- 1/8 answers "I don't know" despite relevant context being present
-- 1/8 references adjacent context but misses the specific preference
+**Added instruction 3** (session-user clarity):
+> "All retrieved memories are about you across multiple sessions. Different session IDs do not mean different users."
 
-The pattern: the actor generates a plausible recommendation for the topic rather than grounding in what the user specifically said. Instruction 2 says "reference what the user has said" but this is too weak against instruction 1's "implicit signals" escape hatch.
+Targets failure #2 (camping) and any similar cross-session attribution confusion.
 
-## Revised counting_enumerate.md
+**Not changed:** instruction 1 (scan-list-dedup-count), instruction 4 (synthesis), instruction 5 (concise). The v1 proposal's count-first reordering and dropped attribution are not applied -- those targeted cognitive overload, which is not the failure mode.
 
-```
-You are answering a question based on a long conversation history.
-Today's date is {question_date}.
-Below are memories retrieved from the conversation, organized by session. Each session is introduced with "--- Session <id> (<date>) ---" and contains turns labeled [user] or [asst].
+## Changes to preference.md
 
-Instructions:
-1. State the count first, then briefly list the items. Scan every session below before answering — the items are spread across multiple sessions.
-2. If two sessions mention the same item, count it once.
-3. If no items match, answer "0" — do not abandon the task or say "I don't know."
-4. Answer concisely. State the count and the items.
+**Instruction 1** revised: "stated preferences" replaces "explicit statements OR implicit signals." The "implicit signals" escape hatch is removed. "Prefer these over inferred preferences" keeps inference possible but makes explicit statements primary.
 
-Memories:
-{memories_text}
+**Instruction 2** revised: "If the user mentioned a product, ingredient, or experience by name, reference it directly." Concrete grounding targeting the failure mode where the actor references topic area but misses the named entity.
 
-Question: {question}
+**Instruction 3** added: "Do not give generic advice. Every recommendation should trace back to something the user said." Direct negative instruction targeting the most common ACTOR_MISS pattern.
 
-Answer:
-```
+**Instruction 4** revised: "say so rather than guessing" replaces the synthesis directive. For preference questions, guessing IS the failure mode.
 
-**Changes:**
-- Instruction 1: single directive "state the count first, list briefly second." Scan-all is a subordinate clause, not a multi-step process. Dropped "list each item explicitly with its source session" — the per-item attribution that consumed generation budget.
-- Instruction 2: dedup is now its own short sentence instead of buried in instruction 1.
-- Instruction 3: explicit zero-result fallback. Addresses the "no information about X" false-negative failures. The phrasing "do not abandon the task" directly targets the mid-enumeration dropout pattern.
-- Instruction 4: unchanged safety floor.
-- Length: 591 chars (vs 621 original). Fewer words doing more work.
+## What this PR does NOT address
 
-## Revised preference.md
-
-```
-You are answering a question based on a long conversation history.
-Today's date is {question_date}.
-Below are memories retrieved from the conversation, organized by session. Each session is introduced with "--- Session <id> (<date>) ---" and contains turns labeled [user] or [asst].
-
-Instructions:
-1. Find the user's stated preferences relevant to this question — look for explicit statements about what they like, dislike, own, or have tried. Prefer these over inferred preferences from general activities.
-2. Base your recommendation on specific details from the sessions. If the user mentioned a product, ingredient, or experience by name, reference it directly.
-3. Do not give generic advice. Every recommendation should trace back to something the user said.
-4. When no relevant preferences are found, say so rather than guessing. Answer concisely.
-
-Memories:
-{memories_text}
-
-Question: {question}
-
-Answer:
-```
-
-**Changes:**
-- Instruction 1: "stated preferences" replaces "explicit statements OR implicit signals." The "implicit signals" escape hatch that caused generic recommendations is removed. "Prefer these over inferred preferences" keeps the door open for inference but makes explicit statements primary.
-- Instruction 2: "mentioned a product, ingredient, or experience by name" — concrete grounding instruction targeting the specific failure mode (actor references topic but misses the named entity the user discussed).
-- Instruction 3: new. "Do not give generic advice" — direct negative instruction targeting the most common failure. "Trace back to something the user said" reinforces grounding.
-- Instruction 4: "say so rather than guessing" replaces the synthesis directive. For preference questions, guessing IS the failure mode. Better to admit absence than fabricate.
-- Length: 719 chars (vs 622 original). Slightly longer due to the anti-generic instruction, but each sentence addresses a specific failure pattern.
+- 1 multi-session RETRIEVAL_MISS (doctors, #4): zero answer sessions retrieved. Needs FTS coverage work.
+- 3 preference RETRIEVAL_MISS cases: FTS vocabulary-gap failures. Deferred to item #8 (compiled-truth boost) once descriptions are populated.
+- factual_direct.md (68.4%) and factual_current_state.md (50.0%): different failure modes, smaller samples. Separate investigation if prioritized.
 
 ## Test Plan
 
-No new code tests. The bench is the test.
+Targeted bench runs only ($3.20 total):
+- **Multi-session** (n=20, ~$1.60): baseline 50% (10/20), target 60%+ (12+/20)
+- **Single-session-preference** (n=20, ~$1.60): baseline 60% (12/20), target 70%+ (14+/20)
 
-- **Multi-session category** (n=20, ~$1.60): primary verification for counting_enumerate.md. Baseline: 50% (10/20). Target: 60%+ (12+/20). The 10 failures were all counting — even converting 2-3 is a meaningful lift.
-- **Single-session-preference category** (n=20, ~$1.60): primary verification for preference.md. Baseline: 60% (12/20). Target: 70%+ (14+/20).
-- Both categories run as part of the standard bench sweep; no special configuration needed.
+No full bench until targeted results confirm the intervention works.
 
 ## Safety Floor Verification
 
 Both revised prompts preserve:
 - Today's date: `{question_date}` present
-- Memory format: "organized by session" / "--- Session <id> (<date>) ---" header description present
-- "Don't know" fallback: counting has "answer '0'"; preference has "say so rather than guessing"
-- Concise answers: instruction 4 in both
+- Memory format: "organized by session" / session header description present
+- "Don't know" fallback: counting has synthesis instruction; preference has "say so rather than guessing"
+- Concise answers: final instruction in both
