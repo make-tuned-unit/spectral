@@ -26,6 +26,14 @@ pub struct CategoryStats {
     pub accuracy: f64,
 }
 
+/// Per-question strategy routing telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyTelemetry {
+    pub shape: String,
+    pub prompt_template: String,
+    pub retrieval_path_chosen: String,
+}
+
 /// Detailed result for a single evaluated question.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuestionResult {
@@ -44,6 +52,9 @@ pub struct QuestionResult {
     /// Cascade telemetry (populated when --use-cascade is set).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade_telemetry: Option<crate::retrieval::CascadeTelemetry>,
+    /// Strategy routing telemetry (populated when shape routing is active).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy_telemetry: Option<StrategyTelemetry>,
 }
 
 /// Full evaluation report.
@@ -102,6 +113,7 @@ impl EvalReport {
         memory_keys: Vec<String>,
         duration_ms: u64,
         cascade_telemetry: Option<crate::retrieval::CascadeTelemetry>,
+        strategy_telemetry: Option<StrategyTelemetry>,
     ) {
         self.total_questions += 1;
         if correct {
@@ -136,6 +148,7 @@ impl EvalReport {
             retrieved_memory_keys: memory_keys,
             duration_ms,
             cascade_telemetry,
+            strategy_telemetry,
         });
     }
 
@@ -239,6 +252,7 @@ mod tests {
             vec!["k1".into()],
             100,
             None,
+            None,
         );
         report.record(
             "q2",
@@ -252,6 +266,7 @@ mod tests {
             vec!["k2".into(), "k3".into()],
             200,
             None,
+            None,
         );
         report.record(
             "q3",
@@ -264,6 +279,7 @@ mod tests {
             10,
             vec![],
             50,
+            None,
             None,
         );
         report.finalize();
@@ -292,6 +308,7 @@ mod tests {
             retrieved_memory_keys: vec!["s1:turn:0:user".into(), "s2:turn:1:assistant".into()],
             duration_ms: 1234,
             cascade_telemetry: None,
+            strategy_telemetry: None,
         };
         let json = serde_json::to_string(&qr).unwrap();
         assert!(json.contains("\"question_id\":\"q42\""));
