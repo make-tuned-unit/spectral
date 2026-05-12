@@ -1398,3 +1398,212 @@ fn memories_for_session_aggregates_across_cascades() {
         "memories_for_session should return unique IDs"
     );
 }
+
+// ── Co-retrieval ranking integration tests ──────────────────────────
+
+#[test]
+fn co_retrieval_boost_lifts_co_retrieved_memories_in_cascade() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // Ingest: "rust" and "editor" memories are topically close.
+    // "commute" memory is unrelated but will match FTS on "daily".
+    let r_rust = brain
+        .remember(
+            "cr-rust",
+            "I use Rust for systems programming daily",
+            Visibility::Private,
+        )
+        .unwrap();
+    let r_editor = brain
+        .remember(
+            "cr-editor",
+            "My daily editor for Rust is Neovim",
+            Visibility::Private,
+        )
+        .unwrap();
+    let r_commute = brain
+        .remember(
+            "cr-commute",
+            "My daily commute takes thirty minutes by train",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    // Run cascade queries that return overlapping subsets.
+    // "Rust programming editor Neovim" should co-retrieve
+    // cr-rust and cr-editor but not cr-commute.
+    let cascade_config = CascadeConfig::default();
+    let ctx = RecognitionContext::empty();
+    for _ in 0..5 {
+        let _ = brain.recall_cascade("Rust programming editor Neovim", &ctx, &cascade_config);
+    }
+
+    // Rebuild co-retrieval index from the cascade events
+    let pairs = brain.rebuild_co_retrieval_index().unwrap();
+    assert!(pairs > 0, "should have at least one co-retrieval pair");
+
+    // Verify: cr-rust and cr-editor are co-retrieved (using memory_id, not key)
+    let related = brain.related_memories(&r_rust.memory_id, 10).unwrap();
+    let related_ids: Vec<&str> = related.iter().map(|r| r.memory_id.as_str()).collect();
+    assert!(
+        related_ids.contains(&r_editor.memory_id.as_str()),
+        "cr-editor should be co-retrieved with cr-rust, got: {related_ids:?}"
+    );
+
+    // Now run cascade for "daily" — all three match on FTS.
+    // With co-retrieval active, cr-editor should get a boost when
+    // cr-rust is an anchor (both are "daily" matches).
+    let result = brain
+        .recall_cascade("daily", &ctx, &cascade_config)
+        .unwrap();
+    let hit_ids: Vec<&str> = result.merged_hits.iter().map(|h| h.id.as_str()).collect();
+
+    // All three should be present
+    assert!(
+        hit_ids.contains(&r_rust.memory_id.as_str()),
+        "cr-rust should be in results"
+    );
+    assert!(
+        hit_ids.contains(&r_editor.memory_id.as_str()),
+        "cr-editor should be in results"
+    );
+    assert!(
+        hit_ids.contains(&r_commute.memory_id.as_str()),
+        "cr-commute should be in results"
+    );
+
+    // cr-editor should rank above cr-commute because co-retrieval boosts it.
+    // Both match "daily" via FTS, but cr-editor has co-retrieval affinity
+    // with cr-rust (an anchor) while cr-commute does not.
+    let editor_pos = hit_ids
+        .iter()
+        .position(|id| *id == r_editor.memory_id)
+        .unwrap();
+    let commute_pos = hit_ids
+        .iter()
+        .position(|id| *id == r_commute.memory_id)
+        .unwrap();
+    assert!(
+        editor_pos < commute_pos,
+        "cr-editor (co-retrieved with cr-rust) should rank above cr-commute, \
+         got editor={editor_pos} commute={commute_pos}"
+    );
+}
+
+#[test]
+fn compute_co_retrieval_boosts_normalization_and_edge_cases() {
+    use spectral_graph::ranking::compute_co_retrieval_boosts;
+    use spectral_ingest::MemoryHit;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    // (e2) Empty candidates returns empty map without panic
+    let empty: Vec<MemoryHit> = Vec::new();
+    let boosts = compute_co_retrieval_boosts(&brain, &empty, 3);
+    assert!(
+        boosts.is_empty(),
+        "empty candidates should produce empty map"
+    );
+
+    // Ingest memories and generate co-retrieval data via cascade queries
+    brain
+        .remember("norm-a", "I like apples for breakfast", Visibility::Private)
+        .unwrap();
+    brain
+        .remember(
+            "norm-b",
+            "I like bananas for breakfast",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember("norm-c", "I like cherries for dessert", Visibility::Private)
+        .unwrap();
+
+    // Cascade queries that co-retrieve a+b more often than a+c.
+    // "breakfast" matches a+b but not c; "like" matches all three.
+    let cascade_config = CascadeConfig::default();
+    let ctx = RecognitionContext::empty();
+    for _ in 0..5 {
+        let _ = brain.recall_cascade("breakfast apples bananas", &ctx, &cascade_config);
+    }
+    for _ in 0..2 {
+        let _ = brain.recall_cascade("cherries dessert apples", &ctx, &cascade_config);
+    }
+    brain.rebuild_co_retrieval_index().unwrap();
+
+    // Build synthetic candidate list with norm-a as anchor (FTS position 0)
+    fn make_candidate(id: &str, content: &str) -> MemoryHit {
+        MemoryHit {
+            id: id.into(),
+            key: id.into(),
+            content: content.into(),
+            wing: None,
+            hall: None,
+            signal_score: 0.5,
+            visibility: "private".into(),
+            hits: 0,
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            declarative_density: None,
+            description: None,
+        }
+    }
+
+    let candidates = vec![
+        make_candidate("norm-a", "I like apples for breakfast"),
+        make_candidate("norm-b", "I like bananas for breakfast"),
+        make_candidate("norm-c", "I like cherries for dessert"),
+    ];
+
+    // (e) Normalization: values in [0.0, 1.0]
+    let boosts = compute_co_retrieval_boosts(&brain, &candidates, 1);
+    for (id, &val) in &boosts {
+        assert!(
+            (0.0..=1.0).contains(&val),
+            "boost for {id} should be in [0.0, 1.0], got {val}"
+        );
+    }
+
+    // If both b and c have boosts, b should be >= c (more co-retrievals)
+    let b_boost = boosts.get("norm-b").copied().unwrap_or(0.0);
+    let c_boost = boosts.get("norm-c").copied().unwrap_or(0.0);
+    assert!(
+        b_boost >= c_boost,
+        "norm-b (more co-retrievals) should have >= boost than norm-c, \
+         got b={b_boost} c={c_boost}"
+    );
+
+    // If there are any boosts, max should be 1.0 (normalized)
+    if !boosts.is_empty() {
+        let max_boost = boosts.values().copied().fold(0.0_f64, f64::max);
+        assert!(
+            (max_boost - 1.0).abs() < f64::EPSILON,
+            "max boost should be 1.0 after normalization, got {max_boost}"
+        );
+    }
+
+    // (e) anchor_count > candidates.len() doesn't panic
+    let boosts_big_anchor = compute_co_retrieval_boosts(&brain, &candidates, 100);
+    // Should not panic; results depend on data
+    let _ = boosts_big_anchor;
+
+    // (e) No co-retrieval data returns empty map
+    let tmp2 = TempDir::new().unwrap();
+    let brain2 = Brain::open(brain_config(&tmp2)).unwrap();
+    brain2
+        .remember("fresh-1", "Some content here", Visibility::Private)
+        .unwrap();
+    let fresh_candidates = vec![make_candidate("fresh-1", "Some content here")];
+    let empty_boosts = compute_co_retrieval_boosts(&brain2, &fresh_candidates, 3);
+    assert!(
+        empty_boosts.is_empty(),
+        "fresh brain with no co-retrieval data should return empty map"
+    );
+}
