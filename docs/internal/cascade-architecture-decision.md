@@ -201,6 +201,22 @@ The evidence is clear:
 
 3. **If L2 episode summaries (#12) are prioritized**, design them as a pipeline stage, not as a Layer impl. The pipeline already has `apply_episode_diversity()`. Episode summarization would be a new stage that runs after retrieval, groups hits by episode, and optionally generates summary context.
 
+### Whitepaper divergence
+
+The TACT whitepaper describes the orchestrator architecture: ordered layers (L0-L5) with per-layer confidence and early stopping. The implementation rejected that design based on empirical evidence. The whitepaper remains aspirational — it correctly identifies the *goals* (layered recognition, confidence-driven stopping, zero-LLM hot path) but prescribes an implementation strategy (independent Layer trait objects with per-layer retrieval) that doesn't work with a single underlying FTS store. The single-pipeline achieves the whitepaper's goals through different means: one retrieval pass, composable re-ranking stages, deterministic signals throughout.
+
+The whitepaper should be updated to reflect the actual architecture. Leaving the orchestrator design as the documented architecture while the implementation pursues a different approach creates confusion for any reader who consults both. The update should preserve the whitepaper's conceptual framing (layered recognition, escalating cost) while describing how the pipeline implements it (one retrieval, staged re-ranking, configurable signal weights).
+
+### L2 episode summaries: deferred design decision
+
+This document recommends "episode summaries can be a pipeline stage" but does not resolve the L2 design question. There are two distinct capabilities conflated under "L2":
+
+1. **Session-grouped formatting.** Retrieving individual memory hits and presenting them grouped by session/episode. PR #70 already does this. It's a formatting concern, not a retrieval concern, and fits trivially in the pipeline.
+
+2. **Session-level summary retrieval.** Retrieving pre-computed episode summaries as first-class retrieval targets — what the TACT whitepaper's L2 originally described. This is a retrieval concern: summaries would be indexed alongside memories, and the pipeline would need to decide when to surface a summary vs. constituent memories.
+
+These require different designs. (1) is already solved. (2) involves schema changes (summary storage), ingest changes (summary generation trigger), and retrieval changes (summary-vs-memory ranking). When backlog item #12 is dispatched, the design decision is whether (2) is a pipeline stage (summaries are just another candidate type in the re-ranking pool) or something structurally different. This document does not resolve that question — it only notes that the pipeline architecture does not preclude either approach.
+
 ### What would change this recommendation
 
 - **If a heavy layer is introduced** (vector search, LLM re-ranking) that makes early stopping materially valuable, the orchestrator model becomes relevant again. But per the backlog, L4 vector search is "deferred indefinitely" and LLM-in-loop recognition contradicts the zero-LLM architectural commitment.
