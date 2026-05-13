@@ -98,13 +98,23 @@ The unified re-ranking pipeline is `apply_reranking_pipeline()` at `ranking.rs:2
 
 The critical evidence:
 
-1. **GENUINE_MISS dominates** (4 of 10 multi-session failures). In all four cases, answer sessions were retrieved (3/3 or 4/4). The failure is actor-level — the actor sees the evidence but fails to extract embedded references. No ranking signal can fix this because the memories are already in the actor's context.
+1. **GENUINE_MISS is the largest single failure mode** (4 of 10 multi-session failures), with DEFINITION_DISAGREEMENT (3) and RETRIEVAL_MISS (2) making up the rest. Verification of retrieval status for the 4 GENUINE_MISS cases:
 
-2. **RETRIEVAL_MISS is addressed by item #8** (description-enriched FTS), not session-level signals. Cases #4 and #10 failed because FTS vocabulary didn't match — descriptions bridge that gap. Session-level ranking can't help if the session's memories aren't in the FTS result set at all.
+   **Verification methodology**: PR #99's failure table claims "3/3 retrieved" for cases #7, #8, #9, citing cross-referencing of `memory_keys` from `report.json` against answer session IDs. However, `memory_keys` is **empty for all results** in the post-PR-#98 bench run — the field was not populated. PR #99's retrieval status was inferred from actor output, not retrieval telemetry.
+
+   Independent verification from actor output:
+   - **#3 Bike expenses**: Actor quotes bike lights ($40) from `answer_2880eb6c_2`. Misses $25 chain from the SAME turn. 4/4 answer sessions confirmed in actor context — actor attention miss, not ranking.
+   - **#7 Festivals**: Actor explicitly references `answer_cf9e3940_1`, `answer_cf9e3940_2`, `answer_cf9e3940_3` by session ID. 3/3 confirmed retrieved. Actor found 3 festivals, missed the 4th. GENUINE_MISS confirmed.
+   - **#8 Tanks**: Actor found "Amazonia" (from `answer_c65042d7_3`) and "1-gallon tank for friend's kid" (from `answer_c65042d7_1`). But the missed 5-gallon betta tank from `answer_c65042d7_2` has **no evidence of retrieval** — neither the session ID nor any unique content from that session appears in actor output. PR #99 classified this as GENUINE_MISS, stating the betta tank is "in the first turn of the session," but retrieval of that session is not confirmed. **This case is ambiguous: could be partial RETRIEVAL_MISS.**
+   - **#9 Weddings**: Actor explicitly references `answer_e7b0637e_1` and quotes from non-answer sessions. Emily+Sarah (`answer_e7b0637e_2`) and Jen+Tom (`answer_e7b0637e_3`) have **no evidence of retrieval** — neither session IDs nor distinctive content (Emily, Sarah, Jen, Tom, bohemian) appear in actor output. PR #99 states "All 3 answer sessions were retrieved" but this is not confirmed by the data. **This case is ambiguous: could be partial RETRIEVAL_MISS for 2 of 3 answer sessions.**
+
+   **Impact on recommendation**: Even if #8 and #9 are partially retrieval-related, the missing sessions contain embedded references (betta tank in a nitrite-levels session, attended weddings in wedding-planning sessions). These are the same vocabulary-gap pattern that item #8 addresses. Session-level ranking would not help surface sessions that FTS doesn't match — descriptions would.
+
+2. **RETRIEVAL_MISS is addressed by item #8** (description-enriched FTS), not session-level signals. Cases #4 and #10 failed because FTS vocabulary didn't match — descriptions bridge that gap. Session-level ranking can't help if the session's memories aren't in the FTS result set at all. The ambiguous portions of #8 and #9 (if retrieval-related) are the same vocabulary-gap pattern.
 
 3. **Existing per-memory signals already cover what session signals would approximate.** Per-memory recency ≈ session recency (same timestamps). Per-memory declarative density ≈ session declarative density (more precise). Per-memory co-retrieval ≈ session co-retrieval coherence (avoids feedback loops).
 
-4. **Candidate E (topic density) is actively counterproductive** for the embedded-reference failure mode that drives GENUINE_MISS. Boosting sessions with high topic density would penalize sessions where the answer appears as a subordinate reference — exactly the cases that are hardest.
+4. **Candidate E (topic density) is actively counterproductive** for the embedded-reference failure mode. Boosting sessions with high topic density would penalize sessions where the answer appears as a subordinate reference — exactly the cases that are hardest.
 
 5. **The backlog's own framing was correct**: "Deferred deliberately until we have real usage data to inform what session signal should weight." There is no usage data yet. The bench uses synthetic LongMemEval data with single-date sessions, which means session-level temporal signals are degenerate (same date for all turns in a session).
 
@@ -140,7 +150,7 @@ If item #11 is revisited in the future, the validation would need:
 
 Item #11 becomes worthwhile if:
 
-1. **A bench failure is identified where answer sessions are retrieved but ranked below K cutoff.** This would mean retrieval found the evidence but ranking discarded it. No such case exists in the current multi-session failure classification (PR #99). If future bench runs reveal this pattern, session-level ranking becomes relevant.
+1. **A bench failure is identified where answer sessions are retrieved but ranked below K cutoff.** This would mean retrieval found the evidence but ranking discarded it. No confirmed case exists in the current multi-session failure classification (PR #99), though cases #8 and #9 are ambiguous — their retrieval status was not independently verified (see Section 3 verification). A follow-up with retrieval telemetry populated (`memory_keys` in `report.json`) would resolve the ambiguity. If those cases are partially retrieval-related, they're vocabulary-gap failures addressable by item #8's descriptions, not session-level ranking.
 
 2. **Production usage data from Permagent shows session-level patterns** that LongMemEval doesn't capture. Real conversations have multi-day sessions, variable turn counts, and temporal patterns absent in the benchmark. Session-level signals might matter more in production than in synthetic data.
 
