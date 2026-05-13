@@ -281,7 +281,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let brain = ingest_question(&test_question(), dir.path(), IngestStrategy::PerTurn).unwrap();
 
-        let (memories, telemetry) =
+        let (memories, _, telemetry) =
             retrieve_cascade(&brain, "sky blue", &RetrievalConfig::default(), None).unwrap();
         assert!(!memories.is_empty());
 
