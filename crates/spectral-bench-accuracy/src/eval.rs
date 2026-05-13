@@ -36,6 +36,9 @@ pub struct EvalConfig {
     /// When None and use_cascade is true, shape routing is active.
     #[serde(default)]
     pub retrieval_path_override: Option<RetrievalPath>,
+    /// Filter to a single question by ID (for targeted pre-validation).
+    #[serde(default)]
+    pub question_id: Option<String>,
 }
 
 impl Default for EvalConfig {
@@ -53,6 +56,7 @@ impl Default for EvalConfig {
             dump_scores_path: None,
             checkpoint_interval: 10,
             retrieval_path_override: None,
+            question_id: None,
         }
     }
 }
@@ -86,6 +90,8 @@ pub struct AccuracyEval {
     config: EvalConfig,
     actor: Box<dyn Actor>,
     judge: Box<dyn Judge>,
+    /// Optional description map for FTS enrichment.
+    descriptions: Option<crate::describe::DescriptionMap>,
 }
 
 /// Result of evaluating a single question.
@@ -110,7 +116,14 @@ impl AccuracyEval {
             config,
             actor,
             judge,
+            descriptions: None,
         }
+    }
+
+    /// Set the description map for FTS enrichment.
+    pub fn with_descriptions(mut self, descriptions: crate::describe::DescriptionMap) -> Self {
+        self.descriptions = Some(descriptions);
+        self
     }
 
     /// Run the full evaluation.
@@ -250,6 +263,11 @@ impl AccuracyEval {
         // Ingest
         let brain = ingest::ingest_question(question, &brain_dir, self.config.ingest_strategy)?;
 
+        // Apply descriptions for FTS enrichment (if provided)
+        if let Some(ref descs) = self.descriptions {
+            let _ = crate::describe::apply_descriptions(&brain, descs);
+        }
+
         // Classify question shape for routing
         let qtype = retrieval::QuestionType::classify(&question.question);
 
@@ -369,6 +387,10 @@ impl AccuracyEval {
 
     fn filter_questions<'a>(&self, questions_all: &'a [Question]) -> Vec<&'a Question> {
         let mut questions: Vec<&Question> = questions_all.iter().collect();
+
+        if let Some(ref qid) = self.config.question_id {
+            questions.retain(|q| q.question_id == *qid);
+        }
 
         if let Some(ref cats) = self.config.categories {
             let cat_strs: HashSet<String> = cats.iter().map(|c| c.as_str().to_string()).collect();

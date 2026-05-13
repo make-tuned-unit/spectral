@@ -29,7 +29,9 @@ regex = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
+blake3 = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
 indicatif = "0.17"
 
 [dev-dependencies]

@@ -164,22 +164,23 @@ impl SqliteStore {
             CREATE INDEX IF NOT EXISTS idx_memories_signal ON memories(signal_score);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-                key, content, content=memories, content_rowid=rowid
+                key, content, description,
+                content=memories, content_rowid=rowid
             );
 
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-                INSERT INTO memories_fts(rowid, key, content)
-                VALUES (new.rowid, new.key, new.content);
+                INSERT INTO memories_fts(rowid, key, content, description)
+                VALUES (new.rowid, new.key, new.content, COALESCE(new.description, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-                INSERT INTO memories_fts(memories_fts, rowid, key, content)
-                VALUES ('delete', old.rowid, old.key, old.content);
+                INSERT INTO memories_fts(memories_fts, rowid, key, content, description)
+                VALUES ('delete', old.rowid, old.key, old.content, COALESCE(old.description, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-                INSERT INTO memories_fts(memories_fts, rowid, key, content)
-                VALUES ('delete', old.rowid, old.key, old.content);
-                INSERT INTO memories_fts(rowid, key, content)
-                VALUES (new.rowid, new.key, new.content);
+                INSERT INTO memories_fts(memories_fts, rowid, key, content, description)
+                VALUES ('delete', old.rowid, old.key, old.content, COALESCE(old.description, ''));
+                INSERT INTO memories_fts(rowid, key, content, description)
+                VALUES (new.rowid, new.key, new.content, COALESCE(new.description, ''));
             END;
 
             CREATE TABLE IF NOT EXISTS constellation_fingerprints (
@@ -425,6 +426,52 @@ impl SqliteStore {
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash)",
         )?;
+
+        // FTS5 migration: add description column to FTS virtual table.
+        // FTS5 does not support ALTER TABLE, so we detect and drop+recreate.
+        let fts_has_description = {
+            let fts_sql: Option<String> = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = 'memories_fts'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            fts_sql
+                .as_deref()
+                .is_some_and(|sql| sql.contains("description"))
+        };
+        if !fts_has_description {
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS memories_ai;
+                 DROP TRIGGER IF EXISTS memories_ad;
+                 DROP TRIGGER IF EXISTS memories_au;
+                 DROP TABLE IF EXISTS memories_fts;
+
+                 CREATE VIRTUAL TABLE memories_fts USING fts5(
+                     key, content, description,
+                     content=memories, content_rowid=rowid
+                 );
+
+                 CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+                     INSERT INTO memories_fts(rowid, key, content, description)
+                     VALUES (new.rowid, new.key, new.content, COALESCE(new.description, ''));
+                 END;
+                 CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+                     INSERT INTO memories_fts(memories_fts, rowid, key, content, description)
+                     VALUES ('delete', old.rowid, old.key, old.content, COALESCE(old.description, ''));
+                 END;
+                 CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+                     INSERT INTO memories_fts(memories_fts, rowid, key, content, description)
+                     VALUES ('delete', old.rowid, old.key, old.content, COALESCE(old.description, ''));
+                     INSERT INTO memories_fts(rowid, key, content, description)
+                     VALUES (new.rowid, new.key, new.content, COALESCE(new.description, ''));
+                 END;
+
+                 INSERT INTO memories_fts(rowid, key, content, description)
+                 SELECT rowid, key, content, COALESCE(description, '') FROM memories;",
+            )?;
+        }
 
         Ok(())
     }
@@ -888,7 +935,7 @@ impl MemoryStore for SqliteStore {
                  FROM memories_fts fts
                  JOIN memories m ON m.rowid = fts.rowid
                  WHERE memories_fts MATCH ?1
-                 ORDER BY rank LIMIT ?2",
+                 ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5) LIMIT ?2",
                 cols = MEMORY_COLUMNS.replace(", ", ", m."),
             );
             let mut stmt = conn.prepare(&sql)?;
@@ -2006,6 +2053,81 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn fts_matches_description_text() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "session_abc:turn:0:user".into(),
+            content: "I saw Dr. Patel for my sinusitis follow-up".into(),
+            wing: Some("general".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        store.write(&mem, &[]).await.unwrap();
+
+        // "doctors" should NOT match content (only "Dr." is there)
+        let results = store.fts_search(&["doctors".into()], 10).await.unwrap();
+        assert!(results.is_empty(), "should not match without description");
+
+        // Add description with category-level vocabulary
+        store
+            .set_description(
+                "m1",
+                "User visits doctors including ENT specialist Dr. Patel",
+            )
+            .await
+            .unwrap();
+
+        // "doctors" should now match via the description column
+        let results = store.fts_search(&["doctors".into()], 10).await.unwrap();
+        assert_eq!(results.len(), 1, "should match via description");
+        assert_eq!(results[0].id, "m1");
+    }
+
+    #[tokio::test]
+    async fn fts_description_null_does_not_break_search() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "k1".into(),
+            content: "I love hiking in the mountains".into(),
+            wing: None,
+            hall: None,
+            signal_score: 0.5,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        store.write(&mem, &[]).await.unwrap();
+
+        // Content match should still work when description is NULL
+        let results = store.fts_search(&["hiking".into()], 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "m1");
     }
 
     #[tokio::test]

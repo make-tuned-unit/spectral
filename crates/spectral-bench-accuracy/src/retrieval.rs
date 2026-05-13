@@ -477,6 +477,12 @@ pub fn retrieve_cascade(
 }
 
 /// Parse LongMemEval question_date format ("2023/05/30 (Tue) 23:40") into DateTime<Utc>.
+/// Public alias for use by inspect module.
+pub fn parse_question_date_pub(date_str: &str) -> Option<DateTime<Utc>> {
+    parse_question_date(date_str)
+}
+
+/// Parse LongMemEval question_date format ("2023/05/30 (Tue) 23:40") into DateTime<Utc>.
 fn parse_question_date(date_str: &str) -> Option<DateTime<Utc>> {
     // Strip the day-of-week parenthetical: "2023/05/30 (Tue) 23:40" → "2023/05/30 23:40"
     let cleaned = date_str
