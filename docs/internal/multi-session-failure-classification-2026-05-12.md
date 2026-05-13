@@ -34,8 +34,8 @@
 | 5 | dd2973ad | Bedtime before doctor | 2 AM | "I don't know" | 2/2 retrieved | DATE/TEMPORAL_REASONING | Date math error |
 | 6 | c4a1ceb8 | Citrus fruits in cocktails | 3 | 4 | 4/4 retrieved | DEFINITION_DISAGREEMENT | Grapefruit: used or suggested? |
 | 7 | gpt4_a56e767c | Movie festivals attended | 4 | 3 | 3/3 retrieved | GENUINE_MISS | 4th festival not found |
-| 8 | 46a3abf7 | Tanks currently owned | 3 | 2 | 3/3 retrieved | GENUINE_MISS | Missed 5-gallon betta tank |
-| 9 | gpt4_2f8be40d | Weddings attended | 3 | 2 | 3/3 retrieved | GENUINE_MISS | Missed Emily+Sarah, Jen+Tom |
+| 8 | 46a3abf7 | Tanks currently owned | 3 | 2 | 3/3 retrieved | AMBIGUOUS* | Missed 5-gallon betta tank |
+| 9 | gpt4_2f8be40d | Weddings attended | 3 | 2 | 3/3 retrieved | AMBIGUOUS* | Missed Emily+Sarah, Jen+Tom |
 | 10 | gpt4_15e38248 | Furniture bought/assembled/sold/fixed | 4 | 2 | 2/4 retrieved | RETRIEVAL_MISS | 2 answer sessions not retrieved |
 
 ---
@@ -200,3 +200,27 @@ If items #20 and #8 both succeed at their estimated lifts:
 - Remaining: 4 GENUINE_MISS + 1 TEMPORAL = 5 failures requiring deeper intervention
 
 The GENUINE_MISS failures (especially #9 weddings, which persists across every intervention tried) represent the hard floor for prompt-level approaches. These 4-5 failures are where the path-to-90% analysis in the category audit meets reality: lifting past 75% on multi-session requires either a fundamentally different actor pattern (per-session extraction) or model-level improvements in subordinate-reference attention.
+
+---
+
+## Correction (2026-05-13): Cases #8 and #9 reclassified to AMBIGUOUS
+
+*Cases #8 (tanks) and #9 (weddings) reclassified from GENUINE_MISS to AMBIGUOUS pending retrieval verification. See `docs/internal/item-11-investigation.md` Section 3 for full analysis.*
+
+**Finding**: The "3/3 retrieved" claim for cases #8 and #9 was based on inference from actor output, not retrieval telemetry. The `memory_keys` field in `report.json` is empty for all results in the post-PR-#98 bench run — it was not populated.
+
+Independent verification from actor output:
+- **#8 Tanks**: Actor found content from `answer_c65042d7_3` (Amazonia) and `answer_c65042d7_1` (friend's kid tank). But the missed 5-gallon betta tank from `answer_c65042d7_2` has no evidence of retrieval — neither session ID nor distinctive content appears in actor output. May be partial RETRIEVAL_MISS.
+- **#9 Weddings**: Actor references `answer_e7b0637e_1` only. Emily+Sarah (`answer_e7b0637e_2`) and Jen+Tom (`answer_e7b0637e_3`) have no evidence of retrieval. May be partial RETRIEVAL_MISS for 2 of 3 answer sessions.
+
+**Strategic implication**: Item #8's projected lift could be larger than the +2 estimate (cases #4, #10 only). If cases #8 and #9 are partially retrieval-related, description enrichment may address them too. The Permagent regen bench run is the decisive test.
+
+**Aggregate counts (revised)**:
+
+| Classification | Count | Change |
+|----------------|-------|--------|
+| DEFINITION_DISAGREEMENT | 3 | unchanged |
+| GENUINE_MISS | 2 | was 4, reduced by 2 |
+| AMBIGUOUS (GENUINE_MISS or partial RETRIEVAL_MISS) | 2 | new |
+| RETRIEVAL_MISS | 2 | unchanged |
+| DATE/TEMPORAL_REASONING | 1 | unchanged |
