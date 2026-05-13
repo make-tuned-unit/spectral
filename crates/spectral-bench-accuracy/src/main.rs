@@ -80,6 +80,10 @@ enum Command {
         /// after ingestion, enriching FTS indexing.
         #[arg(long)]
         descriptions: Option<PathBuf>,
+
+        /// Filter to a single question by ID (for targeted pre-validation).
+        #[arg(long)]
+        question_id: Option<String>,
     },
 
     /// Pretty-print a previously saved JSON report
@@ -112,6 +116,12 @@ enum Command {
         /// enrich FTS indexing before retrieval.
         #[arg(long)]
         descriptions: Option<PathBuf>,
+
+        /// Retrieval path: cascade (default) or local.
+        /// cascade matches bench --use-cascade behavior.
+        /// local uses legacy recall_local for debugging.
+        #[arg(long, default_value = "cascade")]
+        retrieval_path: String,
     },
 
     /// Generate search-indexing descriptions for bench memories via LLM API
@@ -181,6 +191,7 @@ fn main() -> Result<()> {
             base_url,
             max_results,
             descriptions,
+            question_id,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
@@ -247,6 +258,7 @@ fn main() -> Result<()> {
                 use_cascade,
                 dump_scores_path: dump_scores,
                 retrieval_path_override,
+                question_id,
                 ..Default::default()
             };
 
@@ -279,6 +291,7 @@ fn main() -> Result<()> {
             work_dir,
             output,
             descriptions,
+            retrieval_path,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question = ds
@@ -295,13 +308,25 @@ fn main() -> Result<()> {
                 })
                 .transpose()?;
 
+            let ret_path = match retrieval_path.as_str() {
+                "local" => spectral_bench_accuracy::inspect::InspectRetrievalPath::Local,
+                "cascade" => spectral_bench_accuracy::inspect::InspectRetrievalPath::Cascade,
+                other => {
+                    eprintln!("Unknown retrieval path: {other}. Valid: cascade, local");
+                    std::process::exit(1);
+                }
+            };
+
             std::fs::create_dir_all(&work_dir)?;
-            eprintln!("Inspecting question {question_id}...");
+            eprintln!(
+                "Inspecting question {question_id} (retrieval: {retrieval_path})..."
+            );
             let result = spectral_bench_accuracy::inspect::inspect_question(
                 question,
                 &work_dir,
                 &RetrievalConfig::default(),
                 descs.as_ref(),
+                ret_path,
             )?;
 
             let json = serde_json::to_string_pretty(&result)?;

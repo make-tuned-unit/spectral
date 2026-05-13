@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::dataset::Question;
 use crate::ingest;
-use crate::retrieval::RetrievalConfig;
+use crate::retrieval::{QuestionType, RetrievalConfig};
 
 /// A single scored-memory record for the JSONL dump (Tool 1).
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,13 +71,28 @@ pub fn write_score_records(
     Ok(())
 }
 
+/// Retrieval path for the inspect tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectRetrievalPath {
+    /// Legacy direct recall (recall_local).
+    Local,
+    /// Cascade pipeline — matches bench `--use-cascade` behavior.
+    Cascade,
+}
+
 /// Run a deep inspection of a single question: ingest, recall top-N,
 /// enumerate ALL memories in the brain.
+///
+/// `retrieval_path` controls how top-N retrieval is performed:
+/// - `Cascade` (default): uses `recall_cascade_with_pipeline` with the same
+///   question-type-routed config the bench uses under `--use-cascade`.
+/// - `Local`: uses `recall_local` (legacy TACT/FTS direct recall).
 pub fn inspect_question(
     question: &Question,
     work_dir: &Path,
     config: &RetrievalConfig,
     descriptions: Option<&crate::describe::DescriptionMap>,
+    retrieval_path: InspectRetrievalPath,
 ) -> Result<InspectResult> {
     let brain_dir = work_dir.join(format!("inspect_{}", question.question_id));
     let brain = ingest::ingest_question(question, &brain_dir, ingest::IngestStrategy::PerTurn)?;
@@ -90,12 +105,38 @@ pub fn inspect_question(
         }
     }
 
-    // Top-N via normal recall
-    let recall_result = brain.recall_local(&question.question)?;
-    let retrieved_top: Vec<ScoredMemory> = recall_result
-        .memory_hits
+    // Top-N retrieval — cascade or local
+    let hits: Vec<spectral_ingest::MemoryHit> = match retrieval_path {
+        InspectRetrievalPath::Cascade => {
+            // Match bench's cascade invocation: question-type routing → pipeline config
+            let qtype = QuestionType::classify(&question.question);
+            let pipeline_config = qtype.cascade_profile();
+            let context = question
+                .question_date
+                .as_deref()
+                .and_then(crate::retrieval::parse_question_date_pub)
+                .map(|dt| spectral_cascade::RecognitionContext::empty().with_now(dt))
+                .unwrap_or_else(spectral_cascade::RecognitionContext::empty);
+            let result =
+                brain.recall_cascade_with_pipeline(&question.question, &context, &pipeline_config)?;
+            result
+                .merged_hits
+                .into_iter()
+                .take(pipeline_config.k)
+                .collect()
+        }
+        InspectRetrievalPath::Local => {
+            let recall_result = brain.recall_local(&question.question)?;
+            recall_result
+                .memory_hits
+                .into_iter()
+                .take(config.max_results)
+                .collect()
+        }
+    };
+
+    let retrieved_top: Vec<ScoredMemory> = hits
         .iter()
-        .take(config.max_results)
         .enumerate()
         .map(|(i, hit)| ScoredMemory {
             rank: i + 1,
@@ -108,7 +149,9 @@ pub fn inspect_question(
         })
         .collect();
 
-    // ALL memories from the brain, sorted by signal_score descending
+    // ALL memories from the brain, sorted by signal_score descending.
+    // Note: this is query-independent — it's a haystack snapshot, not FTS/cascade results.
+    // `retrieved_top` above is the query-aware retrieval output.
     let all_raw = brain.list_all_memories(10_000)?;
     let haystack_memory_count = all_raw.len();
     let all_memories: Vec<ScoredMemory> = all_raw
@@ -173,8 +216,14 @@ mod tests {
     fn inspect_all_memories_includes_more_than_top_20() {
         let dir = tempfile::tempdir().unwrap();
         let q = test_question_with_many_turns();
-        let result =
-            inspect_question(&q, dir.path(), &RetrievalConfig { max_results: 20 }, None).unwrap();
+        let result = inspect_question(
+            &q,
+            dir.path(),
+            &RetrievalConfig { max_results: 20 },
+            None,
+            InspectRetrievalPath::Local,
+        )
+        .unwrap();
 
         assert!(
             result.all_memories.len() > result.retrieved_top_20.len(),
