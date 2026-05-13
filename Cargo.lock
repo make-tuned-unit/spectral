@@ -2811,6 +2811,7 @@ name = "spectral-bench-accuracy"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "blake3",
  "chrono",
  "clap",
  "indicatif 0.17.11",

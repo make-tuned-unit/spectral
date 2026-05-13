@@ -364,20 +364,26 @@ Plus description precompute: ~$0.10.
 
 **Success criterion**: `cargo check -p spectral-bench-accuracy` passes. `describe` subcommand produces a JSON file with descriptions for all bench memories.
 
-### Commit 4: Pre-validation rank check (HARD GATE)
+### --- CC work ends here. Human executes Commits 4-5. ---
 
-**Changes**:
-- Generate descriptions for cases #4 and #10 using the `describe` tooling
-- Run rank validation (unit test or manual check) confirming PR #101 results reproduce
-- Document results in a brief verification note
+### Commit 4: Pre-validation rank check (HARD GATE) — Human
+
+**Steps**:
+1. Run `describe` subcommand against real API to generate descriptions
+2. Generate descriptions for cases #4 and #10
+3. Run rank validation confirming PR #101 results reproduce
+4. Document results in a brief verification note
 
 **Success criterion**: Case #4 doctors: 3/3 answer sessions in top-60. Case #10 furniture: 4/4 answer sessions in top-60.
 
 **HARD GATE**: If PR #101's rank results do not reproduce against the real implementation, STOP and debug. Do not proceed to Commit 5. Diagnose whether the issue is description quality, FTS weighting, trigger behavior, or migration correctness. $3.20 in bench runs is wasted if the underlying mechanism doesn't work.
 
-### Commit 5: Targeted bench runs
+### Commit 5: Targeted bench runs — Human
 
-**Changes**: None (bench runs are external). Results documented in PR description.
+**Steps**:
+1. Run multi-session bench with `--descriptions bench_descriptions.json --use-cascade`
+2. Run single-session-preference bench with same flag
+3. Document results in PR description
 
 **Success criterion**: multi-session >= 60%, single-session-preference stable or improved.
 

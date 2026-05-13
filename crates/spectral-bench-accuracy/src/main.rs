@@ -74,6 +74,12 @@ enum Command {
         /// Maximum memories to pass to actor
         #[arg(long, default_value = "40")]
         max_results: usize,
+
+        /// Path to descriptions JSON file (from `describe` subcommand).
+        /// When provided, descriptions are applied to each question's brain
+        /// after ingestion, enriching FTS indexing.
+        #[arg(long)]
+        descriptions: Option<PathBuf>,
     },
 
     /// Pretty-print a previously saved JSON report
@@ -100,6 +106,41 @@ enum Command {
         /// Output JSON file
         #[arg(long, default_value = "inspect.json")]
         output: PathBuf,
+    },
+
+    /// Generate search-indexing descriptions for bench memories via LLM API
+    Describe {
+        /// Path to the LongMemEval_S dataset JSON
+        #[arg(long)]
+        dataset: PathBuf,
+
+        /// Output JSON file for descriptions
+        #[arg(long, default_value = "bench_descriptions.json")]
+        output: PathBuf,
+
+        /// Force regeneration of all descriptions (default: skip existing)
+        #[arg(long)]
+        regenerate: bool,
+
+        /// Ingestion strategy: per_turn or per_session
+        #[arg(long, default_value = "per_turn")]
+        ingest_strategy: String,
+
+        /// Model for description generation
+        #[arg(long, default_value = "claude-haiku-4-5-20251001")]
+        model: String,
+
+        /// Base URL for API calls
+        #[arg(long, default_value = "https://api.anthropic.com")]
+        base_url: String,
+
+        /// Maximum questions to process (default: all)
+        #[arg(long)]
+        max_questions: Option<usize>,
+
+        /// Categories to include (comma-separated)
+        #[arg(long)]
+        categories: Option<String>,
     },
 
     /// Dry-run: ingest one question, retrieve, but don't call LLMs
@@ -133,6 +174,7 @@ fn main() -> Result<()> {
             judge_model,
             base_url,
             max_results,
+            descriptions,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
@@ -207,7 +249,12 @@ fn main() -> Result<()> {
             let actor = AnthropicActor::new(api_key.clone(), actor_model, base_url.clone());
             let judge = AnthropicJudge::new(api_key, judge_model, base_url);
 
-            let eval = AccuracyEval::new(config, Box::new(actor), Box::new(judge));
+            let mut eval = AccuracyEval::new(config, Box::new(actor), Box::new(judge));
+            if let Some(ref desc_path) = descriptions {
+                let descs = spectral_bench_accuracy::describe::load_descriptions(desc_path)?;
+                eprintln!("Loaded {} descriptions from {}", descs.len(), desc_path.display());
+                eval = eval.with_descriptions(descs);
+            }
             let report = eval.run()?;
 
             println!("{}", report.summary());
@@ -250,6 +297,115 @@ fn main() -> Result<()> {
             eprintln!("Top-20 retrieved: {}", result.retrieved_top_20.len());
             eprintln!("All memories enumerated: {}", result.all_memories.len());
             eprintln!("\nInspect output saved to {}", output.display());
+        }
+
+        Command::Describe {
+            dataset,
+            output,
+            regenerate,
+            ingest_strategy,
+            model,
+            base_url,
+            max_questions,
+            categories,
+        } => {
+            let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
+
+            let cats = categories
+                .map(|s| {
+                    s.split(',')
+                        .map(|c| Category::from_question_type(c.trim()))
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
+
+            let mut questions: Vec<&spectral_bench_accuracy::dataset::Question> =
+                ds.iter().collect();
+            if let Some(ref cat_filter) = cats {
+                let cat_strs: std::collections::HashSet<String> =
+                    cat_filter.iter().map(|c| c.as_str().to_string()).collect();
+                questions.retain(|q| {
+                    Category::from_question_type(&q.question_type)
+                        .map(|cat| cat_strs.contains(cat.as_str()))
+                        .unwrap_or(false)
+                });
+            }
+            if let Some(max) = max_questions {
+                questions.truncate(max);
+            }
+
+            let strategy = match ingest_strategy.as_str() {
+                "per_session" => ingest::IngestStrategy::PerSession,
+                _ => ingest::IngestStrategy::PerTurn,
+            };
+
+            // Load existing descriptions for idempotence
+            let existing = spectral_bench_accuracy::describe::load_descriptions(&output)?;
+            eprintln!(
+                "Loaded {} existing descriptions from {}",
+                existing.len(),
+                output.display()
+            );
+
+            // Collect all memory keys and content from the dataset
+            let mut all_memories: Vec<(String, String)> = Vec::new();
+            for question in &questions {
+                for (idx, session) in question.haystack_sessions.iter().enumerate() {
+                    let session_id = question
+                        .haystack_session_ids
+                        .get(idx)
+                        .map(|s| s.as_str())
+                        .unwrap_or("unknown");
+
+                    match strategy {
+                        ingest::IngestStrategy::PerTurn => {
+                            for (turn_idx, turn) in session.iter().enumerate() {
+                                let key =
+                                    format!("{session_id}:turn:{turn_idx}:{}", turn.role);
+                                all_memories.push((key, turn.content.clone()));
+                            }
+                        }
+                        ingest::IngestStrategy::PerSession => {
+                            let content: String = session
+                                .iter()
+                                .map(|t| format!("{}: {}", t.role, t.content))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let key = format!("{session_id}:session");
+                            all_memories.push((key, content));
+                        }
+                    }
+                }
+            }
+
+            // Dedup by key (same session may appear in multiple questions)
+            let mut seen = std::collections::HashSet::new();
+            all_memories.retain(|(key, _)| seen.insert(key.clone()));
+
+            eprintln!(
+                "Dataset: {} questions, {} unique memories to describe",
+                questions.len(),
+                all_memories.len()
+            );
+
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
+            let generator =
+                spectral_bench_accuracy::describe::AnthropicDescriber::new(api_key, model, base_url);
+
+            let descriptions = spectral_bench_accuracy::describe::generate_descriptions(
+                &all_memories,
+                &existing,
+                regenerate,
+                &generator,
+            )?;
+
+            spectral_bench_accuracy::describe::save_descriptions(&descriptions, &output)?;
+            eprintln!(
+                "\nDescriptions saved to {} ({} total)",
+                output.display(),
+                descriptions.len()
+            );
         }
 
         Command::DryRun { dataset, work_dir } => {

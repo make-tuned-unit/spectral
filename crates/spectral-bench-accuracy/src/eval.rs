@@ -86,6 +86,8 @@ pub struct AccuracyEval {
     config: EvalConfig,
     actor: Box<dyn Actor>,
     judge: Box<dyn Judge>,
+    /// Optional description map for FTS enrichment.
+    descriptions: Option<crate::describe::DescriptionMap>,
 }
 
 /// Result of evaluating a single question.
@@ -110,7 +112,14 @@ impl AccuracyEval {
             config,
             actor,
             judge,
+            descriptions: None,
         }
+    }
+
+    /// Set the description map for FTS enrichment.
+    pub fn with_descriptions(mut self, descriptions: crate::describe::DescriptionMap) -> Self {
+        self.descriptions = Some(descriptions);
+        self
     }
 
     /// Run the full evaluation.
@@ -249,6 +258,11 @@ impl AccuracyEval {
 
         // Ingest
         let brain = ingest::ingest_question(question, &brain_dir, self.config.ingest_strategy)?;
+
+        // Apply descriptions for FTS enrichment (if provided)
+        if let Some(ref descs) = self.descriptions {
+            let _ = crate::describe::apply_descriptions(&brain, descs);
+        }
 
         // Classify question shape for routing
         let qtype = retrieval::QuestionType::classify(&question.question);
