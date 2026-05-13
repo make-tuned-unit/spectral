@@ -153,16 +153,25 @@ See "New Tier 1 items" above.
 - **Why it matters:** Single-session-preference is at 45%; some failures are arguably correct under a different rubric. Category-specific rubrics distinguish "preference match" from "factual match," reducing judge-side false negatives. Estimated +0.5-1pp overall, concentrated in single-session-preference.
 - **Out of scope:** Multi-judge ensemble, model swapping for judge — keep Sonnet 4.5 as judge.
 
+### 21. Retrieval telemetry in bench reports (`memory_keys` population)
+
+- **Source:** Item #11 investigation (2026-05-13). `memory_keys` is empty for all results in the post-PR-#98 bench run. PR #99's failure classification was based on actor output inference, not retrieval telemetry. Cases #8 and #9 were reclassified to AMBIGUOUS as a result.
+- **Effort:** 2-3h
+- **Depends on:** Nothing — the `memory_keys` field already exists on `QuestionResult` in `report.rs`, and `SingleResult` in `eval.rs` computes `memory_keys` at `eval.rs:338-358`. The gap is that cascade retrieval via `format_hits_grouped` returns formatted strings, not `MemoryHit` structs, so key extraction falls back to string parsing which may silently produce empty results.
+- **Why it matters:** Evidence-based failure classification. Without per-question retrieval data (which memories were retrieved, at what rank, with what score), every failure analysis requires reasoning backward from actor output. This is fragile — it produced an incorrect classification for 2 of 10 multi-session failures. Future bench runs should produce attributable retrieval telemetry so classification is mechanical, not inferential.
+- **Out of scope:** Per-memory score records in main reports (the `--dump-scores` flag already handles this for detailed analysis). This item is about making `memory_keys` reliably populated in the standard report.
+
 ---
 
 ## Tier 3 — Architectural / longer horizon
 
-### 11. Audit-P4 full scope: session signal in ranking
+### 11. Audit-P4 full scope: session signal in ranking (DEFERRED — investigated 2026-05-13)
 
 - **Source:** Audit P4. PR #79 shipped the data capture; behavioral use deferred.
 - **Effort:** 6–8h
 - **Depends on:** Bench checkpoint (done), some usage data accumulated in `retrieval_events`.
 - **Why it matters:** Closes the ambient state loop. Recency-weighted ranking via active session. The biggest architectural change still pending. Deferred deliberately until we have real usage data to inform what session signal *should* weight — guessing now means redesigning later. **Composes with item 17:** GeneralRecall strategy benefits most from session-priority retrieval.
+- **Investigation (2026-05-13):** Evaluated 5 candidate session signals against documented failures. None addresses existing failure cases — GENUINE_MISS is actor-level (embedded references), not ranking-level. Existing per-memory signals subsume session-level approximations. Candidate topic-density is actively counterproductive. Defer until: (1) a failure is found where retrieved sessions rank below K cutoff, (2) Permagent production usage data, (3) item #12 creates session-level metadata, or (4) actor improvements shift bottleneck to ranking. Full analysis: `docs/internal/item-11-investigation.md`.
 - **Out of scope:** Multi-device session reconciliation, session lifecycle management.
 
 ### 12. L2 cascade layer: episode summaries
