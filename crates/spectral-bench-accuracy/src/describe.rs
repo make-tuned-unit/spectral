@@ -121,6 +121,15 @@ impl DescriptionGenerator for AnthropicDescriber {
     }
 }
 
+/// Write the description map atomically: write to `.tmp`, then rename.
+fn save_descriptions_atomic(map: &DescriptionMap, path: &Path) -> Result<()> {
+    let tmp_path = path.with_extension("json.tmp");
+    let json = serde_json::to_string_pretty(map)?;
+    std::fs::write(&tmp_path, json)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
 /// Generate descriptions for all memory keys, respecting idempotence.
 ///
 /// - `memory_keys_and_content`: list of (key, content) pairs to describe
@@ -135,17 +144,58 @@ pub fn generate_descriptions(
     regenerate: bool,
     generator: &dyn DescriptionGenerator,
 ) -> Result<DescriptionMap> {
+    generate_descriptions_incremental(
+        memory_keys_and_content,
+        existing,
+        regenerate,
+        generator,
+        None,
+        100,
+    )
+}
+
+/// Generate descriptions with incremental persistence.
+///
+/// Every `flush_interval` newly generated descriptions, the accumulated map
+/// is written atomically to `output_path` (write to `.tmp`, rename to final).
+/// On Ctrl-C the current state is flushed before exit.
+///
+/// Combined with skip-existing default behavior, a killed run resumes by
+/// re-invoking the same command.
+pub fn generate_descriptions_incremental(
+    memory_keys_and_content: &[(String, String)],
+    existing: &DescriptionMap,
+    regenerate: bool,
+    generator: &dyn DescriptionGenerator,
+    output_path: Option<&Path>,
+    flush_interval: usize,
+) -> Result<DescriptionMap> {
     let mut map = if regenerate {
         DescriptionMap::new()
     } else {
         existing.clone()
     };
 
+    // Ctrl-C flag: set by signal handler, checked each iteration
+    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let interrupted_clone = interrupted.clone();
+    let _ = ctrlc::set_handler(move || {
+        interrupted_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        eprintln!("\n  Ctrl-C received, flushing descriptions to disk...");
+    });
+
     let total = memory_keys_and_content.len();
     let mut generated = 0;
     let mut skipped = 0;
+    let mut since_last_flush = 0;
 
     for (key, content) in memory_keys_and_content {
+        // Check for Ctrl-C before each generation
+        if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("  Interrupted after {generated} generations, {skipped} skipped");
+            break;
+        }
+
         if !regenerate && map.contains_key(key) {
             skipped += 1;
             continue;
@@ -155,14 +205,27 @@ pub fn generate_descriptions(
             Ok(desc) => {
                 map.insert(key.clone(), desc);
                 generated += 1;
+                since_last_flush += 1;
                 if generated % 100 == 0 {
                     eprintln!("  Generated {generated}/{total} descriptions ({skipped} skipped)...");
+                }
+                // Incremental flush
+                if since_last_flush >= flush_interval {
+                    if let Some(path) = output_path {
+                        save_descriptions_atomic(&map, path)?;
+                    }
+                    since_last_flush = 0;
                 }
             }
             Err(e) => {
                 eprintln!("  warn: failed to describe {key}: {e}");
             }
         }
+    }
+
+    // Final flush (covers remaining items + Ctrl-C)
+    if let Some(path) = output_path {
+        save_descriptions_atomic(&map, path)?;
     }
 
     eprintln!("Description generation complete: {generated} generated, {skipped} skipped, {total} total");
@@ -250,6 +313,133 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded.get("key1").unwrap(), "desc1");
         assert_eq!(loaded.get("key2").unwrap(), "desc2");
+    }
+
+    /// Mock generator that tracks calls and optionally records flush events.
+    struct FlushTrackingDescriber {
+        call_count: AtomicUsize,
+    }
+
+    impl FlushTrackingDescriber {
+        fn new() -> Self {
+            Self {
+                call_count: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.call_count.load(Ordering::SeqCst)
+        }
+    }
+
+    impl DescriptionGenerator for FlushTrackingDescriber {
+        fn generate(&self, content: &str) -> Result<String> {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            Ok(format!("desc: {}", &content[..content.len().min(20)]))
+        }
+    }
+
+    #[test]
+    fn incremental_flush_writes_periodically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("incr.json");
+        let mock = FlushTrackingDescriber::new();
+
+        let items: Vec<(String, String)> = (0..5)
+            .map(|i| (format!("key{i}"), format!("content{i}")))
+            .collect();
+
+        let result = generate_descriptions_incremental(
+            &items,
+            &DescriptionMap::new(),
+            false,
+            &mock,
+            Some(&path),
+            2, // flush every 2
+        )
+        .unwrap();
+
+        assert_eq!(mock.calls(), 5);
+        assert_eq!(result.len(), 5);
+
+        // File should exist with all 5 descriptions (final flush)
+        let loaded = load_descriptions(&path).unwrap();
+        assert_eq!(loaded.len(), 5);
+    }
+
+    #[test]
+    fn incremental_resume_skips_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resume.json");
+        let mock = FlushTrackingDescriber::new();
+
+        // Pre-populate with 3 existing descriptions
+        let mut existing = DescriptionMap::new();
+        for i in 0..3 {
+            existing.insert(format!("key{i}"), format!("existing{i}"));
+        }
+        save_descriptions(&existing, &path).unwrap();
+
+        let items: Vec<(String, String)> = (0..5)
+            .map(|i| (format!("key{i}"), format!("content{i}")))
+            .collect();
+
+        let loaded_existing = load_descriptions(&path).unwrap();
+        let result = generate_descriptions_incremental(
+            &items,
+            &loaded_existing,
+            false,
+            &mock,
+            Some(&path),
+            100,
+        )
+        .unwrap();
+
+        // Should only generate 2 new descriptions (key3, key4)
+        assert_eq!(mock.calls(), 2, "should only generate for key3 and key4");
+        assert_eq!(result.len(), 5);
+        // Existing entries preserved
+        assert_eq!(result.get("key0").unwrap(), "existing0");
+        // New entries generated
+        assert!(result.get("key3").unwrap().starts_with("desc:"));
+    }
+
+    #[test]
+    fn incremental_no_output_path_still_works() {
+        let mock = FlushTrackingDescriber::new();
+        let items: Vec<(String, String)> = (0..3)
+            .map(|i| (format!("key{i}"), format!("content{i}")))
+            .collect();
+
+        let result = generate_descriptions_incremental(
+            &items,
+            &DescriptionMap::new(),
+            false,
+            &mock,
+            None, // no output path
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(mock.calls(), 3);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn atomic_write_no_partial_file_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("atomic.json");
+        let tmp_path = path.with_extension("json.tmp");
+
+        let mut map = DescriptionMap::new();
+        map.insert("k1".into(), "v1".into());
+        save_descriptions_atomic(&map, &path).unwrap();
+
+        // Final file exists, tmp does not
+        assert!(path.exists());
+        assert!(!tmp_path.exists());
+        let loaded = load_descriptions(&path).unwrap();
+        assert_eq!(loaded.len(), 1);
     }
 
     #[test]

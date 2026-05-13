@@ -435,14 +435,16 @@ fn main() -> Result<()> {
             let generator =
                 spectral_bench_accuracy::describe::AnthropicDescriber::new(api_key, model, base_url);
 
-            let descriptions = spectral_bench_accuracy::describe::generate_descriptions(
-                &all_memories,
-                &existing,
-                regenerate,
-                &generator,
-            )?;
+            let descriptions =
+                spectral_bench_accuracy::describe::generate_descriptions_incremental(
+                    &all_memories,
+                    &existing,
+                    regenerate,
+                    &generator,
+                    Some(&output),
+                    100,
+                )?;
 
-            spectral_bench_accuracy::describe::save_descriptions(&descriptions, &output)?;
             eprintln!(
                 "\nDescriptions saved to {} ({} total)",
                 output.display(),
