@@ -34,8 +34,37 @@ fn judge_prompt(question: &str, predicted: &str, ground_truth: &str, category: C
              The answer is correct if the temporal aspect is accurately captured."
         }
         Category::MultiSession => {
-            "The question requires synthesizing information across multiple conversation sessions. \
-             The answer is correct if it accurately combines relevant facts from different sessions."
+            "The question requires synthesizing information across multiple conversation sessions.\n\n\
+             COUNTING QUESTION PROTOCOL:\n\
+             If this is a counting question (asks \"how many\", \"how much\", \"total\", or the ground truth is a number):\n\n\
+             1. Extract the system's numerical answer and the ground truth number.\n\
+             2. Compute delta = |system_count - ground_truth_count|.\n\
+             3. If delta = 0: the answer is CORRECT.\n\
+             4. If delta > 1: the answer is INCORRECT.\n\
+             5. If delta = 1: apply the REASONING-AWARE TOLERANCE CHECK below.\n\n\
+             REASONING-AWARE TOLERANCE CHECK (delta = 1 only):\n\
+             Examine the system's full output (including <thinking> and <quotes> blocks) for EXPLICIT REASONING \
+             about which items to include or exclude from the count. Look for these signals:\n\n\
+             ACCEPT (mark correct) if the system:\n\
+             - Explicitly names items it included or excluded and explains WHY\n\
+             - Addresses categorization boundaries\n\
+             - Reasons about whether specific items belong in the count\n\
+             - Over-counted by 1 with explicit reasoning for including an additional item the GT excludes\n\n\
+             Note: simply listing items in the count does not constitute reasoning. The system must show \
+             DELIBERATION about whether items belong — either through <thinking> content addressing inclusion, \
+             exhaustive <quotes> documentation of disputed items, or explicit statements about why an item \
+             was included or excluded.\n\n\
+             REJECT (mark incorrect) if the system:\n\
+             - Simply lists fewer items than GT with no discussion of excluded items\n\
+             - Shows no awareness that additional items might exist\n\
+             - Does not engage with categorization boundaries\n\
+             - Expresses no uncertainty or reasoning about the completeness of its count\n\n\
+             DOLLAR AMOUNTS:\n\
+             When the ground truth is a dollar amount (e.g., \"$2,500\"), treat delta=1 as exact match — \
+             the tolerance is designed for unit counts, not dollar totals.\n\n\
+             NON-COUNTING QUESTIONS:\n\
+             If this is NOT a counting question, apply the standard rubric: the answer is correct if it \
+             accurately combines relevant facts from different sessions, even if worded differently."
         }
         _ => {
             "An answer is correct if it conveys the same factual information as the ground truth, \
@@ -199,6 +228,8 @@ mod tests {
     fn judge_prompt_renders_per_category() {
         let p = judge_prompt("Q?", "A", "A", Category::MultiSession);
         assert!(p.contains("multiple conversation sessions"));
+        assert!(p.contains("COUNTING QUESTION PROTOCOL"));
+        assert!(p.contains("REASONING-AWARE TOLERANCE CHECK"));
 
         let p2 = judge_prompt("Q?", "A", "A", Category::KnowledgeUpdate);
         assert!(p2.contains("MOST RECENT"));

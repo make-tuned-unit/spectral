@@ -74,6 +74,8 @@ ACCEPT (mark correct) if the system:
 - Reasons about whether specific items belong in the count, showing awareness of the boundary decision
 - Over-counted by 1 with explicit reasoning for including an additional item the GT excludes
 
+Note: simply listing items in the count does not constitute reasoning. The actor must show DELIBERATION about whether items belong — either through <thinking> content addressing inclusion, exhaustive <quotes> documentation of disputed items, or explicit statements about why an item was included or excluded.
+
 REJECT (mark incorrect) if the system:
 - Simply lists fewer items than GT with no discussion of excluded items
 - Shows no awareness that additional items might exist
@@ -82,6 +84,9 @@ REJECT (mark incorrect) if the system:
 - The <quotes> block contains no evidence of items being deliberately excluded
 
 The key distinction: ACCEPT when the system CHOSE to count differently (explicit reasoning visible). REJECT when the system FAILED TO FIND items (no reasoning about the missing items).
+
+DOLLAR AMOUNTS:
+When the ground truth is a dollar amount (e.g., "$2,500"), treat delta=1 as exact match — the tolerance is designed for unit counts, not dollar totals.
 
 NON-COUNTING QUESTIONS:
 If this is NOT a counting question, apply the standard rubric: the answer is correct if it accurately combines relevant facts from different sessions, even if worded differently.
@@ -185,8 +190,8 @@ That gives a total of **3 projects** mentioned across the conversations.
    - Actor explicitly lists all 3 projects by name with source sessions.
    - Actor includes "new product feature launch planned for June" — this is the item GT excludes.
    - Actor's framing "led or am currently leading" and "planned for June" shows it reasoned about inclusion: planning a product launch qualifies as "leading a project."
-4. This is an over-count with explicit reasoning. The actor found and named the additional item (product launch) and included it as a project being led. The reasoning for inclusion is visible.
-5. **Verdict: CORRECT** (DEFINITION_DISAGREEMENT — over-count with named additional item and defensible inclusion rationale).
+4. This is an over-count where the actor lists the additional item by name. However, the actor does NOT explicitly reason about whether "planned for June" qualifies as "leading" — it simply lists the item. Under the stricter deliberation bar ("simply listing items does not constitute reasoning"), the actor must show deliberation about inclusion, not just enumerate.
+5. **Verdict: UNCERTAIN.** The judge may accept (actor named the item and framed it as a project being led) or reject (no explicit deliberation about whether a planned launch counts as "leading"). Either outcome is acceptable — this is the borderline case the stricter bar is designed to test.
 
 ---
 
@@ -442,7 +447,7 @@ The prompt change is self-contained in `judge.rs:26-54`. No structural changes t
 
 | Category | Questions | Estimated cost | Expected outcome |
 |----------|-----------|---------------|-----------------|
-| multi-session | 20 | $1.60 | 65% (+3 from 50%): #1, #2, #6 flip to correct |
+| multi-session | 20 | $1.60 | 60-65% (+2 to +3 from 50%): #1, #6 flip; #2 uncertain |
 | single-session-preference | 20 | $1.60 | Stable (no change expected — non-counting) |
 | **Total** | 40 | **$3.20** | |
 
@@ -460,11 +465,11 @@ The prompt change is self-contained in `judge.rs:26-54`. No structural changes t
 
 | Metric | Value |
 |--------|-------|
-| Cases flipped to correct | 3 (#1 clothing, #2 projects, #6 citrus) |
+| Cases flipped to correct | 2 certain (#1 clothing, #6 citrus), 1 uncertain (#2 projects) |
 | Cases correctly remaining incorrect | 3 (#7 festivals, #8 tanks, #9 weddings) |
 | False positive risk | Zero identified |
 | Regression risk on correct cases | Zero identified |
-| Expected lift | +15pp (50% → 65%) |
+| Expected lift | +10 to +15pp (50% → 60-65%) |
 | Files modified | 1 (`judge.rs`) |
 | Harness changes | None |
 | Cost to validate | $3.20 |
