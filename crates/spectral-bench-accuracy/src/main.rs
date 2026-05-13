@@ -157,6 +157,11 @@ enum Command {
         /// Categories to include (comma-separated)
         #[arg(long)]
         categories: Option<String>,
+
+        /// API format: anthropic (default) or openai (for Ollama, vLLM, etc.).
+        /// Use openai with --base-url http://localhost:11434 for Ollama.
+        #[arg(long, default_value = "anthropic")]
+        api_format: String,
     },
 
     /// Dry-run: ingest one question, retrieve, but don't call LLMs
@@ -352,6 +357,7 @@ fn main() -> Result<()> {
             base_url,
             max_questions,
             categories,
+            api_format,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
 
@@ -431,18 +437,30 @@ fn main() -> Result<()> {
                 all_memories.len()
             );
 
-            let api_key = std::env::var("ANTHROPIC_API_KEY")
-                .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
-            let generator = spectral_bench_accuracy::describe::AnthropicDescriber::new(
-                api_key, model, base_url,
-            );
+            let generator: Box<dyn spectral_bench_accuracy::describe::DescriptionGenerator> =
+                match api_format.as_str() {
+                    "openai" => Box::new(spectral_bench_accuracy::describe::OpenAIDescriber::new(
+                        model, base_url,
+                    )),
+                    "anthropic" => {
+                        let api_key = std::env::var("ANTHROPIC_API_KEY")
+                            .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
+                        Box::new(spectral_bench_accuracy::describe::AnthropicDescriber::new(
+                            api_key, model, base_url,
+                        ))
+                    }
+                    other => {
+                        eprintln!("Unknown API format: {other}. Valid: anthropic, openai");
+                        std::process::exit(1);
+                    }
+                };
 
             let descriptions =
                 spectral_bench_accuracy::describe::generate_descriptions_incremental(
                     &all_memories,
                     &existing,
                     regenerate,
-                    &generator,
+                    generator.as_ref(),
                     Some(&output),
                     100,
                 )?;

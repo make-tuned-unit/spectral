@@ -133,6 +133,58 @@ fn save_descriptions_atomic(map: &DescriptionMap, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Generator that calls an OpenAI-compatible Chat Completions API (Ollama, vLLM, etc.).
+pub struct OpenAIDescriber {
+    model: String,
+    base_url: String,
+    client: reqwest::blocking::Client,
+}
+
+impl OpenAIDescriber {
+    pub fn new(model: String, base_url: String) -> Self {
+        Self {
+            model,
+            base_url,
+            client: reqwest::blocking::Client::new(),
+        }
+    }
+}
+
+impl DescriptionGenerator for OpenAIDescriber {
+    fn generate(&self, content: &str) -> Result<String> {
+        let prompt = build_prompt(content);
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": prompt}]
+        });
+
+        let resp = self
+            .client
+            .post(format!("{}/v1/chat/completions", self.base_url))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            anyhow::bail!(
+                "OpenAI-compat API returned {status}: {}",
+                &body[..body.len().min(500)]
+            );
+        }
+
+        let json: serde_json::Value = resp.json()?;
+        let text = json["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing choices[0].message.content in response"))?
+            .trim()
+            .to_string();
+        Ok(text)
+    }
+}
+
 /// Generate descriptions for all memory keys, respecting idempotence.
 ///
 /// - `memory_keys_and_content`: list of (key, content) pairs to describe
