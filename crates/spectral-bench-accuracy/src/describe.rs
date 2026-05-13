@@ -108,7 +108,10 @@ impl DescriptionGenerator for AnthropicDescriber {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
-            anyhow::bail!("Describe API returned {status}: {}", &body[..body.len().min(500)]);
+            anyhow::bail!(
+                "Describe API returned {status}: {}",
+                &body[..body.len().min(500)]
+            );
         }
 
         let json: serde_json::Value = resp.json()?;
@@ -207,7 +210,9 @@ pub fn generate_descriptions_incremental(
                 generated += 1;
                 since_last_flush += 1;
                 if generated % 100 == 0 {
-                    eprintln!("  Generated {generated}/{total} descriptions ({skipped} skipped)...");
+                    eprintln!(
+                        "  Generated {generated}/{total} descriptions ({skipped} skipped)..."
+                    );
                 }
                 // Incremental flush
                 if since_last_flush >= flush_interval {
@@ -228,7 +233,9 @@ pub fn generate_descriptions_incremental(
         save_descriptions_atomic(&map, path)?;
     }
 
-    eprintln!("Description generation complete: {generated} generated, {skipped} skipped, {total} total");
+    eprintln!(
+        "Description generation complete: {generated} generated, {skipped} skipped, {total} total"
+    );
     Ok(map)
 }
 
@@ -288,7 +295,10 @@ mod tests {
     impl DescriptionGenerator for MockDescriber {
         fn generate(&self, content: &str) -> Result<String> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
-            Ok(format!("Description of: {}", &content[..content.len().min(50)]))
+            Ok(format!(
+                "Description of: {}",
+                &content[..content.len().min(50)]
+            ))
         }
     }
 

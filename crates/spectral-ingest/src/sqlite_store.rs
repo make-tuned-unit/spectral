@@ -2086,7 +2086,10 @@ mod tests {
 
         // Add description with category-level vocabulary
         store
-            .set_description("m1", "User visits doctors including ENT specialist Dr. Patel")
+            .set_description(
+                "m1",
+                "User visits doctors including ENT specialist Dr. Patel",
+            )
             .await
             .unwrap();
 

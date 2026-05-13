@@ -117,8 +117,11 @@ pub fn inspect_question(
                 .and_then(crate::retrieval::parse_question_date_pub)
                 .map(|dt| spectral_cascade::RecognitionContext::empty().with_now(dt))
                 .unwrap_or_else(spectral_cascade::RecognitionContext::empty);
-            let result =
-                brain.recall_cascade_with_pipeline(&question.question, &context, &pipeline_config)?;
+            let result = brain.recall_cascade_with_pipeline(
+                &question.question,
+                &context,
+                &pipeline_config,
+            )?;
             result
                 .merged_hits
                 .into_iter()

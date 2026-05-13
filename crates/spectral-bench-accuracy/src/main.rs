@@ -270,7 +270,11 @@ fn main() -> Result<()> {
             let mut eval = AccuracyEval::new(config, Box::new(actor), Box::new(judge));
             if let Some(ref desc_path) = descriptions {
                 let descs = spectral_bench_accuracy::describe::load_descriptions(desc_path)?;
-                eprintln!("Loaded {} descriptions from {}", descs.len(), desc_path.display());
+                eprintln!(
+                    "Loaded {} descriptions from {}",
+                    descs.len(),
+                    desc_path.display()
+                );
                 eval = eval.with_descriptions(descs);
             }
             let report = eval.run()?;
@@ -318,9 +322,7 @@ fn main() -> Result<()> {
             };
 
             std::fs::create_dir_all(&work_dir)?;
-            eprintln!(
-                "Inspecting question {question_id} (retrieval: {retrieval_path})..."
-            );
+            eprintln!("Inspecting question {question_id} (retrieval: {retrieval_path})...");
             let result = spectral_bench_accuracy::inspect::inspect_question(
                 question,
                 &work_dir,
@@ -402,8 +404,7 @@ fn main() -> Result<()> {
                     match strategy {
                         ingest::IngestStrategy::PerTurn => {
                             for (turn_idx, turn) in session.iter().enumerate() {
-                                let key =
-                                    format!("{session_id}:turn:{turn_idx}:{}", turn.role);
+                                let key = format!("{session_id}:turn:{turn_idx}:{}", turn.role);
                                 all_memories.push((key, turn.content.clone()));
                             }
                         }
@@ -432,8 +433,9 @@ fn main() -> Result<()> {
 
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
-            let generator =
-                spectral_bench_accuracy::describe::AnthropicDescriber::new(api_key, model, base_url);
+            let generator = spectral_bench_accuracy::describe::AnthropicDescriber::new(
+                api_key, model, base_url,
+            );
 
             let descriptions =
                 spectral_bench_accuracy::describe::generate_descriptions_incremental(
