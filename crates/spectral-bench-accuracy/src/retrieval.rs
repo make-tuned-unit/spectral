@@ -104,6 +104,22 @@ impl QuestionType {
             return Self::Counting;
         }
 
+        // Location questions: "where" → Factual, even with temporal modifiers.
+        // "Where did Rachel move to after her recent relocation?" → FactualCurrentState
+        // "Where did I attend the religious activity last week?" → Factual
+        // Temporal modifiers in "where" questions provide context, not question focus.
+        if Regex::new(r"^where\b").unwrap().is_match(&q) {
+            if Regex::new(
+                r"\b(currently|right now|most recent|latest|newest|do i still|now|recent)\b",
+            )
+            .unwrap()
+            .is_match(&q)
+            {
+                return Self::FactualCurrentState;
+            }
+            return Self::Factual;
+        }
+
         // Temporal
         if Regex::new(r"when did|how long|(?:^|\W)first\b|(?:^|\W)last\b|before|after|ago|since")
             .unwrap()
@@ -799,6 +815,51 @@ mod tests {
         assert_eq!(
             QuestionType::classify("What car do I currently drive?"),
             QuestionType::FactualCurrentState
+        );
+    }
+
+    #[test]
+    fn classify_where_bypasses_temporal() {
+        // Rachel case: "after" should NOT trigger Temporal for "where" questions
+        assert_eq!(
+            QuestionType::classify("Where did Rachel move to after her recent relocation?"),
+            QuestionType::FactualCurrentState
+        );
+        // "last week" should NOT trigger Temporal for "where" questions
+        assert_eq!(
+            QuestionType::classify("Where did I attend the religious activity last week?"),
+            QuestionType::Factual
+        );
+        // "after" without recency signal → plain Factual
+        assert_eq!(
+            QuestionType::classify("Where did I go after lunch?"),
+            QuestionType::Factual
+        );
+        // Recency signal → FactualCurrentState
+        assert_eq!(
+            QuestionType::classify("Where is the painting currently hanging?"),
+            QuestionType::FactualCurrentState
+        );
+    }
+
+    #[test]
+    fn classify_where_does_not_break_temporal() {
+        // Non-"where" temporal questions must remain Temporal
+        assert_eq!(
+            QuestionType::classify("When did I start jogging?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify("How long is my commute?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify("What happened first?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify("What did I do after the concert?"),
+            QuestionType::Temporal
         );
     }
 
