@@ -193,7 +193,7 @@ No changes to the re-ranking pipeline or `RerankingConfig`.
 | 1 | **Inflected forms**: Include both singular and plural of key category nouns | Search description for both forms | "User visits doctors. Doctor appointments include..." |
 | 2 | **Category-level vocabulary**: Generalize from specific instances to category terms | Description contains at least one category noun not in the raw content | Content has "Dr. Patel" → description has "doctors" |
 | 3 | **Concise**: 50-100 tokens | Token count check | "User visits multiple doctors including ENT specialist Dr. Patel..." (28 tokens) |
-| 4 | **Accurate**: No category terms for sessions that don't deserve them | Manual spot-check: description categories match content categories | Session about cooking should NOT mention "doctors" or "furniture" |
+| 4 | **Accurate**: No category nouns in the description that don't have category-supportive evidence in the source content | For each category noun in the description, verify at least one specific instance exists in the source content | Content mentions "coffee table" → "furniture" is valid. Content mentions only cooking → "furniture" is hallucinated. |
 
 ### Suggested Librarian prompt template
 
@@ -249,7 +249,7 @@ Description:
 
 During bench runs, descriptions are loaded and applied via `set_description()` before the evaluation loop.
 
-**Cost estimate**: ~600 memories × ~100 input tokens × ~80 output tokens × $0.25/$1.25 per MTok (Haiku) = ~$0.02 input + ~$0.06 output = **<$0.10 total**. Negligible.
+**Cost estimate**: LongMemEval-S has 120 questions, each with multiple sessions and turns. Actual bench memory count is ~12,000. At Haiku pricing (~100 input tokens + ~80 output tokens per memory, $0.25/$1.25 per MTok): ~$0.30 input + ~$1.20 output = **~$1.50 total**. Still cheap.
 
 **Why not Option 1 (local Librarian)**: Requires qwen2.5:3b setup, introduces a dependency on Permagent's Librarian infrastructure, and the bench team shouldn't be blocked on Permagent's model availability.
 
@@ -262,6 +262,8 @@ Add a `describe` subcommand to `spectral-bench-accuracy` that:
 2. For each question, ingests memories into a temp brain (existing `ingest_question()`)
 3. Calls Haiku to generate descriptions for each memory
 4. Writes descriptions to a JSON file
+
+**Idempotence**: Default behavior on re-run is skip-existing — if the descriptions JSON file exists, only generate entries for memory keys not already present. A `--regenerate` flag forces full regeneration. This prevents waste on iterative bench runs.
 
 The main `run` subcommand gets an optional `--descriptions <path>` flag. When provided, it loads the description map and calls `set_description()` on each memory after ingestion, before retrieval.
 
@@ -362,7 +364,7 @@ Plus description precompute: ~$0.10.
 
 **Success criterion**: `cargo check -p spectral-bench-accuracy` passes. `describe` subcommand produces a JSON file with descriptions for all bench memories.
 
-### Commit 4: Pre-validation rank check
+### Commit 4: Pre-validation rank check (HARD GATE)
 
 **Changes**:
 - Generate descriptions for cases #4 and #10 using the `describe` tooling
@@ -370,6 +372,8 @@ Plus description precompute: ~$0.10.
 - Document results in a brief verification note
 
 **Success criterion**: Case #4 doctors: 3/3 answer sessions in top-60. Case #10 furniture: 4/4 answer sessions in top-60.
+
+**HARD GATE**: If PR #101's rank results do not reproduce against the real implementation, STOP and debug. Do not proceed to Commit 5. Diagnose whether the issue is description quality, FTS weighting, trigger behavior, or migration correctness. $3.20 in bench runs is wasted if the underlying mechanism doesn't work.
 
 ### Commit 5: Targeted bench runs
 
@@ -388,7 +392,7 @@ Plus description precompute: ~$0.10.
 | FTS schema change | Add `description` as 3rd indexed column |
 | Migration approach | Drop + recreate FTS5 table, rebuild from base |
 | Ranking change | BM25 column weight 0.5 for descriptions |
-| Description source for bench | Haiku API precompute (~$0.10) |
+| Description source for bench | Haiku API precompute (~$1.50) |
 | Expected lift | +2 multi-session (50% → 60%), +1-3 single-session-preference |
-| Validation cost | $3.20 bench runs + $0.10 description generation |
+| Validation cost | $3.20 bench runs + $1.50 description generation |
 | Commits | 5 sequential, each with own success criterion |
