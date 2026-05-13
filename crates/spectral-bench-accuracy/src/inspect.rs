@@ -77,9 +77,18 @@ pub fn inspect_question(
     question: &Question,
     work_dir: &Path,
     config: &RetrievalConfig,
+    descriptions: Option<&crate::describe::DescriptionMap>,
 ) -> Result<InspectResult> {
     let brain_dir = work_dir.join(format!("inspect_{}", question.question_id));
     let brain = ingest::ingest_question(question, &brain_dir, ingest::IngestStrategy::PerTurn)?;
+
+    // Apply descriptions for FTS enrichment (if provided)
+    if let Some(descs) = descriptions {
+        let applied = crate::describe::apply_descriptions(&brain, descs)?;
+        if applied > 0 {
+            eprintln!("  Applied {applied} descriptions to brain");
+        }
+    }
 
     // Top-N via normal recall
     let recall_result = brain.recall_local(&question.question)?;
@@ -165,7 +174,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let q = test_question_with_many_turns();
         let result =
-            inspect_question(&q, dir.path(), &RetrievalConfig { max_results: 20 }).unwrap();
+            inspect_question(&q, dir.path(), &RetrievalConfig { max_results: 20 }, None).unwrap();
 
         assert!(
             result.all_memories.len() > result.retrieved_top_20.len(),

@@ -106,6 +106,12 @@ enum Command {
         /// Output JSON file
         #[arg(long, default_value = "inspect.json")]
         output: PathBuf,
+
+        /// Path to descriptions JSON file (from `describe` subcommand).
+        /// When provided, descriptions are applied after ingestion to
+        /// enrich FTS indexing before retrieval.
+        #[arg(long)]
+        descriptions: Option<PathBuf>,
     },
 
     /// Generate search-indexing descriptions for bench memories via LLM API
@@ -272,6 +278,7 @@ fn main() -> Result<()> {
             question_id,
             work_dir,
             output,
+            descriptions,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question = ds
@@ -279,12 +286,22 @@ fn main() -> Result<()> {
                 .find(|q| q.question_id == question_id)
                 .ok_or_else(|| anyhow::anyhow!("question_id {question_id} not found in dataset"))?;
 
+            let descs = descriptions
+                .as_ref()
+                .map(|p| {
+                    let d = spectral_bench_accuracy::describe::load_descriptions(p)?;
+                    eprintln!("Loaded {} descriptions from {}", d.len(), p.display());
+                    Ok::<_, anyhow::Error>(d)
+                })
+                .transpose()?;
+
             std::fs::create_dir_all(&work_dir)?;
             eprintln!("Inspecting question {question_id}...");
             let result = spectral_bench_accuracy::inspect::inspect_question(
                 question,
                 &work_dir,
                 &RetrievalConfig::default(),
+                descs.as_ref(),
             )?;
 
             let json = serde_json::to_string_pretty(&result)?;
