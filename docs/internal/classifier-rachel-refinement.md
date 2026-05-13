@@ -2,7 +2,7 @@
 
 **Date**: 2026-05-13
 **Branch**: `feat/classifier-rachel-suburbs`
-**Status**: Proposal — awaiting review before implementation.
+**Status**: Approved — proceeding to implementation.
 
 ---
 
@@ -11,7 +11,7 @@
 **Question**: QID `830ce83f` — "Where did Rachel move to after her recent relocation?"
 **Dataset label**: `knowledge-update`
 **Current QuestionType classification**: `Temporal` (via the word "after" matching the Temporal regex)
-**Correct QuestionType classification**: `Factual` or `FactualCurrentState` (the question asks for a location, not a time sequence)
+**Correct QuestionType classification**: `FactualCurrentState` (the question asks for a location — "recent" signals current-state framing)
 
 The `QuestionType::classify()` function in `retrieval.rs:108` has a Temporal regex:
 ```
@@ -47,11 +47,11 @@ After the Counting check (line 105) and before the Temporal check (line 108), ad
 
 ```rust
 // Location questions: "where" → Factual, even with temporal modifiers.
-// "Where did Rachel move to after her recent relocation?" → Factual
+// "Where did Rachel move to after her recent relocation?" → FactualCurrentState
 // "Where did I attend the religious activity last week?" → Factual
 // Temporal modifiers in "where" questions provide context, not question focus.
 if Regex::new(r"^where\b").unwrap().is_match(&q) {
-    if Regex::new(r"\b(currently|right now|most recent|latest|newest|do i still|now|after|recent)\b")
+    if Regex::new(r"\b(currently|right now|most recent|latest|newest|do i still|now|recent)\b")
         .unwrap()
         .is_match(&q)
     {
@@ -61,55 +61,92 @@ if Regex::new(r"^where\b").unwrap().is_match(&q) {
 }
 ```
 
-**Why this is safe**: Only one existing dataset question has `question_type=temporal-reasoning` and starts with "where": QID `gpt4_b5700ca0` — "Where did I attend the religious activity last week?" This question asks for a location, so Factual routing is appropriate. No bench result exists for this question, so no measurable regression.
+**Note**: "after" is deliberately excluded from the FactualCurrentState recency sub-gate. "after" is a sequencing word, not a recency signal. "Where did I go after lunch?" should classify as plain Factual, not FactualCurrentState. The Rachel case is caught by "recent" ("her **recent** relocation"), which is a true recency signal.
+
+**Why this is safe**: Only one existing dataset question has `question_type=temporal-reasoning` and starts with "where": QID `gpt4_b5700ca0` — "Where did I attend the religious activity last week?" This question asks for a location (GT: "the Episcopal Church"), not a time. The dataset label `temporal-reasoning` is semantically wrong — reclassifying to Factual gives the actor a better retrieval strategy for a location lookup. This is net-positive.
 
 **Why not reorder globally**: Moving the entire Factual check before Temporal would break "What happened first?" (starts with "what" but is temporal — sequencing intent). The "where" carve-out is safe because location questions are never truly temporal.
 
 ---
 
-## Section 4 — Example Classifications (Old vs New)
+## Section 4 — Full Audit: All 19 "Where" Questions in Dataset
 
-| # | Question | Old | New | Correct? |
-|---|----------|-----|-----|----------|
-| 1 | "Where did Rachel move to after her recent relocation?" | Temporal | **FactualCurrentState** | Fixed |
-| 2 | "Where did I attend the religious activity last week?" | Temporal | **Factual** | Fixed (location answer) |
-| 3 | "Where does my sister live?" | Factual | Factual | Unchanged |
-| 4 | "Where is the painting currently hanging?" | FactualCurrentState | FactualCurrentState | Unchanged |
-| 5 | "Where did I go on my most recent family trip?" | FactualCurrentState | FactualCurrentState | Unchanged |
-| 6 | "When did I start jogging?" | Temporal | Temporal | Unchanged |
-| 7 | "How long is my commute?" | Temporal | Temporal | Unchanged |
-| 8 | "What happened first?" | Temporal | Temporal | Unchanged |
-| 9 | "How many weeks ago did I start?" | Temporal | Temporal | Unchanged |
-| 10 | "What degree did I graduate with?" | Factual | Factual | Unchanged |
+### Knowledge-Update (7 questions)
+
+| QID | Question | Old classification | New classification | Semantic match? |
+|-----|----------|-------------------|-------------------|----------------|
+| 830ce83f | "Where did Rachel move to after her recent relocation?" | Temporal (via "after") | **FactualCurrentState** (via "recent") | Yes — asks for current location |
+| 9ea5eabc | "Where did I go on my most recent family trip?" | FactualCurrentState | FactualCurrentState | Unchanged — "most recent" already hit recency sub-gate |
+| 07741c44 | "Where do I initially keep my old sneakers?" | Factual | Factual | Unchanged — no temporal words, already reached Factual check |
+| e493bb7c | "Where is the painting 'Ethereal Dreams' by Emma Taylor currently hanging?" | FactualCurrentState | FactualCurrentState | Unchanged — "currently" already hit recency sub-gate |
+| 22d2cb42 | "Where did I get my guitar serviced?" | Factual | Factual | Unchanged — no temporal words |
+| eace081b | "Where am I planning to stay for my birthday trip to Hawaii?" | Factual | Factual | Unchanged — no temporal words |
+| 07741c45 | "Where do I currently keep my old sneakers?" | FactualCurrentState | FactualCurrentState | Unchanged — "currently" already hit recency sub-gate |
+
+**Summary**: 1 question reclassified (830ce83f Temporal→FactualCurrentState). 6 unchanged. All 7 semantic matches confirmed.
+
+### Single-Session-User (11 questions)
+
+| QID | Question | Old classification | New classification | Semantic match? |
+|-----|----------|-------------------|-------------------|----------------|
+| 51a45a95 | "Where did I redeem a $5 coupon on coffee creamer?" | Factual | Factual | Unchanged |
+| 6ade9755 | "Where do I take yoga classes?" | Factual | Factual | Unchanged |
+| f8c5f88b | "Where did I buy my new tennis racket from?" | Factual | Factual | Unchanged |
+| 3b6f954b | "Where did I attend for my study abroad program?" | Factual | Factual | Unchanged |
+| d52b4f67 | "Where did I attend my cousin's wedding?" | Factual | Factual | Unchanged |
+| 25e5aa4f | "Where did I complete my Bachelor's degree in Computer Science?" | Factual | Factual | Unchanged |
+| 86b68151 | "Where did I buy my new bookshelf from?" | Factual | Factual | Unchanged |
+| e01b8e2f | "Where did I go on a week-long trip with my family?" | Factual | Factual | Unchanged |
+| 4fd1909e | "Where did I attend the Imagine Dragons concert?" | Factual | Factual | Unchanged |
+| 1faac195 | "Where does my sister Emily live?" | Factual | Factual | Unchanged |
+| 3d86fd0a | "Where did I meet Sophia?" | Factual | Factual | Unchanged |
+
+**Summary**: 0 reclassified. All 11 were already reaching the Factual check (no temporal words). The new `where` interception produces identical results.
+
+### Temporal-Reasoning (1 question)
+
+| QID | Question | Old classification | New classification | Semantic match? |
+|-----|----------|-------------------|-------------------|----------------|
+| gpt4_b5700ca0 | "Where did I attend the religious activity last week?" | Temporal (via "last") | **Factual** | Yes — GT is "the Episcopal Church" (a location). Dataset label `temporal-reasoning` is semantically wrong. Factual routing gives the actor a better retrieval strategy. Net-positive reclassification. |
+
+**Summary**: 1 question reclassified (gpt4_b5700ca0 Temporal→Factual). The dataset label is wrong; the question asks for a location.
+
+### Full audit totals
+
+| Category | Total | Reclassified | Unchanged |
+|----------|-------|-------------|-----------|
+| knowledge-update | 7 | 1 (830ce83f) | 6 |
+| single-session-user | 11 | 0 | 11 |
+| temporal-reasoning | 1 | 1 (gpt4_b5700ca0) | 0 |
+| **Total** | **19** | **2** | **17** |
+
+Both reclassifications are semantically correct. Zero regressions.
 
 ---
 
-## Section 5 — Cross-Category Spot-Checks
+## Section 5 — Non-"Where" Cross-Category Spot-Checks
 
-### Temporal (should remain Temporal)
+### Temporal (must remain Temporal under new logic)
 
-| Question | Result |
-|----------|--------|
-| "When did I start jogging?" | Temporal — starts with "When", not "where" |
-| "How long is my commute?" | Temporal — starts with "How", not "where" |
-| "What happened first?" | Temporal — starts with "What", "first" triggers temporal |
-| "Which event happened first, the meeting with Rachel or the pride parade?" | Temporal — starts with "Which", "first" triggers temporal |
+| Question | Result | Why |
+|----------|--------|-----|
+| "When did I start jogging?" | Temporal | starts with "When", not "where" — `where` interception doesn't fire |
+| "How long is my commute?" | Temporal | starts with "How" — `where` interception doesn't fire |
+| "What happened first?" | Temporal | starts with "What" — `where` interception doesn't fire, "first" hits Temporal regex |
+| "How many weeks ago did I start?" | Temporal | starts with "How many" — hits Temporal-counting before `where` check |
 
-### Factual (should remain Factual)
+### Factual (must remain Factual)
 
-| Question | Result |
-|----------|--------|
-| "What degree did I graduate with?" | Factual — starts with "What", no temporal words |
-| "Who gave me the gift?" | Factual — starts with "Who", no temporal words |
-| "Where does my sister live?" | Factual — starts with "where", no recency modifiers |
+| Question | Result | Why |
+|----------|--------|-----|
+| "What degree did I graduate with?" | Factual | starts with "What", no temporal words — reaches existing Factual check |
+| "Who gave me the gift?" | Factual | starts with "Who" — reaches existing Factual check |
 
-### SingleSession / Counting (should remain unchanged)
+### Counting (must remain Counting)
 
-| Question | Result |
-|----------|--------|
-| "How many books did I read?" | Counting — "how many" fires before "where" check |
-| "Can you recommend a restaurant?" | GeneralPreference — no "where" involved |
-| "How many days did I spend camping?" | Counting — "how many" fires first |
+| Question | Result | Why |
+|----------|--------|-----|
+| "How many books did I read?" | Counting | "how many" fires at step 2, before `where` check |
 
 ---
 
@@ -119,7 +156,7 @@ if Regex::new(r"^where\b").unwrap().is_match(&q) {
 
 1. **`retrieval.rs:108`** — Add `where` interception before the Temporal regex (6 lines)
 2. **`retrieval.rs` tests** — Add 8 new test cases:
-   - 4 "where" questions that should now classify as Factual/FactualCurrentState
+   - 4 "where" questions that should classify as Factual/FactualCurrentState
    - 4 existing Temporal questions that must remain Temporal (regression guard)
 3. **Verify the exact Rachel question** — use "Where did Rachel move to after her recent relocation?" as a test case
 
@@ -134,6 +171,6 @@ if Regex::new(r"^where\b").unwrap().is_match(&q) {
 
 ## Section 7 — Expected Lift
 
-+1 question on knowledge-update category (830ce83f, Rachel suburbs). This moves the question from Temporal retrieval (K=40, recency half-life=60 days) to Factual retrieval, which is the correct strategy for "what is X's current location."
++1 question on knowledge-update category (830ce83f, Rachel suburbs). This moves the question from Temporal retrieval (K=40, recency half-life=60 days) to FactualCurrentState retrieval, which is the correct strategy for "what is X's current location."
 
-Side benefit: QID `gpt4_b5700ca0` ("Where did I attend the religious activity last week?") also reclassifies from Temporal to Factual, which is more appropriate for a location lookup.
+Side benefit: QID `gpt4_b5700ca0` ("Where did I attend the religious activity last week?") reclassifies from Temporal to Factual. The dataset labels it `temporal-reasoning` but the GT is a location ("the Episcopal Church"). Factual routing is more appropriate.
