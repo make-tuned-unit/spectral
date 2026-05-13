@@ -262,9 +262,8 @@ pub fn apply_descriptions(
     let mut applied = 0;
     for (key, desc) in descriptions {
         let id = memory_id_from_key(key);
-        match brain.set_description(&id, desc) {
-            Ok(()) => applied += 1,
-            Err(_) => {} // key not found in this brain (normal for per-question brains)
+        if brain.set_description(&id, desc).is_ok() {
+            applied += 1;
         }
     }
     Ok(applied)

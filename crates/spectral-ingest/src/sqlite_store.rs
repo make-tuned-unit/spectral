@@ -439,7 +439,7 @@ impl SqliteStore {
                 .ok();
             fts_sql
                 .as_deref()
-                .map_or(false, |sql| sql.contains("description"))
+                .is_some_and(|sql| sql.contains("description"))
         };
         if !fts_has_description {
             conn.execute_batch(
