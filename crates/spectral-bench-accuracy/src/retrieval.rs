@@ -343,7 +343,7 @@ pub fn retrieve_topk_fts(
     brain: &Brain,
     question: &str,
     config: &RetrievalConfig,
-) -> Result<Vec<String>> {
+) -> Result<(Vec<String>, Vec<MemoryHit>)> {
     let topk_config = RecallTopKConfig {
         k: config.max_results.max(40),
         apply_signal_score_weighting: std::env::var("SPECTRAL_DISABLE_SIGNAL_SCORE").is_err(),
@@ -353,15 +353,15 @@ pub fn retrieve_topk_fts(
         ..RecallTopKConfig::default()
     };
 
-    let hits = brain.recall_topk_fts(question, &topk_config, Visibility::Private)?;
-
-    let memories: Vec<String> = hits
+    let hits: Vec<MemoryHit> = brain
+        .recall_topk_fts(question, &topk_config, Visibility::Private)?
         .into_iter()
         .take(config.max_results)
-        .map(|hit| format_hit(&hit))
         .collect();
 
-    Ok(memories)
+    let memories: Vec<String> = hits.iter().map(format_hit).collect();
+
+    Ok((memories, hits))
 }
 
 /// Retrieve memories using graph traversal to bridge vocabulary mismatches.
@@ -440,7 +440,7 @@ pub fn retrieve_cascade(
     question: &str,
     _config: &RetrievalConfig,
     question_date: Option<&str>,
-) -> Result<(Vec<String>, CascadeTelemetry)> {
+) -> Result<(Vec<String>, Vec<MemoryHit>, CascadeTelemetry)> {
     // P1: Question-type routing
     let qtype = QuestionType::classify(question);
     let pipeline_config = qtype.cascade_profile();
@@ -489,7 +489,7 @@ pub fn retrieve_cascade(
         .collect();
     let formatted = format_hits_grouped(&hits);
 
-    Ok((formatted, telemetry))
+    Ok((formatted, hits, telemetry))
 }
 
 /// Parse LongMemEval question_date format ("2023/05/30 (Tue) 23:40") into DateTime<Utc>.
@@ -695,7 +695,7 @@ mod tests {
         // Retrieve with question_date = May 30, 2023
         // The recent memory (May 20) is 10 days old; old memory (Jan 10) is 140 days old.
         // With recency weighting, the recent memory should rank first.
-        let (memories_with_date, _) = retrieve_cascade(
+        let (memories_with_date, _, _) = retrieve_cascade(
             &brain,
             "jogging exercise",
             &RetrievalConfig::default(),
@@ -998,7 +998,7 @@ mod tests {
             )
             .unwrap();
 
-        let (_, telemetry) = retrieve_cascade(
+        let (_, _, telemetry) = retrieve_cascade(
             &brain,
             "How many books did I read?",
             &RetrievalConfig::default(),

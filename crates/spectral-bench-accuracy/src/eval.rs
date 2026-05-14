@@ -299,12 +299,12 @@ impl AccuracyEval {
         let question_date = question.question_date.as_deref();
         let (memories, raw_hits, cascade_telemetry) = match effective_path {
             RetrievalPath::TopkFts => {
-                let formatted = retrieval::retrieve_topk_fts(
+                let (formatted, hits) = retrieval::retrieve_topk_fts(
                     &brain,
                     &question.question,
                     &self.config.retrieval,
                 )?;
-                (formatted, Vec::new(), None)
+                (formatted, hits, None)
             }
             RetrievalPath::Tact => {
                 let result = brain.recall_local(&question.question)?;
@@ -322,13 +322,13 @@ impl AccuracyEval {
                 (formatted, Vec::new(), None)
             }
             RetrievalPath::Cascade => {
-                let (formatted, telemetry) = retrieval::retrieve_cascade(
+                let (formatted, hits, telemetry) = retrieval::retrieve_cascade(
                     &brain,
                     &question.question,
                     &self.config.retrieval,
                     question_date,
                 )?;
-                (formatted, Vec::new(), Some(telemetry))
+                (formatted, hits, Some(telemetry))
             }
         };
         let memory_count = memories.len();
@@ -551,6 +551,68 @@ mod tests {
         assert_eq!(report.total_questions, 2);
         assert_eq!(report.correct, 2);
         assert!((report.overall_accuracy - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn eval_populates_memory_keys_in_report() {
+        // Use a question where FTS will match: "car" query against "My car is red" content
+        let dir = tempfile::tempdir().unwrap();
+        let ds_path = dir.path().join("dataset.json");
+        let questions = vec![Question {
+            question_id: "q-keys".into(),
+            question_type: "multi-session".into(),
+            question: "What color is the car?".into(),
+            answer: serde_json::Value::String("Red".into()),
+            question_date: Some("2023/06/01 (Thu) 10:00".into()),
+            haystack_sessions: vec![vec![
+                Turn {
+                    role: "user".into(),
+                    content: "My car is red and I love driving it every day".into(),
+                },
+                Turn {
+                    role: "assistant".into(),
+                    content: "That sounds great! Red cars are very visible on the road.".into(),
+                },
+            ]],
+            haystack_session_ids: vec!["s1".into()],
+            haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
+        }];
+        std::fs::write(&ds_path, serde_json::to_string(&questions).unwrap()).unwrap();
+
+        let config = EvalConfig {
+            dataset_path: ds_path,
+            work_dir: dir.path().join("work"),
+            max_questions: Some(1),
+            checkpoint_interval: 100,
+            ..Default::default()
+        };
+
+        let eval = AccuracyEval::new(
+            config,
+            Box::new(MockActor::new("Red")),
+            Box::new(MockJudge::always_pass()),
+        );
+        let report = eval.run().unwrap();
+        assert_eq!(report.results.len(), 1);
+
+        let result = &report.results[0];
+        assert!(
+            !result.retrieved_memory_keys.is_empty(),
+            "retrieved_memory_keys should be populated, got empty"
+        );
+        // Keys should look like session:turn:N:role format
+        for key in &result.retrieved_memory_keys {
+            assert!(
+                key.contains(':'),
+                "memory key should contain ':' separator, got: {key}"
+            );
+        }
+        // memory count should match keys count
+        assert_eq!(
+            result.retrieved_memory_count,
+            result.retrieved_memory_keys.len(),
+            "memory_count should equal memory_keys length"
+        );
     }
 
     #[test]
