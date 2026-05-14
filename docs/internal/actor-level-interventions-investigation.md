@@ -2,7 +2,7 @@
 
 **Date**: 2026-05-14
 **Branch**: `investigate/actor-level-interventions`
-**Status**: Investigation complete. Recommendation: **sequenced approach** -- Candidate A (quote-anchored per-session extraction) as cheapest viable, with Candidate B (two-call extract-then-count) as escalation.
+**Status**: Investigation complete. Conclusion: **the GENUINE_MISS ceiling is real for single-context-window actor approaches.** Prompt interventions (PR #93, #97, #98) and structured-output variations within a single call all face the same input-attention limitation. The only structurally different lever -- per-session context isolation (Candidate C) -- is expensive and addresses at most the 2 AMBIGUOUS cases. One narrow experiment can determine whether context isolation helps, but the expected lift is modest (+0 to +2 questions, 0-10pp) and contingent on cases #8/#9 being actor failures rather than retrieval failures.
 
 ---
 
@@ -131,30 +131,27 @@ All three answer sessions are primarily about the user **planning their own wedd
 
 ## Section 3 -- Candidate Interventions
 
-### Candidate A -- Quote-anchored per-session extraction
+### Candidate A -- Per-session structured output (single call)
 
-**Mechanism**: Instead of one actor call over all sessions, restructure the single call to force explicit per-session extraction. The prompt would require the actor to process each session header sequentially and, for each, output a structured block:
+**Mechanism**: Restructure the single call's prompt to force explicit per-session extraction. The prompt would require the actor to process each session header sequentially and, for each, output a structured block:
 
 ```
 <session id="answer_e7b0637e_2">
-Relevant quotes: "My friend Emily finally got to tie the knot with her partner Sarah"
 Items found: Emily+Sarah's wedding
 </session>
 ```
 
 After processing all sessions, the actor counts unique items from the per-session blocks.
 
-This differs from the current quote-first instruction (PR #97) in structure: the current prompt says "quote every mention" but lets the model quote globally. This candidate forces the model to iterate session-by-session with an explicit output structure per session.
+**Why this is NOT meaningfully different from PR #97**: PR #97's instruction 2 already says: "quote every mention of the item being counted **from each session**. Place quotes in `<quotes>` tags, **one per session** that contains a mention." The model is already told to produce per-session quotes. The result documented in PR #99: the model's `<quotes>` blocks exhibit the same topic-following behavior -- it quotes from sessions it classifies as relevant and skips sessions where the primary topic doesn't match.
 
-**Sub-problem 1 (within-turn partial extraction)**: **Partially addresses.** By forcing per-session structured output, the model must engage with each session's content individually rather than skimming. However, the within-turn miss in case #3 involves two facts in the same sentence pair -- structured per-session output won't force per-sentence scanning. The $25 chain and $40 lights are in the same session, same turn. A per-session structure ensures the actor looks at the session, but doesn't guarantee it extracts both prices from one turn.
+Candidate A changes the output format (structured `<session>` blocks instead of flat `<quotes>` tags) but does not change the input or the model's reading pass. In a single-call setup, the model processes all sessions in one context window. Output structure changes what the model *writes*, not what it *reads*. If the model's reading pass doesn't register "Emily finally got to tie the knot with Sarah" as relevant to "weddings attended" -- because the session's primary topic is wedding planning -- then forcing a `<session id="_2">` output block just produces `Items found: None` or skips the block entirely.
 
-**Sub-problem 2 (cross-session topic filtering)**: **Directly addresses.** This is the primary target. When processing `answer_e7b0637e_2` in isolation (a session about wedding planning), the instruction "extract items relevant to [weddings attended]" forces the model to scan the session for wedding-attendance references regardless of the session's primary topic. The cross-session attention competition that causes the model to skip subordinate mentions is eliminated -- each session gets its own extraction pass.
+The chain-of-thought analogy does not apply. CoT helps with *reasoning* tasks (the model has the facts but needs to externalize logic steps). The GENUINE_MISS failure is an *extraction/attention* failure (the model doesn't register the fact during its reading pass). Structured output formatting doesn't change input attention allocation.
 
-**Sub-problem 3 (festivals)**: **May address** if the 4th festival is in a session that the actor skimmed due to topic filtering.
+**Evidence**: PR #97 already tested per-session quoting. The model was instructed to produce "one [quote block] per session that contains a mention." It produced per-session quotes for the sessions it found relevant and skipped the sessions containing embedded references. Changing the XML tag format from `<quotes>` to `<session>` doesn't change which sessions the model identifies as containing a mention.
 
-**Cost**: **Zero additional LLM calls.** This is a prompt restructuring within the single existing call. Output tokens increase (structured per-session blocks are longer than a flat answer), but no additional API calls.
-
-**Risk**: Increased output length may cause the model to truncate or abbreviate later sessions (positional attention decay -- "lost in the middle" effect). For 20+ sessions, the structured output could be 2-3x longer than the current format, potentially exceeding the 4096 max_tokens or causing quality degradation in later session blocks.
+**Assessment**: **Downgraded. Not a viable intervention.** This is a cosmetic variation of PR #97, which already failed. The per-session output structure is not the untried variable -- the per-session structure was already present in PR #97's instruction. What's actually different in Candidate A is nothing.
 
 ### Candidate B -- Two-call extract-then-count (structured pre-pass)
 
@@ -162,187 +159,144 @@ This differs from the current quote-first instruction (PR #97) in structure: the
 
 Call 2 (synthesis): receives the JSON array from Call 1 and the question. Instructed: "Given these extracted items, deduplicate and count. State the final answer." No access to raw memories -- only the extracted candidates.
 
-**Sub-problem 1 (within-turn partial extraction)**: **Better than A.** The extraction call's sole task is "find every mention" with no competing synthesis goal. The model's full attention is on extraction. This is the separation-of-concerns argument from the external research synthesis (Google LangExtract pattern, Multi-Step Reasoning survey). However, it's not guaranteed -- the same model processing the same text may still miss the $25 chain even when extraction is the only task. The within-turn attention drop is a model capability issue, not a task-framing issue.
+**Why the separation-of-concerns argument is weaker than it appears**: The claimed advantage is that the extraction call's sole task is "find every mention" with no competing synthesis goal, so the model allocates more attention to extraction. But the model's attention allocation during its reading pass is not governed by the output task -- it's governed by the input content and the query. Whether the output task is "extract items as JSON" (Candidate B Call 1) or "quote every mention then count" (current prompt), the model processes the same input tokens with the same attention weights during reading.
 
-**Sub-problem 2 (cross-session topic filtering)**: **Directly addresses.** Same mechanism as Candidate A -- the extraction call scans each session for relevant items. Separation from counting removes the possibility that the model prematurely concludes "I found enough" and stops scanning.
+PR #97 already separated extraction (in `<quotes>`) from counting (after quotes) within a single call. The two-phase structure exists. Candidate B moves the phases to separate API calls, but the extraction call still processes all sessions in one context window. The cross-session topic filtering that causes the model to skip subordinate references operates during the reading pass, not during the output generation pass. Changing whether extraction and counting are in the same call or separate calls doesn't change how the model reads the input.
 
-**Sub-problem 3 (festivals)**: **May address** if the 4th festival is findable with more careful extraction.
+The LangExtract/Multi-Step Reasoning survey evidence (cited in `docs/internal/external-research-synthesis-2026-05-12.md`) supports separation-of-concerns for tasks where extraction and reasoning compete for output-generation attention. The failure mode here is different: the model fails to *notice* the item during reading, not to *reason about* it during output. Separation of concerns addresses the wrong bottleneck.
 
-**Cost**: **One additional LLM call per question.** At Sonnet pricing (~$0.04/call), this doubles the actor cost from ~$0.04 to ~$0.08 per question. For a 20-question multi-session bench run, that's $0.80 additional. For a 120-question full run, ~$4.80 additional. Not prohibitive.
+**Sub-problem 1 (within-turn partial extraction)**: **Does not address.** The $25 chain and $40 lights are in the same sentence pair. The extraction call processes the same sentence pair in the same context window. If the model reads "it cost me $25...also got bike lights...which were $40" and extracts only the $40, having extraction as the sole task doesn't change the sentence-level attention drop.
 
-**Risk**: The extraction call could produce false positives (items that aren't actually relevant), which would inflate the count. The synthesis call has no access to raw context to verify -- it trusts the extraction. This could REGRESS currently-correct cases where the actor currently gets the count right by being appropriately selective. Mitigation: the synthesis call could include a "verify each extracted item is actually [the counted thing]" instruction.
+**Sub-problem 2 (cross-session topic filtering)**: **Does not address.** The extraction call still processes all 20 sessions in one context window. The model's reading pass still classifies sessions by primary topic and allocates attention accordingly. A wedding-planning session's subordinate reference to an attended wedding is still subordinate during the extraction call's reading pass.
+
+**Assessment**: **Downgraded.** Candidate B adds one LLM call but doesn't change the input-attention dynamic that causes the failure. The two-call structure addresses a bottleneck (extraction competing with counting) that is not the actual bottleneck (extraction failing during reading).
 
 ### Candidate C -- Per-session extraction (N calls)
 
-**Mechanism**: One LLM call per retrieved session: "Given this session about [topic], what does it say relevant to [question]?" Then an aggregation call over all per-session summaries.
+**Mechanism**: One LLM call per retrieved session: "Given this session, what does it say relevant to [question]?" Then an aggregation call over all per-session extractions.
 
-**Sub-problem 1 (within-turn partial extraction)**: **Similar to A.** Isolating a single session doesn't guarantee within-turn extraction. The $25 chain and $40 lights are in the same turn; processing that session alone, the model may still extract one and miss the other.
+**This is the only candidate that changes the input-attention dynamic.** Each session is processed in a context window containing only that session's content (a few turns) plus the question. There is no cross-session attention competition. The model cannot skip a wedding-attendance reference in session _2 because it's "less relevant than the wedding-planning topic" -- there IS no wedding-planning topic in session _2's isolated context. Each session gets the model's full attention budget.
 
-**Sub-problem 2 (cross-session topic filtering)**: **Strongly addresses.** Each session is processed in complete isolation. No cross-session topic competition at all. This is mechanistically the strongest intervention for this sub-problem.
+**Sub-problem 1 (within-turn partial extraction)**: **Does not address.** Isolating a single session doesn't change within-turn extraction. The $25 chain and $40 lights are in the same turn within one session; processing that session alone, the model faces the same sentence-level attention drop. This sub-problem is at a granularity below what context isolation can fix.
 
-**Sub-problem 3 (festivals)**: **Addresses** if the 4th festival exists in a retrieved session.
+**Sub-problem 2 (cross-session topic filtering)**: **Directly addresses by eliminating the mechanism.** Cross-session topic filtering requires multiple sessions competing for attention. With one session per call, there is no competition. This is the mechanistically correct intervention for sub-problem 2.
 
-**Cost**: **N additional LLM calls per question**, where N is the number of sessions (typically 10-20 for counting questions). At $0.04/call, that's $0.40-$0.80 per question or $8-$16 for a 20-question bench run. **This is expensive.** Full 120-question run: $48-$96 additional.
+**Sub-problem 3 (festivals)**: **May address** if the 4th festival is in a session that the actor skimmed due to topic filtering in the whole-context call.
 
-**Risk**: High latency (serial: N * call_latency; parallel: still N API calls). The aggregation call must handle deduplication across sessions, which reintroduces a synthesis task that could miss cross-session connections. Also, individual session extraction calls have very little context -- a question like "How many weddings did I attend?" sent to a session about wedding planning might extract the user's own wedding rather than attended weddings, because the per-session call lacks the broader context that distinguishes "own wedding" from "attended wedding."
+**Cost**: **N additional LLM calls per question**, where N is the number of sessions (typically 10-20 for counting questions). At $0.04/call, that's $0.40-$0.80 per question or $8-$16 for a 20-question bench run. **Expensive for routine use.**
+
+**Risk**: Decontextualization. Per-session calls lack cross-session framing that helps the actor distinguish "my wedding" from "a wedding I attended." A question like "How many weddings did I attend?" sent to a session about wedding planning might extract the user's own wedding plans rather than attended weddings. Mitigation: pass the original question explicitly ("What does this session say relevant to: How many weddings have I attended?"), so the question provides the framing. But this risk is real and untested.
 
 ### Candidate D -- Question-type-specific prompting
 
-**Mechanism**: Counting questions get a different prompt than the current `counting_enumerate.md`. Specifically: "Enumerate exhaustively, then count. For each session, list EVERY [item type] mentioned, even if it seems tangential. Err on the side of over-counting -- include items you're uncertain about and flag the uncertainty."
+**Mechanism**: Counting questions get a different prompt emphasizing exhaustive enumeration and over-counting.
 
-**Sub-problem 1 (within-turn partial extraction)**: **Weakly addresses.** "Enumerate exhaustively" is already the intent of the current prompt (instruction 1: "Scan EVERY session header"). Adding "err on over-counting" might shift the model's threshold for inclusion, but the within-turn miss in case #3 isn't a threshold problem -- the model simply didn't see the $25 chain. You can't over-count what you didn't notice.
+**Assessment**: **Not viable.** The current prompt already says "scan EVERY session" (instruction 1) and "items may appear as passing mentions" (instruction 3, added PR #93). PR #93 and PR #97 both added instructions targeting the same failure mode. Neither changed model behavior. A third iteration of emphatic prompting addresses the wrong layer. The failure is in input attention, not in instruction comprehension. The model understands the instruction; it doesn't execute it because its attention allocation during reading doesn't surface the embedded references.
 
-**Sub-problem 2 (cross-session topic filtering)**: **Weakly addresses.** The current prompt already has instruction 3 ("Items may appear as passing mentions within conversations about other topics"). Restating this more emphatically is unlikely to change behavior -- PR #93 already added this instruction and it didn't help.
-
-**Sub-problem 3 (festivals)**: **Minimal impact.**
-
-**Cost**: **Zero.** Prompt change only.
-
-**Risk**: "Err on over-counting" directly risks regressing currently-correct cases. If the model includes uncertain items, cases that currently get exact counts may start over-counting. The 3 DEFINITION_DISAGREEMENT cases (#1 clothing, #2 projects, #6 citrus) already show over-counting issues -- this instruction would make them worse.
+**Risk**: "Err on over-counting" would regress currently-correct cases. The 3 DEFINITION_DISAGREEMENT cases (#1 clothing, #2 projects, #6 citrus) already show over-counting issues.
 
 ### Candidate E -- Re-read / verification pass
 
-**Mechanism**: After the actor produces an answer, a second call receives the answer + the original context and checks: "The answer says 3 festivals. Verify against the source: is there a 4th? Quote any mentions the answer may have missed."
+**Mechanism**: After the actor produces an answer, a second call receives the answer + the original context and checks for missed items.
 
-**Sub-problem 1 (within-turn partial extraction)**: **Uncertain.** If the verifier is given the original context and told "look for items the answer missed," it faces the same extraction task as the original call. It may find the $25 chain because it's specifically looking for missed items (directed search vs. open scan). Or it may exhibit the same attention patterns.
+**Assessment**: **Not viable.** PR #93 identified the structural problem: "a second pass using the same recognition strategy will miss them again." The verifier processes the same context window with the same attention patterns. The verification framing ("is there a 4th?") provides a slightly more directed scan, but the verifier doesn't know the GT count and so has no signal that the actor's count is wrong. The actor says "2 weddings" with confidence; the verifier has no reason to doubt it. Confirmation bias in LLMs is well-documented for this pattern.
 
-**Sub-problem 2 (cross-session topic filtering)**: **Partially addresses.** The verifier knows the count to verify against (GT-implied or answer-stated), giving it a target. "The answer says 2 weddings, but are there more?" is a more focused scan than "count all weddings." However, the verifier doesn't know the GT -- it only knows the actor's answer. If the actor says "2 weddings" with confidence, the verifier has no signal that 2 might be wrong.
+### Candidate assessment summary (revised)
 
-**Sub-problem 3 (festivals)**: **May help** if the verifier re-scans and finds the 4th.
+| Candidate | Differs from PR #97? | Sub-problem 1 (within-turn) | Sub-problem 2 (topic filtering) | Extra calls | Viable? |
+|-----------|---------------------|----------------------------|---------------------------------|-------------|---------|
+| A: Per-session structured output | **No** | Does not address | Does not address | 0 | **No** |
+| B: Two-call extract-then-count | Superficially | Does not address | Does not address | 1 | **No** |
+| C: Per-session N-calls | **Yes** -- actual context isolation | Does not address | **Directly addresses** | N (10-20) | Testable |
+| D: Question-type prompting | No | Does not address | Does not address | 0 | **No** |
+| E: Verification pass | No | Does not address | Weakly | 1 | **No** |
 
-**Cost**: **One additional LLM call per question.** Same as Candidate B (~$0.04/question).
-
-**Risk**: The verifier operates in a biased context -- it receives the actor's answer as a hypothesis and is asked to confirm or refute it. Confirmation bias in LLMs is well-documented: given an answer, the verifier may rationalize it rather than genuinely re-scan. The PR #93 investigation already noted this: "a second pass using the same recognition strategy will miss them again." The verification framing ("is there a 4th?") is better than a re-scan, but still faces the same attention patterns on the same context.
-
-### Candidate assessment summary
-
-| Candidate | Sub-problem 1 (within-turn) | Sub-problem 2 (topic filtering) | Sub-problem 3 (festivals) | Extra calls | Regression risk |
-|-----------|----------------------------|---------------------------------|---------------------------|-------------|-----------------|
-| A: Quote-anchored per-session | Partial | Direct | Maybe | 0 | Truncation at high session count |
-| B: Two-call extract-then-count | Better | Direct | Maybe | 1 | False-positive inflation |
-| C: Per-session N-calls | Partial | Strong | Maybe | N (10-20) | Decontextualization; expensive |
-| D: Question-type prompting | Weak | Weak | Minimal | 0 | Over-counting regression |
-| E: Verification pass | Uncertain | Partial | Maybe | 1 | Confirmation bias |
+**The critical finding**: Candidates A, B, D, and E all operate within a single context window containing all sessions. They vary the output format, the task framing, or the number of calls, but the model's reading pass over the input is the same in all of them. The reading pass is where the failure occurs -- the model allocates attention to primary session topics and skips subordinate references. Only Candidate C changes the reading pass by eliminating cross-session attention competition entirely.
 
 ---
 
 ## Section 4 -- The Honest Cost/Benefit
 
-### Cost structure
+### Why single-context-window approaches are exhausted
 
-| Candidate | Calls per question | Estimated $/question | $/20-question run | Latency multiplier |
-|-----------|-------------------|---------------------|-------------------|-------------------|
-| A | 1 (same as current) | $0.04 | $0.80 | 1.0-1.5x (longer output) |
-| B | 2 | $0.08 | $1.60 | 2x |
-| C | N+1 (11-21) | $0.44-$0.84 | $8.80-$16.80 | 5-10x (serial) / 2x (parallel) |
-| D | 1 (same as current) | $0.04 | $0.80 | 1.0x |
-| E | 2 | $0.08 | $1.60 | 2x |
+Three prompt-level interventions have been tried (PR #93, #97, #98). Each targeted the GENUINE_MISS failure mode. None worked. This investigation analyzed two additional single-context-window variations (Candidates A and B) and found they are not meaningfully different from what was already tried:
 
-### Regression risk analysis
+- **PR #97** already asked for per-session quotes. Candidate A changes the XML format but not the mechanism.
+- **PR #97** already separated extraction (`<quotes>`) from counting (final answer). Candidate B moves them to separate API calls but doesn't change the reading pass.
 
-**Candidate A** (prompt restructuring): Low regression risk. The actor still receives the same context and produces an answer. The structured per-session output changes the reasoning path but not the information available. Risk: if the structured output exceeds max_tokens for high-session-count questions, the actor may truncate analysis of later sessions. Testable: check output length on a 20-session question.
+The pattern is clear: **within a single context window, the model's attention allocation during reading is the bottleneck, and no output-side restructuring changes it.** The model reads 20 sessions, classifies each by primary topic, allocates attention accordingly, and skips subordinate references in off-topic sessions. Instructions to "scan every session" and "look for passing mentions" don't override this attention pattern -- the model complies with the instruction as it understands it (it does scan every session) but its reading doesn't surface the embedded references.
 
-**Candidate B** (two-call): Moderate regression risk. The extraction call may produce false positives that inflate counts. Currently-correct counting questions (10/20 pass) could regress if the extraction over-identifies items. Mitigation: the synthesis call can include deduplication and relevance verification instructions.
+### What Candidate C actually costs
 
-**Candidate C** (N-calls): Moderate regression risk from decontextualization. Per-session calls lack cross-session context that helps the actor distinguish "my wedding" from "a wedding I attended." The aggregation call must resolve these ambiguities without access to the original text. Also high cost makes iterative experimentation expensive.
-
-**Candidate D** (prompting): High regression risk. "Over-count" instruction directly conflicts with precision on currently-correct questions. The 3 DEFINITION_DISAGREEMENT cases already show that over-counting is the dominant failure mode for the judge.
-
-**Candidate E** (verification): Low regression risk but low expected benefit. The verifier is unlikely to harm correct answers (it's asked to check, not change). But it's also unlikely to find items the original call missed, due to the same attention patterns.
-
-### Which candidates are cheap AND address real sub-problems?
-
-**Candidate A is the cheapest viable intervention.** Zero extra calls, directly addresses sub-problem 2 (the largest sub-problem by case count), partially addresses sub-problem 1. The risk (truncation) is testable before committing to a full bench run.
-
-**Candidate B is the cheapest STRONG intervention.** One extra call, better coverage of sub-problem 1 (separation of extraction from counting), direct coverage of sub-problem 2. Moderate regression risk from false-positive inflation, but mitigable.
-
-**Candidate D is cheap but doesn't address the real sub-problems.** The current prompt already says "scan every session" and "items may appear as passing mentions." More emphatic phrasing won't change model attention patterns.
-
-**Candidate C addresses sub-problem 2 most strongly but is expensive.** The cost makes it unsuitable for iterative experimentation. Worth considering only if A and B fail.
+| Metric | Value |
+|--------|-------|
+| Calls per question | N+1 (11-21 typical) |
+| Estimated $/question | $0.44-$0.84 |
+| $/20-question bench run | $8.80-$16.80 |
+| Latency multiplier | 5-10x (serial) / 2x (parallel) |
+| Pre-validation cost (3 sessions, 1 case) | ~$0.12 |
 
 ### The AMBIGUOUS caveat
 
-Cases #8 (tanks) and #9 (weddings) are classified AMBIGUOUS -- they may be partial RETRIEVAL_MISS, not actor failures. If the missed sessions weren't retrieved, no actor intervention helps. The honest accounting:
+Cases #8 (tanks) and #9 (weddings) are the only cases where sub-problem 2 (cross-session topic filtering) is the likely mechanism. Both are classified AMBIGUOUS -- they may be partial RETRIEVAL_MISS, not actor failures. If the missed sessions weren't retrieved, context isolation can't help because the sessions aren't in the context to isolate.
+
+The honest accounting:
 
 - **Confirmed GENUINE_MISS**: #3 (bike expenses), #7 (festivals) -- 2 cases
 - **AMBIGUOUS (may be retrieval)**: #8 (tanks), #9 (weddings) -- 2 cases
 
-If cases #8 and #9 are retrieval failures, actor interventions address only 2 of 10 multi-session failures. If they are actor failures, interventions address 4 of 10. The expected lift from actor interventions alone is therefore **+1 to +2 questions out of 20** (5-10pp), not the +4 (20pp) that would be the case if all GENUINE_MISS were actor-addressable.
+Case #3 is sub-problem 1 (within-turn) -- context isolation doesn't help. Case #7 is sub-problem 3 (unknown mechanism). Only cases #8 and #9 are sub-problem 2, and they're AMBIGUOUS.
 
-This is a meaningful finding. The ceiling for actor-level interventions on the current failure set is modest even if the interventions work perfectly.
+**Candidate C addresses at most 2 of 10 multi-session failures, and only if those 2 are actually actor failures rather than retrieval failures.**
+
+### Regression risk for Candidate C
+
+Per-session calls lack cross-session context. This creates a specific risk: a question like "How many weddings did I attend?" sent to a session about wedding planning might extract the user's own wedding plans rather than attended weddings, because the per-session call lacks the broader conversational framing. The question provides some framing ("weddings I attended"), but within a wedding-planning session, the model may still extract the user's own wedding ("I'm planning a garden wedding for June") as a "wedding" mentioned in the session.
+
+This risk could cause Candidate C to regress currently-correct cases where the whole-context actor correctly distinguishes primary-topic items from counted items.
 
 ---
 
 ## Section 5 -- Recommendation
 
-### Sequenced approach: Candidate A first, Candidate B as escalation
+### The GENUINE_MISS ceiling is real
 
-**Step 1: Pre-validation of Candidate A on 2 cases.**
+Single-context-window prompt interventions for the GENUINE_MISS failure mode are exhausted:
 
-Pick cases #3 (bike expenses) and #7 (festivals). These are the 2 confirmed GENUINE_MISS cases where all answer sessions are verified retrieved.
+1. **PR #93** (embedded-reference instruction): tried, failed. Actor still skips subordinate references.
+2. **PR #97** (quote-first extraction with per-session quoting): tried, failed. Actor's `<quotes>` blocks exhibit same topic-following behavior.
+3. **PR #98** (max_tokens increase): tried, no lift on GENUINE_MISS.
+4. **Candidate A** (per-session structured output): analyzed, not meaningfully different from PR #97.
+5. **Candidate B** (two-call extract-then-count): analyzed, separation of concerns doesn't change the reading pass.
+6. **Candidate D** (emphatic prompting): third iteration of same approach, already failed twice.
+7. **Candidate E** (verification pass): faces same attention patterns, confirmation bias.
 
-**Manual experiment for case #3 (bike expenses)**:
+The failure mechanism -- input-attention allocation that prioritizes primary session topics over subordinate references -- is not addressable by output-side restructuring within a single context window.
 
-Construct the prompt manually with the quote-anchored per-session structure:
+### One narrow experiment path remains
 
-```
-For each session below, extract EVERY expense or cost mentioned,
-with a verbatim quote. Process one session at a time.
+Candidate C (per-session context isolation) is the only structurally different lever that hasn't been tried. It eliminates cross-session attention competition by processing each session in isolation. This directly addresses sub-problem 2 (the only sub-problem it CAN address), at the cost of N additional LLM calls per question.
 
-<session id="answer_2880eb6c_1">
-[session content]
-</session>
-Items found: [model fills in]
+**Whether this experiment is worth running depends on a prior question that should be resolved first: are cases #8 and #9 actually actor failures?**
 
-<session id="answer_2880eb6c_2">
-[session content]
-</session>
-Items found: [model fills in]
+Item #21 (retrieval telemetry in bench reports) would populate `memory_keys` in `report.json`, resolving the AMBIGUOUS classification. If the missed sessions in cases #8 and #9 were NOT retrieved, they are retrieval failures, and Candidate C is moot for the current failure set. If they WERE retrieved, Candidate C targets exactly these cases.
 
-[...remaining sessions...]
+**Recommended sequence**:
 
-Now count the total unique expenses from all sessions above.
-```
+1. **Ship item #21** (retrieval telemetry). Effort: 2-3h. Resolves the AMBIGUOUS classification.
+2. **Re-run multi-session bench** with telemetry populated. Determine whether cases #8 and #9 are retrieval or actor failures.
+3. **If actor failures**: Run a manual pre-validation of Candidate C on case #9 (weddings). Take the 3 answer sessions from `longmemeval_s.json`. For each, send a single LLM call: "Given this conversation session, list every wedding the user mentions attending. Quote the relevant text." Cost: ~$0.12 for 3 calls. Check whether session `answer_e7b0637e_2` in isolation produces "Emily and Sarah's wedding" and session `answer_e7b0637e_3` produces "Jen and Tom's wedding." This isolates the variable: does context isolation surface the embedded references that whole-context processing misses?
+4. **If the pre-validation succeeds**: Candidate C is validated for sub-problem 2. Decide whether the lift (at most +2 questions, 10pp) justifies the per-question cost ($0.40-$0.80) and latency (5-10x) for production use.
+5. **If retrieval failures OR pre-validation fails**: The GENUINE_MISS floor is confirmed. Accept it in the path-to-90% math.
 
-Run this manually against Claude Sonnet 4.6 (or the bench model). Check:
-- Does the per-session structure force the model to find "$25 chain replacement" in `answer_2880eb6c_2`?
-- Does it find "$120 Bell Zephyr helmet" in `answer_2880eb6c_1`?
-- Does it still find the "$40 bike lights" it currently finds?
+### What this means for the path-to-90%
 
-**Manual experiment for case #7 (festivals)**:
+The multi-session GENUINE_MISS failures represent a hard floor for prompt-level and call-structure interventions. The path to higher accuracy on multi-session runs through:
 
-Same structure, extracting "film festivals attended" per session. Check whether the per-session scan surfaces the 4th festival.
-
-**Success criteria**: If the per-session structure finds at least one additional item in either case that the current prompt misses, Candidate A is validated for implementation. If it finds zero additional items in both cases, the failure is at a granularity that prompt restructuring can't address, and the conclusion is that sub-problem 1 (within-turn) is a model capability limitation.
-
-**Step 2 (contingent): If Candidate A succeeds on pre-validation, implement in counting_enumerate.md.**
-
-Replace the current quote-first instruction with the per-session structured extraction format. Run targeted multi-session bench (20 questions, ~$1.60).
-
-**Step 3 (contingent): If Candidate A fails on pre-validation OR succeeds but bench lift is < +1, escalate to Candidate B.**
-
-Implement the two-call extract-then-count pattern. Pre-validate on the same 2 cases with the extraction-only call. If extraction-only finds more items, implement the two-call pipeline in the bench harness.
-
-**Step 4 (if both fail): Declare the GENUINE_MISS floor.**
-
-If neither Candidate A nor B finds additional items on the pre-validation cases, the within-turn partial extraction failure is a model capability limitation. The honest conclusion: actor-level prompt/call-structure interventions cannot address sub-problem 1. Sub-problem 2 may be addressable by A or B but is confounded by the AMBIGUOUS retrieval status of cases #8 and #9. The practical ceiling improvement from actor interventions is +0 to +1 questions (0-5pp).
-
-### Why this recommendation, not another
-
-**Why not Candidate D (prompting)?** Already tried twice. PR #93 added the embedded-reference instruction. PR #97 added quote-first. Both are in the current `counting_enumerate.md` and neither worked. A third round of emphatic restating won't change model attention patterns.
-
-**Why not Candidate C (per-session N-calls)?** Too expensive for pre-validation. At $0.40-$0.84/question, testing even 2 cases costs $0.80-$1.68, comparable to a full Candidate B bench run. And per-session extraction faces the decontextualization risk -- a single-session call about "wedding planning" might extract the user's own wedding plans rather than attended weddings, because it lacks the cross-session framing of the original question.
-
-**Why not Candidate E (verification)?** PR #93's analysis already identified the structural problem: "a second pass using the same recognition strategy will miss them again." The verification framing is slightly better (directed search for missing items vs. open re-scan), but the verifier doesn't know the GT count, so it can't know whether to keep looking.
-
-**Why Candidate A before B?** A is cheaper (zero extra calls) and tests the same hypothesis (per-session structured extraction improves recall). If A works, there's no need for B's extra call. If A fails, B's separation-of-concerns adds one more lever (extraction as sole task). The pre-validation experiment is the same for both -- apply per-session structure manually, check if more items are found.
-
-### Backing by failure characterization
-
-- **Candidate A addresses sub-problem 2** (cross-session topic filtering: cases #8, #9) by forcing per-session extraction, eliminating cross-session attention competition. This is the mechanism that PR #93 identified as the dominant failure mode.
-- **Candidate A partially addresses sub-problem 1** (within-turn extraction: case #3) by increasing the model's engagement with each session's content. Whether this is sufficient is what the pre-validation tests.
-- **Candidate A does NOT address the AMBIGUOUS cases if they are retrieval failures.** The pre-validation uses confirmed GENUINE_MISS cases (#3, #7) specifically to avoid this confound.
-- **Candidate B adds separation-of-concerns** for sub-problem 1: the extraction call's sole task is finding items, not counting or synthesizing. This is the best shot at the within-turn miss, because the model's full attention budget is allocated to extraction.
+- **Retrieval improvements** (item #8: description-enriched FTS) -- addresses RETRIEVAL_MISS cases (#4, #10) and potentially the AMBIGUOUS cases (#8, #9) if they are retrieval failures. This is the highest-leverage remaining intervention for multi-session.
+- **Judge refinement** -- the 3 DEFINITION_DISAGREEMENT cases (#1, #2, #6) are judge-side failures, not actor-side. Item #20 was reverted, but the cases remain addressable by a better judge approach.
+- **Model capability improvements** -- sub-problem 1 (within-turn partial extraction) is a model-level limitation. A more capable model might extract both the $25 chain and $40 lights from the same sentence pair. This is out of scope for Spectral engineering.
+- **Accepting the floor** -- if items #8 and #21 ship and the AMBIGUOUS cases resolve to retrieval, the actor-addressable GENUINE_MISS count drops to 2 (cases #3 and #7). Case #3 is within-turn (intractable). Case #7 is uncharacterized (may be GT accuracy). The practical GENUINE_MISS floor is 1-2 questions out of 20.
 
 ---
 
@@ -361,21 +315,22 @@ They do NOT share:
 - LLM call mechanics (bench uses `reqwest::blocking::Client`; Permagent has its own async pipeline)
 - Multi-call patterns (bench is single-call; Permagent's call structure is independent)
 
-### Would an intervention need Permagent-side changes?
+### Would Candidate C need Permagent-side changes?
 
-**Yes, if the intervention proves effective.** Any successful actor intervention would need to be replicated in Permagent's actor:
+**Yes, if validated and adopted.** Per-session extraction would require:
 
-- **Candidate A (prompt restructuring)**: Permagent would need to adopt the per-session structured extraction format in its synthesis prompt. Effort: prompt change only, no code change.
-- **Candidate B (two-call)**: Permagent would need a two-call actor pipeline: extraction call then synthesis call. Effort: moderate code change (add extraction step, parse structured output, pass to synthesis).
-- **Candidate C (N-calls)**: Permagent would need per-session extraction + aggregation. Effort: significant code change and latency impact on production.
+- Permagent splits retrieved memories by session before sending to the actor
+- N per-session extraction calls + 1 aggregation call (replaces single actor call)
+- Latency budget for N+1 calls per question (5-10x current)
+- Possibly restricted to counting questions only (via `QuestionType` classifier, which would need to be promoted to Spectral core or reimplemented in Permagent)
 
 ### The `QuestionType` classifier
 
-The classifier lives in `spectral-bench-accuracy/src/retrieval.rs`, not in Spectral core. If actor interventions are shape-specific (e.g., only counting questions get the two-call pattern), Permagent would either need to import the classifier or implement its own. Backlog item notes that promoting `Brain::classify_question` to Spectral is deferred until a production consumer needs it.
+The classifier lives in `spectral-bench-accuracy/src/retrieval.rs`, not in Spectral core. If per-session extraction is shape-specific (only counting questions), Permagent would need the classifier. Backlog item notes that promoting `Brain::classify_question` to Spectral is deferred until a production consumer needs it.
 
 ### Immediate coordination required
 
-**None.** This is a proposal-only investigation. No implementation, no Permagent changes needed. If the recommendation is approved and pre-validation succeeds, Permagent coordination should happen before the bench intervention is promoted to production.
+**None.** This investigation concludes that the ceiling is real and the remaining experiment path (Candidate C pre-validation) is contingent on item #21 shipping first. No Permagent changes needed unless Candidate C is validated.
 
 ---
 
@@ -384,23 +339,36 @@ The classifier lives in `spectral-bench-accuracy/src/retrieval.rs`, not in Spect
 | Intervention | PR | Target | Result |
 |-------------|-----|--------|--------|
 | Embedded-reference instruction | #93 | Sub-problem 2 | No lift. Actor still skips subordinate references. |
-| Quote-first extraction | #97 | Sub-problems 1+2 | No lift. Actor's `<quotes>` blocks exhibit same topic-following behavior. |
+| Quote-first extraction (per-session quoting) | #97 | Sub-problems 1+2 | No lift. Actor's `<quotes>` blocks exhibit same topic-following behavior. |
 | Max_tokens increase to 4096 | #98 | Output truncation | No lift on GENUINE_MISS. Fixed other issues. |
 | Reasoning-aware judge rubric | #102 | DEFINITION_DISAGREEMENT | Reverted. Zero lift on target cases. |
 | Session-user clarity instruction | #93 | Session confusion | Fixed case #2 (camping) but not generalizable. |
 
-Each of these was designed to address the GENUINE_MISS failure mode. None worked. This is the context for the recommendation: incremental prompt changes have been tried three times and failed three times. A structural change (per-session extraction format, or separation of extraction from counting) is the next-cheapest lever that hasn't been tried.
+### Candidates analyzed and rejected in this investigation
+
+| Candidate | Claim | Why rejected |
+|-----------|-------|-------------|
+| A: Per-session structured output | Per-session output blocks force deeper engagement | PR #97 already asked for per-session quotes. Output format changes what the model writes, not what it reads. Same attention pattern, same failures. |
+| B: Two-call extract-then-count | Separation of concerns improves extraction recall | Extraction call still processes all sessions in one context window. Same reading pass, same attention allocation. PR #97 already separated extraction from counting within a single call. |
+| D: Emphatic prompting | Stronger enumeration instructions improve coverage | Third iteration of same approach. PR #93 added "scan for passing mentions"; PR #97 added "quote every mention." Model understands the instruction; its attention doesn't execute it. |
+| E: Verification pass | Second pass finds missed items | Same context window, same attention patterns. Confirmation bias. PR #93 already noted: "a second pass using the same recognition strategy will miss them again." |
+
+### The underlying pattern
+
+All failed and rejected interventions share the same limitation: **they operate within a single context window containing all sessions.** The model's reading pass over the input is where the failure occurs. The model allocates attention to primary session topics and de-prioritizes subordinate references. No output-side intervention (formatting, task framing, verification, multi-call with shared context) changes this reading-pass behavior.
+
+The only intervention that changes the reading pass is context isolation -- processing each session in its own context window (Candidate C). This hasn't been tried and is testable.
 
 ## Appendix B -- Expected lift accounting
 
 | Scenario | Cases flipped | Lift (of 20 multi-session) |
 |----------|--------------|---------------------------|
-| Candidate A works on sub-problem 2 only, #8/#9 are retrieval | 0 | 0pp |
-| Candidate A works on sub-problem 2, #8/#9 are actor | +2 (#8, #9) | +10pp |
-| Candidate A works on sub-problems 1+2, #8/#9 are actor | +3 (#3, #8, #9) | +15pp |
-| Candidate A works on all, #7 addressable | +4 (#3, #7, #8, #9) | +20pp |
-| Neither A nor B works | 0 | 0pp |
+| Context isolation works on sub-problem 2, #8/#9 are actor | +2 (#8, #9) | +10pp |
+| Context isolation works, #8/#9 are retrieval | 0 | 0pp |
+| Context isolation doesn't work (attention failure persists in isolation) | 0 | 0pp |
+| Sub-problem 1 (#3) addressed by model upgrade (out of scope) | +1 | +5pp |
+| Sub-problem 3 (#7) is GT accuracy issue | 0 | 0pp |
 
-The expected value depends critically on whether cases #8 and #9 are retrieval or actor failures. Item #21 (retrieval telemetry in bench reports) would resolve this ambiguity. If #21 ships before the actor intervention, the pre-validation can be better targeted.
+The maximum achievable lift from actor-level interventions on the current failure set is **+2 questions (+10pp)**, and this requires: (a) cases #8 and #9 are confirmed actor failures, (b) context isolation addresses sub-problem 2, and (c) the decontextualization risk doesn't regress other cases.
 
-**Realistic expectation**: +0 to +2 questions (0-10pp). The pre-validation experiment is designed to determine which end of this range is achievable before investing in a full bench run.
+**Realistic expectation**: +0 to +1 questions (0-5pp). The highest-leverage next step is item #21 (retrieval telemetry) to resolve the AMBIGUOUS classification, followed by item #8 (description-enriched FTS) which addresses the cases whether they are retrieval or actor failures.
