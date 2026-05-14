@@ -40,7 +40,7 @@ Today's shipping landed three PRs and an empirical baseline. State of `main` is 
 
 **Empirical baseline locked:** 73.3% overall on LongMemEval-S at K=40 cascade. Path to 90%+ exists but requires composing this baseline with 4-6 weeks of disciplined engineering: shape-routed actors (item 17), structural backlog items (item 2 co-retrieval ranking, item 8 compiled-truth boost, item 12 L2 episodes), plus multi-step actor patterns for the multi-session counting bottleneck. Per-step contribution stacks to +15-20pp; bench checkpoints between each PR keep attribution clean.
 
-**Bottleneck identified (2026-05-11):** Actor synthesis, not retrieval. 75% of remaining failures show the actor receiving relevant memories but failing to count, synthesize, or apply preference signal correctly. **Update (2026-05-14):** Deeper investigation refined this picture. Multi-session failures decompose into DEFINITION_DISAGREEMENT (3, judge-side), GENUINE_MISS (2 confirmed + 2 AMBIGUOUS), RETRIEVAL_MISS (2), and TEMPORAL (1). Actor-level prompt interventions exhausted for GENUINE_MISS (3 interventions tried, all failed; structural output analysis confirms ceiling). Remaining path: item #8 bench validation (retrieval), item #21 telemetry resolving AMBIGUOUS cases, and judge refinement (item #20). See `docs/internal/actor-level-interventions-investigation.md`.
+**Bottleneck identified (2026-05-11):** Actor synthesis, not retrieval. 75% of remaining failures show the actor receiving relevant memories but failing to count, synthesize, or apply preference signal correctly. **Update (2026-05-14):** Deeper investigation refined this picture. Multi-session failures decompose into DEFINITION_DISAGREEMENT (3, judge-side), GENUINE_MISS (4 confirmed — cases #8/#9 resolved from AMBIGUOUS via PR #117 bench run), RETRIEVAL_MISS (2), and TEMPORAL (1). Actor-level prompt interventions exhausted for GENUINE_MISS (3 interventions tried, all failed; structural output analysis confirms ceiling). Remaining path: judge refinement (item #20) and structurally-different actor approaches (Candidate C). See `docs/internal/actor-level-interventions-investigation.md`.
 
 **Process discipline:** The propose-then-implement pattern (used on PR #84 and #86) caught design issues at proposal stage twice in a row that would have required rework if implementation had proceeded. Make this the standard for any non-trivial bench-side or architecturally-significant PR going forward.
 
@@ -56,15 +56,17 @@ Today's shipping landed three PRs and an empirical baseline. State of `main` is 
 
 Current state on `main` at `f258e2d` (2026-05-14). Recognition architecture v1 shipped. Description-enriched FTS shipped (PR #104). Describe subcommand with Ollama support and structural template shipped (PR #108). Retrieval telemetry in bench reports shipped (PR #107 — resolves the AMBIGUOUS classification gap on next bench run). Shape-routed actor strategies shipped (PR #86). Preflight spot-check subcommand shipped (PR #110). Three investigations completed and deferred: item #11 (session signal), item #12 (L2 episodes), item #19 (cascade max_confidence — confirmed bug, telemetry-only).
 
-**Actor-level intervention ceiling established (2026-05-14):** The actor-level interventions investigation (`docs/internal/actor-level-interventions-investigation.md`) concluded that the GENUINE_MISS ceiling is real for single-context-window actor approaches. Three prompt interventions tried (PRs #93, #97, #98) and two structural-output candidates analyzed — all face the same input-attention limitation. The only structurally different lever (per-session context isolation, Candidate C) is expensive and addresses at most the 2 AMBIGUOUS cases (#8, #9), contingent on item #21's telemetry resolving them as actor failures. Multi-session GENUINE_MISS cases #8/#9 are AMBIGUOUS (may be retrieval), not confirmed actor failures (PR #106 correction).
+**Actor-level intervention ceiling established (2026-05-14):** The actor-level interventions investigation (`docs/internal/actor-level-interventions-investigation.md`) concluded that the GENUINE_MISS ceiling is real for single-context-window actor approaches. Three prompt interventions tried (PRs #93, #97, #98) and two structural-output candidates analyzed — all face the same input-attention limitation. The only structurally different lever (per-session context isolation, Candidate C) is expensive and addresses at most the 4 confirmed GENUINE_MISS cases. **Update (2026-05-14, PR #117):** Cases #8 (tanks) and #9 (weddings) resolved from AMBIGUOUS to confirmed GENUINE_MISS — item #8 bench validation showed all answer sessions retrieved in both conditions; the actor fails to count, not retrieve. Candidate C is no longer gated on resolving #8/#9 classification.
 
 Spectral is making a deliberate bet: **deterministic recognition without LLM-in-loop**, closer to how a brain actually works, cheaper at inference, but architecturally distant from what Memanto and other RAG-style systems optimize for. The backlog reflects two parallel tracks:
 
-- **Track A — Path B (recognition wins):** Use the recognition loop shipped in #71-#79 to make ranking better without LLM filtering. Co-retrieval signal in ranking (item 2), description-text in FTS (item 8 — foundation shipped, bench validation pending), AAAK context priming. Session-aware recency (item 11) deferred — no documented failure case. Every point is defended by deterministic mechanisms no other system has.
+- **Track A — Path B (recognition wins):** Use the recognition loop shipped in #71-#79 to make ranking better without LLM filtering. Co-retrieval signal in ranking (item 2), description-text in FTS (item 8 — **validated: +2.5pp isolated lift**, PR #117), AAAK context priming. Session-aware recency (item 11) deferred — no documented failure case. Every point is defended by deterministic mechanisms no other system has. **Track A is reaching diminishing returns on bench** — the +2.5pp lift was real but capped by the actor ceiling. Remaining retrieval-side items (items #22, T1) should be measured but expectations are tempered.
 - **Track B — robustness and consumer DX:** Fix the footguns consumers have to defend against externally. Idempotency (closed via #85), health probes (item 5), backfill orchestration (item 6).
-- **Track C — bench engineering:** Shape-routed strategies (item 17 — shipped), strategy telemetry (item 18), judge rubrics (item 20 — first attempt reverted, needs different approach). Actor-level prompt interventions exhausted for multi-session GENUINE_MISS; remaining path is retrieval improvement (item #8 bench validation) and accepting the multi-session floor where neither retrieval nor actor fixes apply.
+- **Track C — bench engineering:** Shape-routed strategies (item 17 — shipped), strategy telemetry (item 18), judge rubrics (item 20 — first attempt reverted, needs different approach). Actor-level prompt interventions exhausted for multi-session GENUINE_MISS; item #8 retrieval improvement delivered +2.5pp but did not flip multi-session cases (actor ceiling absorbed the gain). Remaining path with real headroom: Candidate C (per-session context isolation — structurally different actor approach) and judge refinement (item #20). Further retrieval tuning yields diminishing returns while the actor ceiling holds.
 
 All three tracks matter. Track A moves the differentiator; Track B reduces integration friction; Track C closes the bench number gap that funders, partners, and credibility analysts read first.
+
+**Actor synthesis confirmed as binding constraint (2026-05-14, PR #117):** The item #8 bench validation completed the evidence chain. Description-enriched FTS delivered +2.5pp (in range), but the gain was capped — RETRIEVAL_MISS cases showed retrieval improved (more answer sessions surfaced) yet did NOT flip, because the actor ceiling absorbed the retrieval gain. This composes with the #113 structural-ceiling finding and the #114 "actor prompt interventions exhausted" conclusion. Multi-session AMBIGUOUS cases #8/#9 resolved as GENUINE_MISS (all answer sessions retrieved; actor fails to count). The remaining levers with real headroom are the structurally-different ones — Candidate C (per-session context isolation) and judge-side work (item #20) — not further retrieval tuning. Retrieval-side items (#22, T1) should still be measured for completeness but expectations are tempered by this ceiling.
 
 ---
 
@@ -118,15 +120,9 @@ See "New Tier 1 items" above. **Investigation (2026-05-14, PR #112):** Confirmed
 - **Why it matters:** As `retrieval_events` accumulates, `co_retrieval_pairs` drifts unless rebuilt. Either Permagent's Librarian schedules it or Spectral exposes a "rebuild if stale" primitive. Cleaner if Spectral owns the staleness check; consumers shouldn't need to reason about index freshness.
 - **Out of scope:** Background tokio task — provide the primitive, let consumer decide cadence.
 
-### 8. Compiled-truth boost in cascade ranking  [gbrain idea #2] — foundation SHIPPED, bench validation pending
+### ~~8. Compiled-truth boost in cascade ranking  [gbrain idea #2]~~ — SHIPPED + VALIDATED (PR #117)
 
-- **Source:** garrytan/gbrain — "Compiled-truth boost (assessments outrank timeline noise)."
-- **Effort:** 1–2h (original estimate). Foundation shipped; bench validation remaining.
-- **Depends on:** Description-writing path populated (Librarian shipping in Permagent).
-- **Why it matters:** Memories with `description.is_some()` rank higher than raw timeline events. Cheap, deterministic, measurable. The ranking lift compounds with description coverage: as Librarian writes more descriptions, retrieval quality improves automatically. Estimated +1–3pp once description coverage is meaningful. **Composes with item 17:** GeneralPreference strategy benefits most when descriptions exist.
-- **Shipped so far:** (1) PR #104 — description-enriched FTS (descriptions indexed in BM25, vocabulary-gap bridging confirmed on 3/3 RETRIEVAL_MISS cases). Pre-validation: `docs/internal/item-8-prevalidation-vocabulary-gap.md`. (2) PR #108 — `describe` subcommand with Ollama/OpenAI-compatible API (`--api-format openai`), structural template prompt (0% hallucination on 35 tested memories vs 23% with prose prompt). Docs: `docs/internal/ollama-describe-compat.md`, `docs/internal/describe-structural-template-smoke.md`.
-- **Remaining:** Bench validation — qwen2.5:7b description regen on full LongMemEval corpus, targeted bench run to measure actual lift on RETRIEVAL_MISS and AMBIGUOUS cases.
-- **Out of scope:** Description quality scoring, freshness-weighted boost.
+Foundation shipped (PRs #104/#108), bench validation complete (PR #117). Isolated description-content lift: **+2.5pp** (75.0% → 77.5%), within the predicted +1-3pp range. Lift concentrated in temporal-reasoning (+10pp); multi-session showed zero lift because that bottleneck is actor synthesis, not retrieval. RETRIEVAL_MISS cases showed the vocabulary-bridging mechanism working (previously-missing answer sessions surfaced) but the actor ceiling absorbed the retrieval gain — questions did not flip. Full analysis: `docs/internal/item-8-bench-validation.md`.
 
 ### 9. Filtered `list_undescribed` (by wing/age/source)
 
@@ -155,14 +151,14 @@ See "New Tier 1 items" above. **Investigation (2026-05-14, PR #112):** Confirmed
 
 ### ~~21. Retrieval telemetry in bench reports (`memory_keys` population)~~ — SHIPPED via PR #107
 
-Shipped 2026-05-14. `retrieve_cascade()` and `retrieve_topk_fts()` now return raw `MemoryHit` vectors alongside formatted strings. `memory_keys` reliably populated for Cascade, TopkFts, and Tact paths. Graph path still falls back to string parsing. The next multi-session bench run with telemetry will resolve the AMBIGUOUS classification of cases #8 (tanks) and #9 (weddings) — determining whether these are actor failures or retrieval failures. This resolution gates whether actor-level Candidate C (per-session context isolation) is worth pre-validating. See `docs/internal/actor-level-interventions-investigation.md` Section 5.
+Shipped 2026-05-14. `retrieve_cascade()` and `retrieve_topk_fts()` now return raw `MemoryHit` vectors alongside formatted strings. `memory_keys` reliably populated for Cascade, TopkFts, and Tact paths. Graph path still falls back to string parsing. **AMBIGUOUS cases resolved (PR #117):** Item #8 bench validation confirmed cases #8 (tanks) and #9 (weddings) as GENUINE_MISS — all answer sessions retrieved in both conditions; actor fails to count. Candidate C no longer gated on this resolution.
 
 ### 22. Enable spectrograms in bench ingest
 
 - **Source:** Deferred from PR #82 (split into preflight-only PR #110 + this item). Preflight subcommand shipped on main via PR #110.
 - **Effort:** 1h code change + 1 bench run for attribution.
-- **Depends on:** Item #8 bench validation complete (so spectrogram impact is measured independently, not confounded with description-enriched FTS).
-- **Why it matters:** Spectrograms feed `signal_score` via the spectrogram analyzer, which feeds re-ranking. Enabling them changes bench behavior. Must run as an isolated experiment to measure impact on accuracy — don't bundle with other retrieval changes or attribution is confounded. PR #82's `enable_spectrogram: true` change to `ingest_question()` is the implementation; the preflight subcommand (now on main via PR #110) can verify coverage.
+- **Depends on:** Item #8 bench validation complete — **now satisfied** (PR #117). Spectrogram impact can now be measured independently.
+- **Why it matters:** Spectrograms feed `signal_score` via the spectrogram analyzer, which feeds re-ranking. Enabling them changes bench behavior. Must run as an isolated experiment to measure impact on accuracy — don't bundle with other retrieval changes or attribution is confounded. PR #82's `enable_spectrogram: true` change to `ingest_question()` is the implementation; the preflight subcommand (now on main via PR #110) can verify coverage. **Baseline for this measurement is now 77.5%** (descriptions-enabled main), not the old 73.3%.
 - **Out of scope:** Spectrogram-conditioned retrieval (that's further architectural work). This item is just flipping the flag and measuring.
 
 ---
@@ -226,7 +222,8 @@ Shipped 2026-05-14. `retrieve_cascade()` and `retrieve_topk_fts()` now return ra
 - **Item 1 — Synthesis prompt revisions** → PR #84 shipped. Bench lift attributed.
 - **Item 3 — Bench checkpoint** → 73.3% baseline locked at commit `e9a80d8`. Failure analysis in `docs/internal/bench-failure-analysis-2026-05-11.md`.
 - **Item 4 — Content-hash dedup** → PR #85 shipped, broader scope than originally captured (non-destructive write semantics + WriteOutcome + content hash + backfill).
-- **Item 21 — Retrieval telemetry** → PR #107 shipped 2026-05-14. `memory_keys` now populated for Cascade, TopkFts, and Tact paths. Next bench run resolves AMBIGUOUS cases #8/#9.
+- **Item 8 — Description-enriched FTS** → Foundation shipped (PRs #104/#108), bench validation complete (PR #117). Isolated lift: +2.5pp (75.0% → 77.5%), within predicted +1-3pp. Lift concentrated in temporal-reasoning; multi-session zero (actor ceiling). AMBIGUOUS cases #8/#9 resolved as GENUINE_MISS. Full analysis: `docs/internal/item-8-bench-validation.md`.
+- **Item 21 — Retrieval telemetry** → PR #107 shipped 2026-05-14. `memory_keys` now populated for Cascade, TopkFts, and Tact paths. AMBIGUOUS cases #8/#9 resolved via item #8 bench validation (PR #117).
 
 ---
 
@@ -260,38 +257,41 @@ tracks the gap between them and the architectural work above.
 - **Effort:** Investigation first (is entity-graph adjacency
   additive over co-retrieval pairs already in ranking?), then
   either wiring work or a deliberate retirement.
-- **Depends on:** Item #8 bench validation complete — same
-  attribution-confounding rule as item #22. Don't measure graph
-  neighborhood lift while description-enriched FTS lift is
-  un-isolated.
+- **Depends on:** Four preconditions (T2 investigation, PR #116):
+  1. Item #8 bench validation complete — **now satisfied** (PR #117).
+  2. Entity→memory bridging gap fix — `recall_graph()` currently
+     detours through FTS on entity canonical names; this must be
+     closed before the graph signal is meaningful.
+  3. Ontology cleanup — ~385 auto-created phrase entities dilute
+     graph signal; curate or improve extraction quality first.
+  4. Kuzu neighborhood size measurement — deferred Q1 from T2;
+     measure on Permagent brain before wiring.
 - **Why it matters:** Either this is an unused signal worth
   activating, or it's six-week-old dead code that should be named
   as such. The current ambiguous state is the worst option.
 - **Out of scope:** Spectrogram-conditioned or peak-pair retrieval
   (see T3).
 
-### T2. Topology design questions (Kuzu graph)
+### T2. Topology design questions (Kuzu graph) — RESOLVED (PR #116)
 
-- **Source:** Neighbours status audit + brain-topology brief
-  Section 3.3.
-- **State:** Design decisions, not build work. The co-retrieval
-  half is already resolved (session co-occurrence, symmetric,
-  query-side limit, feeds re-ranking at weight 0.10 — shipped #90).
-  These questions are open for the Kuzu graph only.
-- **Effort:** Decision doc, no code. Cheap. NOT gated on item #8.
-- **Open questions:**
-  - **Degree cap.** The Kuzu neighborhood has no degree cap —
-    bounded only by `max_hops`. If T1 wires it into the cascade,
-    an uncapped graph drifts toward fully-connected and stops
-    discriminating. Decide a cap before wiring, not after.
-  - **Adjacency basis.** Entity-graph edges only today. Should it
-    blend co-access or semantic similarity, or stay pure
-    explicit-predicate?
-  - **Relationship to co-retrieval pairs.** Two adjacency signals
-    now exist. Are they complementary or redundant? T1's
-    investigation should answer this.
-- **Why it matters:** Resolving these is the precondition for T1
-  being a real wiring task instead of a guess.
+All three design questions answered. Full analysis:
+`docs/internal/t2-topology-design-decisions.md`.
+
+- **Q1 Degree cap:** Deferred to T1. Measurement needed first —
+  graph is inert so capping dead code is speculative. When T1
+  begins, measure neighborhood sizes on Permagent brain, then
+  decide.
+- **Q2 Adjacency basis:** Keep pure explicit-predicate.
+  Co-retrieval pairs already cover behavioral adjacency. No
+  failure case shows blended adjacency would help.
+- **Q3 Co-retrieval relationship:** Complementary in theory, but
+  co-retrieval subsumes practical value today. Critical finding:
+  the entity→memory bridging gap (`recall_graph()` detours
+  through FTS on canonical names) plus ~385 auto-created
+  phrase-entity ontology noise make the graph path low-signal.
+- **Implication for T1:** Not a simple wiring task, not a clear
+  retirement. Three additional preconditions established (see
+  T1's updated "Depends on").
 
 ### T3. Peak-pair fingerprinting (recognition layer)
 
@@ -336,3 +336,5 @@ Updated same day after PR #84, PR #85, bench checkpoint, failure analysis (`docs
 Reconciled 2026-05-14 to reflect six merged investigation docs (PRs #106, #107, #108, #109, #110, #112) and the actor-level interventions investigation. Items #11, #12, #19 updated with investigation outcomes. Item #21 marked shipped. Item #8 status updated with PR #104/#108 progress. Item #20 updated with revert. Strategic frame updated with actor-level ceiling finding and PR #99 correction (#8/#9 AMBIGUOUS).
 
 Topology section added 2026-05-14: Track 2 — Topology (T1 Kuzu graph wire-or-retire, T2 design questions, T3 peak-pair fingerprinting), plus docs/internal/topology-lineage.md. Reflects neighbours status audit 2026-05-14. No existing items modified.
+
+Reconciled 2026-05-14 (item #8 + T2): item #8 validation complete (+2.5pp isolated lift, PR #117), T2 design questions resolved (PR #116), T1 dependencies expanded to 4 preconditions, item #22 baseline updated to 77.5%, multi-session classification corrected (4 confirmed GENUINE_MISS), strategic frame updated — actor synthesis confirmed as binding constraint.
