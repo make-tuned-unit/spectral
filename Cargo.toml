@@ -27,7 +27,7 @@ readme = "README.md"
 # Crypto + identity
 blake3 = "1.5"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-rand = "0.8"
+rand = "0.9"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
