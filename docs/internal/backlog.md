@@ -243,6 +243,80 @@ Shipped 2026-05-14. `retrieve_cascade()` and `retrieve_topk_fts()` now return ra
 
 ---
 
+## Track 2 — Topology (recognition substrate)
+
+Topology features give memory the adjacency structure that
+recognition-based retrieval traverses. Audit 2026-05-14 found
+two distinct implementations at different maturity. This section
+tracks the gap between them and the architectural work above.
+
+### T1. Kuzu graph neighborhood — wire into cascade, or retire
+
+- **Source:** Neighbours status audit 2026-05-14.
+- **State:** Built (PRs #2/#3, 2026-04-27), inert. `neighborhood()`
+  BFS over the Kuzu entity graph exists and is queryable, but only
+  consumed by the experimental `--retrieval-path graph` bench flag.
+  `recall_cascade()` never calls `recall_graph()`.
+- **Effort:** Investigation first (is entity-graph adjacency
+  additive over co-retrieval pairs already in ranking?), then
+  either wiring work or a deliberate retirement.
+- **Depends on:** Item #8 bench validation complete — same
+  attribution-confounding rule as item #22. Don't measure graph
+  neighborhood lift while description-enriched FTS lift is
+  un-isolated.
+- **Why it matters:** Either this is an unused signal worth
+  activating, or it's six-week-old dead code that should be named
+  as such. The current ambiguous state is the worst option.
+- **Out of scope:** Spectrogram-conditioned or peak-pair retrieval
+  (see T3).
+
+### T2. Topology design questions (Kuzu graph)
+
+- **Source:** Neighbours status audit + brain-topology brief
+  Section 3.3.
+- **State:** Design decisions, not build work. The co-retrieval
+  half is already resolved (session co-occurrence, symmetric,
+  query-side limit, feeds re-ranking at weight 0.10 — shipped #90).
+  These questions are open for the Kuzu graph only.
+- **Effort:** Decision doc, no code. Cheap. NOT gated on item #8.
+- **Open questions:**
+  - **Degree cap.** The Kuzu neighborhood has no degree cap —
+    bounded only by `max_hops`. If T1 wires it into the cascade,
+    an uncapped graph drifts toward fully-connected and stops
+    discriminating. Decide a cap before wiring, not after.
+  - **Adjacency basis.** Entity-graph edges only today. Should it
+    blend co-access or semantic similarity, or stay pure
+    explicit-predicate?
+  - **Relationship to co-retrieval pairs.** Two adjacency signals
+    now exist. Are they complementary or redundant? T1's
+    investigation should answer this.
+- **Why it matters:** Resolving these is the precondition for T1
+  being a real wiring task instead of a guess.
+
+### T3. Peak-pair fingerprinting (recognition layer)
+
+- **Source:** TACT constellation whitepaper; cascade trilogy
+  planning. Formerly tracked informally as "PR 2."
+- **State:** Not built. The current `find_resonant()` in
+  spectral-spectrogram does dimensional similarity matching
+  (nearest-neighbor in feature space), not Shazam-style
+  combinatorial peak-pair hashing.
+- **Effort:** 1–2 weeks. Largest item in this section.
+- **Depends on:** The schema-synthesis-vs-raw-memory question
+  resolved first (whether peaks are detected in raw memory or
+  constructed at synthesis time). Dispatching peak-pair work
+  before that decision risks building the matcher on the wrong
+  substrate.
+- **Why it matters:** This is the Track 2 recognition core — the
+  relational structure no vector system captures. But the #113
+  structural-ceiling finding means its *bench* payoff is
+  uncertain; its real payoff is production recognition quality.
+  Sequence honestly: this is product work, not bench work.
+- **Out of scope:** L3 cascade wiring + diagonal alignment
+  matching (follows peak-pair as a separate item).
+
+---
+
 ## How to use this backlog
 
 When picking the next Spectral-CC task, scan Tier 1 top-to-bottom. If everything in Tier 1 is in flight or shipped, move to Tier 2. Tier 3 items are for "what's the next big architectural piece" conversations.
@@ -260,3 +334,5 @@ Original backlog assembled 2026-05-11 from PRs #71-#79, the Spectral architectur
 Updated same day after PR #84, PR #85, bench checkpoint, failure analysis (`docs/internal/bench-failure-analysis-2026-05-11.md`), and PR #86 dispatch. Added items 17-20.
 
 Reconciled 2026-05-14 to reflect six merged investigation docs (PRs #106, #107, #108, #109, #110, #112) and the actor-level interventions investigation. Items #11, #12, #19 updated with investigation outcomes. Item #21 marked shipped. Item #8 status updated with PR #104/#108 progress. Item #20 updated with revert. Strategic frame updated with actor-level ceiling finding and PR #99 correction (#8/#9 AMBIGUOUS).
+
+Topology section added 2026-05-14: Track 2 — Topology (T1 Kuzu graph wire-or-retire, T2 design questions, T3 peak-pair fingerprinting), plus docs/internal/topology-lineage.md. Reflects neighbours status audit 2026-05-14. No existing items modified.
