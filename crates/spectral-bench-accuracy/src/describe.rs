@@ -32,18 +32,21 @@ pub fn save_descriptions(map: &DescriptionMap, path: &Path) -> Result<()> {
 }
 
 /// Prompt template for generating search-indexing descriptions.
-pub const DESCRIBE_PROMPT: &str = r#"Write a concise description (50-100 tokens) of this memory for search indexing.
+///
+/// Structural format calibrated for qwen2.5:7b (matches Permagent's
+/// production Librarian template). Output: summary + Related terms + Categories.
+pub const DESCRIBE_PROMPT: &str = r#"Write a search-indexing description of this memory in EXACTLY this format:
 
-Requirements:
-- Include category-level nouns that generalize the specific items mentioned
-  (e.g., "coffee table" → also say "furniture"; "Dr. Patel" → also say "doctors")
-- Include BOTH singular and plural forms of key nouns
-  (e.g., "doctor/doctors", "wedding/weddings", "project/projects")
-- Include the specific names and details from the content
-- Do NOT add category terms the content doesn't support
-- Write in third person ("User..." not "I...")
+{one-sentence summary of the memory content}. Related terms: {comma-separated inflected vocabulary}. Categories: {3-5 category-level nouns}.
 
-Memory content:
+Rules:
+1. The summary must describe ONLY what is in the source content. Do not add facts, entities, names, or categories that are not in the source content.
+2. Related terms: include both singular and plural forms of key nouns (e.g., "doctor, doctors, visit, visits, visited").
+3. Categories: generalize from specific items to category-level nouns (e.g., "coffee table" → "furniture"; "Dr. Patel" → "healthcare").
+4. Total output must be 50-100 tokens.
+5. Write in third person ("User..." not "I...").
+
+Source content:
 {content}
 
 Description:"#;
@@ -131,6 +134,58 @@ fn save_descriptions_atomic(map: &DescriptionMap, path: &Path) -> Result<()> {
     std::fs::write(&tmp_path, json)?;
     std::fs::rename(&tmp_path, path)?;
     Ok(())
+}
+
+/// Generator that calls an OpenAI-compatible Chat Completions API (Ollama, vLLM, etc.).
+pub struct OpenAIDescriber {
+    model: String,
+    base_url: String,
+    client: reqwest::blocking::Client,
+}
+
+impl OpenAIDescriber {
+    pub fn new(model: String, base_url: String) -> Self {
+        Self {
+            model,
+            base_url,
+            client: reqwest::blocking::Client::new(),
+        }
+    }
+}
+
+impl DescriptionGenerator for OpenAIDescriber {
+    fn generate(&self, content: &str) -> Result<String> {
+        let prompt = build_prompt(content);
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": prompt}]
+        });
+
+        let resp = self
+            .client
+            .post(format!("{}/v1/chat/completions", self.base_url))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            anyhow::bail!(
+                "OpenAI-compat API returned {status}: {}",
+                &body[..body.len().min(500)]
+            );
+        }
+
+        let json: serde_json::Value = resp.json()?;
+        let text = json["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing choices[0].message.content in response"))?
+            .trim()
+            .to_string();
+        Ok(text)
+    }
 }
 
 /// Generate descriptions for all memory keys, respecting idempotence.
