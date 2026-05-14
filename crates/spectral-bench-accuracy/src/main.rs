@@ -174,6 +174,26 @@ enum Command {
         #[arg(long, default_value = "eval-work")]
         work_dir: PathBuf,
     },
+
+    /// Pre-flight spot-check: ingest questions and verify wing/hall/spectrogram/fingerprint population.
+    /// Reports PASS/FAIL per check. Does not call LLMs.
+    Preflight {
+        /// Path to the LongMemEval_S dataset JSON
+        #[arg(long)]
+        dataset: PathBuf,
+
+        /// Working directory
+        #[arg(long, default_value = "eval-work")]
+        work_dir: PathBuf,
+
+        /// Question ID to check (default: first multi-session question)
+        #[arg(long)]
+        question_id: Option<String>,
+
+        /// Check ALL questions in the dataset (overrides --question-id)
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -493,6 +513,286 @@ fn main() -> Result<()> {
             }
             eprintln!("\nDry-run complete. No LLM calls made.");
             let _ = std::fs::remove_dir_all(&brain_dir);
+        }
+        Command::Preflight {
+            dataset,
+            work_dir,
+            question_id,
+            all,
+        } => {
+            let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
+            std::fs::create_dir_all(&work_dir)?;
+
+            let questions: Vec<&spectral_bench_accuracy::dataset::Question> = if all {
+                ds.iter().collect()
+            } else {
+                let q = match &question_id {
+                    Some(id) => ds
+                        .iter()
+                        .find(|q| q.question_id == *id)
+                        .ok_or_else(|| anyhow::anyhow!("question_id {id} not found"))?,
+                    None => ds
+                        .iter()
+                        .find(|q| {
+                            q.question_type == "multi-session" && q.haystack_sessions.len() >= 3
+                        })
+                        .or_else(|| ds.first())
+                        .ok_or_else(|| anyhow::anyhow!("empty dataset"))?,
+                };
+                vec![q]
+            };
+
+            eprintln!(
+                "Preflight: checking {} question(s) from dataset ({} total)",
+                questions.len(),
+                ds.len()
+            );
+
+            let mut total_memories: i64 = 0;
+            let mut total_null_wings: i64 = 0;
+            let mut total_null_halls: i64 = 0;
+            let mut total_spectrograms: i64 = 0;
+            let mut total_fingerprints: i64 = 0;
+            let mut total_null_buckets: i64 = 0;
+            let mut total_unknown_buckets: i64 = 0;
+            let mut wing_counts: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            let mut hall_counts: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            let mut bucket_counts: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            let mut failed_questions: Vec<String> = Vec::new();
+
+            let pb = indicatif::ProgressBar::new(questions.len() as u64);
+            pb.set_style(
+                indicatif::ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                    .unwrap()
+                    .progress_chars("#>-"),
+            );
+
+            for question in &questions {
+                let brain_dir = work_dir.join(format!("preflight_{}", question.question_id));
+                let _ = std::fs::remove_dir_all(&brain_dir);
+
+                match ingest::ingest_question(question, &brain_dir, ingest::IngestStrategy::PerTurn)
+                {
+                    Ok(_brain) => {}
+                    Err(e) => {
+                        failed_questions
+                            .push(format!("{}: ingest error: {e}", question.question_id));
+                        pb.inc(1);
+                        let _ = std::fs::remove_dir_all(&brain_dir);
+                        continue;
+                    }
+                }
+
+                let db_path = brain_dir.join("memory.db");
+                let conn = match rusqlite::Connection::open_with_flags(
+                    &db_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        failed_questions
+                            .push(format!("{}: db open error: {e}", question.question_id));
+                        pb.inc(1);
+                        let _ = std::fs::remove_dir_all(&brain_dir);
+                        continue;
+                    }
+                };
+
+                let mem_count: i64 =
+                    conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
+                total_memories += mem_count;
+
+                let nw: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM memories WHERE wing IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let nh: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM memories WHERE hall IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
+                total_null_wings += nw;
+                total_null_halls += nh;
+
+                let mut stmt = conn
+                    .prepare("SELECT COALESCE(wing, 'NULL'), COUNT(*) FROM memories GROUP BY 1")?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+                for row in rows {
+                    let (wing, count) = row?;
+                    *wing_counts.entry(wing).or_insert(0) += count;
+                }
+
+                let mut stmt = conn
+                    .prepare("SELECT COALESCE(hall, 'NULL'), COUNT(*) FROM memories GROUP BY 1")?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+                for row in rows {
+                    let (hall, count) = row?;
+                    *hall_counts.entry(hall).or_insert(0) += count;
+                }
+
+                let has_spec: bool = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_spectrogram'",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .map(|c| c > 0)?;
+                if has_spec {
+                    let sc: i64 =
+                        conn.query_row("SELECT COUNT(*) FROM memory_spectrogram", [], |r| {
+                            r.get(0)
+                        })?;
+                    total_spectrograms += sc;
+                }
+
+                let has_fp: bool = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='constellation_fingerprints'",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .map(|c| c > 0)?;
+                if has_fp {
+                    let fp: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM constellation_fingerprints",
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    total_fingerprints += fp;
+
+                    let nb: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM constellation_fingerprints WHERE time_delta_bucket IS NULL",
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    let ub: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM constellation_fingerprints WHERE time_delta_bucket = 'unknown'",
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    total_null_buckets += nb;
+                    total_unknown_buckets += ub;
+
+                    let mut stmt = conn.prepare(
+                        "SELECT COALESCE(time_delta_bucket, 'NULL'), COUNT(*) FROM constellation_fingerprints GROUP BY 1",
+                    )?;
+                    let rows =
+                        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+                    for row in rows {
+                        let (bucket, count) = row?;
+                        *bucket_counts.entry(bucket).or_insert(0) += count;
+                    }
+                }
+
+                let _ = std::fs::remove_dir_all(&brain_dir);
+                pb.inc(1);
+            }
+
+            pb.finish_and_clear();
+
+            eprintln!(
+                "\n=== PREFLIGHT SPOT-CHECK ({} questions) ===",
+                questions.len()
+            );
+            eprintln!("Total memories: {total_memories}");
+
+            eprintln!("\nWing distribution:");
+            let mut wings: Vec<_> = wing_counts.iter().collect();
+            wings.sort_by(|a, b| b.1.cmp(a.1));
+            for (wing, count) in &wings {
+                eprintln!("  {wing}: {count}");
+            }
+
+            eprintln!("\nHall distribution:");
+            let mut halls: Vec<_> = hall_counts.iter().collect();
+            halls.sort_by(|a, b| b.1.cmp(a.1));
+            for (hall, count) in &halls {
+                eprintln!("  {hall}: {count}");
+            }
+
+            eprintln!("\nSpectrograms: {total_spectrograms} / {total_memories}");
+
+            eprintln!("\nFingerprints: {total_fingerprints}");
+            if !bucket_counts.is_empty() {
+                eprintln!("time_delta_bucket distribution:");
+                let mut buckets: Vec<_> = bucket_counts.iter().collect();
+                buckets.sort_by(|a, b| b.1.cmp(a.1));
+                for (bucket, count) in &buckets {
+                    eprintln!("  {bucket}: {count}");
+                }
+            }
+
+            eprintln!("\n=== PREFLIGHT SUMMARY ===");
+            let mut pass = true;
+
+            if total_null_wings > 0 {
+                eprintln!("FAIL: {total_null_wings} memories with NULL wing");
+                pass = false;
+            } else {
+                eprintln!("PASS: All {total_memories} memories have wing assigned");
+            }
+
+            if total_null_halls > 0 {
+                eprintln!("FAIL: {total_null_halls} memories with NULL hall");
+                pass = false;
+            } else {
+                eprintln!("PASS: All {total_memories} memories have hall assigned");
+            }
+
+            // Spectrogram coverage: reports actual state. When enable_spectrogram
+            // is false (current default), this will correctly show 0/N and WARN
+            // rather than FAIL — spectrograms are optional until explicitly enabled.
+            if total_spectrograms == total_memories && total_memories > 0 {
+                eprintln!(
+                    "PASS: All memories have spectrograms ({total_spectrograms}/{total_memories})"
+                );
+            } else if total_spectrograms == 0 {
+                eprintln!(
+                    "WARN: No spectrograms computed (0/{total_memories}) — enable_spectrogram is off"
+                );
+            } else {
+                eprintln!(
+                    "WARN: Partial spectrogram coverage ({total_spectrograms}/{total_memories})"
+                );
+            }
+
+            if total_null_buckets > 0 {
+                eprintln!("FAIL: {total_null_buckets} fingerprints with NULL time_delta_bucket");
+                pass = false;
+            }
+            if total_unknown_buckets > 0 {
+                eprintln!(
+                    "FAIL: {total_unknown_buckets} fingerprints with 'unknown' time_delta_bucket"
+                );
+                pass = false;
+            }
+            if total_null_buckets == 0 && total_unknown_buckets == 0 && total_fingerprints > 0 {
+                eprintln!(
+                    "PASS: All {total_fingerprints} fingerprints have valid time_delta_bucket"
+                );
+            }
+
+            if !failed_questions.is_empty() {
+                eprintln!("\nFailed questions ({}):", failed_questions.len());
+                for f in &failed_questions {
+                    eprintln!("  {f}");
+                }
+                pass = false;
+            }
+
+            if pass {
+                eprintln!("\nAll pre-flight checks passed.");
+            } else {
+                eprintln!("\nPre-flight checks FAILED. Review issues above.");
+                std::process::exit(1);
+            }
         }
     }
 
