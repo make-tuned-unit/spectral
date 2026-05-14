@@ -17,6 +17,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Fix macOS cargo PATH
+        if: runner.os == 'macOS'
+        run: |
+          # On macos-15 runners, the system cargo in /opt/homebrew/bin resolves
+          # to rustup-init instead of a proper proxy. Prepend the real toolchain
+          # bin directory so cargo/rustc resolve correctly.
+          REAL_CARGO_DIR="$(dirname "$(rustup which cargo)")"
+          echo "$REAL_CARGO_DIR" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
       - name: Unit and integration tests
         run: cargo test --workspace --lib --tests
