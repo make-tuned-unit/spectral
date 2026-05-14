@@ -161,6 +161,14 @@ See "New Tier 1 items" above.
 - **Why it matters:** Evidence-based failure classification. Without per-question retrieval data (which memories were retrieved, at what rank, with what score), every failure analysis requires reasoning backward from actor output. This is fragile — it produced an incorrect classification for 2 of 10 multi-session failures. Future bench runs should produce attributable retrieval telemetry so classification is mechanical, not inferential.
 - **Out of scope:** Per-memory score records in main reports (the `--dump-scores` flag already handles this for detailed analysis). This item is about making `memory_keys` reliably populated in the standard report.
 
+### 22. Enable spectrograms in bench ingest
+
+- **Source:** Deferred from PR #82 (split into preflight-only PR #110 + this item).
+- **Effort:** 1h code change + 1 bench run for attribution.
+- **Depends on:** Item #8 bench validation complete (so spectrogram impact is measured independently).
+- **Why it matters:** Spectrograms feed `signal_score` via the spectrogram analyzer, which feeds re-ranking. Enabling them changes bench behavior. Must run as an isolated experiment to measure impact on accuracy — don't bundle with other retrieval changes or attribution is confounded. PR #82's `enable_spectrogram: true` change to `ingest_question()` is the implementation; the preflight subcommand (now on main) can verify coverage.
+- **Out of scope:** Spectrogram-conditioned retrieval (that's further architectural work). This item is just flipping the flag and measuring.
+
 ---
 
 ## Tier 3 — Architectural / longer horizon
