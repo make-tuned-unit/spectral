@@ -34,18 +34,13 @@ Today's shipping landed three PRs and an empirical baseline. State of `main` is 
 - **Why it matters:** PR #86 ships per-question `strategy_telemetry` (chosen prompt template, retrieval path, classification path). This item builds the analysis script that consumes that telemetry to produce a per-strategy accuracy report per bench run. Becomes the input to backlog item #15 (per-PR ablation reporting) and item #16 (fail-improve loop on misclassifications). Without this, we ship #17 but can't measure which strategies earn their weight.
 - **Out of scope:** Automated regression detection. This is reporting, not gating.
 
-**Item 19 — Cascade `max_confidence=0.85` plateau investigation.**
-- **Source:** Bench failure analysis 2026-05-11. All 6 temporal failures showed identical `max_confidence=0.85` and `stopped_at=None`.
-- **Effort:** 4-6h investigation + 2-4h likely fix.
-- **Depends on:** Nothing.
-- **Why it matters:** Either a hardcoded ceiling or a real cascade confidence-scoring bug. If real, fixing it could lift cascade-on-temporal from 70% back toward 85% without needing the topk_fts routing escape hatch (which PR #86 puts in as the fast fix). The uniformity is suspicious; the kind of pattern that often hides a real bug. Worth investigating regardless of bench impact.
-- **Out of scope:** Refactoring cascade confidence semantics — investigate scope first.
+**Item 19 — Cascade `max_confidence=0.85` plateau investigation.** INVESTIGATED (PR #112). Bug confirmed: `.min(0.85)` clamp makes `max_confidence` non-functional. Telemetry-only — not an accuracy lever. Fix options: Option A (fix shim) or Option B (wire through orchestrator). See `docs/internal/cascade-max-confidence-investigation.md`.
 
 ### Strategic frame update
 
 **Empirical baseline locked:** 73.3% overall on LongMemEval-S at K=40 cascade. Path to 90%+ exists but requires composing this baseline with 4-6 weeks of disciplined engineering: shape-routed actors (item 17), structural backlog items (item 2 co-retrieval ranking, item 8 compiled-truth boost, item 12 L2 episodes), plus multi-step actor patterns for the multi-session counting bottleneck. Per-step contribution stacks to +15-20pp; bench checkpoints between each PR keep attribution clean.
 
-**Bottleneck identified:** Actor synthesis, not retrieval. 75% of remaining failures show the actor receiving relevant memories but failing to count, synthesize, or apply preference signal correctly. Retrieval is doing more work than the prompt-eng and counting-discipline of the actor can keep up with. This recontextualizes future Spectral-side work: ranking changes (items 2, 8) matter for the 15% of failures that ARE retrieval-bound; actor-side work in the bench harness (items 17, 18) addresses the 75% that aren't.
+**Bottleneck identified (2026-05-11):** Actor synthesis, not retrieval. 75% of remaining failures show the actor receiving relevant memories but failing to count, synthesize, or apply preference signal correctly. **Update (2026-05-14):** Deeper investigation refined this picture. Multi-session failures decompose into DEFINITION_DISAGREEMENT (3, judge-side), GENUINE_MISS (2 confirmed + 2 AMBIGUOUS), RETRIEVAL_MISS (2), and TEMPORAL (1). Actor-level prompt interventions exhausted for GENUINE_MISS (3 interventions tried, all failed; structural output analysis confirms ceiling). Remaining path: item #8 bench validation (retrieval), item #21 telemetry resolving AMBIGUOUS cases, and judge refinement (item #20). See `docs/internal/actor-level-interventions-investigation.md`.
 
 **Process discipline:** The propose-then-implement pattern (used on PR #84 and #86) caught design issues at proposal stage twice in a row that would have required rework if implementation had proceeded. Make this the standard for any non-trivial bench-side or architecturally-significant PR going forward.
 
@@ -59,13 +54,15 @@ Today's shipping landed three PRs and an empirical baseline. State of `main` is 
 
 ## Strategic frame (read this first)
 
-Current state on `main` at `e9a80d8`. Recognition architecture v1 is shipped: every retrieval is logged, events are mined for co-occurrence, events are attributable to sessions, descriptions can be written and read on memories. Non-destructive write semantics shipped via PR #85. Synthesis prompt revisions shipped via PR #84. Empirical bench baseline established at 73.3% on LongMemEval-S (commit `e9a80d8`, K=40 cascade). Shape-routed actor strategies in flight as PR #86; on landing, expected +10-15pp lift breaks the 80% mark.
+Current state on `main` at `f258e2d` (2026-05-14). Recognition architecture v1 shipped. Description-enriched FTS shipped (PR #104). Describe subcommand with Ollama support and structural template shipped (PR #108). Retrieval telemetry in bench reports shipped (PR #107 — resolves the AMBIGUOUS classification gap on next bench run). Shape-routed actor strategies shipped (PR #86). Preflight spot-check subcommand shipped (PR #110). Three investigations completed and deferred: item #11 (session signal), item #12 (L2 episodes), item #19 (cascade max_confidence — confirmed bug, telemetry-only).
+
+**Actor-level intervention ceiling established (2026-05-14):** The actor-level interventions investigation (`docs/internal/actor-level-interventions-investigation.md`) concluded that the GENUINE_MISS ceiling is real for single-context-window actor approaches. Three prompt interventions tried (PRs #93, #97, #98) and two structural-output candidates analyzed — all face the same input-attention limitation. The only structurally different lever (per-session context isolation, Candidate C) is expensive and addresses at most the 2 AMBIGUOUS cases (#8, #9), contingent on item #21's telemetry resolving them as actor failures. Multi-session GENUINE_MISS cases #8/#9 are AMBIGUOUS (may be retrieval), not confirmed actor failures (PR #106 correction).
 
 Spectral is making a deliberate bet: **deterministic recognition without LLM-in-loop**, closer to how a brain actually works, cheaper at inference, but architecturally distant from what Memanto and other RAG-style systems optimize for. The backlog reflects two parallel tracks:
 
-- **Track A — Path B (recognition wins):** Use the recognition loop shipped in #71-#79 to make ranking better without LLM filtering. Co-retrieval signal in ranking (item 2), session-aware recency (item 11), description-text in FTS (item 8), AAAK context priming. Every point is defended by deterministic mechanisms no other system has.
+- **Track A — Path B (recognition wins):** Use the recognition loop shipped in #71-#79 to make ranking better without LLM filtering. Co-retrieval signal in ranking (item 2), description-text in FTS (item 8 — foundation shipped, bench validation pending), AAAK context priming. Session-aware recency (item 11) deferred — no documented failure case. Every point is defended by deterministic mechanisms no other system has.
 - **Track B — robustness and consumer DX:** Fix the footguns consumers have to defend against externally. Idempotency (closed via #85), health probes (item 5), backfill orchestration (item 6).
-- **Track C — bench engineering (new track post 2026-05-11):** Actor synthesis is the limiting factor for ~75% of bench failures. Shape-routed strategies (item 17), strategy telemetry (item 18), and category-specific judge rubrics (deferred Change D from PR #84) materially move the bench number independent of retrieval-side work.
+- **Track C — bench engineering:** Shape-routed strategies (item 17 — shipped), strategy telemetry (item 18), judge rubrics (item 20 — first attempt reverted, needs different approach). Actor-level prompt interventions exhausted for multi-session GENUINE_MISS; remaining path is retrieval improvement (item #8 bench validation) and accepting the multi-session floor where neither retrieval nor actor fixes apply.
 
 All three tracks matter. Track A moves the differentiator; Track B reduces integration friction; Track C closes the bench number gap that funders, partners, and credibility analysts read first.
 
@@ -97,9 +94,9 @@ See "New Tier 1 items" above.
 
 See "New Tier 1 items" above.
 
-### 19. Cascade `max_confidence=0.85` plateau investigation
+### 19. Cascade `max_confidence=0.85` plateau investigation (INVESTIGATED — confirmed bug, not accuracy lever)
 
-See "New Tier 1 items" above.
+See "New Tier 1 items" above. **Investigation (2026-05-14, PR #112):** Confirmed as a real bug — `.min(0.85)` clamp in `brain.rs:1189-1192` makes `max_confidence` non-functional (166/166 runs produce identical 0.85). Orchestrator with correct computation is bypassed. Two fix options: Option A (fix the shim — minimal) or Option B (wire through orchestrator — structural). Fix is telemetry-only; does not affect retrieval accuracy. The Temporal→topk_fts routing decision was based on accuracy, not confidence, so fixing this doesn't change routing. Enables future confidence-driven routing. Full analysis: `docs/internal/cascade-max-confidence-investigation.md`.
 
 ---
 
@@ -121,12 +118,14 @@ See "New Tier 1 items" above.
 - **Why it matters:** As `retrieval_events` accumulates, `co_retrieval_pairs` drifts unless rebuilt. Either Permagent's Librarian schedules it or Spectral exposes a "rebuild if stale" primitive. Cleaner if Spectral owns the staleness check; consumers shouldn't need to reason about index freshness.
 - **Out of scope:** Background tokio task — provide the primitive, let consumer decide cadence.
 
-### 8. Compiled-truth boost in cascade ranking  [gbrain idea #2]
+### 8. Compiled-truth boost in cascade ranking  [gbrain idea #2] — foundation SHIPPED, bench validation pending
 
 - **Source:** garrytan/gbrain — "Compiled-truth boost (assessments outrank timeline noise)."
-- **Effort:** 1–2h
+- **Effort:** 1–2h (original estimate). Foundation shipped; bench validation remaining.
 - **Depends on:** Description-writing path populated (Librarian shipping in Permagent).
 - **Why it matters:** Memories with `description.is_some()` rank higher than raw timeline events. Cheap, deterministic, measurable. The ranking lift compounds with description coverage: as Librarian writes more descriptions, retrieval quality improves automatically. Estimated +1–3pp once description coverage is meaningful. **Composes with item 17:** GeneralPreference strategy benefits most when descriptions exist.
+- **Shipped so far:** (1) PR #104 — description-enriched FTS (descriptions indexed in BM25, vocabulary-gap bridging confirmed on 3/3 RETRIEVAL_MISS cases). Pre-validation: `docs/internal/item-8-prevalidation-vocabulary-gap.md`. (2) PR #108 — `describe` subcommand with Ollama/OpenAI-compatible API (`--api-format openai`), structural template prompt (0% hallucination on 35 tested memories vs 23% with prose prompt). Docs: `docs/internal/ollama-describe-compat.md`, `docs/internal/describe-structural-template-smoke.md`.
+- **Remaining:** Bench validation — qwen2.5:7b description regen on full LongMemEval corpus, targeted bench run to measure actual lift on RETRIEVAL_MISS and AMBIGUOUS cases.
 - **Out of scope:** Description quality scoring, freshness-weighted boost.
 
 ### 9. Filtered `list_undescribed` (by wing/age/source)
@@ -145,28 +144,25 @@ See "New Tier 1 items" above.
 - **Why it matters:** Consumers expect `MemoryHit.description` to be populated everywhere it's available. Today the ranking pipeline doesn't propagate it through every path. Trivial bug, easy to verify, no risk.
 - **Out of scope:** Description propagation in non-`MemoryHit` types.
 
-### 20. Judge rubric per-category revision (deferred Change D from PR #84)
+### 20. Judge rubric per-category revision (deferred Change D from PR #84) — first attempt REVERTED
 
 - **Source:** Deferred from PR #84 to avoid attribution muddling.
 - **Effort:** 2–3h
 - **Depends on:** Bench checkpoint (done) and ideally item 17 shipping first (so we can attribute lift cleanly between actor changes and judge changes).
-- **Why it matters:** Single-session-preference is at 45%; some failures are arguably correct under a different rubric. Category-specific rubrics distinguish "preference match" from "factual match," reducing judge-side false negatives. Estimated +0.5-1pp overall, concentrated in single-session-preference.
+- **Why it matters:** 3 DEFINITION_DISAGREEMENT failures (#1 clothing, #2 projects, #6 citrus) are judge-side, not actor-side. Category-specific rubrics could distinguish defensible-different-count from genuine-miss.
+- **First attempt (PR #102, reverted PR #103):** Reasoning-aware +-1 tolerance for counting questions. Zero lift on target cases — all 3 DEFINITION_DISAGREEMENT cases remained incorrect. The "deliberation" bar was too strict: the judge required explicit meta-reasoning, not just exhaustive evidence documentation. Post-mortem: `docs/internal/item-20-reasoning-aware-judge-proposal.md` Section 0. Needs a different approach — either two-call judge or structural signal detection.
 - **Out of scope:** Multi-judge ensemble, model swapping for judge — keep Sonnet 4.5 as judge.
 
-### 21. Retrieval telemetry in bench reports (`memory_keys` population)
+### ~~21. Retrieval telemetry in bench reports (`memory_keys` population)~~ — SHIPPED via PR #107
 
-- **Source:** Item #11 investigation (2026-05-13). `memory_keys` is empty for all results in the post-PR-#98 bench run. PR #99's failure classification was based on actor output inference, not retrieval telemetry. Cases #8 and #9 were reclassified to AMBIGUOUS as a result.
-- **Effort:** 2-3h
-- **Depends on:** Nothing — the `memory_keys` field already exists on `QuestionResult` in `report.rs`, and `SingleResult` in `eval.rs` computes `memory_keys` at `eval.rs:338-358`. The gap is that cascade retrieval via `format_hits_grouped` returns formatted strings, not `MemoryHit` structs, so key extraction falls back to string parsing which may silently produce empty results.
-- **Why it matters:** Evidence-based failure classification. Without per-question retrieval data (which memories were retrieved, at what rank, with what score), every failure analysis requires reasoning backward from actor output. This is fragile — it produced an incorrect classification for 2 of 10 multi-session failures. Future bench runs should produce attributable retrieval telemetry so classification is mechanical, not inferential.
-- **Out of scope:** Per-memory score records in main reports (the `--dump-scores` flag already handles this for detailed analysis). This item is about making `memory_keys` reliably populated in the standard report.
+Shipped 2026-05-14. `retrieve_cascade()` and `retrieve_topk_fts()` now return raw `MemoryHit` vectors alongside formatted strings. `memory_keys` reliably populated for Cascade, TopkFts, and Tact paths. Graph path still falls back to string parsing. The next multi-session bench run with telemetry will resolve the AMBIGUOUS classification of cases #8 (tanks) and #9 (weddings) — determining whether these are actor failures or retrieval failures. This resolution gates whether actor-level Candidate C (per-session context isolation) is worth pre-validating. See `docs/internal/actor-level-interventions-investigation.md` Section 5.
 
 ### 22. Enable spectrograms in bench ingest
 
-- **Source:** Deferred from PR #82 (split into preflight-only PR #110 + this item).
+- **Source:** Deferred from PR #82 (split into preflight-only PR #110 + this item). Preflight subcommand shipped on main via PR #110.
 - **Effort:** 1h code change + 1 bench run for attribution.
-- **Depends on:** Item #8 bench validation complete (so spectrogram impact is measured independently).
-- **Why it matters:** Spectrograms feed `signal_score` via the spectrogram analyzer, which feeds re-ranking. Enabling them changes bench behavior. Must run as an isolated experiment to measure impact on accuracy — don't bundle with other retrieval changes or attribution is confounded. PR #82's `enable_spectrogram: true` change to `ingest_question()` is the implementation; the preflight subcommand (now on main) can verify coverage.
+- **Depends on:** Item #8 bench validation complete (so spectrogram impact is measured independently, not confounded with description-enriched FTS).
+- **Why it matters:** Spectrograms feed `signal_score` via the spectrogram analyzer, which feeds re-ranking. Enabling them changes bench behavior. Must run as an isolated experiment to measure impact on accuracy — don't bundle with other retrieval changes or attribution is confounded. PR #82's `enable_spectrogram: true` change to `ingest_question()` is the implementation; the preflight subcommand (now on main via PR #110) can verify coverage.
 - **Out of scope:** Spectrogram-conditioned retrieval (that's further architectural work). This item is just flipping the flag and measuring.
 
 ---
@@ -179,15 +175,16 @@ See "New Tier 1 items" above.
 - **Effort:** 6–8h
 - **Depends on:** Bench checkpoint (done), some usage data accumulated in `retrieval_events`.
 - **Why it matters:** Closes the ambient state loop. Recency-weighted ranking via active session. The biggest architectural change still pending. Deferred deliberately until we have real usage data to inform what session signal *should* weight — guessing now means redesigning later. **Composes with item 17:** GeneralRecall strategy benefits most from session-priority retrieval.
-- **Investigation (2026-05-13):** Evaluated 5 candidate session signals against documented failures. None addresses existing failure cases — GENUINE_MISS is actor-level (embedded references), not ranking-level. Existing per-memory signals subsume session-level approximations. Candidate topic-density is actively counterproductive. Defer until: (1) a failure is found where retrieved sessions rank below K cutoff, (2) Permagent production usage data, (3) item #12 creates session-level metadata, or (4) actor improvements shift bottleneck to ranking. Full analysis: `docs/internal/item-11-investigation.md`.
+- **Investigation (2026-05-13, PR #106):** Evaluated 5 candidate session signals against documented failures. None addresses existing failure cases — GENUINE_MISS is actor-level (embedded references), not ranking-level. Existing per-memory signals subsume session-level approximations. Candidate topic-density is actively counterproductive. Defer until: (1) a failure is found where retrieved sessions rank below K cutoff, (2) Permagent production usage data, (3) item #12 creates session-level metadata, or (4) actor improvements shift bottleneck to ranking. PR #106 also corrected PR #99's failure classification: cases #8 (tanks) and #9 (weddings) reclassified from GENUINE_MISS to AMBIGUOUS — retrieval status unverified (memory_keys was empty). Full analysis: `docs/internal/item-11-investigation.md`.
 - **Out of scope:** Multi-device session reconciliation, session lifecycle management.
 
-### 12. L2 cascade layer: episode summaries
+### 12. L2 cascade layer: episode summaries (DEFERRED — investigated 2026-05-14)
 
 - **Source:** TACT whitepaper, queued as PR 2 of the cascade trilogy.
 - **Effort:** 1 week (single largest item in the backlog).
 - **Depends on:** Episode data model (partially exists), consumer-provided `episode_id` API (RememberOpts already has it).
-- **Why it matters:** The layer between AAAK (L1) and constellation/TACT (L3). **Bench analysis confirmed this is the highest-leverage individual item:** multi-session counting (9 failures, biggest absolute failure count) needs L2 episode-grouped retrieval to let the actor scan over discrete session blocks rather than 80+ interleaved hits. Composes with item 17's `counting_enumerate` strategy — they become genuinely powerful together. Estimated +3-4pp overall.
+- **Why it matters:** The layer between AAAK (L1) and constellation/TACT (L3).
+- **Investigation (2026-05-14, PR #108):** L2 summaries duplicate item #8's FTS-bridging mechanism at episode granularity with zero incremental value for documented failures. The compression-vs-embedded-reference tension is structural: summaries lose the detail that the hardest failures require, and the LLM summarizer faces the same attention problem as the actor. The backlog's original "+3-4pp" estimate was written before PRs #93, #99, and #70 reframed the multi-session bottleneck as actor attention, not retrieval grouping. Defer until: (1) item #8 ships and demonstrates a ceiling, (2) structured summary format validated for embedded-reference recall, (3) production usage data, or (4) actor attention problem solved. Full analysis: `docs/internal/item-12-investigation.md`.
 - **Out of scope:** L4 vector layer (deferred), L0 filesystem layer (PR 3 of cascade trilogy).
 
 ### 13. Per-session summaries dual-index retrieval (audit Proposal 5)
@@ -229,6 +226,7 @@ See "New Tier 1 items" above.
 - **Item 1 — Synthesis prompt revisions** → PR #84 shipped. Bench lift attributed.
 - **Item 3 — Bench checkpoint** → 73.3% baseline locked at commit `e9a80d8`. Failure analysis in `docs/internal/bench-failure-analysis-2026-05-11.md`.
 - **Item 4 — Content-hash dedup** → PR #85 shipped, broader scope than originally captured (non-destructive write semantics + WriteOutcome + content hash + backfill).
+- **Item 21 — Retrieval telemetry** → PR #107 shipped 2026-05-14. `memory_keys` now populated for Cascade, TopkFts, and Tact paths. Next bench run resolves AMBIGUOUS cases #8/#9.
 
 ---
 
@@ -260,3 +258,5 @@ Before promoting an item to a PR draft, re-check the **Depends on** field. Items
 Original backlog assembled 2026-05-11 from PRs #71-#79, the Spectral architecture audit, the Permagent integration audit, the cascade trilogy planning, and gbrain review.
 
 Updated same day after PR #84, PR #85, bench checkpoint, failure analysis (`docs/internal/bench-failure-analysis-2026-05-11.md`), and PR #86 dispatch. Added items 17-20.
+
+Reconciled 2026-05-14 to reflect six merged investigation docs (PRs #106, #107, #108, #109, #110, #112) and the actor-level interventions investigation. Items #11, #12, #19 updated with investigation outcomes. Item #21 marked shipped. Item #8 status updated with PR #104/#108 progress. Item #20 updated with revert. Strategic frame updated with actor-level ceiling finding and PR #99 correction (#8/#9 AMBIGUOUS).
