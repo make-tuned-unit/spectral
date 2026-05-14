@@ -758,7 +758,9 @@ fn main() -> Result<()> {
                     "WARN: No spectrograms computed (0/{total_memories}) — enable_spectrogram is off"
                 );
             } else {
-                eprintln!("WARN: Partial spectrogram coverage ({total_spectrograms}/{total_memories})");
+                eprintln!(
+                    "WARN: Partial spectrogram coverage ({total_spectrograms}/{total_memories})"
+                );
             }
 
             if total_null_buckets > 0 {
