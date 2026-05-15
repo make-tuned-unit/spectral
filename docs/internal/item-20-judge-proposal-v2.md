@@ -1,6 +1,6 @@
 # Item #20: Judge Rubric Revision v2 — Proposal
 
-**Date:** 2026-05-14
+**Date:** 2026-05-14 (revised after review)
 **Status:** Proposal. Awaiting review before implementation.
 **Source:** Item #20 backlog entry; v1 post-mortem in
 `docs/internal/item-20-reasoning-aware-judge-proposal.md` Section 0.
@@ -22,7 +22,7 @@ interpretation. If not, it was rejected as a genuine miss.
 
 The tightening added during review — "simply listing items does
 not constitute reasoning — must show DELIBERATION" — set a bar
-that none of the 3 target cases could clear:
+that none of the target cases could clear:
 
 - **Case #1 (clothing):** Actor explicitly reasoned "The boots
   exchange seems already done — they just need to pick up the
@@ -31,10 +31,6 @@ that none of the 3 target cases could clear:
   explicit meta-statement like "I'm counting this as 1 item
   because..." rather than accepting implicit reasoning in the
   actor's narrative.
-- **Case #2 (projects):** Actor listed 3 projects by name. No
-  explicit discussion of whether "planned for June" counts as
-  "leading." The judge correctly rejected this under the
-  deliberation bar — the actor enumerated but did not reason.
 - **Case #6 (citrus):** Actor produced 40+ exhaustive quotes
   documenting grapefruit across 4 sessions. The judge required
   explicit verbal deliberation ("I'm including grapefruit
@@ -56,16 +52,23 @@ edge cases.
 The second attempt must **not** rely on judging the actor's intent
 or reasoning quality. It must use **objective structural signals**
 in the actor's output — specifically, the presence or absence of
-the disputed items — rather than subjective assessments of whether
-the actor "deliberated."
+the disputed items and their supporting evidence — rather than
+subjective assessments of whether the actor "deliberated."
 
 ---
 
-## Section 2 — The 3 target cases
+## Section 2 — Actual target cases (current baseline verified)
 
-### Case #1: Clothing (0a995998) — under-count
+The original failure classification identified 3
+DEFINITION_DISAGREEMENT cases (#1, #2, #6). However, the current
+baseline (descriptions-enabled main, `20260514-item8-with-descriptions`)
+shows **case #2 is already CORRECT** — the actor now answers 2
+(matching GT), not 3 as in the older run. Only 2 target cases
+remain:
 
-**GT:** 3 items. **Actor:** 2 items.
+### Case #1: Clothing (0a995998) — under-count, still INCORRECT
+
+**GT:** 3 items. **Actor:** 2 items. **Delta:** -1.
 
 **Actor's answer:** Navy blue blazer (dry cleaner pickup) + new
 boots from Zara (exchange pickup). The actor explicitly says:
@@ -81,66 +84,48 @@ pending action, not 2) is reasonable. The GT counts it as 2
 (return boots + pickup new boots = 2 separate items, plus blazer
 = 3). Both interpretations are valid.
 
-**Rubric change needed:** Accept this as correct because the actor
-shows **awareness** of the disputed evidence (the exchange) and
-explicitly reasons about it. The actor didn't miss anything — it
-categorized differently.
+**Rubric change needed:** Accept via the under-count awareness
+check — the actor's output mentions the exchange (the disputed
+evidence) and explicitly reasons about it.
 
-**Regression risk:** Low. The signal is strong: the actor quotes
-the exchange, discusses it, and concludes it's 1 action. No
-currently-correct case with delta=0 would be affected. The only
-risk would be a future under-count case where the actor mentions
-an item but wrongly excludes it — but that's also a
-DEFINITION_DISAGREEMENT by construction.
+### Case #2: Projects (6d550036) — ALREADY CORRECT, no action
 
-### Case #2: Projects (6d550036) — over-count
+**GT:** 2 projects. **Actor (current run):** 2 projects (cloud
+migration + product feature launch). **Delta:** 0.
 
-**GT:** 2 projects. **Actor:** 3 projects.
+The actor's count now matches GT. No rubric change needed for this
+case. (In the older run used for the failure classification, the
+actor answered 3. The actor's behavior changed across runs — LLM
+non-determinism.)
 
-**Actor's answer:** Data analysis, cloud migration, product
-feature launch (planned for June). The GT counts 2; the actor
-included a planned launch as "leading a project."
+**Subset verification (for the record):** The actor's 2 projects
+(cloud migration, product launch) are NOT the GT's 2 projects.
+The GT's 2 are from answer sessions (data analysis + consumer
+psychology research). One answer session (`answer_ec904b3c_3`,
+consumer psychology) was not retrieved. The actor found projects
+from non-answer sessions. The count match is coincidental, but
+the judge accepts it because the count is exact. This case
+illustrates why count-only GT is fragile for item-level counting
+questions.
 
-**Why defensible:** "Planning a product feature launch for June" is
-plausibly "leading a project." The GT's narrower scope may exclude
-it because the user's role isn't specified as "leading," but the
-actor's inclusion is reasonable.
-
-**Rubric change needed:** Accept this because the actor
-**over-counted** by 1 and **enumerated all items** including the
-extra one. An over-count with enumerated evidence means the actor
-found everything the GT found, plus one additional item. The
-disagreement is about whether the extra item belongs — this is
-definitionally a DEFINITION_DISAGREEMENT, never a GENUINE_MISS.
-The actor cannot "miss" items it found and listed.
-
-**Regression risk:** Low. Over-count acceptance at delta-1 only
-fires when the actor produces MORE items than GT. If the actor
-lists items by name, it has already demonstrated retrieval
-success. The risk is an actor that over-counts with a genuinely
-irrelevant item — but at delta-1, this is always a boundary
-judgment, not a retrieval failure.
-
-### Case #6: Citrus (c4a1ceb8) — over-count
+### Case #6: Citrus (c4a1ceb8) — over-count, still INCORRECT
 
 **GT:** 3 types. **Actor:** 4 types (lemon, lime, orange,
-grapefruit).
+grapefruit). **Delta:** +1.
 
-**Actor's answer:** Exhaustive `<quotes>` block documenting
-grapefruit in citrus peel recipes, Gin & Tonic garnish, and a
-Grapefruit-Rosemary-Gin flavor combination. 40+ quotes across 4
-sessions.
+**Subset verification:** GT's 3 items are {lemon, lime, orange}.
+The actor's 4 items are {lemon, lime, orange, grapefruit}. **GT
+IS a strict subset of the actor's items.** All GT items appear in
+the actor's enumeration. The extra item (grapefruit) is documented
+with 40+ quotes across 4 sessions showing grapefruit in recipe
+contexts (citrus peel infusions, Gin & Tonic garnish,
+Grapefruit-Rosemary-Gin combination). The grapefruit is real — not
+fabricated — and the scope question (does garnish/optional count
+as "used in recipes") is genuine.
 
-**Why defensible:** Grapefruit appears in recipe contexts — peel
-infusions, garnishes, flavor combinations. Whether these count as
-"used in cocktail recipes" is a scope question. The GT counts only
-actively squeezed/juiced citrus; the actor counts all citrus
-mentioned in recipe contexts. Both interpretations are valid.
-
-**Rubric change needed:** Same as case #2 — over-count by 1 with
-enumerated and documented evidence. Accept.
-
-**Regression risk:** Same as case #2 — low.
+**Rubric change needed:** Accept via the over-count evidence check
+— the extra item is supported by extensive quoted evidence from
+source material.
 
 ---
 
@@ -150,52 +135,67 @@ enumerated and documented evidence. Accept.
 
 **Two-call judge (extract then grade):**
 
-The first call would extract: what items did the actor find? What
-items does the GT contain? The second call would compare the
-extracted lists.
-
-This does not address the v1 failure. The v1 failure was not about
-the judge failing to see the actor's evidence — the judge saw
-the evidence just fine. The failure was about the judge's
-acceptance criteria: what level of reasoning makes a delta-1
-acceptable? A two-call structure changes how the judge processes
-the input but not the fundamental rubric question. The second
-call still needs a rule for when delta-1 is acceptable, and that
-rule is what v1 got wrong.
+Does not address the v1 failure. The v1 failure was not about the
+judge failing to see the actor's evidence — the judge saw it. The
+failure was about acceptance criteria. A two-call structure changes
+how the judge processes input but not the fundamental rubric
+question. The second call still needs a rule for when delta-1 is
+acceptable, and that rule is what v1 got wrong.
 
 **Structural signal detection:**
 
 Detect objective structural patterns in the actor's output rather
-than subjective reasoning quality. The key insight from the 3
-target cases: the distinguishing signal between
-DEFINITION_DISAGREEMENT and GENUINE_MISS is not "did the actor
-deliberate" but "did the actor find the disputed items."
+than subjective reasoning quality. The key insight: the
+distinguishing signal between DEFINITION_DISAGREEMENT and
+GENUINE_MISS is not "did the actor deliberate" but "did the actor
+find the disputed items, and are they supported by evidence?"
 
-### Recommendation: directional acceptance (structural signal)
+### Recommendation: symmetric evidence check
 
-The v1 approach treated over-counts and under-counts identically
-(both required "deliberation"). This was wrong. They have
-fundamentally different failure modes:
+Both over-counts and under-counts get the **same factual rigor**.
+No free passes on either side.
 
-**Over-count by 1 (actor > GT):** The actor found everything the
-GT found, plus one additional item. The actor cannot have "missed"
-something it found and listed. An over-count with enumerated items
-is always a scope disagreement — DEFINITION_DISAGREEMENT by
-construction. **Accept unconditionally at delta-1.**
+**Over-count by 1 (actor > GT):** Accept only if:
+1. The actor enumerated each counted item with supporting evidence
+   (quotes or specific factual details traceable to source).
+2. The extra item is supported by evidence in the actor's output —
+   not just named, but documented with a quote or specific detail
+   from the conversation history.
 
-**Under-count by 1 (actor < GT):** The actor found fewer items.
-This could be a GENUINE_MISS (actor didn't see the item) or a
-DEFINITION_DISAGREEMENT (actor saw it but categorized differently).
-The signal: **does the actor's output mention the evidence that
-would change the count?** If yes → the actor chose to count
-differently (DEFINITION_DISAGREEMENT). If no → the actor failed
-to find it (GENUINE_MISS).
+An over-count where the extra item is fabricated or unsupported
+is INCORRECT. An over-count where the extra item has quoted
+evidence is a scope disagreement — CORRECT.
 
-This removes the subjective "deliberation" assessment entirely.
-The check is factual: does the actor's output (including thinking,
-quotes, reasoning) contain references to the items or evidence
-relevant to the disputed count? Not "did the actor deliberate
-about inclusion," but "did the actor see the evidence at all."
+**Under-count by 1 (actor < GT):** Accept only if the actor's
+output (including thinking, quotes, reasoning) mentions, quotes,
+or discusses evidence related to the item(s) it did not count. If
+the actor shows awareness of the missing evidence and chose not to
+count it, mark CORRECT. If the actor shows no awareness, mark
+INCORRECT.
+
+### Why the over-count rule is not unconditional
+
+The original v2 draft accepted over-counts unconditionally ("if
+enumerated, accept"). This has a hole: an over-count by 1 is
+consistent with TWO situations:
+- (a) Actor found everything GT found, plus one scope-call extra
+  — a real DEFINITION_DISAGREEMENT.
+- (b) Actor missed a GT item AND found one or two extras (net +1)
+  — a GENUINE_MISS that happens to have the right arithmetic.
+
+Case #2 (projects) illustrates (b) exactly: the actor missed
+consumer psychology research (not retrieved) and found cloud
+migration + product launch from non-answer sessions. Count
+parity (3 vs 2 = +1) was arithmetic coincidence, not scope
+disagreement. GT was NOT a subset of the actor's items.
+
+The symmetric evidence check catches fabrication and unsupported
+items. The subset property is the harder check — with count-only
+GT, the judge cannot verify subset directly. But requiring quoted
+evidence for the extra item raises the bar enough to filter out
+cases where the actor's enumeration doesn't correspond to GT's
+items. An actor that fabricates or finds unrelated items typically
+won't have source-material quotes for them.
 
 ### Proposed judge prompt (MultiSession counting rubric)
 
@@ -208,11 +208,14 @@ If this is a counting question (asks "how many", "how much",
 2. If they match exactly: CORRECT.
 3. If they differ by more than 1: INCORRECT.
 4. If the system's count is HIGHER than ground truth by exactly 1:
-   Check whether the system enumerated its items with supporting
-   evidence. If the system listed each counted item by name or
-   with a quote, mark CORRECT — the system found everything in
-   the ground truth plus one additional item, which is a scope
-   disagreement, not a miss.
+   Check whether the extra item the system counted is supported
+   by EVIDENCE — a verbatim quote from conversation text or
+   specific factual details traceable to a session. If the extra
+   item is documented with source evidence, mark CORRECT — the
+   system found a real item that the ground truth excluded, which
+   is a scope disagreement. If the extra item has no supporting
+   evidence (just named or asserted without quotes/details), mark
+   INCORRECT.
 5. If the system's count is LOWER than ground truth by exactly 1:
    Check whether the system's output (including <thinking> and
    <quotes> blocks) mentions, quotes, or discusses evidence
@@ -224,82 +227,65 @@ If this is a counting question (asks "how many", "how much",
 
 DOLLAR AMOUNTS:
 When the ground truth is a dollar amount, do not apply the +-1
-tolerance — require exact match. The tolerance is for unit
-counts, not dollar totals.
+tolerance — require exact match.
 
 NON-COUNTING QUESTIONS:
 If this is NOT a counting question, apply the standard rubric.
 ```
 
-### Why this won't hit the same wall as v1
+### Case-by-case verification against revised rubric
 
-The v1 failure was the judge's interpretation of "deliberation" —
-a subjective concept the judge applied too strictly. The v2 rubric
-replaces subjective assessment with two objective checks:
-
-- **Over-count rule (step 4):** No judgment needed. Did the actor
-  enumerate items? Yes → CORRECT. This is deterministic.
-- **Under-count rule (step 5):** Factual check. Does the actor's
-  output mention evidence related to the missing item? Not "did it
-  reason about it" — just "does it appear in the output anywhere."
-  This is far easier for the judge to evaluate than "deliberation."
-
-Case-by-case verification:
-
-| Case | Direction | v2 rule | Result |
-|---|---|---|---|
-| #1 Clothing | Under-count (2 vs 3) | Step 5: actor mentions the exchange explicitly → CORRECT | Flips |
-| #2 Projects | Over-count (3 vs 2) | Step 4: actor enumerated 3 items by name → CORRECT | Flips |
-| #6 Citrus | Over-count (4 vs 3) | Step 4: actor documented 4 types with quotes → CORRECT | Flips |
-| #7 Festivals | Under-count (3 vs 4) | Step 5: no mention of 4th festival → INCORRECT | Holds |
-| #8 Tanks | Under-count (2 vs 3) | Step 5: no mention of betta tank → INCORRECT | Holds |
-| #9 Weddings | Under-count (2 vs 3) | Step 5: no mention of Emily+Sarah or Jen+Tom → INCORRECT | Holds |
+| Case | Direction | Rule | Evidence check | Result |
+|---|---|---|---|---|
+| #1 Clothing | Under (2 vs 3) | Step 5 | Actor quotes + discusses the exchange | CORRECT (flips) |
+| #2 Projects | Exact (2 vs 2) | Step 2 | N/A — delta=0 | CORRECT (already) |
+| #6 Citrus | Over (4 vs 3) | Step 4 | Grapefruit documented with 40+ quotes from 4 sessions | CORRECT (flips) |
+| #7 Festivals | Under (3 vs 4) | Step 5 | No mention of 4th festival | INCORRECT (holds) |
+| #8 Tanks | Under (2 vs 3) | Step 5 | No mention of betta tank | INCORRECT (holds) |
+| #9 Weddings | Under (2 vs 3) | Step 5 | No mention of Emily+Sarah or Jen+Tom | INCORRECT (holds) |
 
 ---
 
 ## Section 4 — Regression risk
 
-### Over-count rule (step 4) regression analysis
+### Over-count evidence check regression
 
-The rule: any over-count by exactly 1 with enumerated items is
-accepted. Potential false accept: an actor that over-counts by 1
-with a genuinely irrelevant item (not a scope boundary). For
-example, counting "3 weddings attended" when GT says 2 and the 3rd
-is the user's own wedding (not "attended").
+The rule requires quoted/specific evidence for the extra item.
+Potential false accept: an actor over-counts with a real but
+irrelevant item that happens to have a source quote. At delta-1,
+this is always a scope boundary question ("does this item belong
+in this category?"), which is definitionally a
+DEFINITION_DISAGREEMENT. The evidence check filters fabrications
+but accepts real items — which is the correct behavior for scope
+disagreements.
 
-**Mitigation:** At delta-1, the extra item is almost always a
-scope boundary by construction — items closely related enough to
-match the question's vocabulary but arguably outside its scope.
-Genuinely irrelevant items (actor counts "3 tanks" but one is a
-military tank, not a fish tank) would produce delta >> 1, not
-delta = 1.
+Potential false reject: an actor over-counts with a correctly-
+scoped extra item but doesn't include a quote. This would cause a
+real DEFINITION_DISAGREEMENT to be rejected. Severity: low — the
+current actor consistently produces quotes for counting questions
+(PR #97 quote-first instruction).
 
-**Measurement plan:** Run the v2 judge on all 120 questions from
-the current bench baseline. Diff against v1 results. Any case
-that flips from correct to incorrect is a regression. Any case
-that flips from incorrect to correct outside the 3 targets is an
-unexpected gain that needs verification.
+### Under-count awareness check regression
 
-### Under-count rule (step 5) regression analysis
+Same analysis as the original proposal — low severity. If the
+actor's output mentions evidence it chose not to count, the most
+charitable interpretation is a categorization choice.
 
-The rule: under-count by 1 is accepted if the actor's output
-mentions evidence related to the missing item. Potential false
-accept: the actor mentions an item in passing (e.g., in a quote
-from a session) but genuinely fails to count it — not because of
-a categorization choice, but because of an extraction failure that
-happens to leave a trace.
+### Measurement plan (revised)
 
-**Severity:** Low. If the actor quotes evidence mentioning the
-item and still doesn't count it, the most charitable interpretation
-is that the actor made a categorization choice. The alternative
-(actor quoted it accidentally but didn't process it) is rare and
-hard to distinguish from a genuine boundary decision.
+Run the v2 judge on all 120 questions. The regression check must
+specifically:
+1. List every case that newly flips to CORRECT (not just the 2
+   targets). Each newly-flipped case gets eyeballed.
+2. List every case that newly flips to INCORRECT (should be zero).
+3. The damage surface is the newly-flipped set, not the held set.
+   Confirming previously-correct cases stayed correct is necessary
+   but insufficient.
 
 ### Dollar amount exclusion
 
-Dollar amounts are excluded from the +-1 tolerance. This prevents
-false accepts on cases like bike expenses (GT=$185, Actor=$40,
-delta=$145 — correctly INCORRECT regardless of rubric).
+Dollar amounts excluded from +-1 tolerance. Prevents false accepts
+on cases like bike expenses (GT=$185, Actor=$40, delta=$145).
 
 ---
 
@@ -308,40 +294,23 @@ delta=$145 — correctly INCORRECT regardless of rubric).
 ### Experimental design
 
 - **Control:** Current main with descriptions, cascade K=40,
-  current judge prompt. Baseline: 77.5% overall, multi-session
-  55% (11/20).
+  current judge prompt. Baseline: 77.5% overall (93/120),
+  multi-session 55% (11/20).
 - **Treatment:** Same config, revised judge prompt only.
 - **Delta:** Treatment - Control = isolated judge-rubric lift.
 
 ### Run scope
 
-The 3 target cases are all in multi-session. But the revised
-rubric applies to ALL counting questions across ALL categories
-(the judge doesn't know which cases are targets). To check for
-regression, the full 120-question bench must be re-run.
+Re-judge existing actor outputs from the item #8
+with-descriptions run (`20260514-item8-with-descriptions`). The
+actor predictions are already saved in `report.json` per category.
+A re-judging pass requires only 120 judge calls (~$9), not
+120 actor + 120 judge calls (~$18).
 
-**However:** since only the judge prompt changes (not retrieval
-or actor), a cheaper approach is possible. Re-judge the existing
-actor outputs from the item #8 with-descriptions run
-(`20260514-item8-with-descriptions`). The actor predictions and
-retrieved memories are already computed and saved in
-`report.json`. A re-judging pass requires only 120 judge calls
-(~$9), not 120 actor + 120 judge calls (~$18).
-
-This requires a small harness addition: a `rejudge` subcommand
-that takes an existing `report.json`, re-runs the judge on each
-`(question, predicted, ground_truth)` triple with the new rubric,
-and produces a new report. This is the minimal-cost attribution
-path.
-
-### Expected run cost
-
-| Approach | Questions | Calls | Cost |
-|---|---|---|---|
-| Re-judge only | 120 | 120 judge | ~$9 |
-| Full re-run | 120 | 240 (actor + judge) | ~$18 |
-
-Re-judge is recommended.
+This requires a `rejudge` subcommand or script that takes existing
+`report.json` files, re-runs the judge on each
+`(question, predicted, ground_truth)` triple, and produces a
+comparison report.
 
 ---
 
@@ -349,62 +318,51 @@ Re-judge is recommended.
 
 ### Expected lift
 
-If all 3 target cases flip: **+2.5pp** (77.5% → 80.0%, 93 → 96
-correct out of 120). All 3 are in multi-session, which would move
-from 55% (11/20) to 70% (14/20).
+2 target cases remain (not 3 as originally estimated):
+- Case #1 (clothing, under-count): moderate confidence
+- Case #6 (citrus, over-count): high confidence
 
-### Is it worth the judge complexity increase?
+If both flip: **+1.7pp** (77.5% → 79.2%, 93 → 95 of 120).
+Multi-session: 55% → 65% (11 → 13 of 20).
 
-Yes. The judge prompt change is ~15 lines of rubric text in
-`judge.rs:26-54`. No structural changes to the `Judge` trait, no
-new API calls, no harness modifications. The complexity delta is
-minimal — this is a prompt edit, not an architectural change.
+If only case #6 flips: **+0.8pp** (77.5% → 78.3%).
 
-### Realistic probability of all 3 flipping
+### Why the lift is lower than the original +2.5pp
 
-**High for cases #2 and #6 (over-count):** The over-count rule is
-deterministic — if the actor enumerated items and the count is
-GT+1, it's accepted. Both actors clearly enumerate. These should
-flip with near-certainty.
+1. Case #2 is already CORRECT in the current baseline (actor
+   non-determinism — it now answers 2, not 3).
+2. The subset check revealed case #2 would have been a false
+   positive under the unconditional over-count rule — the actor
+   missed GT's items and found different ones. The count match
+   was coincidence.
+3. The corrected lift (+1.7pp max) is honest. The original +2.5pp
+   was partly counting a case that already passes.
 
-**Moderate for case #1 (under-count):** Depends on whether the
-judge recognizes the exchange discussion as "evidence related to
-the missing item." The actor explicitly discusses the exchange and
-reasons about it being 1 action. The under-count awareness check
-should detect this, but it requires the judge LLM to connect "the
-exchange" to "the item GT counts as a 3rd."
+### Is it worth the complexity?
 
-**Realistic estimate:** 2-3 of 3 flip. Expected lift: +1.7 to
-+2.5pp.
+Yes. The judge prompt change is ~20 lines of rubric text in
+`judge.rs:26-54`. No structural changes. The corrected lift
+(+1.7pp) is real — case #6 is a clear scope disagreement with
+extensive evidence, and case #1 is a defensible categorization
+with explicit reasoning in the actor's output. Neither is a
+miss being scored as correct.
 
 ### Teaching-to-the-test risk
 
-This is a real concern. The rubric is designed with knowledge of
-the 3 specific failure cases. However:
+The rubric is informed by the failure cases, but both rules
+(evidence-based over-count acceptance, awareness-based under-count
+acceptance) are general principles that map to the established
+DEFINITION_DISAGREEMENT vs GENUINE_MISS taxonomy. The full
+120-question re-judge with the newly-flipped-case-list check is
+the safeguard: any unexpected flips expose teaching-to-the-test.
 
-1. The over-count rule is a general principle, not case-specific.
-   It states: "an over-count by 1 with enumerated evidence is a
-   scope disagreement, not a miss." This is epistemologically
-   correct — if the actor found more items than GT, it didn't miss
-   anything. This principle applies to any counting question, not
-   just cases #2 and #6.
+### Calibration against Memanto
 
-2. The under-count awareness rule is also general. It distinguishes
-   "actor saw the evidence and categorized differently" from "actor
-   didn't see the evidence at all." This maps directly to the
-   DEFINITION_DISAGREEMENT vs GENUINE_MISS taxonomy that was
-   established independently in the failure classification.
-
-3. The measurement plan (re-judge all 120 questions) explicitly
-   checks for unexpected flips in either direction. If the rubric
-   only helps the 3 target cases and hurts nothing, it's a net
-   improvement. If it causes unexpected flips on other cases,
-   that's evidence of teaching-to-the-test.
-
-The honest framing: this IS informed by the failure cases, but the
-principles it encodes (over-count = scope disagreement; under-count
-with awareness = categorization choice) are general enough to
-improve judge quality on future questions, not just these 3.
+Memanto's 89.8% is the external reference. Moving from 77.5% to
+79.2% is +1.7pp of honest lift — no hallucinations scored as wins,
+no coincidental count matches accepted. The gap to Memanto remains
+~10pp, but the number is credible. A quieter honest benchmark is
+worth more for Track 1 credibility than an inflated one.
 
 ---
 
@@ -416,11 +374,10 @@ improve judge quality on future questions, not just these 3.
    `judge_prompt()` with the counting-aware rubric from Section 3.
    All other category arms unchanged.
 
-2. **Optional: `rejudge` subcommand** — Takes an existing
-   `report.json`, re-runs judge on each question's saved
-   `(question, predicted, ground_truth)` with the new rubric,
-   outputs a new report. This enables cheap attribution without
-   re-running the actor.
+2. **`rejudge` script or subcommand** — Takes existing
+   `report.json` files, re-runs judge with new rubric on each
+   saved `(question, predicted, ground_truth)` triple. Outputs a
+   comparison report listing every flipped case.
 
 ### What does NOT change
 
