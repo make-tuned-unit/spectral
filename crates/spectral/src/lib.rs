@@ -301,6 +301,20 @@ impl Brain {
         self.inner.recall_topk_fts(query, config, visibility)
     }
 
+    /// Run the integrated cascade pipeline with ambient boost.
+    ///
+    /// Unlike [`recall()`](Brain::recall), this path takes a
+    /// [`RecognitionContext`](spectral_graph::RecognitionContext) and applies
+    /// wing-match, recency, and ambient boost in the re-ranking pipeline.
+    pub fn recall_cascade(
+        &self,
+        query: &str,
+        context: &spectral_graph::RecognitionContext,
+        config: &spectral_cascade::orchestrator::CascadeConfig,
+    ) -> Result<spectral_cascade::result::CascadeResult, Error> {
+        self.inner.recall_cascade(query, context, config)
+    }
+
     /// Direct access to the underlying graph store.
     pub fn store(&self) -> &spectral_graph::kuzu_store::KuzuStore {
         self.inner.store()
