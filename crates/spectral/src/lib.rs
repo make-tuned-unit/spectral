@@ -76,7 +76,10 @@ pub use spectral_graph::brain::{
     ResonantMemoryHit,
 };
 pub use spectral_graph::Error;
-pub use spectral_ingest::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
+pub use spectral_ingest::{
+    AnnotationInput, DefaultSignalScorer, EntityRef, KeywordBooster, MemoryAnnotation,
+    SignalScorer, SignalScorerConfig,
+};
 pub use spectral_tact::LlmClient;
 
 // Sub-crate access for advanced users
@@ -324,6 +327,29 @@ impl Brain {
     /// List memories where description IS NULL, ordered by created_at DESC.
     pub fn list_undescribed(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
         self.inner.list_undescribed(limit)
+    }
+
+    /// Annotate a memory with contextual who/where/why/how metadata.
+    ///
+    /// Writes a [`spectral_ingest::MemoryAnnotation`] row to the
+    /// `memory_annotations` table. Idempotent on
+    /// `(memory_id, description, when_)`: if an identical annotation
+    /// already exists the call is a no-op and the existing row is
+    /// returned.
+    pub fn annotate(
+        &self,
+        memory_id: &str,
+        input: spectral_ingest::AnnotationInput,
+    ) -> Result<spectral_ingest::MemoryAnnotation, Error> {
+        self.inner.annotate(memory_id, input)
+    }
+
+    /// List all annotations for a memory.
+    pub fn list_annotations(
+        &self,
+        memory_id: &str,
+    ) -> Result<Vec<spectral_ingest::MemoryAnnotation>, Error> {
+        self.inner.list_annotations(memory_id)
     }
 }
 

@@ -6,6 +6,7 @@ use spectral_cascade::RecognitionContext;
 use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, RecallTopKConfig, RememberOpts};
+use spectral_ingest::{AnnotationInput, EntityRef};
 use spectral_tact::TactConfig;
 use tempfile::TempDir;
 
@@ -1675,4 +1676,157 @@ fn compute_co_retrieval_boosts_normalization_and_edge_cases() {
         empty_boosts.is_empty(),
         "fresh brain with no co-retrieval data should return empty map"
     );
+}
+
+// ── Annotation tests ───────────────────────────────────────────────
+
+#[test]
+fn annotate_write_then_read() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    brain
+        .remember("mem-1", "Discussed project timeline", Visibility::Private)
+        .unwrap();
+
+    let when_ = Utc.with_ymd_and_hms(2026, 5, 15, 12, 0, 0).unwrap();
+    let input = AnnotationInput {
+        description: "Sprint planning meeting".into(),
+        who: vec![EntityRef {
+            canonical_id: "person:jesse-sharratt".into(),
+            display_name: "Jesse Sharratt".into(),
+        }],
+        why: "Reviewing sprint progress".into(),
+        where_: Some("office".into()),
+        when_,
+        how: "Verbal discussion".into(),
+    };
+
+    let mem_id = brain
+        .remember("mem-1", "Discussed project timeline", Visibility::Private)
+        .unwrap()
+        .memory_id;
+
+    let annotation = brain.annotate(&mem_id, input).unwrap();
+    assert_eq!(annotation.memory_id, mem_id);
+    assert_eq!(annotation.description, "Sprint planning meeting");
+    assert_eq!(annotation.who.len(), 1);
+    assert_eq!(annotation.who[0].canonical_id, "person:jesse-sharratt");
+
+    let loaded = brain.list_annotations(&mem_id).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].id, annotation.id);
+    assert_eq!(loaded[0].description, "Sprint planning meeting");
+    assert_eq!(loaded[0].who[0].display_name, "Jesse Sharratt");
+}
+
+#[test]
+fn annotate_idempotent_same_content() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    let result = brain
+        .remember("mem-idem", "Some content", Visibility::Private)
+        .unwrap();
+    let mem_id = result.memory_id;
+
+    let when_ = Utc.with_ymd_and_hms(2026, 5, 15, 14, 0, 0).unwrap();
+    let make_input = || AnnotationInput {
+        description: "Same annotation".into(),
+        who: vec![],
+        why: "testing".into(),
+        where_: None,
+        when_,
+        how: "automated".into(),
+    };
+
+    let ann1 = brain.annotate(&mem_id, make_input()).unwrap();
+    let ann2 = brain.annotate(&mem_id, make_input()).unwrap();
+
+    // Both calls succeed
+    assert_eq!(ann1.memory_id, mem_id);
+    assert_eq!(ann2.memory_id, mem_id);
+
+    // Only one row in the database
+    let loaded = brain.list_annotations(&mem_id).unwrap();
+    assert_eq!(
+        loaded.len(),
+        1,
+        "idempotent: second write with same (memory_id, description, when_) should be a no-op"
+    );
+}
+
+#[test]
+fn annotate_cross_check_direct_sql() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    let result = brain
+        .remember("mem-xcheck", "Cross-check content", Visibility::Private)
+        .unwrap();
+    let mem_id = result.memory_id;
+
+    let when_ = Utc.with_ymd_and_hms(2026, 5, 15, 16, 30, 0).unwrap();
+    let input = AnnotationInput {
+        description: "Cross-check annotation".into(),
+        who: vec![
+            EntityRef {
+                canonical_id: "person:jesse".into(),
+                display_name: "Jesse".into(),
+            },
+            EntityRef {
+                canonical_id: "project:spectral".into(),
+                display_name: "Spectral".into(),
+            },
+        ],
+        why: "testing serialization".into(),
+        where_: Some("remote".into()),
+        when_,
+        how: "automated test".into(),
+    };
+
+    let annotation = brain.annotate(&mem_id, input).unwrap();
+
+    // Read the row directly from SQLite to verify storage format
+    let db_path = tmp.path().join("memory.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let (db_id, db_memory_id, db_desc, db_who_json, db_why, db_where, db_when, db_how): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT id, memory_id, description, who, why, where_, when_, how
+             FROM memory_annotations WHERE id = ?1",
+            rusqlite::params![annotation.id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    assert_eq!(db_id, annotation.id);
+    assert_eq!(db_memory_id, mem_id);
+    assert_eq!(db_desc, "Cross-check annotation");
+    assert_eq!(db_why, "testing serialization");
+    assert_eq!(db_where, Some("remote".into()));
+    assert_eq!(db_how, "automated test");
+    assert_eq!(db_when, when_.to_rfc3339());
+
+    // Verify `who` JSON matches serde_json serialization of EntityRef vec
+    let who_from_db: Vec<EntityRef> = serde_json::from_str(&db_who_json).unwrap();
+    assert_eq!(who_from_db.len(), 2);
+    assert_eq!(who_from_db[0].canonical_id, "person:jesse");
+    assert_eq!(who_from_db[1].canonical_id, "project:spectral");
 }
