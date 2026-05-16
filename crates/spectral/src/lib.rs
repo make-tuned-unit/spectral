@@ -347,6 +347,123 @@ impl Brain {
     pub fn list_undescribed(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
         self.inner.list_undescribed(limit)
     }
+
+    /// Annotate a memory with contextual who/where/why/how metadata.
+    ///
+    /// Writes a [`spectral_ingest::MemoryAnnotation`] row to the
+    /// `memory_annotations` table. Idempotent on
+    /// `(memory_id, description, when_)`: if an identical annotation
+    /// already exists the call is a no-op and the existing row is returned.
+    pub fn annotate(
+        &self,
+        memory_id: &str,
+        input: spectral_ingest::AnnotationInput,
+    ) -> Result<spectral_ingest::MemoryAnnotation, Error> {
+        self.inner.annotate(memory_id, input)
+    }
+
+    /// List all annotations for a memory. Read-only, returns an empty
+    /// Vec when no annotations exist for the given memory_id.
+    pub fn list_annotations(
+        &self,
+        memory_id: &str,
+    ) -> Result<Vec<spectral_ingest::MemoryAnnotation>, Error> {
+        self.inner.list_annotations(memory_id)
+    }
+
+    /// Update the `compaction_tier` on an existing memory.
+    ///
+    /// Used by rollup consumers (e.g., Permagent's Librarian) to track
+    /// compaction state as ambient-stream memories are aggregated from
+    /// `Raw` → `HourlyRollup` → `DailyRollup` → `WeeklyRollup`.
+    /// Idempotent: setting the same tier twice is a no-op. Writes a
+    /// single UPDATE to the `memories` table.
+    pub fn set_compaction_tier(
+        &self,
+        memory_id: &str,
+        tier: spectral_ingest::CompactionTier,
+    ) -> Result<(), Error> {
+        self.inner.set_compaction_tier(memory_id, tier)
+    }
+
+    /// List episodes, optionally filtered by wing.
+    ///
+    /// Read-only scan of the `episodes` table, ordered by `started_at`
+    /// descending, up to `limit` rows. Pass `None` for `wing` to list
+    /// across all wings. Cost is O(limit) — bounded by the limit parameter.
+    pub fn list_episodes(
+        &self,
+        wing: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<spectral_ingest::Episode>, Error> {
+        self.inner.list_episodes(wing, limit)
+    }
+
+    /// Get all memories belonging to an episode.
+    ///
+    /// Read-only. Returns memories ordered by `created_at` ascending.
+    /// Returns an empty Vec if the episode_id does not exist.
+    pub fn list_memories_by_episode(
+        &self,
+        episode_id: &str,
+    ) -> Result<Vec<spectral_ingest::Memory>, Error> {
+        self.inner.list_memories_by_episode(episode_id)
+    }
+
+    /// Return memories most frequently co-retrieved with the given memory_id.
+    ///
+    /// Reads from the `co_retrieval_pairs` table (populated by
+    /// [`rebuild_co_retrieval_index`](Brain::rebuild_co_retrieval_index)).
+    /// Returns up to `limit` results ordered by co-occurrence count
+    /// descending. Returns an empty Vec if the memory_id has no
+    /// co-retrieval data or if the index has not been built yet.
+    pub fn related_memories(
+        &self,
+        memory_id: &str,
+        limit: usize,
+    ) -> Result<Vec<spectral_ingest::RelatedMemory>, Error> {
+        self.inner.related_memories(memory_id, limit)
+    }
+
+    /// Count all retrieval events in the database.
+    ///
+    /// Read-only. Scans the `retrieval_events` table. Useful for
+    /// verifying that the feedback loop is logging events.
+    pub fn count_retrieval_events(&self) -> Result<usize, Error> {
+        self.inner.count_retrieval_events()
+    }
+
+    /// Count retrieval events filtered by method (e.g., `"cascade"`,
+    /// `"topk_fts"`).
+    ///
+    /// Read-only. Scans `retrieval_events` with a WHERE clause on
+    /// the `method` column.
+    pub fn count_retrieval_events_by_method(&self, method: &str) -> Result<usize, Error> {
+        self.inner.count_retrieval_events_by_method(method)
+    }
+
+    /// List retrieval events for a given session, ordered by timestamp ASC.
+    ///
+    /// Read-only. Queries the `retrieval_events` table filtered by
+    /// `session_id`, up to `limit` rows. Returns an empty Vec if no
+    /// events exist for the session.
+    pub fn events_for_session(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<spectral_ingest::RetrievalEvent>, Error> {
+        self.inner.events_for_session(session_id, limit)
+    }
+
+    /// List unique memory IDs that surfaced in a session, ordered by
+    /// first appearance.
+    ///
+    /// Read-only. Extracts distinct memory IDs from `retrieval_events`
+    /// for the given `session_id`. Returns an empty Vec if no events
+    /// exist for the session.
+    pub fn memories_for_session(&self, session_id: &str) -> Result<Vec<String>, Error> {
+        self.inner.memories_for_session(session_id)
+    }
 }
 
 // ── BrainBuilder ────────────────────────────────────────────────────
