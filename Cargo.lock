@@ -2806,10 +2806,12 @@ name = "spectral"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "criterion",
  "fastembed",
  "reqwest",
  "serde_json",
+ "spectral-cascade",
  "spectral-core",
  "spectral-graph",
  "spectral-ingest",
