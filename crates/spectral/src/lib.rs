@@ -315,6 +315,14 @@ impl Brain {
         self.inner.recall_cascade(query, context, config)
     }
 
+    /// Rebuild the co-retrieval pairs index from accumulated retrieval events.
+    ///
+    /// Full recompute (not incremental). Atomic replace via single transaction —
+    /// concurrent reads are safe. Idempotent. Returns the number of pairs written.
+    pub fn rebuild_co_retrieval_index(&self) -> Result<usize, Error> {
+        self.inner.rebuild_co_retrieval_index()
+    }
+
     /// Direct access to the underlying graph store.
     pub fn store(&self) -> &spectral_graph::kuzu_store::KuzuStore {
         self.inner.store()
