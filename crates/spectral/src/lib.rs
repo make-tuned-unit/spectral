@@ -351,6 +351,28 @@ impl Brain {
     ) -> Result<Vec<spectral_ingest::MemoryAnnotation>, Error> {
         self.inner.list_annotations(memory_id)
     }
+
+    /// Rebuild the `co_retrieval_pairs` table from accumulated `retrieval_events`.
+    ///
+    /// Computes co-occurrence counts: for every retrieval event, generates all
+    /// `(memory_id_a, memory_id_b)` pairs (lexicographically ordered) from the
+    /// memories returned together, then aggregates counts across all events.
+    ///
+    /// # Semantics
+    ///
+    /// - **Full recompute**: reads *all* rows from `retrieval_events`, not just
+    ///   new ones since the last run. The rebuild is not incremental.
+    /// - **Atomic replace**: runs DELETE + INSERT inside a single transaction,
+    ///   so concurrent `related_memories` readers never see an empty table.
+    /// - **Idempotent**: calling twice with no new events produces the same
+    ///   `co_retrieval_pairs` rows (identical counts and timestamps per pair).
+    /// - **Cost**: O(E × K²) where E = number of retrieval events and K = avg
+    ///   memories per event. Typically K ≤ 40, so effectively O(E).
+    ///
+    /// Returns the number of distinct pairs written.
+    pub fn rebuild_co_retrieval_index(&self) -> Result<usize, Error> {
+        self.inner.rebuild_co_retrieval_index()
+    }
 }
 
 // ── BrainBuilder ────────────────────────────────────────────────────

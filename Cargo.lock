@@ -2809,6 +2809,7 @@ dependencies = [
  "criterion",
  "fastembed",
  "reqwest",
+ "rusqlite",
  "serde_json",
  "spectral-core",
  "spectral-graph",
