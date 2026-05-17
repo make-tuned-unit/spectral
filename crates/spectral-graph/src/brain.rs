@@ -1255,6 +1255,7 @@ impl Brain {
                 neighborhood: Neighborhood {
                     entities: vec![],
                     triples: vec![],
+                    documents: vec![],
                 },
             });
         }
@@ -1263,6 +1264,8 @@ impl Brain {
         let mut all_entities = Vec::new();
         let mut all_triples = Vec::new();
         let mut seen_edges: HashSet<(EntityId, EntityId, String)> = HashSet::new();
+        let mut seen_docs: HashSet<[u8; 32]> = HashSet::new();
+        let mut all_documents = Vec::new();
 
         for seed in &seed_entities {
             let hood = self.store.neighborhood(seed, 2)?;
@@ -1277,6 +1280,11 @@ impl Brain {
                     all_triples.push(triple);
                 }
             }
+            for doc in hood.documents {
+                if seen_docs.insert(doc.id) {
+                    all_documents.push(doc);
+                }
+            }
         }
 
         // Filter by visibility
@@ -1288,6 +1296,10 @@ impl Brain {
             .into_iter()
             .filter(|t| t.visibility.allows(context_visibility))
             .collect();
+        let all_documents: Vec<_> = all_documents
+            .into_iter()
+            .filter(|d| d.visibility.allows(context_visibility))
+            .collect();
         let triples_clone = all_triples.clone();
 
         Ok(RecallResult {
@@ -1296,6 +1308,7 @@ impl Brain {
             neighborhood: Neighborhood {
                 entities: all_entities,
                 triples: all_triples,
+                documents: all_documents,
             },
         })
     }

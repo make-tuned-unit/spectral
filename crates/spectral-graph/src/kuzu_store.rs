@@ -82,6 +82,19 @@ pub struct Triple {
     pub weight: f64,
 }
 
+/// A Document node surfaced during neighborhood traversal.
+#[derive(Debug, Clone)]
+pub struct DocumentNode {
+    /// Blake3 content hash (primary key).
+    pub id: [u8; 32],
+    /// Source identifier (filename, URI, etc.).
+    pub source: String,
+    /// When the document was ingested.
+    pub ingested_at: DateTime<Utc>,
+    /// Visibility level.
+    pub visibility: Visibility,
+}
+
 /// Result of a neighborhood BFS traversal.
 #[derive(Debug)]
 pub struct Neighborhood {
@@ -89,6 +102,8 @@ pub struct Neighborhood {
     pub entities: Vec<Entity>,
     /// All triples connecting visited entities (deduplicated).
     pub triples: Vec<Triple>,
+    /// Documents that mention entities in the neighborhood (terminal — not further expanded).
+    pub documents: Vec<DocumentNode>,
 }
 
 /// Typed wrapper around a Kuzu database.
@@ -392,9 +407,21 @@ impl KuzuStore {
             frontier = next_frontier;
         }
 
+        // After BFS: find Documents mentioning any visited entity (terminal — not expanded)
+        let mut seen_docs: HashSet<[u8; 32]> = HashSet::new();
+        let mut all_documents = Vec::new();
+        for entity_id in &visited {
+            for doc in self.find_mentioning_documents(&conn, entity_id)? {
+                if seen_docs.insert(doc.id) {
+                    all_documents.push(doc);
+                }
+            }
+        }
+
         Ok(Neighborhood {
             entities: all_entities,
             triples: all_triples,
+            documents: all_documents,
         })
     }
 
@@ -490,6 +517,50 @@ impl KuzuStore {
     }
 
     // --- Private helpers ---
+
+    fn find_mentioning_documents(
+        &self,
+        conn: &Connection<'_>,
+        entity_id: &EntityId,
+    ) -> Result<Vec<DocumentNode>, Error> {
+        let mut stmt = conn.prepare(
+            "MATCH (d:Document)-[:Mentions]->(e:Entity)
+             WHERE e.id = $id
+             RETURN d.id, d.source, d.ingested_at, d.visibility",
+        )?;
+        let result = conn.execute(
+            &mut stmt,
+            vec![("id", kuzu::Value::Blob(entity_id.as_bytes().to_vec()))],
+        )?;
+        let mut docs = Vec::new();
+        for row in result {
+            let id_blob = match &row[0] {
+                kuzu::Value::Blob(v) => {
+                    let bytes: [u8; 32] = v.as_slice().try_into().map_err(|_| {
+                        Error::Schema(format!("expected 32-byte doc id, got {} bytes", v.len()))
+                    })?;
+                    bytes
+                }
+                _ => return Err(Error::Schema("expected blob for doc id".into())),
+            };
+            let source = match &row[1] {
+                kuzu::Value::String(s) => s.clone(),
+                _ => return Err(Error::Schema("expected string for source".into())),
+            };
+            let ingested_at = extract_timestamp(&row[2])?;
+            let visibility = match &row[3] {
+                kuzu::Value::String(s) => str_to_visibility(s)?,
+                _ => return Err(Error::Schema("expected string for visibility".into())),
+            };
+            docs.push(DocumentNode {
+                id: id_blob,
+                source,
+                ingested_at,
+                visibility,
+            });
+        }
+        Ok(docs)
+    }
 
     fn get_entity_with_conn(
         &self,

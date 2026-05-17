@@ -233,3 +233,93 @@ fn insert_mention_distinct_entities_both_kept() {
     assert_eq!(count_alice, 1);
     assert_eq!(count_bob, 1);
 }
+
+#[test]
+fn neighborhood_surfaces_mentioning_documents() {
+    let store = KuzuStore::in_memory().unwrap();
+    let alice = make_entity("person", "alice");
+    store.upsert_entity(&alice).unwrap();
+
+    let doc_id = *blake3::hash(b"alice doc content").as_bytes();
+    store
+        .upsert_document(&doc_id, "notes.txt", Visibility::Private)
+        .unwrap();
+    store.insert_mention(&doc_id, &alice.id, 0, 5).unwrap();
+
+    let hood = store.neighborhood(&alice.id, 1).unwrap();
+    assert_eq!(hood.entities.len(), 1); // alice
+    assert_eq!(hood.documents.len(), 1); // notes.txt
+    assert_eq!(hood.documents[0].source, "notes.txt");
+    assert_eq!(hood.documents[0].id, doc_id);
+}
+
+#[test]
+fn neighborhood_documents_are_terminal() {
+    let store = KuzuStore::in_memory().unwrap();
+
+    let alice = make_entity("person", "alice");
+    let bob = make_entity("person", "bob");
+    store.upsert_entity(&alice).unwrap();
+    store.upsert_entity(&bob).unwrap();
+
+    // doc1 mentions alice, doc1 also mentions bob
+    // If Documents expanded, bob would be reachable from alice via doc1.
+    // But Documents are terminal — bob should NOT appear.
+    let doc_id = *blake3::hash(b"shared doc").as_bytes();
+    store
+        .upsert_document(&doc_id, "shared.txt", Visibility::Private)
+        .unwrap();
+    store.insert_mention(&doc_id, &alice.id, 0, 5).unwrap();
+    store.insert_mention(&doc_id, &bob.id, 10, 13).unwrap();
+
+    // No Triple edges — alice and bob are not connected via Entity graph
+    let hood = store.neighborhood(&alice.id, 2).unwrap();
+    // alice only (bob not reachable via Triple edges)
+    assert_eq!(hood.entities.len(), 1);
+    assert_eq!(hood.entities[0].canonical, "alice");
+    // Document surfaces because it mentions alice
+    assert_eq!(hood.documents.len(), 1);
+    assert_eq!(hood.documents[0].source, "shared.txt");
+}
+
+#[test]
+fn neighborhood_combined_triples_and_documents() {
+    let store = KuzuStore::in_memory().unwrap();
+    let brain = BrainIdentity::generate();
+    let now = Utc::now();
+
+    let alice = make_entity("person", "alice");
+    let spectral = make_entity("project", "spectral");
+    store.upsert_entity(&alice).unwrap();
+    store.upsert_entity(&spectral).unwrap();
+
+    // alice -> spectral via Triple
+    store
+        .insert_triple(&Triple {
+            from: alice.id,
+            to: spectral.id,
+            predicate: "works_on".into(),
+            confidence: 0.9,
+            source_doc_id: None,
+            source_brain_id: *brain.brain_id(),
+            asserted_at: now,
+            visibility: Visibility::Private,
+            weight: 1.0,
+        })
+        .unwrap();
+
+    // doc mentions alice
+    let doc_id = *blake3::hash(b"alice meeting notes").as_bytes();
+    store
+        .upsert_document(&doc_id, "meeting.txt", Visibility::Private)
+        .unwrap();
+    store.insert_mention(&doc_id, &alice.id, 0, 5).unwrap();
+
+    let hood = store.neighborhood(&alice.id, 2).unwrap();
+    // Both entities reachable via Triple
+    assert_eq!(hood.entities.len(), 2);
+    assert_eq!(hood.triples.len(), 1);
+    // Document surfaces via Mentions
+    assert_eq!(hood.documents.len(), 1);
+    assert_eq!(hood.documents[0].source, "meeting.txt");
+}
