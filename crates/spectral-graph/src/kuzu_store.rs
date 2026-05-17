@@ -427,7 +427,7 @@ impl KuzuStore {
         Ok(())
     }
 
-    /// Insert a Mentions edge from a document to an entity.
+    /// Insert a Mentions edge from a document to an entity. Idempotent on (doc, entity) pair.
     pub fn insert_mention(
         &self,
         doc_id: &[u8; 32],
@@ -439,11 +439,10 @@ impl KuzuStore {
         let mut stmt = conn.prepare(
             "MATCH (d:Document), (e:Entity)
              WHERE d.id = $doc_id AND e.id = $entity_id
-             CREATE (d)-[:Mentions {
-                 span_start: $span_start,
-                 span_end: $span_end,
-                 extracted_at: cast($extracted, 'TIMESTAMP')
-             }]->(e)",
+             MERGE (d)-[m:Mentions]->(e)
+             SET m.span_start = $span_start,
+                 m.span_end = $span_end,
+                 m.extracted_at = cast($extracted, 'TIMESTAMP')",
         )?;
         conn.execute(
             &mut stmt,
@@ -462,6 +461,32 @@ impl KuzuStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Count Mentions edges from a document to an entity.
+    pub fn count_mentions(&self, doc_id: &[u8; 32], entity_id: &EntityId) -> Result<usize, Error> {
+        let conn = self.connection()?;
+        let mut stmt = conn.prepare(
+            "MATCH (d:Document)-[m:Mentions]->(e:Entity)
+             WHERE d.id = $doc_id AND e.id = $entity_id
+             RETURN count(m)",
+        )?;
+        let result = conn.execute(
+            &mut stmt,
+            vec![
+                ("doc_id", kuzu::Value::Blob(doc_id.to_vec())),
+                (
+                    "entity_id",
+                    kuzu::Value::Blob(entity_id.as_bytes().to_vec()),
+                ),
+            ],
+        )?;
+        for row in result {
+            if let kuzu::Value::Int64(n) = row[0] {
+                return Ok(n as usize);
+            }
+        }
+        Ok(0)
     }
 
     // --- Private helpers ---

@@ -190,3 +190,46 @@ fn neighborhood_2_hop_traversal() {
     assert_eq!(hood2.entities.len(), 3);
     assert_eq!(hood2.triples.len(), 2);
 }
+
+#[test]
+fn insert_mention_is_idempotent() {
+    let store = KuzuStore::in_memory().unwrap();
+    let entity = make_entity("person", "alice");
+    store.upsert_entity(&entity).unwrap();
+
+    let doc_id = *blake3::hash(b"hello world").as_bytes();
+    store
+        .upsert_document(&doc_id, "test.txt", Visibility::Private)
+        .unwrap();
+
+    // Insert the same mention twice
+    store.insert_mention(&doc_id, &entity.id, 0, 5).unwrap();
+    store.insert_mention(&doc_id, &entity.id, 0, 5).unwrap();
+
+    // Should have exactly one edge, not two
+    let count = store.count_mentions(&doc_id, &entity.id).unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn insert_mention_distinct_entities_both_kept() {
+    let store = KuzuStore::in_memory().unwrap();
+    let alice = make_entity("person", "alice");
+    let bob = make_entity("person", "bob");
+    store.upsert_entity(&alice).unwrap();
+    store.upsert_entity(&bob).unwrap();
+
+    let doc_id = *blake3::hash(b"alice and bob").as_bytes();
+    store
+        .upsert_document(&doc_id, "test.txt", Visibility::Private)
+        .unwrap();
+
+    store.insert_mention(&doc_id, &alice.id, 0, 5).unwrap();
+    store.insert_mention(&doc_id, &bob.id, 10, 13).unwrap();
+
+    // Both edges should exist
+    let count_alice = store.count_mentions(&doc_id, &alice.id).unwrap();
+    let count_bob = store.count_mentions(&doc_id, &bob.id).unwrap();
+    assert_eq!(count_alice, 1);
+    assert_eq!(count_bob, 1);
+}
