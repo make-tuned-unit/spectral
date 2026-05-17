@@ -343,6 +343,16 @@ impl Brain {
         self.inner.set_description(id, description)
     }
 
+    /// Set the description on a graph entity. Idempotent: setting the same value
+    /// twice is a no-op. Descriptions improve over time as understanding deepens.
+    pub fn set_entity_description(
+        &self,
+        entity_id: &spectral_core::entity_id::EntityId,
+        description: &str,
+    ) -> Result<(), Error> {
+        self.inner.set_entity_description(entity_id, description)
+    }
+
     /// List memories where description IS NULL, ordered by created_at DESC.
     pub fn list_undescribed(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
         self.inner.list_undescribed(limit)

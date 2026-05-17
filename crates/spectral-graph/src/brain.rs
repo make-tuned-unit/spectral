@@ -827,6 +827,7 @@ impl Brain {
             created_at: now,
             updated_at: now,
             weight: 1.0,
+            description: None,
         })?;
 
         self.store.upsert_entity(&Entity {
@@ -837,6 +838,7 @@ impl Brain {
             created_at: now,
             updated_at: now,
             weight: 1.0,
+            description: None,
         })?;
 
         self.store.insert_triple(&Triple {
@@ -1338,6 +1340,7 @@ impl Brain {
                 created_at: now,
                 updated_at: now,
                 weight: 1.0,
+                description: None,
             })?;
 
             self.store.insert_mention(
@@ -1388,6 +1391,15 @@ impl Brain {
         self.rt
             .block_on(self.memory_store.set_description(id, description))
             .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Set the description on a graph entity. Idempotent.
+    pub fn set_entity_description(
+        &self,
+        entity_id: &EntityId,
+        description: &str,
+    ) -> Result<(), Error> {
+        self.store.set_entity_description(entity_id, description)
     }
 
     /// List memories where description IS NULL, ordered by created_at DESC.

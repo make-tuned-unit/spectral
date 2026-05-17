@@ -82,9 +82,14 @@ pub fn create_schema(conn: &Connection) -> Result<(), Error> {
             visibility STRING,
             created_at TIMESTAMP,
             updated_at TIMESTAMP,
-            weight DOUBLE DEFAULT 1.0
+            weight DOUBLE DEFAULT 1.0,
+            description STRING DEFAULT ''
         )",
     )?;
+
+    // Migration: add description column to existing Entity tables.
+    // Kuzu's ALTER TABLE ADD is idempotent-safe via error suppression.
+    let _ = conn.query("ALTER TABLE Entity ADD description STRING DEFAULT ''");
 
     conn.query(
         "CREATE NODE TABLE IF NOT EXISTS Document(

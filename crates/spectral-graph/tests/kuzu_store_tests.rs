@@ -16,6 +16,7 @@ fn make_entity(id_type: &str, name: &str) -> Entity {
         created_at: now,
         updated_at: now,
         weight: 1.0,
+        description: None,
     }
 }
 
@@ -322,4 +323,68 @@ fn neighborhood_combined_triples_and_documents() {
     // Document surfaces via Mentions
     assert_eq!(hood.documents.len(), 1);
     assert_eq!(hood.documents[0].source, "meeting.txt");
+}
+
+#[test]
+fn set_entity_description_write_then_read() {
+    let store = KuzuStore::in_memory().unwrap();
+    let alice = make_entity("person", "alice");
+    store.upsert_entity(&alice).unwrap();
+
+    store
+        .set_entity_description(&alice.id, "Alice is an engineer")
+        .unwrap();
+
+    let fetched = store.get_entity(&alice.id).unwrap().unwrap();
+    assert_eq!(
+        fetched.description,
+        Some("Alice is an engineer".to_string())
+    );
+}
+
+#[test]
+fn set_entity_description_idempotent() {
+    let store = KuzuStore::in_memory().unwrap();
+    let alice = make_entity("person", "alice");
+    store.upsert_entity(&alice).unwrap();
+
+    store
+        .set_entity_description(&alice.id, "Alice is an engineer")
+        .unwrap();
+    store
+        .set_entity_description(&alice.id, "Alice is an engineer")
+        .unwrap();
+
+    let fetched = store.get_entity(&alice.id).unwrap().unwrap();
+    assert_eq!(
+        fetched.description,
+        Some("Alice is an engineer".to_string())
+    );
+}
+
+#[test]
+fn entity_with_null_description() {
+    let store = KuzuStore::in_memory().unwrap();
+    let alice = make_entity("person", "alice");
+    store.upsert_entity(&alice).unwrap();
+
+    let fetched = store.get_entity(&alice.id).unwrap().unwrap();
+    assert_eq!(fetched.description, None);
+}
+
+#[test]
+fn set_entity_description_overwrites() {
+    let store = KuzuStore::in_memory().unwrap();
+    let alice = make_entity("person", "alice");
+    store.upsert_entity(&alice).unwrap();
+
+    store
+        .set_entity_description(&alice.id, "first version")
+        .unwrap();
+    store
+        .set_entity_description(&alice.id, "improved version")
+        .unwrap();
+
+    let fetched = store.get_entity(&alice.id).unwrap().unwrap();
+    assert_eq!(fetched.description, Some("improved version".to_string()));
 }
