@@ -38,6 +38,7 @@ use crate::Error;
 ///     created_at: Utc::now(),
 ///     updated_at: Utc::now(),
 ///     weight: 1.0,
+///     description: None,
 /// };
 /// assert_eq!(entity.entity_type, "person");
 /// ```
@@ -57,6 +58,8 @@ pub struct Entity {
     pub updated_at: DateTime<Utc>,
     /// Importance weight (default 1.0).
     pub weight: f64,
+    /// Optional human-readable description (set by Librarian).
+    pub description: Option<String>,
 }
 
 /// A directed edge in the knowledge graph.
@@ -254,6 +257,23 @@ impl KuzuStore {
     pub fn get_entity(&self, id: &EntityId) -> Result<Option<Entity>, Error> {
         let conn = self.connection()?;
         self.get_entity_with_conn(&conn, id)
+    }
+
+    /// Set the description on an entity. Idempotent: setting the same value twice is a no-op.
+    pub fn set_entity_description(&self, id: &EntityId, description: &str) -> Result<(), Error> {
+        let conn = self.connection()?;
+        let mut stmt = conn.prepare(
+            "MERGE (e:Entity {id: $id})
+             SET e.description = $description",
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", kuzu::Value::Blob(id.as_bytes().to_vec())),
+                ("description", kuzu::Value::String(description.to_string())),
+            ],
+        )?;
+        Ok(())
     }
 
     /// Insert a triple between two existing entities.
@@ -575,7 +595,7 @@ impl KuzuStore {
         let mut stmt = conn.prepare(
             "MATCH (e:Entity) WHERE e.id = $id
              RETURN e.id, e.entity_type, e.canonical, e.visibility,
-                    e.created_at, e.updated_at, e.weight",
+                    e.created_at, e.updated_at, e.weight, e.description",
         )?;
         let mut result = conn.execute(
             &mut stmt,
@@ -709,6 +729,18 @@ fn extract_string(val: &kuzu::Value) -> Result<String, Error> {
     }
 }
 
+fn extract_optional_string(val: &kuzu::Value) -> Result<Option<String>, Error> {
+    match val {
+        kuzu::Value::Null(_) => Ok(None),
+        kuzu::Value::String(s) if s.is_empty() => Ok(None),
+        kuzu::Value::String(s) => Ok(Some(s.clone())),
+        _ => Err(Error::Schema(format!(
+            "expected string or null, got {:?}",
+            val
+        ))),
+    }
+}
+
 fn extract_double(val: &kuzu::Value) -> Result<f64, Error> {
     match val {
         kuzu::Value::Double(d) => Ok(*d),
@@ -717,6 +749,11 @@ fn extract_double(val: &kuzu::Value) -> Result<f64, Error> {
 }
 
 fn parse_entity_row(row: &[kuzu::Value]) -> Result<Entity, Error> {
+    let description = if row.len() > 7 {
+        extract_optional_string(&row[7])?
+    } else {
+        None
+    };
     Ok(Entity {
         id: extract_entity_id(&row[0])?,
         entity_type: extract_string(&row[1])?,
@@ -725,6 +762,7 @@ fn parse_entity_row(row: &[kuzu::Value]) -> Result<Entity, Error> {
         created_at: extract_timestamp(&row[4])?,
         updated_at: extract_timestamp(&row[5])?,
         weight: extract_double(&row[6])?,
+        description,
     })
 }
 
