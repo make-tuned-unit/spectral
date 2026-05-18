@@ -984,7 +984,9 @@ impl Brain {
             ))
             .map_err(|e| Error::Schema(e.to_string()))?;
 
-        // Filter by visibility, then apply time-based decay to signal scores
+        // Filter by visibility, then apply time-based decay to signal scores.
+        // Consolidated sources are already excluded at the SQL layer
+        // (NOT IN consolidation_edges on fingerprint_search and fts_search).
         let now = Utc::now();
         let memory_hits: Vec<_> = tact
             .memories
@@ -1406,6 +1408,40 @@ impl Brain {
     pub fn list_undescribed(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
         self.rt
             .block_on(self.memory_store.list_undescribed(limit))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Mark source memories as consolidated into a target summary.
+    /// Target must exist. Idempotent on same source→target pair.
+    /// Flattens chains on write and merges signal scores (capped at 1.0).
+    pub fn consolidate_into(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        opts: &spectral_ingest::ConsolidateOpts,
+    ) -> Result<spectral_ingest::ConsolidationResult, Error> {
+        self.rt
+            .block_on(
+                self.memory_store
+                    .consolidate_into(source_keys, target_key, opts),
+            )
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// List consolidation edges, optionally filtered to a specific target.
+    pub fn list_consolidated(
+        &self,
+        target_key: Option<&str>,
+    ) -> Result<Vec<spectral_ingest::ConsolidationEdge>, Error> {
+        self.rt
+            .block_on(self.memory_store.list_consolidated(target_key))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// List memory keys not consolidated as sources.
+    pub fn list_unconsolidated(&self, limit: usize) -> Result<Vec<String>, Error> {
+        self.rt
+            .block_on(self.memory_store.list_unconsolidated(limit))
             .map_err(|e| Error::Schema(e.to_string()))
     }
 

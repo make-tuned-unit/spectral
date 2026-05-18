@@ -358,6 +358,31 @@ impl Brain {
         self.inner.list_undescribed(limit)
     }
 
+    /// Mark source memories as consolidated into a target summary.
+    /// Target must exist. Idempotent on same source→target pair.
+    /// Flattens chains on write and merges signal scores (capped at 1.0).
+    pub fn consolidate_into(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        opts: &spectral_ingest::ConsolidateOpts,
+    ) -> Result<spectral_ingest::ConsolidationResult, Error> {
+        self.inner.consolidate_into(source_keys, target_key, opts)
+    }
+
+    /// List consolidation edges, optionally filtered to a specific target.
+    pub fn list_consolidated(
+        &self,
+        target_key: Option<&str>,
+    ) -> Result<Vec<spectral_ingest::ConsolidationEdge>, Error> {
+        self.inner.list_consolidated(target_key)
+    }
+
+    /// List memory keys not consolidated as sources.
+    pub fn list_unconsolidated(&self, limit: usize) -> Result<Vec<String>, Error> {
+        self.inner.list_unconsolidated(limit)
+    }
+
     /// Annotate a memory with contextual who/where/why/how metadata.
     ///
     /// Writes a [`spectral_ingest::MemoryAnnotation`] row to the
