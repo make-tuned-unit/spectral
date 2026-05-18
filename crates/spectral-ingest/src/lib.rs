@@ -532,6 +532,35 @@ pub trait MemoryStore: Send + Sync {
     fn backfill_content_hashes(
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
+    // ── Consolidation ──
+
+    /// Mark source memories as consolidated into a target.
+    /// Target must exist. Idempotent on same source→target pair.
+    /// Flattens chains: if a source was previously a target, re-points its inbound edges.
+    fn consolidate_into(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        opts: &ConsolidateOpts,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<ConsolidationResult>> + Send + '_>>;
+
+    /// List consolidation edges, optionally filtered to a specific target.
+    fn list_consolidated(
+        &self,
+        target_key: Option<&str>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ConsolidationEdge>>> + Send + '_>>;
+
+    /// List memory keys that are NOT consolidated sources (available for recall).
+    fn list_unconsolidated(
+        &self,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>>;
+
+    /// Return the set of source_keys that have been consolidated (for recall filtering).
+    fn consolidated_source_keys(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<std::collections::HashSet<String>>> + Send + '_>>;
 }
 
 // ── RelatedMemory ──────────────────────────────────────────────────
@@ -545,6 +574,62 @@ pub struct RelatedMemory {
     pub co_count: u64,
     /// Full memory if cheap to join. `None` in v1 — caller fetches via `get_memory`.
     pub memory: Option<Memory>,
+}
+
+// ── Consolidation types ────────────────────────────────────────────
+
+/// Options for `consolidate_into()`.
+#[derive(Debug, Clone)]
+pub struct ConsolidateOpts {
+    /// How to handle source keys that don't exist or are already consolidated elsewhere.
+    pub on_invalid_source: InvalidSourcePolicy,
+}
+
+impl Default for ConsolidateOpts {
+    fn default() -> Self {
+        Self {
+            on_invalid_source: InvalidSourcePolicy::SkipAndReport,
+        }
+    }
+}
+
+/// Policy for handling invalid source keys during consolidation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSourcePolicy {
+    /// Abort the entire operation if any source is invalid.
+    AbortAll,
+    /// Skip invalid sources and report them in the result.
+    SkipAndReport,
+}
+
+/// Result of a consolidation operation.
+#[derive(Debug, Clone)]
+pub struct ConsolidationResult {
+    /// Keys that were successfully consolidated.
+    pub consolidated: Vec<String>,
+    /// Keys that were skipped with reasons.
+    pub skipped: Vec<(String, SkipReason)>,
+    /// Target memory's signal_score after merging.
+    pub target_score_after: f64,
+}
+
+/// Reason a source was skipped during consolidation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipReason {
+    /// Source key does not exist in memories.
+    SourceNotFound,
+    /// Source is already consolidated into a different target.
+    AlreadyConsolidatedElsewhere(String),
+    /// Source key equals target key.
+    SourceEqualsTarget,
+}
+
+/// A single consolidation edge (source→target).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsolidationEdge {
+    pub source_key: String,
+    pub target_key: String,
+    pub consolidated_at: String,
 }
 
 // ── RetrievalEvent ──────────────────────────────────────────────────

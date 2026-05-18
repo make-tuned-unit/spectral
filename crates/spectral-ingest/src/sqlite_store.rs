@@ -29,8 +29,9 @@
 //! - `Some(n)`: use exactly *n* bytes
 
 use crate::{
-    CompactionTier, Episode, Fingerprint, Memory, MemoryAnnotation, MemoryHit, MemoryStore,
-    RelatedMemory, RetrievalEvent, SpectrogramRow, WriteOutcome,
+    CompactionTier, ConsolidateOpts, ConsolidationEdge, ConsolidationResult, Episode, Fingerprint,
+    InvalidSourcePolicy, Memory, MemoryAnnotation, MemoryHit, MemoryStore, RelatedMemory,
+    RetrievalEvent, SkipReason, SpectrogramRow, WriteOutcome,
 };
 use lru::LruCache;
 use rusqlite::{params, Connection};
@@ -245,7 +246,17 @@ impl SqliteStore {
                 FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_annotations_memory_id
-                ON memory_annotations(memory_id);",
+                ON memory_annotations(memory_id);
+
+            CREATE TABLE IF NOT EXISTS consolidation_edges (
+                source_key      TEXT NOT NULL,
+                target_key      TEXT NOT NULL,
+                consolidated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (source_key, target_key),
+                FOREIGN KEY (source_key) REFERENCES memories(key) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_consolidation_target
+                ON consolidation_edges(target_key);",
         )?;
         Ok(())
     }
@@ -472,6 +483,19 @@ impl SqliteStore {
                  SELECT rowid, key, content, COALESCE(description, '') FROM memories;",
             )?;
         }
+
+        // consolidation_edges table (for existing databases that don't have it)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS consolidation_edges (
+                source_key      TEXT NOT NULL,
+                target_key      TEXT NOT NULL,
+                consolidated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (source_key, target_key),
+                FOREIGN KEY (source_key) REFERENCES memories(key) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_consolidation_target
+                ON consolidation_edges(target_key);",
+        )?;
 
         Ok(())
     }
@@ -834,6 +858,7 @@ impl MemoryStore for SqliteStore {
                        m.declarative_density
                 FROM memory_scores ms
                 JOIN memories m ON m.id = ms.memory_id
+                WHERE m.key NOT IN (SELECT source_key FROM consolidation_edges)
                 ORDER BY ms.hits DESC",
                 hash_placeholders = hash_placeholders,
                 limit_param = hashes.len() + 3,
@@ -935,6 +960,7 @@ impl MemoryStore for SqliteStore {
                  FROM memories_fts fts
                  JOIN memories m ON m.rowid = fts.rowid
                  WHERE memories_fts MATCH ?1
+                   AND m.key NOT IN (SELECT source_key FROM consolidation_edges)
                  ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5) LIMIT ?2",
                 cols = MEMORY_COLUMNS.replace(", ", ", m."),
             );
@@ -1918,6 +1944,228 @@ impl MemoryStore for SqliteStore {
                 )?;
             }
             Ok(count)
+        })
+    }
+
+    fn consolidate_into(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        opts: &ConsolidateOpts,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<ConsolidationResult>> + Send + '_>> {
+        let source_keys = source_keys.to_vec();
+        let target_key = target_key.to_string();
+        let opts = opts.clone();
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+
+            // Verify target exists
+            let target_exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memories WHERE key = ?1)",
+                params![target_key],
+                |row| row.get(0),
+            )?;
+            if !target_exists {
+                if opts.on_invalid_source == InvalidSourcePolicy::AbortAll {
+                    anyhow::bail!("target key '{}' does not exist", target_key);
+                }
+                // All sources get SkipReason — but actually target not found is fatal
+                anyhow::bail!("target key '{}' does not exist", target_key);
+            }
+
+            let mut consolidated = Vec::new();
+            let mut skipped = Vec::new();
+
+            for source in &source_keys {
+                // Check source == target
+                if source == &target_key {
+                    skipped.push((source.clone(), SkipReason::SourceEqualsTarget));
+                    continue;
+                }
+
+                // Check source exists
+                let source_exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM memories WHERE key = ?1)",
+                    params![source],
+                    |row| row.get(0),
+                )?;
+                if !source_exists {
+                    if opts.on_invalid_source == InvalidSourcePolicy::AbortAll {
+                        anyhow::bail!("source key '{}' does not exist", source);
+                    }
+                    skipped.push((source.clone(), SkipReason::SourceNotFound));
+                    continue;
+                }
+
+                // Check if already consolidated elsewhere
+                let existing_target: Option<String> = conn
+                    .query_row(
+                        "SELECT target_key FROM consolidation_edges WHERE source_key = ?1",
+                        params![source],
+                        |row| row.get(0),
+                    )
+                    .ok();
+
+                if let Some(ref existing) = existing_target {
+                    if existing == &target_key {
+                        // Idempotent: same edge already exists
+                        consolidated.push(source.clone());
+                        continue;
+                    } else {
+                        skipped.push((
+                            source.clone(),
+                            SkipReason::AlreadyConsolidatedElsewhere(existing.clone()),
+                        ));
+                        continue;
+                    }
+                }
+
+                // Insert edge
+                conn.execute(
+                    "INSERT OR IGNORE INTO consolidation_edges (source_key, target_key)
+                     VALUES (?1, ?2)",
+                    params![source, target_key],
+                )?;
+                consolidated.push(source.clone());
+
+                // Chain flattening: if source was previously a target, add edges from its
+                // inbound sources to the new target. Original edges preserved for history.
+                conn.execute(
+                    "INSERT OR IGNORE INTO consolidation_edges (source_key, target_key)
+                     SELECT source_key, ?1
+                     FROM consolidation_edges
+                     WHERE target_key = ?2 AND source_key != ?1",
+                    params![target_key, source],
+                )?;
+            }
+
+            // Update target signal_score: sum source scores, capped at 1.0
+            if !consolidated.is_empty() {
+                let sum: f64 = {
+                    let keys_csv: String = consolidated
+                        .iter()
+                        .map(|k| format!("'{}'", k.replace('\'', "''")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let sql =
+                        format!("SELECT COALESCE(SUM(signal_score), 0.0) FROM memories WHERE key IN ({keys_csv})");
+                    conn.query_row(&sql, [], |row| row.get(0))?
+                };
+
+                let current_score: f64 = conn.query_row(
+                    "SELECT signal_score FROM memories WHERE key = ?1",
+                    params![target_key],
+                    |row| row.get(0),
+                )?;
+                let new_score = (current_score + sum).min(1.0);
+                conn.execute(
+                    "UPDATE memories SET signal_score = ?1 WHERE key = ?2",
+                    params![new_score, target_key],
+                )?;
+
+                Ok(ConsolidationResult {
+                    consolidated,
+                    skipped,
+                    target_score_after: new_score,
+                })
+            } else {
+                let current_score: f64 = conn.query_row(
+                    "SELECT signal_score FROM memories WHERE key = ?1",
+                    params![target_key],
+                    |row| row.get(0),
+                )?;
+                Ok(ConsolidationResult {
+                    consolidated,
+                    skipped,
+                    target_score_after: current_score,
+                })
+            }
+        })
+    }
+
+    fn list_consolidated(
+        &self,
+        target_key: Option<&str>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ConsolidationEdge>>> + Send + '_>> {
+        let target_key = target_key.map(|s| s.to_string());
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut edges = Vec::new();
+            if let Some(ref target) = target_key {
+                let mut stmt = conn.prepare(
+                    "SELECT source_key, target_key, consolidated_at
+                     FROM consolidation_edges WHERE target_key = ?1
+                     ORDER BY consolidated_at DESC",
+                )?;
+                let rows = stmt.query_map(params![target], |row| {
+                    Ok(ConsolidationEdge {
+                        source_key: row.get(0)?,
+                        target_key: row.get(1)?,
+                        consolidated_at: row.get(2)?,
+                    })
+                })?;
+                for row in rows {
+                    edges.push(row?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT source_key, target_key, consolidated_at
+                     FROM consolidation_edges
+                     ORDER BY consolidated_at DESC",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok(ConsolidationEdge {
+                        source_key: row.get(0)?,
+                        target_key: row.get(1)?,
+                        consolidated_at: row.get(2)?,
+                    })
+                })?;
+                for row in rows {
+                    edges.push(row?);
+                }
+            };
+            Ok(edges)
+        })
+    }
+
+    fn list_unconsolidated(
+        &self,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>> {
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT m.key FROM memories m
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM consolidation_edges ce WHERE ce.source_key = m.key
+                 )
+                 ORDER BY m.created_at DESC LIMIT ?1",
+            )?;
+            let keys: Vec<String> = stmt
+                .query_map(params![limit as i64], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(keys)
+        })
+    }
+
+    fn consolidated_source_keys(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<std::collections::HashSet<String>>> + Send + '_>>
+    {
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare("SELECT source_key FROM consolidation_edges")?;
+            let keys: std::collections::HashSet<String> = stmt
+                .query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(keys)
         })
     }
 }
@@ -4073,5 +4321,187 @@ mod tests {
 
         let count2 = store.backfill_content_hashes().await.unwrap();
         assert_eq!(count2, 0, "second backfill should find no NULL rows");
+    }
+
+    // ── Consolidation tests ────────────────────────────────────────
+
+    fn insert_memory_with_key(store: &SqliteStore, key: &str, score: f64) {
+        let conn = store.conn();
+        conn.execute(
+            "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility)
+             VALUES (?1, ?2, ?3, 'w', 'fact', ?4, 'private')",
+            params![format!("id_{key}"), key, format!("content of {key}"), score],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn consolidate_into_basic() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_memory_with_key(&store, "source1", 0.3);
+        insert_memory_with_key(&store, "source2", 0.4);
+        insert_memory_with_key(&store, "target", 0.2);
+
+        let result = store
+            .consolidate_into(
+                &["source1".into(), "source2".into()],
+                "target",
+                &ConsolidateOpts::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.consolidated, vec!["source1", "source2"]);
+        assert!(result.skipped.is_empty());
+        // 0.2 + 0.3 + 0.4 = 0.9
+        assert!((result.target_score_after - 0.9).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn consolidate_into_idempotent() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_memory_with_key(&store, "src", 0.3);
+        insert_memory_with_key(&store, "tgt", 0.2);
+
+        let r1 = store
+            .consolidate_into(&["src".into()], "tgt", &ConsolidateOpts::default())
+            .await
+            .unwrap();
+        let r2 = store
+            .consolidate_into(&["src".into()], "tgt", &ConsolidateOpts::default())
+            .await
+            .unwrap();
+
+        assert_eq!(r1.consolidated, vec!["src"]);
+        assert_eq!(r2.consolidated, vec!["src"]);
+    }
+
+    #[tokio::test]
+    async fn consolidate_into_target_not_found() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_memory_with_key(&store, "src", 0.5);
+
+        let err = store
+            .consolidate_into(&["src".into()], "nonexistent", &ConsolidateOpts::default())
+            .await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn consolidate_into_skip_reasons() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_memory_with_key(&store, "src", 0.3);
+        insert_memory_with_key(&store, "tgt1", 0.2);
+        insert_memory_with_key(&store, "tgt2", 0.2);
+
+        // Consolidate src into tgt1
+        store
+            .consolidate_into(&["src".into()], "tgt1", &ConsolidateOpts::default())
+            .await
+            .unwrap();
+
+        // Try to consolidate src into tgt2 — should skip (already consolidated elsewhere)
+        let result = store
+            .consolidate_into(
+                &["src".into(), "nonexistent".into(), "tgt2".into()],
+                "tgt2",
+                &ConsolidateOpts::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.consolidated.is_empty());
+        assert_eq!(result.skipped.len(), 3);
+        assert!(matches!(
+            result.skipped[0].1,
+            SkipReason::AlreadyConsolidatedElsewhere(_)
+        ));
+        assert!(matches!(result.skipped[1].1, SkipReason::SourceNotFound));
+        assert!(matches!(
+            result.skipped[2].1,
+            SkipReason::SourceEqualsTarget
+        ));
+    }
+
+    #[tokio::test]
+    async fn consolidate_into_chain_flattening() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_memory_with_key(&store, "a", 0.1);
+        insert_memory_with_key(&store, "b", 0.2);
+        insert_memory_with_key(&store, "c", 0.3);
+
+        // A→B
+        store
+            .consolidate_into(&["a".into()], "b", &ConsolidateOpts::default())
+            .await
+            .unwrap();
+
+        // B→C should flatten A→C
+        store
+            .consolidate_into(&["b".into()], "c", &ConsolidateOpts::default())
+            .await
+            .unwrap();
+
+        // list_consolidated for C should show both A and B
+        let edges_c = store.list_consolidated(Some("c")).await.unwrap();
+        let sources_c: Vec<&str> = edges_c.iter().map(|e| e.source_key.as_str()).collect();
+        assert!(sources_c.contains(&"a"));
+        assert!(sources_c.contains(&"b"));
+
+        // Original A→B edge preserved for history
+        let edges_b = store.list_consolidated(Some("b")).await.unwrap();
+        let sources_b: Vec<&str> = edges_b.iter().map(|e| e.source_key.as_str()).collect();
+        assert!(sources_b.contains(&"a"));
+    }
+
+    #[tokio::test]
+    async fn consolidate_into_score_capped_at_one() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_memory_with_key(&store, "src", 0.9);
+        insert_memory_with_key(&store, "tgt", 0.8);
+
+        let result = store
+            .consolidate_into(&["src".into()], "tgt", &ConsolidateOpts::default())
+            .await
+            .unwrap();
+
+        assert!((result.target_score_after - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn list_unconsolidated_excludes_sources() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_memory_with_key(&store, "a", 0.5);
+        insert_memory_with_key(&store, "b", 0.5);
+        insert_memory_with_key(&store, "c", 0.5);
+
+        store
+            .consolidate_into(&["a".into()], "c", &ConsolidateOpts::default())
+            .await
+            .unwrap();
+
+        let keys = store.list_unconsolidated(10).await.unwrap();
+        assert!(keys.contains(&"b".to_string()));
+        assert!(keys.contains(&"c".to_string()));
+        assert!(!keys.contains(&"a".to_string()));
+    }
+
+    #[tokio::test]
+    async fn consolidated_source_keys_returns_set() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_memory_with_key(&store, "a", 0.5);
+        insert_memory_with_key(&store, "b", 0.5);
+        insert_memory_with_key(&store, "c", 0.5);
+
+        store
+            .consolidate_into(&["a".into(), "b".into()], "c", &ConsolidateOpts::default())
+            .await
+            .unwrap();
+
+        let sources = store.consolidated_source_keys().await.unwrap();
+        assert!(sources.contains("a"));
+        assert!(sources.contains("b"));
+        assert!(!sources.contains("c"));
     }
 }
