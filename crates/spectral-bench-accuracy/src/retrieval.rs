@@ -173,7 +173,12 @@ impl QuestionType {
         match self {
             Self::Counting | Self::CountingCurrentState => CascadePipelineConfig {
                 k: 60,
-                max_per_episode: 3,
+                // Raised from 3 to 6: TYPE_C_INVESTIGATION.md found 3 counting
+                // questions where GT-relevant turns at positions 4-10 within
+                // episodes were truncated by the per-episode cap. 6 balances
+                // within-session coverage with episode diversity (K=60 / 6 = 10
+                // sessions max).
+                max_per_episode: 6,
                 recency_half_life_days: 730.0, // don't penalize any memories
                 ..CascadePipelineConfig::default()
             },
@@ -900,10 +905,10 @@ mod tests {
     }
 
     #[test]
-    fn counting_profile_has_high_k_low_episode_cap() {
+    fn counting_profile_has_high_k_moderate_episode_cap() {
         let profile = QuestionType::Counting.cascade_profile();
         assert_eq!(profile.k, 60);
-        assert_eq!(profile.max_per_episode, 3);
+        assert_eq!(profile.max_per_episode, 6);
         assert!(
             profile.recency_half_life_days > 700.0,
             "counting should not penalize old memories"
