@@ -68,7 +68,22 @@ fn judge_prompt(question: &str, predicted: &str, ground_truth: &str, category: C
         }
         _ => {
             "An answer is correct if it conveys the same factual information as the ground truth, \
-             even if worded differently. Synonyms and paraphrasing are acceptable."
+             even if worded differently. Synonyms and paraphrasing are acceptable.\n\n\
+             SUPERSET ANSWERS:\n\
+             If the system answer includes the ground truth PLUS additional detail, apply these rules:\n\n\
+             ACCEPT the answer if:\n\
+             - The ground truth is clearly present within the system answer\n\
+             - The additional content is topically related to the question (e.g., answering \
+               \"what gift did I buy?\" with \"yellow dress and matching earrings\" when GT is \
+               \"yellow dress\" — earrings are topically related to gift-buying)\n\
+             - A reasonable reader would say \"this answers the question, with extra context\"\n\n\
+             REJECT the answer if:\n\
+             - The additional content contradicts the ground truth\n\
+             - The additional content is topically unrelated to the question\n\
+             - The system answer buries the ground truth in so much noise that it is not clearly \
+               identifiable as an asserted fact (e.g., \"Maybe yellow dress. Could be blue.\" — \
+               ambiguity undermines the assertion)\n\
+             - The system answer does not actually contain the ground truth information"
         }
     };
 
@@ -246,5 +261,71 @@ mod tests {
         let j = MockJudge::always_pass();
         let r = j.grade("Q", "A", "A", Category::MultiSession).unwrap();
         assert!(r.correct);
+    }
+
+    #[test]
+    fn default_rubric_contains_superset_rules() {
+        let p = judge_prompt(
+            "What did I buy?",
+            "yellow dress and earrings",
+            "yellow dress",
+            Category::SingleSessionUser,
+        );
+        assert!(
+            p.contains("SUPERSET ANSWERS"),
+            "default rubric should contain superset rules"
+        );
+        assert!(
+            p.contains("topically related"),
+            "should mention topical relevance"
+        );
+        assert!(
+            p.contains("contradicts"),
+            "should mention contradiction rejection"
+        );
+    }
+
+    #[test]
+    fn superset_rubric_not_in_multi_session() {
+        // MultiSession has its own counting protocol — superset rules should not appear
+        let p = judge_prompt("How many X?", "3", "3", Category::MultiSession);
+        assert!(
+            !p.contains("SUPERSET ANSWERS"),
+            "multi-session should use counting protocol, not superset rubric"
+        );
+    }
+
+    #[test]
+    fn superset_rubric_not_in_knowledge_update() {
+        let p = judge_prompt("What is X?", "A", "A", Category::KnowledgeUpdate);
+        assert!(
+            !p.contains("SUPERSET ANSWERS"),
+            "knowledge-update has its own recency rubric"
+        );
+    }
+
+    #[test]
+    fn superset_rubric_not_in_temporal() {
+        let p = judge_prompt("When?", "A", "A", Category::TemporalReasoning);
+        assert!(
+            !p.contains("SUPERSET ANSWERS"),
+            "temporal has its own rubric"
+        );
+    }
+
+    #[test]
+    fn superset_rubric_applies_to_all_default_categories() {
+        for cat in [
+            Category::SingleSessionUser,
+            Category::SingleSessionAssistant,
+            Category::SingleSessionPreference,
+        ] {
+            let p = judge_prompt("Q?", "A", "A", cat);
+            assert!(
+                p.contains("SUPERSET ANSWERS"),
+                "category {:?} should use default rubric with superset rules",
+                cat
+            );
+        }
     }
 }
