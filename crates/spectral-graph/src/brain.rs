@@ -477,6 +477,14 @@ impl Brain {
             DeviceId::from_descriptor(&hostname)
         });
 
+        // One-time backfill: fix legacy fingerprints with "unknown" time_delta_bucket (PR #65).
+        // Idempotent — returns 0 on subsequent opens once all buckets are valid.
+        match rt.block_on(memory_store.backfill_fingerprint_time_buckets()) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(count = n, "backfilled legacy fingerprint time buckets"),
+            Err(e) => tracing::warn!("fingerprint backfill failed (non-fatal): {e}"),
+        }
+
         Ok(Self {
             identity,
             device_id,

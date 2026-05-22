@@ -675,6 +675,10 @@ pub enum TimeBucket {
     SameWeek,
     SameMonth,
     Older,
+    /// Legacy value from pre-PR#65 code that hardcoded all buckets as Unknown.
+    /// Retained only for deserialization of old fingerprints.
+    /// `backfill_fingerprint_time_buckets()` replaces these with real values.
+    /// New code should never produce this variant.
     Unknown,
 }
 

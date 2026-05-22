@@ -1676,3 +1676,92 @@ fn compute_co_retrieval_boosts_normalization_and_edge_cases() {
         "fresh brain with no co-retrieval data should return empty map"
     );
 }
+
+// ── Constellation fingerprint bucket regression test ─────────────
+
+#[test]
+fn fingerprints_have_valid_time_delta_bucket() {
+    // Regression test for PR #65: ingest previously hardcoded
+    // time_delta_bucket = "unknown" which made fingerprint matching
+    // impossible (query hashes use real buckets like "same_day").
+    //
+    // This test creates two memories with known timestamps via
+    // remember_with() and verifies that the resulting constellation
+    // fingerprints have a valid bucket — never "unknown" or NULL.
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let ts1 = Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+    let ts2 = Utc.with_ymd_and_hms(2024, 6, 15, 14, 0, 0).unwrap(); // same day, 2h later
+
+    // First memory — no fingerprints (no peers yet)
+    let r1 = brain
+        .remember_with(
+            "fp-bucket-test-1",
+            "Decided to use PostgreSQL for the production database",
+            RememberOpts {
+                created_at: Some(ts1),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(r1.fingerprints_created, 0, "first memory has no peers");
+
+    // Second memory — should create fingerprints pairing with first
+    let r2 = brain
+        .remember_with(
+            "fp-bucket-test-2",
+            "PostgreSQL schema migration completed for production",
+            RememberOpts {
+                created_at: Some(ts2),
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        r2.fingerprints_created >= 1,
+        "second memory should pair with first; got {} fingerprints",
+        r2.fingerprints_created
+    );
+
+    // Query the constellation_fingerprints table directly to verify buckets
+    let db_path = tmp.path().join("memory.db");
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+
+    let unknown_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM constellation_fingerprints WHERE time_delta_bucket = 'unknown'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unknown_count, 0,
+        "no fingerprints should have 'unknown' bucket (PR #65 regression)"
+    );
+
+    let null_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM constellation_fingerprints WHERE time_delta_bucket IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(null_count, 0, "no fingerprints should have NULL bucket");
+
+    // Verify the bucket is correct: 2 hours apart = same_day
+    let bucket: String = conn
+        .query_row(
+            "SELECT time_delta_bucket FROM constellation_fingerprints LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        bucket, "same_day",
+        "2-hour delta should produce 'same_day' bucket, got '{bucket}'"
+    );
+}
