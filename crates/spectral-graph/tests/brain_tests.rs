@@ -1750,10 +1750,7 @@ fn fingerprints_have_valid_time_delta_bucket() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(
-        null_count, 0,
-        "no fingerprints should have NULL bucket"
-    );
+    assert_eq!(null_count, 0, "no fingerprints should have NULL bucket");
 
     // Verify the bucket is correct: 2 hours apart = same_day
     let bucket: String = conn
