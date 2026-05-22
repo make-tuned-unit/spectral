@@ -37,14 +37,15 @@ pub fn save_descriptions(map: &DescriptionMap, path: &Path) -> Result<()> {
 /// production Librarian template). Output: summary + Related terms + Categories.
 pub const DESCRIBE_PROMPT: &str = r#"Write a search-indexing description of this memory in EXACTLY this format:
 
-{one-sentence summary of the memory content}. Related terms: {comma-separated inflected vocabulary}. Categories: {3-5 category-level nouns}.
+{one-sentence summary of the memory content}. Related terms: {comma-separated inflected vocabulary}. Search terms: {2-3 common query terms not literally in content}. Categories: {3-5 category-level nouns}.
 
 Rules:
 1. The summary must describe ONLY what is in the source content. Do not add facts, entities, names, or categories that are not in the source content.
 2. Related terms: include both singular and plural forms of key nouns (e.g., "doctor, doctors, visit, visits, visited").
-3. Categories: generalize from specific items to category-level nouns (e.g., "coffee table" → "furniture"; "Dr. Patel" → "healthcare").
-4. Total output must be 50-100 tokens.
-5. Write in third person ("User..." not "I...").
+3. Search terms: include 2-3 common terms a user might search for to find this content, even if not literally present. For example: "portable power bank" → "battery life, phone charging"; "Dr. Patel consultation" → "doctor visit, medical appointment"; "cherry tomatoes from my garden" → "homegrown ingredients, dinner recipes".
+4. Categories: generalize from specific items to category-level nouns (e.g., "coffee table" → "furniture"; "Dr. Patel" → "healthcare").
+5. Total output must be 50-120 tokens.
+6. Write in third person ("User..." not "I...").
 
 Source content:
 {content}
