@@ -132,6 +132,7 @@ pub struct Neighborhood {
 ///     id, entity_type: "person".into(), canonical: "alice".into(),
 ///     visibility: Visibility::Private,
 ///     created_at: Utc::now(), updated_at: Utc::now(), weight: 1.0,
+///     description: None,
 /// }).unwrap();
 /// let found = store.get_entity(&id).unwrap();
 /// assert!(found.is_some());
@@ -168,6 +169,7 @@ pub struct Neighborhood {
 ///         id, entity_type: ty.into(), canonical: name.into(),
 ///         visibility: Visibility::Private,
 ///         created_at: now, updated_at: now, weight: 1.0,
+///         description: None,
 ///     }).unwrap();
 /// }
 ///
