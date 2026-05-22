@@ -134,7 +134,7 @@ impl QuestionType {
             .is_match(&q)
         {
             // Level 2: recency sub-gate for Factual
-            if Regex::new(r"\b(currently|right now|most recent|latest|newest|do i still|now)\b")
+            if Regex::new(r"\b(currently|right now|most recent|most recently|latest|newest|do i still|now)\b")
                 .unwrap()
                 .is_match(&q)
             {
@@ -814,6 +814,11 @@ mod tests {
         );
         assert_eq!(
             QuestionType::classify("What car do I currently drive?"),
+            QuestionType::FactualCurrentState
+        );
+        // "most recently" should also trigger FactualCurrentState
+        assert_eq!(
+            QuestionType::classify("What type of camera lens did I purchase most recently?"),
             QuestionType::FactualCurrentState
         );
     }
