@@ -1583,6 +1583,13 @@ impl MemoryStore for SqliteStore {
                 .filter_map(|r| r.ok())
                 .collect();
 
+            if !rows.is_empty() {
+                tracing::debug!(
+                    count = rows.len(),
+                    "found fingerprints with unknown/null time_delta_bucket, backfilling"
+                );
+            }
+
             let mut updated = 0;
             let mut update_stmt = conn.prepare(
                 "UPDATE constellation_fingerprints
@@ -1629,6 +1636,7 @@ impl MemoryStore for SqliteStore {
                 };
 
                 update_stmt.execute(params![bucket.as_str(), new_hash, fp_id])?;
+                tracing::trace!(fp_id = %fp_id, bucket = bucket.as_str(), "backfilled fingerprint time bucket");
                 updated += 1;
             }
 
