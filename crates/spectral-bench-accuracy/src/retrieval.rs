@@ -134,9 +134,11 @@ impl QuestionType {
             .is_match(&q)
         {
             // Level 2: recency sub-gate for Factual
-            if Regex::new(r"\b(currently|right now|most recent|most recently|latest|newest|do i still|now)\b")
-                .unwrap()
-                .is_match(&q)
+            if Regex::new(
+                r"\b(currently|right now|most recent|most recently|latest|newest|do i still|now)\b",
+            )
+            .unwrap()
+            .is_match(&q)
             {
                 return Self::FactualCurrentState;
             }
