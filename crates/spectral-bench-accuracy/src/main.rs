@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 use spectral_bench_accuracy::*;
 use std::path::PathBuf;
 
+use spectral_bench_accuracy::run_notes;
+
 #[derive(Parser)]
 #[command(
     name = "spectral-bench-accuracy",
@@ -164,6 +166,17 @@ enum Command {
         api_format: String,
     },
 
+    /// Generate RUN_NOTES.md for an existing eval-run directory
+    GenerateNotes {
+        /// Working directory containing report.json
+        #[arg(long)]
+        work_dir: PathBuf,
+
+        /// Overwrite existing RUN_NOTES.md
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Dry-run: ingest one question, retrieve, but don't call LLMs
     DryRun {
         /// Path to the LongMemEval_S dataset JSON
@@ -218,6 +231,36 @@ fn main() -> Result<()> {
             descriptions,
             question_id,
         } => {
+            // Warn if existing eval-run has no RUN_NOTES.md
+            run_notes::warn_missing_notes(&work_dir);
+
+            // Capture CLI flags for post-run RUN_NOTES.md generation
+            let (notes_git_hash, notes_git_msg) = run_notes::get_git_info();
+            let mut notes_flags: Vec<(String, String)> = vec![
+                ("Dataset".into(), dataset.display().to_string()),
+                ("Actor Model".into(), actor_model.clone()),
+                ("Judge Model".into(), judge_model.clone()),
+                ("Use Cascade".into(), use_cascade.to_string()),
+                ("Max Results".into(), max_results.to_string()),
+                ("Ingest Strategy".into(), ingest_strategy.clone()),
+            ];
+            if let Some(ref rp) = retrieval_path {
+                notes_flags.push(("Retrieval Path".into(), rp.clone()));
+            }
+            if let Some(ref desc_path) = descriptions {
+                notes_flags.push(("Descriptions".into(), desc_path.display().to_string()));
+            }
+            if let Some(ref cats) = categories {
+                notes_flags.push(("Categories".into(), cats.clone()));
+            }
+            if let Some(max) = max_questions {
+                notes_flags.push(("Max Questions".into(), max.to_string()));
+            }
+            if let Some(ref qid) = question_id {
+                notes_flags.push(("Question ID".into(), qid.clone()));
+            }
+            let notes_work_dir = work_dir.clone();
+
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
             let estimated_cost =
@@ -307,11 +350,58 @@ fn main() -> Result<()> {
             println!("{}", report.summary());
             report::save_report(&report, &output)?;
             eprintln!("\nReport saved to {}", output.display());
+
+            // Auto-generate RUN_NOTES.md stub
+            let notes_config = run_notes::RunNotesConfig {
+                git_commit: notes_git_hash,
+                git_message: notes_git_msg,
+                cli_flags: notes_flags,
+            };
+            let notes_content = run_notes::generate_notes(&report, &notes_config);
+            match run_notes::write_notes_if_missing(&notes_work_dir, &notes_content) {
+                Ok(true) => eprintln!(
+                    "RUN_NOTES.md generated at {}",
+                    notes_work_dir.join("RUN_NOTES.md").display()
+                ),
+                Ok(false) => eprintln!("RUN_NOTES.md already exists, skipping"),
+                Err(e) => eprintln!("Warning: could not write RUN_NOTES.md: {e}"),
+            }
         }
 
         Command::Report { path } => {
             let report = report::load_report(&path)?;
             println!("{}", report.summary());
+        }
+
+        Command::GenerateNotes { work_dir, force } => {
+            let report_path = work_dir.join("report.json");
+            let report = report::load_report(&report_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Could not load report.json from {}: {e}",
+                    work_dir.display()
+                )
+            })?;
+
+            let config = run_notes::RunNotesConfig::from_report(&report);
+            let notes = run_notes::generate_notes(&report, &config);
+
+            match run_notes::write_notes(&work_dir, &notes, force) {
+                Ok(true) => {
+                    eprintln!(
+                        "RUN_NOTES.md generated at {}",
+                        work_dir.join("RUN_NOTES.md").display()
+                    );
+                }
+                Ok(false) => {
+                    eprintln!(
+                        "RUN_NOTES.md already exists at {}. Use --force to overwrite.",
+                        work_dir.join("RUN_NOTES.md").display()
+                    );
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("Failed to write RUN_NOTES.md: {e}"));
+                }
+            }
         }
 
         Command::Inspect {
