@@ -417,6 +417,28 @@ impl Brain {
     ///
     /// Creates `data_dir` if missing, generates identity on first run,
     /// opens both the graph database and memory store.
+    ///
+    /// # Known issue: process abort on Linux with glibc 2.39+
+    ///
+    /// Creating many ephemeral `Brain` instances within a single process
+    /// and dropping them can cause `SIGABRT` at process exit on Linux
+    /// running glibc 2.39 or later (e.g. Ubuntu 24.04+). The abort fires
+    /// during normal exit-handler execution, *after* all Rust `Drop` impls
+    /// have completed cleanly. No data loss occurs — work the process did
+    /// is fully persisted before the abort.
+    ///
+    /// Root cause is upstream in kuzu: the kuzu Rust binding maintains
+    /// process-global C++ static state (see kuzudb/kuzu#5528) whose
+    /// destructors interact poorly with glibc 2.39's stricter pthread
+    /// teardown checks. macOS is unaffected.
+    ///
+    /// Workaround for test suites: use a single shared `Brain` instance
+    /// per test binary via `std::sync::OnceLock`, rather than constructing
+    /// a fresh `Brain` per test. Production code that needs many ephemeral
+    /// `Brain` instances per process should consider an alternative
+    /// pattern until the upstream issue is resolved.
+    ///
+    /// Tracked at: <KUZU_ISSUE_LINK>, <SPECTRAL_ISSUE_LINK>.
     pub fn open(config: BrainConfig) -> Result<Self, Error> {
         std::fs::create_dir_all(&config.data_dir)?;
 
@@ -2393,5 +2415,66 @@ fn row_to_fingerprint(
         novelty: row.novelty,
         peak_dimensions: serde_json::from_str(&row.peak_dimensions).unwrap_or_default(),
         created_at: Utc::now(),
+    }
+}
+
+#[cfg(test)]
+mod kuzu_teardown_repro {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Reproducer for the kuzu process-global static state issue on
+    /// Linux with glibc 2.39+. Marked `#[ignore]` so it does not run
+    /// in normal CI — invoke explicitly:
+    ///
+    /// ```bash
+    /// cargo test -p spectral-graph --release \
+    ///     -- --ignored kuzu_teardown_repro
+    /// ```
+    ///
+    /// Expected behavior:
+    /// - macOS: test passes, process exits cleanly (exit code 0)
+    /// - Ubuntu 24.04+ (glibc 2.39+): test passes, process aborts at
+    ///   exit with SIGABRT (exit code 134)
+    ///
+    /// The test itself asserts nothing — the diagnostic signal is the
+    /// process exit code. Test "passing" while the process aborts at
+    /// exit is the bug.
+    ///
+    /// See doc comment on `Brain::open` for full context.
+    #[test]
+    #[ignore = "diagnostic reproducer; runs only with --ignored"]
+    fn many_ephemeral_brains_abort_at_exit() {
+        const N: usize = 20;
+
+        for i in 0..N {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let data_dir: PathBuf = tempdir.path().join(format!("brain_{i}"));
+
+            // Leak the tempdir so the path stays valid (matches the
+            // pattern downstream test fixtures use).
+            std::mem::forget(tempdir);
+
+            let config = BrainConfig {
+                data_dir,
+                ontology_path: PathBuf::from("tests/fixtures/brain_ontology.toml"),
+                memory_db_path: None,
+                llm_client: None,
+                wing_rules: None,
+                hall_rules: None,
+                device_id: None,
+                enable_spectrogram: false,
+                entity_policy: EntityPolicy::Strict,
+                sqlite_mmap_size: None,
+                activity_wing: "activity".into(),
+                redaction_policy: None,
+                tact_config: None,
+            };
+
+            let brain = Brain::open(config).expect("brain open");
+            drop(brain);
+        }
+        // Test body completes successfully. On Linux glibc 2.39+, the
+        // abort fires after this function returns, during exit handlers.
     }
 }
