@@ -200,7 +200,23 @@ impl KuzuStore {
         let db = Database::new(path, SystemConfig::default())?;
         {
             let conn = Connection::new(&db)?;
-            create_schema(&conn)?;
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("spectral-graph: about to run create_schema for path = {path:?}");
+                use std::io::Write;
+                std::io::stderr().flush().ok();
+            }
+            let result = create_schema(&conn);
+            #[cfg(debug_assertions)]
+            {
+                eprintln!(
+                    "spectral-graph: create_schema returned: {:?}",
+                    result.is_ok()
+                );
+                use std::io::Write;
+                std::io::stderr().flush().ok();
+            }
+            result?;
         }
         Ok(Self { db })
     }
@@ -210,7 +226,23 @@ impl KuzuStore {
         let db = Database::in_memory(SystemConfig::default())?;
         {
             let conn = Connection::new(&db)?;
-            create_schema(&conn)?;
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("spectral-graph: about to run create_schema for in-memory db");
+                use std::io::Write;
+                std::io::stderr().flush().ok();
+            }
+            let result = create_schema(&conn);
+            #[cfg(debug_assertions)]
+            {
+                eprintln!(
+                    "spectral-graph: create_schema returned: {:?}",
+                    result.is_ok()
+                );
+                use std::io::Write;
+                std::io::stderr().flush().ok();
+            }
+            result?;
         }
         Ok(Self { db })
     }

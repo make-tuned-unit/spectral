@@ -418,25 +418,23 @@ impl Brain {
     /// Creates `data_dir` if missing, generates identity on first run,
     /// opens both the graph database and memory store.
     ///
-    /// # Known issue: process abort on Linux with glibc 2.39+
+    /// # Known issue: schema-creation abort on Linux
     ///
-    /// Creating many ephemeral `Brain` instances within a single process
-    /// and dropping them can cause `SIGABRT` at process exit on Linux
-    /// running glibc 2.39 or later (e.g. Ubuntu 24.04+). The abort fires
-    /// during normal exit-handler execution, *after* all Rust `Drop` impls
-    /// have completed cleanly. No data loss occurs — work the process did
-    /// is fully persisted before the abort.
+    /// `Brain::open()` may abort with SIGABRT on Linux during schema
+    /// creation. The abort fires inside `create_schema` when kuzu
+    /// throws a C++ exception that the kuzu cxxbridge FFI layer fails
+    /// to convert into a Rust `Result::Err` — `std::terminate` fires
+    /// instead. macOS is unaffected.
     ///
-    /// Root cause is upstream in kuzu: the kuzu Rust binding maintains
-    /// process-global C++ static state (see kuzudb/kuzu#5528) whose
-    /// destructors interact poorly with glibc 2.39's stricter pthread
-    /// teardown checks. macOS is unaffected.
+    /// This is a kuzu FFI correctness issue (cxxbridge `trycatch`
+    /// should never call `std::terminate`). The platform difference
+    /// is not yet fully diagnosed; the underlying query appears to
+    /// behave differently on Linux. Investigation ongoing.
     ///
-    /// Workaround for test suites: use a single shared `Brain` instance
-    /// per test binary via `std::sync::OnceLock`, rather than constructing
-    /// a fresh `Brain` per test. Production code that needs many ephemeral
-    /// `Brain` instances per process should consider an alternative
-    /// pattern until the upstream issue is resolved.
+    /// Earlier diagnoses attributed this to glibc 2.39 pthread
+    /// teardown behavior or to instance count thresholds. Both were
+    /// incorrect; a single `Brain::open()` is sufficient to trigger
+    /// the abort.
     ///
     /// Tracked at: <KUZU_ISSUE_LINK>, <SPECTRAL_ISSUE_LINK>.
     pub fn open(config: BrainConfig) -> Result<Self, Error> {
@@ -2419,62 +2417,55 @@ fn row_to_fingerprint(
 }
 
 #[cfg(test)]
-mod kuzu_teardown_repro {
+mod kuzu_schema_abort_repro {
     use super::*;
     use std::path::PathBuf;
 
-    /// Reproducer for the kuzu process-global static state issue on
-    /// Linux with glibc 2.39+. Marked `#[ignore]` so it does not run
-    /// in normal CI — invoke explicitly:
+    /// Reproducer for the kuzu schema-creation abort on Linux.
+    ///
+    /// A single `Brain::open()` aborts during schema creation on Linux
+    /// (a C++ exception thrown by kuzu inside create_schema is not
+    /// converted to a Rust Result by cxxbridge — std::terminate fires
+    /// and the process aborts with SIGABRT).
+    ///
+    /// Marked `#[ignore]` so it does not run in normal CI. Invoke:
     ///
     /// ```bash
     /// cargo test -p spectral-graph --release \
-    ///     -- --ignored kuzu_teardown_repro
+    ///     -- --ignored kuzu_schema_abort_repro
     /// ```
     ///
     /// Expected behavior:
     /// - macOS: test passes, process exits cleanly (exit code 0)
-    /// - Ubuntu 24.04+ (glibc 2.39+): test passes, process aborts at
-    ///   exit with SIGABRT (exit code 134)
+    /// - Ubuntu 24.04+: process aborts during Brain::open() with
+    ///   SIGABRT (exit code 134). The test will not complete.
     ///
-    /// The test itself asserts nothing — the diagnostic signal is the
-    /// process exit code. Test "passing" while the process aborts at
-    /// exit is the bug.
-    ///
-    /// See doc comment on `Brain::open` for full context.
+    /// See `Brain::open` doc comment for context.
     #[test]
     #[ignore = "diagnostic reproducer; runs only with --ignored"]
-    fn many_ephemeral_brains_abort_at_exit() {
-        const N: usize = 20;
+    fn single_brain_open_aborts_on_linux() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir: PathBuf = tempdir.path().join("brain");
+        std::mem::forget(tempdir);
 
-        for i in 0..N {
-            let tempdir = tempfile::tempdir().expect("tempdir");
-            let data_dir: PathBuf = tempdir.path().join(format!("brain_{i}"));
+        let config = BrainConfig {
+            data_dir,
+            ontology_path: PathBuf::from("tests/fixtures/brain_ontology.toml"),
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        };
 
-            // Leak the tempdir so the path stays valid (matches the
-            // pattern downstream test fixtures use).
-            std::mem::forget(tempdir);
-
-            let config = BrainConfig {
-                data_dir,
-                ontology_path: PathBuf::from("tests/fixtures/brain_ontology.toml"),
-                memory_db_path: None,
-                llm_client: None,
-                wing_rules: None,
-                hall_rules: None,
-                device_id: None,
-                enable_spectrogram: false,
-                entity_policy: EntityPolicy::Strict,
-                sqlite_mmap_size: None,
-                activity_wing: "activity".into(),
-                redaction_policy: None,
-                tact_config: None,
-            };
-
-            let brain = Brain::open(config).expect("brain open");
-            drop(brain);
-        }
-        // Test body completes successfully. On Linux glibc 2.39+, the
-        // abort fires after this function returns, during exit handlers.
+        // On Linux this never returns successfully — abort fires
+        // inside Brain::open during schema creation.
+        let _brain = Brain::open(config).expect("brain open");
     }
 }

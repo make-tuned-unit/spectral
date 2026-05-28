@@ -74,7 +74,39 @@ pub fn schema_version() -> u32 {
 /// assert_eq!(schema_version(), schema_version());
 /// ```
 pub fn create_schema(conn: &Connection) -> Result<(), Error> {
-    conn.query(
+    #[cfg(debug_assertions)]
+    macro_rules! schema_query {
+        ($conn:expr, $label:expr, $query:expr) => {{
+            let query_str: &str = $query;
+            let label_str: &str = $label;
+            eprintln!("spectral-graph: schema query [{label_str}] executing: {query_str}");
+            {
+                use std::io::Write;
+                std::io::stderr().flush().ok();
+            }
+            let result = $conn.query(query_str);
+            eprintln!(
+                "spectral-graph: schema query [{label_str}] returned: {}",
+                if result.is_ok() { "ok" } else { "err" }
+            );
+            {
+                use std::io::Write;
+                std::io::stderr().flush().ok();
+            }
+            result
+        }};
+    }
+
+    #[cfg(not(debug_assertions))]
+    macro_rules! schema_query {
+        ($conn:expr, $label:expr, $query:expr) => {
+            $conn.query($query)
+        };
+    }
+
+    schema_query!(
+        conn,
+        "1/5 Entity",
         "CREATE NODE TABLE IF NOT EXISTS Entity(
             id BLOB PRIMARY KEY,
             entity_type STRING,
@@ -84,23 +116,31 @@ pub fn create_schema(conn: &Connection) -> Result<(), Error> {
             updated_at TIMESTAMP,
             weight DOUBLE DEFAULT 1.0,
             description STRING DEFAULT ''
-        )",
+        )"
     )?;
 
     // Migration: add description column to existing Entity tables.
     // Kuzu's ALTER TABLE ADD is idempotent-safe via error suppression.
-    let _ = conn.query("ALTER TABLE Entity ADD description STRING DEFAULT ''");
+    let _ = schema_query!(
+        conn,
+        "2/5 ALTER Entity",
+        "ALTER TABLE Entity ADD description STRING DEFAULT ''"
+    );
 
-    conn.query(
+    schema_query!(
+        conn,
+        "3/5 Document",
         "CREATE NODE TABLE IF NOT EXISTS Document(
             id BLOB PRIMARY KEY,
             source STRING,
             ingested_at TIMESTAMP,
             visibility STRING
-        )",
+        )"
     )?;
 
-    conn.query(
+    schema_query!(
+        conn,
+        "4/5 Triple",
         "CREATE REL TABLE IF NOT EXISTS Triple(
             FROM Entity TO Entity,
             predicate STRING,
@@ -110,16 +150,18 @@ pub fn create_schema(conn: &Connection) -> Result<(), Error> {
             asserted_at TIMESTAMP,
             visibility STRING,
             weight DOUBLE
-        )",
+        )"
     )?;
 
-    conn.query(
+    schema_query!(
+        conn,
+        "5/5 Mentions",
         "CREATE REL TABLE IF NOT EXISTS Mentions(
             FROM Document TO Entity,
             span_start INT64,
             span_end INT64,
             extracted_at TIMESTAMP
-        )",
+        )"
     )?;
 
     Ok(())
