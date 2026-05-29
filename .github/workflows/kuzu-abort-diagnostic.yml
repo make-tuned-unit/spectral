@@ -16,13 +16,20 @@ jobs:
             /usr/local/lib/android /usr/local/share/boost \
             /opt/hostedtoolcache/CodeQL
           sudo apt-get clean
-      - name: Run diagnostic test
+      - name: Run diagnostic test (single brain)
         run: |
-          cargo test -p spectral-graph -- --ignored \
+          cargo test -p spectral-graph -- --ignored --nocapture \
             kuzu_schema_abort_repro 2>&1 \
             | tee /tmp/spectral-schema-abort.log
+      - name: Run all spectral-graph tests (multi-brain abort repro)
+        if: always()
+        run: |
+          cargo test -p spectral-graph -- --nocapture 2>&1 \
+            | tee /tmp/spectral-full-test.log || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: spectral-schema-abort-log
-          path: /tmp/spectral-schema-abort.log
+          name: spectral-diagnostic-logs
+          path: |
+            /tmp/spectral-schema-abort.log
+            /tmp/spectral-full-test.log
