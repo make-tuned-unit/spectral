@@ -26,7 +26,7 @@ jobs:
         run: |
           cargo test -p spectral-graph -- --nocapture 2>&1 \
             | tee /tmp/spectral-full-test.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: spectral-diagnostic-logs
