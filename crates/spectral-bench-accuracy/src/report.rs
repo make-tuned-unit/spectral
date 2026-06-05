@@ -74,6 +74,21 @@ pub struct QuestionResult {
     /// Outcome classification: ok, transport_failure, or auth_failure.
     #[serde(default)]
     pub outcome_class: OutcomeClass,
+    /// Rendered memories text passed to the actor (for replay).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_context: Option<String>,
+    /// Question date string used in the actor prompt (for replay).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_date: Option<String>,
+    /// Replayed actor answer (populated by --replay-actor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayed_predicted: Option<String>,
+    /// Replayed judge verdict (populated by --replay-actor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayed_correct: Option<bool>,
+    /// Replayed judge reasoning (populated by --replay-actor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayed_judge_reasoning: Option<String>,
 }
 
 /// Full evaluation report.
@@ -151,6 +166,8 @@ impl EvalReport {
         strategy_telemetry: Option<StrategyTelemetry>,
         retry_count: u32,
         outcome_class: OutcomeClass,
+        actor_context: Option<String>,
+        question_date: Option<String>,
     ) {
         self.total_questions += 1;
 
@@ -208,6 +225,11 @@ impl EvalReport {
             strategy_telemetry,
             retry_count,
             outcome_class,
+            actor_context,
+            question_date,
+            replayed_predicted: None,
+            replayed_correct: None,
+            replayed_judge_reasoning: None,
         });
     }
 
@@ -323,6 +345,8 @@ mod tests {
             None,
             0,
             OutcomeClass::Ok,
+            None,
+            None,
         );
         report.record(
             "q2",
@@ -339,6 +363,8 @@ mod tests {
             None,
             0,
             OutcomeClass::Ok,
+            None,
+            None,
         );
         report.record(
             "q3",
@@ -355,6 +381,8 @@ mod tests {
             None,
             0,
             OutcomeClass::Ok,
+            None,
+            None,
         );
         report.finalize();
 
@@ -385,6 +413,11 @@ mod tests {
             strategy_telemetry: None,
             retry_count: 0,
             outcome_class: OutcomeClass::Ok,
+            actor_context: None,
+            question_date: None,
+            replayed_predicted: None,
+            replayed_correct: None,
+            replayed_judge_reasoning: None,
         };
         let json = serde_json::to_string(&qr).unwrap();
         assert!(json.contains("\"question_id\":\"q42\""));
