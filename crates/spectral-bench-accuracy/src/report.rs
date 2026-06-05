@@ -9,6 +9,19 @@ fn default_retrieval_path() -> String {
     "topk_fts".into()
 }
 
+/// Outcome classification for a question evaluation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutcomeClass {
+    /// Question was evaluated (answer may be right or wrong).
+    #[default]
+    Ok,
+    /// Exhausted retries on a transient/transport error — no valid answer.
+    TransportFailure,
+    /// Hit a non-retryable auth/validation error (401/403/400).
+    AuthFailure,
+}
+
 /// Whether the eval run completed or halted early.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +68,12 @@ pub struct QuestionResult {
     /// Strategy routing telemetry (populated when shape routing is active).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy_telemetry: Option<StrategyTelemetry>,
+    /// Number of retries needed (0 = clean first-try success).
+    #[serde(default)]
+    pub retry_count: u32,
+    /// Outcome classification: ok, transport_failure, or auth_failure.
+    #[serde(default)]
+    pub outcome_class: OutcomeClass,
 }
 
 /// Full evaluation report.
@@ -69,6 +88,18 @@ pub struct EvalReport {
     pub total_questions: usize,
     pub correct: usize,
     pub overall_accuracy: f64,
+    /// Questions that completed cleanly on first try.
+    #[serde(default)]
+    pub clean: usize,
+    /// Questions recovered after retry.
+    #[serde(default)]
+    pub recovered_after_retry: usize,
+    /// Questions lost to transport/connection failures (excluded from accuracy).
+    #[serde(default)]
+    pub transport_failures: usize,
+    /// Questions lost to auth failures (excluded from accuracy).
+    #[serde(default)]
+    pub auth_failures: usize,
     pub per_category: HashMap<String, CategoryStats>,
     /// Detailed per-question results.
     pub results: Vec<QuestionResult>,
@@ -89,6 +120,10 @@ impl EvalReport {
             total_questions: 0,
             correct: 0,
             overall_accuracy: 0.0,
+            clean: 0,
+            recovered_after_retry: 0,
+            transport_failures: 0,
+            auth_failures: 0,
             per_category: HashMap::new(),
             results: Vec::new(),
             run_status: RunStatus::Completed,
@@ -114,27 +149,49 @@ impl EvalReport {
         duration_ms: u64,
         cascade_telemetry: Option<crate::retrieval::CascadeTelemetry>,
         strategy_telemetry: Option<StrategyTelemetry>,
+        retry_count: u32,
+        outcome_class: OutcomeClass,
     ) {
         self.total_questions += 1;
-        if correct {
-            self.correct += 1;
+
+        // Track outcome summary
+        match outcome_class {
+            OutcomeClass::Ok => {
+                if retry_count > 0 {
+                    self.recovered_after_retry += 1;
+                } else {
+                    self.clean += 1;
+                }
+                if correct {
+                    self.correct += 1;
+                }
+            }
+            OutcomeClass::TransportFailure => {
+                self.transport_failures += 1;
+            }
+            OutcomeClass::AuthFailure => {
+                self.auth_failures += 1;
+            }
         }
 
-        let cat_key = category.as_str().to_string();
-        let entry = self
-            .per_category
-            .entry(cat_key)
-            .or_insert_with(|| CategoryStats {
-                category,
-                total: 0,
-                correct: 0,
-                accuracy: 0.0,
-            });
-        entry.total += 1;
-        if correct {
-            entry.correct += 1;
+        // Only count in per-category accuracy if the question was actually evaluated
+        if outcome_class == OutcomeClass::Ok {
+            let cat_key = category.as_str().to_string();
+            let entry = self
+                .per_category
+                .entry(cat_key)
+                .or_insert_with(|| CategoryStats {
+                    category,
+                    total: 0,
+                    correct: 0,
+                    accuracy: 0.0,
+                });
+            entry.total += 1;
+            if correct {
+                entry.correct += 1;
+            }
+            entry.accuracy = entry.correct as f64 / entry.total as f64;
         }
-        entry.accuracy = entry.correct as f64 / entry.total as f64;
 
         self.results.push(QuestionResult {
             question_id: question_id.into(),
@@ -149,6 +206,8 @@ impl EvalReport {
             duration_ms,
             cascade_telemetry,
             strategy_telemetry,
+            retry_count,
+            outcome_class,
         });
     }
 
@@ -161,8 +220,10 @@ impl EvalReport {
     pub fn finalize(&mut self) {
         self.completed_at = Utc::now();
         self.duration_seconds = (self.completed_at - self.started_at).num_seconds() as u64;
-        self.overall_accuracy = if self.total_questions > 0 {
-            self.correct as f64 / self.total_questions as f64
+        // Accuracy denominator excludes transport/auth failures
+        let evaluated = self.total_questions - self.transport_failures - self.auth_failures;
+        self.overall_accuracy = if evaluated > 0 {
+            self.correct as f64 / evaluated as f64
         } else {
             0.0
         };
@@ -177,13 +238,20 @@ impl EvalReport {
             "Actor: {}  |  Judge: {}",
             self.actor_name, self.judge_name
         ));
+        let evaluated = self.total_questions - self.transport_failures - self.auth_failures;
         lines.push(format!(
             "Overall: {}/{} ({:.1}%)",
             self.correct,
-            self.total_questions,
+            evaluated,
             self.overall_accuracy * 100.0
         ));
         lines.push(format!("Duration: {}s", self.duration_seconds));
+        if self.transport_failures > 0 || self.auth_failures > 0 || self.recovered_after_retry > 0 {
+            lines.push(format!(
+                "Reliability: {} clean, {} recovered, {} transport failures, {} auth failures",
+                self.clean, self.recovered_after_retry, self.transport_failures, self.auth_failures
+            ));
+        }
         lines.push(String::new());
 
         lines.push(format!(
@@ -253,6 +321,8 @@ mod tests {
             100,
             None,
             None,
+            0,
+            OutcomeClass::Ok,
         );
         report.record(
             "q2",
@@ -267,6 +337,8 @@ mod tests {
             200,
             None,
             None,
+            0,
+            OutcomeClass::Ok,
         );
         report.record(
             "q3",
@@ -281,6 +353,8 @@ mod tests {
             50,
             None,
             None,
+            0,
+            OutcomeClass::Ok,
         );
         report.finalize();
 
@@ -309,6 +383,8 @@ mod tests {
             duration_ms: 1234,
             cascade_telemetry: None,
             strategy_telemetry: None,
+            retry_count: 0,
+            outcome_class: OutcomeClass::Ok,
         };
         let json = serde_json::to_string(&qr).unwrap();
         assert!(json.contains("\"question_id\":\"q42\""));

@@ -108,6 +108,10 @@ struct SingleResult {
     cascade_telemetry: Option<retrieval::CascadeTelemetry>,
     /// Strategy routing telemetry.
     strategy_telemetry: Option<crate::report::StrategyTelemetry>,
+    /// Total retries across actor + judge.
+    retry_count: u32,
+    /// Outcome classification.
+    outcome_class: crate::report::OutcomeClass,
 }
 
 impl AccuracyEval {
@@ -182,7 +186,12 @@ impl AccuracyEval {
 
             match self.eval_single(question, category) {
                 Ok(r) => {
-                    consecutive_errors = 0;
+                    let is_failure = r.outcome_class != crate::report::OutcomeClass::Ok;
+                    if is_failure {
+                        consecutive_errors += 1;
+                    } else {
+                        consecutive_errors = 0;
+                    }
                     if let Some(ref mut w) = score_writer {
                         let _ = inspect::write_score_records(
                             w,
@@ -205,9 +214,21 @@ impl AccuracyEval {
                         r.duration_ms,
                         r.cascade_telemetry,
                         r.strategy_telemetry,
+                        r.retry_count,
+                        r.outcome_class,
                     );
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        eprintln!(
+                            "[FATAL] {} consecutive errors. Halting run. Partial report saved.",
+                            consecutive_errors
+                        );
+                        report.run_status = RunStatus::HaltedOnErrors { consecutive_errors };
+                        break;
+                    }
                 }
                 Err(e) => {
+                    // Non-API error (ingest/retrieval failure)
                     consecutive_errors += 1;
                     eprintln!("[ERROR] {}: {e}", question.question_id);
                     let answer_text = question.answer_text();
@@ -218,12 +239,14 @@ impl AccuracyEval {
                         &question.question,
                         &format!("[error: {e}]"),
                         &answer_text,
-                        Some(format!("API call failed: {e}")),
+                        Some(format!("Local error: {e}")),
                         0,
                         Vec::new(),
                         0,
                         None,
                         None,
+                        0,
+                        crate::report::OutcomeClass::TransportFailure,
                     );
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
@@ -357,17 +380,101 @@ impl AccuracyEval {
                 .collect()
         };
 
-        // Act
+        // Act — with retry on transient failures
         let question_date_str = question.question_date.as_deref().unwrap_or("unknown");
-        let predicted =
+        let actor_outcome = crate::retry::with_retry(4, &question.question_id, "actor", || {
             self.actor
-                .answer(&question.question, question_date_str, &memories, qtype)?;
+                .answer(&question.question, question_date_str, &memories, qtype)
+        });
 
-        // Judge
+        let (predicted, mut total_retries, outcome_class) = match actor_outcome {
+            crate::retry::CallOutcome::Success { value, retry_count } => {
+                (value, retry_count, crate::report::OutcomeClass::Ok)
+            }
+            crate::retry::CallOutcome::TransportFailure { error, retry_count } => {
+                eprintln!("[TRANSPORT] {}: {error}", question.question_id);
+                let _ = std::fs::remove_dir_all(&brain_dir);
+                return Ok(SingleResult {
+                    correct: false,
+                    predicted: format!("[error: {error}]"),
+                    memory_count,
+                    memory_keys,
+                    reasoning: Some(format!("Actor transport failure: {error}")),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    raw_hits,
+                    cascade_telemetry,
+                    strategy_telemetry,
+                    retry_count,
+                    outcome_class: crate::report::OutcomeClass::TransportFailure,
+                });
+            }
+            crate::retry::CallOutcome::AuthFailure { error } => {
+                eprintln!("[AUTH] {}: {error}", question.question_id);
+                let _ = std::fs::remove_dir_all(&brain_dir);
+                return Ok(SingleResult {
+                    correct: false,
+                    predicted: format!("[error: {error}]"),
+                    memory_count,
+                    memory_keys,
+                    reasoning: Some(format!("Auth failure: {error}")),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    raw_hits,
+                    cascade_telemetry,
+                    strategy_telemetry,
+                    retry_count: 0,
+                    outcome_class: crate::report::OutcomeClass::AuthFailure,
+                });
+            }
+        };
+
+        // Judge — with retry on transient failures
         let answer_text = question.answer_text();
-        let grade = self
-            .judge
-            .grade(&question.question, &predicted, &answer_text, category)?;
+        let judge_outcome = crate::retry::with_retry(4, &question.question_id, "judge", || {
+            self.judge
+                .grade(&question.question, &predicted, &answer_text, category)
+        });
+
+        let (grade, outcome_class) = match judge_outcome {
+            crate::retry::CallOutcome::Success { value, retry_count } => {
+                total_retries += retry_count;
+                (value, outcome_class)
+            }
+            crate::retry::CallOutcome::TransportFailure { error, retry_count } => {
+                eprintln!("[TRANSPORT] {} judge: {error}", question.question_id);
+                total_retries += retry_count;
+                let _ = std::fs::remove_dir_all(&brain_dir);
+                return Ok(SingleResult {
+                    correct: false,
+                    predicted,
+                    memory_count,
+                    memory_keys,
+                    reasoning: Some(format!("Judge transport failure: {error}")),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    raw_hits,
+                    cascade_telemetry,
+                    strategy_telemetry,
+                    retry_count: total_retries,
+                    outcome_class: crate::report::OutcomeClass::TransportFailure,
+                });
+            }
+            crate::retry::CallOutcome::AuthFailure { error } => {
+                eprintln!("[AUTH] {} judge: {error}", question.question_id);
+                let _ = std::fs::remove_dir_all(&brain_dir);
+                return Ok(SingleResult {
+                    correct: false,
+                    predicted,
+                    memory_count,
+                    memory_keys,
+                    reasoning: Some(format!("Judge auth failure: {error}")),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    raw_hits,
+                    cascade_telemetry,
+                    strategy_telemetry,
+                    retry_count: 0,
+                    outcome_class: crate::report::OutcomeClass::AuthFailure,
+                });
+            }
+        };
 
         // Clean up brain directory
         let _ = std::fs::remove_dir_all(&brain_dir);
@@ -382,6 +489,8 @@ impl AccuracyEval {
             raw_hits,
             cascade_telemetry,
             strategy_telemetry,
+            retry_count: total_retries,
+            outcome_class,
         })
     }
 
@@ -482,6 +591,32 @@ mod tests {
         }
         fn name(&self) -> &str {
             "fail-nth"
+        }
+    }
+
+    /// Actor that always fails with a given error message.
+    struct AlwaysFailActor {
+        error_msg: String,
+    }
+    impl AlwaysFailActor {
+        fn new(msg: &str) -> Self {
+            Self {
+                error_msg: msg.into(),
+            }
+        }
+    }
+    impl Actor for AlwaysFailActor {
+        fn answer(
+            &self,
+            _q: &str,
+            _d: &str,
+            _m: &[String],
+            _shape: crate::retrieval::QuestionType,
+        ) -> anyhow::Result<String> {
+            Err(anyhow::anyhow!("{}", self.error_msg))
+        }
+        fn name(&self) -> &str {
+            "always-fail"
         }
     }
 
@@ -732,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_continues_on_isolated_error() {
+    fn eval_recovers_transient_error_via_retry() {
         let dir = tempfile::tempdir().unwrap();
         let ds_path = dir.path().join("dataset.json");
         let qs = make_n_questions(4);
@@ -745,20 +880,96 @@ mod tests {
             ..Default::default()
         };
 
-        // Fail on question index 1 only — the rest succeed
+        // Fail on question index 1 only — retry recovers it
         let eval = AccuracyEval::new(
             config,
             Box::new(FailNthActor::new(1)),
             Box::new(MockJudge::always_pass()),
         );
         let report = eval.run().unwrap();
-        // All 4 questions should be attempted
+        // All 4 questions should be attempted and recovered
         assert_eq!(report.total_questions, 4);
         assert_eq!(report.run_status, RunStatus::Completed);
-        // 3 correct, 1 failed
-        assert_eq!(report.correct, 3);
-        assert_eq!(report.failures().len(), 1);
-        assert!(report.failures()[0].predicted.contains("[error:"));
+        // All correct (the 429 was retried and recovered)
+        assert_eq!(report.correct, 4);
+        assert_eq!(report.recovered_after_retry, 1);
+        // The recovered question should have retry_count > 0
+        let retried: Vec<_> = report
+            .results
+            .iter()
+            .filter(|r| r.retry_count > 0)
+            .collect();
+        assert_eq!(retried.len(), 1, "exactly one question should have retried");
+        assert_eq!(retried[0].outcome_class, crate::report::OutcomeClass::Ok);
+    }
+
+    #[test]
+    fn auth_failure_fails_fast_no_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds_path = dir.path().join("dataset.json");
+        let qs = make_n_questions(2);
+        std::fs::write(&ds_path, serde_json::to_string(&qs).unwrap()).unwrap();
+
+        let config = EvalConfig {
+            dataset_path: ds_path,
+            work_dir: dir.path().join("work"),
+            checkpoint_interval: 100,
+            ..Default::default()
+        };
+
+        let eval = AccuracyEval::new(
+            config,
+            Box::new(AlwaysFailActor::new(
+                "API returned 401 Unauthorized: invalid x-api-key",
+            )),
+            Box::new(MockJudge::always_pass()),
+        );
+        let report = eval.run().unwrap();
+        // Auth failures should be tagged, not counted as wrong answers
+        assert_eq!(report.auth_failures, 2);
+        assert_eq!(report.correct, 0);
+        // Accuracy denominator excludes auth failures
+        let evaluated = report.total_questions - report.transport_failures - report.auth_failures;
+        assert_eq!(evaluated, 0);
+        // Outcome class on each result
+        for r in &report.results {
+            assert_eq!(r.outcome_class, crate::report::OutcomeClass::AuthFailure);
+            assert_eq!(r.retry_count, 0, "401 should NOT have retried");
+        }
+    }
+
+    #[test]
+    fn transport_failure_excluded_from_accuracy() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds_path = dir.path().join("dataset.json");
+        let qs = make_n_questions(2);
+        std::fs::write(&ds_path, serde_json::to_string(&qs).unwrap()).unwrap();
+
+        let config = EvalConfig {
+            dataset_path: ds_path,
+            work_dir: dir.path().join("work"),
+            checkpoint_interval: 100,
+            ..Default::default()
+        };
+
+        let eval = AccuracyEval::new(
+            config,
+            Box::new(AlwaysFailActor::new("error sending request for url")),
+            Box::new(MockJudge::always_pass()),
+        );
+        let report = eval.run().unwrap();
+        assert_eq!(report.transport_failures, 2);
+        assert_eq!(report.correct, 0);
+        // Transport failures excluded from denominator
+        let evaluated = report.total_questions - report.transport_failures - report.auth_failures;
+        assert_eq!(evaluated, 0);
+        for r in &report.results {
+            assert_eq!(
+                r.outcome_class,
+                crate::report::OutcomeClass::TransportFailure
+            );
+            assert!(r.retry_count > 0, "transport error should have retried");
+        }
     }
 
     #[test]

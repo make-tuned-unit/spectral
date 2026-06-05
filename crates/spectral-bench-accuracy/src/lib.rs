@@ -29,6 +29,7 @@ pub mod inspect;
 pub mod judge;
 pub mod report;
 pub mod retrieval;
+pub mod retry;
 
 pub use actor::{Actor, AnthropicActor, MockActor};
 pub use dataset::{Category, Question};
