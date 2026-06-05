@@ -164,6 +164,42 @@ enum Command {
         api_format: String,
     },
 
+    /// Replay actor (and judge) over a saved bench report with a new prompt template.
+    /// Holds retrieval constant — only the actor prompt changes.
+    ReplayActor {
+        /// Path to the saved bench report JSON.
+        #[arg(long)]
+        report: PathBuf,
+
+        /// Path to the actor prompt template to test.
+        #[arg(long)]
+        actor_prompt: Option<PathBuf>,
+
+        /// Optional: file with question IDs to replay (one per line).
+        #[arg(long)]
+        question_ids: Option<PathBuf>,
+
+        /// Output file for the replayed report.
+        #[arg(long, default_value = "replay-report.json")]
+        output: PathBuf,
+
+        /// Skip actor, re-run only judge over stored predictions.
+        #[arg(long)]
+        judge_only: bool,
+
+        /// Actor model name.
+        #[arg(long, default_value = "claude-sonnet-4-6")]
+        actor_model: String,
+
+        /// Judge model name.
+        #[arg(long, default_value = "claude-sonnet-4-6")]
+        judge_model: String,
+
+        /// Base URL for API calls.
+        #[arg(long, default_value = "https://api.anthropic.com")]
+        base_url: String,
+    },
+
     /// Dry-run: ingest one question, retrieve, but don't call LLMs
     DryRun {
         /// Path to the LongMemEval_S dataset JSON
@@ -490,6 +526,29 @@ fn main() -> Result<()> {
                 output.display(),
                 descriptions.len()
             );
+        }
+
+        Command::ReplayActor {
+            report,
+            actor_prompt,
+            question_ids,
+            output,
+            judge_only,
+            actor_model,
+            judge_model,
+            base_url,
+        } => {
+            let config = spectral_bench_accuracy::replay::ReplayConfig {
+                report_path: report,
+                actor_prompt,
+                question_ids_path: question_ids,
+                output_path: output,
+                judge_only,
+                actor_model,
+                judge_model,
+                base_url,
+            };
+            spectral_bench_accuracy::replay::run_replay(&config)?;
         }
 
         Command::DryRun { dataset, work_dir } => {

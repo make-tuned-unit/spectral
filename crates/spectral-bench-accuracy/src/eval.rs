@@ -112,6 +112,8 @@ struct SingleResult {
     retry_count: u32,
     /// Outcome classification.
     outcome_class: crate::report::OutcomeClass,
+    /// Rendered memories text for replay.
+    actor_context: String,
 }
 
 impl AccuracyEval {
@@ -216,6 +218,8 @@ impl AccuracyEval {
                         r.strategy_telemetry,
                         r.retry_count,
                         r.outcome_class,
+                        Some(r.actor_context),
+                        question.question_date.clone(),
                     );
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
@@ -247,6 +251,8 @@ impl AccuracyEval {
                         None,
                         0,
                         crate::report::OutcomeClass::TransportFailure,
+                        None,
+                        question.question_date.clone(),
                     );
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
@@ -381,6 +387,7 @@ impl AccuracyEval {
         };
 
         // Act — with retry on transient failures
+        let actor_context = memories.join("\n");
         let question_date_str = question.question_date.as_deref().unwrap_or("unknown");
         let actor_outcome = crate::retry::with_retry(4, &question.question_id, "actor", || {
             self.actor
@@ -406,6 +413,7 @@ impl AccuracyEval {
                     strategy_telemetry,
                     retry_count,
                     outcome_class: crate::report::OutcomeClass::TransportFailure,
+                    actor_context: actor_context.clone(),
                 });
             }
             crate::retry::CallOutcome::AuthFailure { error } => {
@@ -423,6 +431,7 @@ impl AccuracyEval {
                     strategy_telemetry,
                     retry_count: 0,
                     outcome_class: crate::report::OutcomeClass::AuthFailure,
+                    actor_context: actor_context.clone(),
                 });
             }
         };
@@ -455,6 +464,7 @@ impl AccuracyEval {
                     strategy_telemetry,
                     retry_count: total_retries,
                     outcome_class: crate::report::OutcomeClass::TransportFailure,
+                    actor_context: actor_context.clone(),
                 });
             }
             crate::retry::CallOutcome::AuthFailure { error } => {
@@ -472,6 +482,7 @@ impl AccuracyEval {
                     strategy_telemetry,
                     retry_count: 0,
                     outcome_class: crate::report::OutcomeClass::AuthFailure,
+                    actor_context,
                 });
             }
         };
@@ -491,6 +502,7 @@ impl AccuracyEval {
             strategy_telemetry,
             retry_count: total_retries,
             outcome_class,
+            actor_context,
         })
     }
 

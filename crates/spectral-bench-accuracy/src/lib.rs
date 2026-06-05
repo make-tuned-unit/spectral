@@ -27,6 +27,7 @@ pub mod eval;
 pub mod ingest;
 pub mod inspect;
 pub mod judge;
+pub mod replay;
 pub mod report;
 pub mod retrieval;
 pub mod retry;

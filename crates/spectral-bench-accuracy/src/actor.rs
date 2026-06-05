@@ -36,6 +36,34 @@ impl AnthropicActor {
         }
     }
 
+    /// Send a pre-built request body to the Anthropic API and return the text.
+    pub fn call_raw(&self, body: &serde_json::Value) -> anyhow::Result<String> {
+        let resp = self
+            .client
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(body)
+            .send()?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "API returned {}: {}",
+                status,
+                body.chars().take(500).collect::<String>()
+            ));
+        }
+
+        let json: serde_json::Value = resp.json()?;
+        json["content"][0]["text"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("Response missing content[0].text"))
+    }
+
     pub fn from_env() -> Result<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
