@@ -85,9 +85,9 @@ enum Command {
         #[arg(long)]
         question_id: Option<String>,
 
-        /// Enable pre-retrieval query expansion via LLM-generated terms.
+        /// Disable pre-retrieval query expansion (on by default).
         #[arg(long)]
-        expand_queries: bool,
+        no_expand_queries: bool,
 
         /// Model for query expansion (default: haiku).
         #[arg(long, default_value = "claude-haiku-4-5-20251001")]
@@ -261,7 +261,7 @@ fn main() -> Result<()> {
             max_results,
             descriptions,
             question_id,
-            expand_queries,
+            no_expand_queries,
             expansion_model,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
@@ -348,7 +348,7 @@ fn main() -> Result<()> {
                 );
                 eval = eval.with_descriptions(descs);
             }
-            if expand_queries {
+            if !no_expand_queries {
                 eprintln!("Query expansion enabled (model: {expansion_model})");
                 eval = eval.with_expansion(spectral_bench_accuracy::expansion::ExpansionConfig {
                     enabled: true,
