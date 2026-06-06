@@ -97,6 +97,7 @@ pub fn expand_query(question: &str, config: &ExpansionConfig) -> Result<String> 
         return Ok(question.to_string());
     }
 
+    eprintln!("  [expansion] +{} terms: {}", terms.len(), terms.join(", "));
     Ok(format!("{} {}", question, terms.join(" ")))
 }
 
