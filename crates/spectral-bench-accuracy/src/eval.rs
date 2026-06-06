@@ -92,6 +92,8 @@ pub struct AccuracyEval {
     judge: Box<dyn Judge>,
     /// Optional description map for FTS enrichment.
     descriptions: Option<crate::describe::DescriptionMap>,
+    /// Optional query expansion config.
+    expansion: Option<crate::expansion::ExpansionConfig>,
 }
 
 /// Result of evaluating a single question.
@@ -123,7 +125,13 @@ impl AccuracyEval {
             actor,
             judge,
             descriptions: None,
+            expansion: None,
         }
+    }
+
+    pub fn with_expansion(mut self, config: crate::expansion::ExpansionConfig) -> Self {
+        self.expansion = Some(config);
+        self
     }
 
     /// Set the description map for FTS enrichment.
@@ -297,7 +305,23 @@ impl AccuracyEval {
             let _ = crate::describe::apply_descriptions(&brain, descs);
         }
 
-        // Classify question shape for routing
+        // Query expansion: augment question with synonym/domain terms for FTS
+        let retrieval_query = if let Some(ref exp_config) = self.expansion {
+            match crate::expansion::expand_query(&question.question, exp_config) {
+                Ok(expanded) => expanded,
+                Err(e) => {
+                    eprintln!(
+                        "  [expansion] {}: expansion failed, using original: {e}",
+                        question.question_id
+                    );
+                    question.question.clone()
+                }
+            }
+        } else {
+            question.question.clone()
+        };
+
+        // Classify question shape for routing (use original question, not expanded)
         let qtype = retrieval::QuestionType::classify(&question.question);
 
         // Determine effective retrieval path for this question.
@@ -325,18 +349,16 @@ impl AccuracyEval {
         };
 
         // Retrieve — get raw hits for score dumping, formatted strings for actor
+        // Use expanded query for retrieval, original question for actor prompt
         let question_date = question.question_date.as_deref();
         let (memories, raw_hits, cascade_telemetry) = match effective_path {
             RetrievalPath::TopkFts => {
-                let (formatted, hits) = retrieval::retrieve_topk_fts(
-                    &brain,
-                    &question.question,
-                    &self.config.retrieval,
-                )?;
+                let (formatted, hits) =
+                    retrieval::retrieve_topk_fts(&brain, &retrieval_query, &self.config.retrieval)?;
                 (formatted, hits, None)
             }
             RetrievalPath::Tact => {
-                let result = brain.recall_local(&question.question)?;
+                let result = brain.recall_local(&retrieval_query)?;
                 let hits: Vec<_> = result
                     .memory_hits
                     .into_iter()
@@ -347,13 +369,13 @@ impl AccuracyEval {
             }
             RetrievalPath::Graph => {
                 let formatted =
-                    retrieval::retrieve_graph(&brain, &question.question, &self.config.retrieval)?;
+                    retrieval::retrieve_graph(&brain, &retrieval_query, &self.config.retrieval)?;
                 (formatted, Vec::new(), None)
             }
             RetrievalPath::Cascade => {
                 let (formatted, hits, telemetry) = retrieval::retrieve_cascade(
                     &brain,
-                    &question.question,
+                    &retrieval_query,
                     &self.config.retrieval,
                     question_date,
                 )?;
