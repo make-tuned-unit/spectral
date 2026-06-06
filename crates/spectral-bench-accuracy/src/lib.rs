@@ -24,6 +24,7 @@ pub mod actor;
 pub mod dataset;
 pub mod describe;
 pub mod eval;
+pub mod expansion;
 pub mod ingest;
 pub mod inspect;
 pub mod judge;

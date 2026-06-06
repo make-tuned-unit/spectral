@@ -84,6 +84,14 @@ enum Command {
         /// Filter to a single question by ID (for targeted pre-validation).
         #[arg(long)]
         question_id: Option<String>,
+
+        /// Enable pre-retrieval query expansion via LLM-generated terms.
+        #[arg(long)]
+        expand_queries: bool,
+
+        /// Model for query expansion (default: haiku).
+        #[arg(long, default_value = "claude-haiku-4-5-20251001")]
+        expansion_model: String,
     },
 
     /// Pretty-print a previously saved JSON report
@@ -253,6 +261,8 @@ fn main() -> Result<()> {
             max_results,
             descriptions,
             question_id,
+            expand_queries,
+            expansion_model,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             let question_count = max_questions.unwrap_or(ds.len());
@@ -326,7 +336,7 @@ fn main() -> Result<()> {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
             let actor = AnthropicActor::new(api_key.clone(), actor_model, base_url.clone());
-            let judge = AnthropicJudge::new(api_key, judge_model, base_url);
+            let judge = AnthropicJudge::new(api_key.clone(), judge_model, base_url.clone());
 
             let mut eval = AccuracyEval::new(config, Box::new(actor), Box::new(judge));
             if let Some(ref desc_path) = descriptions {
@@ -337,6 +347,16 @@ fn main() -> Result<()> {
                     desc_path.display()
                 );
                 eval = eval.with_descriptions(descs);
+            }
+            if expand_queries {
+                eprintln!("Query expansion enabled (model: {expansion_model})");
+                eval = eval.with_expansion(spectral_bench_accuracy::expansion::ExpansionConfig {
+                    enabled: true,
+                    model: expansion_model,
+                    base_url,
+                    api_key,
+                    max_terms: 10,
+                });
             }
             let report = eval.run()?;
 
