@@ -224,6 +224,8 @@ Shipped 2026-05-14. `retrieve_cascade()` and `retrieve_topk_fts()` now return ra
 - **Item 4 — Content-hash dedup** → PR #85 shipped, broader scope than originally captured (non-destructive write semantics + WriteOutcome + content hash + backfill).
 - **Item 8 — Description-enriched FTS** → Foundation shipped (PRs #104/#108), bench validation complete (PR #117). Isolated lift: +2.5pp (75.0% → 77.5%), within predicted +1-3pp. Lift concentrated in temporal-reasoning; multi-session zero (actor ceiling). AMBIGUOUS cases #8/#9 resolved as GENUINE_MISS. Full analysis: `docs/internal/item-8-bench-validation.md`.
 - **Item 21 — Retrieval telemetry** → PR #107 shipped 2026-05-14. `memory_keys` now populated for Cascade, TopkFts, and Tact paths. AMBIGUOUS cases #8/#9 resolved via item #8 bench validation (PR #117).
+- **Query expansion (PR #157)** → Shipped 2026-06-05, merged to main (c0e3765). Pre-retrieval Haiku term generation, on-by-default. MEASURED: +5.3pp on MS+SSP (72.5%→77.8%, n=163). All-category effect UNMEASURED (projected ~73-74%, requires n=500 bench). Confirmed safe corpus-wide (0 regressions).
+- **Extract→code-operate pipeline** → SHELVED (negative result, 2026-06-07). Diagnosis confirmed (80% of actor failures are deterministic operations) but measured pipeline fixes only 5-7/26 OPERATION cases ($0.21 total investigation cost). Recall-vs-precision tradeoff has no sweet spot at Haiku cost tier. Residual is model-capability-bound semantic qualification. Do not re-attempt. Analysis in `~/spectral-local-bench/QUALIFICATION_GATE.md`.
 
 ---
 
