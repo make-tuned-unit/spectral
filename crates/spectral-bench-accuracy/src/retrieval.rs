@@ -120,8 +120,8 @@ impl QuestionType {
             return Self::Factual;
         }
 
-        // Temporal
-        if Regex::new(r"when did|how long|(?:^|\W)first\b|(?:^|\W)last\b|before|after|ago|since")
+        // Temporal — includes explicit ordering phrases ("order ... earliest/latest")
+        if Regex::new(r"when did|how long|(?:^|\W)first\b|(?:^|\W)last\b|before|after|ago|since|order.+(?:earliest|latest)|from earliest|chronological|(?:^|\W)order of\b")
             .unwrap()
             .is_match(&q)
         {
@@ -341,24 +341,32 @@ pub fn retrieve(brain: &Brain, question: &str, config: &RetrievalConfig) -> Resu
 /// - `SPECTRAL_DISABLE_RECENCY=1` — disable recency weighting
 /// - `SPECTRAL_DISABLE_ENTITY_RESOLUTION=1` — disable entity clustering
 /// - `SPECTRAL_DISABLE_CONTEXT_DEDUP=1` — disable context chain dedup
+///
+/// When `question_date` is provided (format: "2023/05/30 (Tue) 23:40"),
+/// recency decay is anchored to that date instead of `Utc::now()`.
 pub fn retrieve_topk_fts(
     brain: &Brain,
     question: &str,
     config: &RetrievalConfig,
+    question_date: Option<&str>,
 ) -> Result<(Vec<String>, Vec<MemoryHit>)> {
+    // Floor at 40: prevents CLI overrides (e.g. --max-results 20) from cutting
+    // temporal evidence turns that rank at FTS position 21-40 after reranking.
+    let output_size = config.max_results.max(40);
     let topk_config = RecallTopKConfig {
-        k: config.max_results.max(40),
+        k: output_size,
         apply_signal_score_weighting: std::env::var("SPECTRAL_DISABLE_SIGNAL_SCORE").is_err(),
         apply_recency_weighting: std::env::var("SPECTRAL_DISABLE_RECENCY").is_err(),
         apply_entity_resolution: std::env::var("SPECTRAL_DISABLE_ENTITY_RESOLUTION").is_err(),
         apply_context_dedup: std::env::var("SPECTRAL_DISABLE_CONTEXT_DEDUP").is_err(),
+        now: question_date.and_then(parse_question_date),
         ..RecallTopKConfig::default()
     };
 
     let hits: Vec<MemoryHit> = brain
         .recall_topk_fts(question, &topk_config, Visibility::Private)?
         .into_iter()
-        .take(config.max_results)
+        .take(output_size)
         .collect();
 
     let memories: Vec<String> = hits.iter().map(format_hit).collect();
@@ -728,6 +736,86 @@ mod tests {
         assert!(recent_pos > 0 && old_pos > 0);
     }
 
+    #[test]
+    fn topk_fts_uses_question_date_for_recency() {
+        let dir = tempfile::tempdir().unwrap();
+        let ontology_path = dir.path().join("ontology.toml");
+        std::fs::write(&ontology_path, "version = 1\n").unwrap();
+
+        let brain = Brain::open(BrainConfig {
+            data_dir: dir.path().to_path_buf(),
+            ontology_path,
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        })
+        .unwrap();
+
+        let recent_ts = Utc.with_ymd_and_hms(2023, 5, 20, 12, 0, 0).unwrap();
+        let old_ts = Utc.with_ymd_and_hms(2023, 1, 10, 12, 0, 0).unwrap();
+
+        brain
+            .remember_with(
+                "recent-memory",
+                "I recently started jogging every morning for exercise",
+                RememberOpts {
+                    created_at: Some(recent_ts),
+                    visibility: Visibility::Private,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        brain
+            .remember_with(
+                "old-memory",
+                "I started a new exercise routine with jogging",
+                RememberOpts {
+                    created_at: Some(old_ts),
+                    visibility: Visibility::Private,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // TopkFts with question_date anchored to May 30 2023
+        let (_, hits_with_date) = retrieve_topk_fts(
+            &brain,
+            "jogging exercise",
+            &RetrievalConfig::default(),
+            Some("2023/05/30 (Tue) 23:40"),
+        )
+        .unwrap();
+
+        // TopkFts WITHOUT question_date (Utc::now, ~2026 → both equally old)
+        let (_, hits_no_date) = retrieve_topk_fts(
+            &brain,
+            "jogging exercise",
+            &RetrievalConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        // With question_date, recency should meaningfully distinguish the two.
+        // The recent memory (May 20, 10 days old) should score higher.
+        assert!(hits_with_date.len() >= 2, "should return both memories");
+        assert_eq!(
+            hits_with_date[0].key, "recent-memory",
+            "with question_date, recent memory should rank first"
+        );
+
+        // Without question_date, both are ~1200 days old — recency barely
+        // distinguishes them; FTS rank dominates. Just verify both returned.
+        assert!(hits_no_date.len() >= 2, "should return both memories");
+    }
+
     // ── P1: Question-type routing tests ──────────────────────────────
 
     #[test]
@@ -778,6 +866,32 @@ mod tests {
         );
         assert_eq!(
             QuestionType::classify("How many weeks ago did I start?"),
+            QuestionType::Temporal
+        );
+    }
+
+    #[test]
+    fn classify_temporal_ordering_questions() {
+        // Event-ordering questions should route to Temporal, not Factual.
+        assert_eq!(
+            QuestionType::classify("What is the order of the sports events I watched in January?"),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify(
+                "What is the order of the six museums I visited from earliest to latest?"
+            ),
+            QuestionType::Temporal
+        );
+        assert_eq!(
+            QuestionType::classify(
+                "What is the order of the concerts and musical events I attended?"
+            ),
+            QuestionType::Temporal
+        );
+        // "first" and "last" already match the existing temporal regex
+        assert_eq!(
+            QuestionType::classify("What was the first airline I flew with?"),
             QuestionType::Temporal
         );
     }
