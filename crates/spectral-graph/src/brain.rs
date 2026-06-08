@@ -331,6 +331,10 @@ pub struct RecallTopKConfig {
     pub apply_entity_resolution: bool,
     /// Collapse `[Memory context]` reference duplicates. Default true.
     pub apply_context_dedup: bool,
+    /// Time anchor for recency decay. `None` = `Utc::now()`.
+    /// Set this to the question/query date when scoring historical data
+    /// so recency decay reflects distance from the question, not wall-clock.
+    pub now: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Default for RecallTopKConfig {
@@ -342,6 +346,7 @@ impl Default for RecallTopKConfig {
             recency_half_life_days: 365.0,
             apply_entity_resolution: true,
             apply_context_dedup: true,
+            now: None,
         }
     }
 }
@@ -1158,12 +1163,15 @@ impl Brain {
             max_per_episode: 5,
             apply_context_dedup: config.apply_context_dedup,
         };
-        let empty_ctx = spectral_cascade::RecognitionContext::empty();
+        let ctx = match config.now {
+            Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
+            None => spectral_cascade::RecognitionContext::empty(),
+        };
         let co_boosts = crate::ranking::compute_co_retrieval_boosts(self, &candidates, 3);
         let results = crate::ranking::apply_reranking_pipeline(
             candidates,
             &reranking_config,
-            &empty_ctx,
+            &ctx,
             &co_boosts,
         );
 

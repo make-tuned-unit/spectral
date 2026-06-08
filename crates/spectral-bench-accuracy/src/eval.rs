@@ -353,8 +353,12 @@ impl AccuracyEval {
         let question_date = question.question_date.as_deref();
         let (memories, raw_hits, cascade_telemetry) = match effective_path {
             RetrievalPath::TopkFts => {
-                let (formatted, hits) =
-                    retrieval::retrieve_topk_fts(&brain, &retrieval_query, &self.config.retrieval)?;
+                let (formatted, hits) = retrieval::retrieve_topk_fts(
+                    &brain,
+                    &retrieval_query,
+                    &self.config.retrieval,
+                    question_date,
+                )?;
                 (formatted, hits, None)
             }
             RetrievalPath::Tact => {
