@@ -122,6 +122,7 @@ impl SqliteStore {
         ))?;
         Self::init_schema(&conn)?;
         Self::migrate_provenance_columns(&conn)?;
+        Self::migrate_fk_cascade(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             wing_cache: Arc::new(Mutex::new(LruCache::new(
@@ -135,6 +136,7 @@ impl SqliteStore {
         let conn = Connection::open_in_memory()?;
         Self::init_schema(&conn)?;
         Self::migrate_provenance_columns(&conn)?;
+        Self::migrate_fk_cascade(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             wing_cache: Arc::new(Mutex::new(LruCache::new(
@@ -194,8 +196,8 @@ impl SqliteStore {
                 target_hall       TEXT,
                 time_delta_bucket TEXT,
                 created_at        TEXT,
-                FOREIGN KEY (anchor_memory_id) REFERENCES memories(id),
-                FOREIGN KEY (target_memory_id) REFERENCES memories(id)
+                FOREIGN KEY (anchor_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+                FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_fp_hash ON constellation_fingerprints(fingerprint_hash);
             CREATE INDEX IF NOT EXISTS idx_fp_wing_hash
@@ -216,7 +218,7 @@ impl SqliteStore {
                 novelty           REAL,
                 peak_dimensions   TEXT,
                 created_at        TEXT DEFAULT (datetime('now')),
-                FOREIGN KEY (memory_id) REFERENCES memories(id)
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_spectrogram_action ON memory_spectrogram(action_type);
 
@@ -498,6 +500,241 @@ impl SqliteStore {
         )?;
 
         Ok(())
+    }
+
+    /// Migrate constellation_fingerprints and memory_spectrogram FK definitions
+    /// from NO ACTION to ON DELETE CASCADE, matching the memory_annotations convention.
+    ///
+    /// SQLite cannot ALTER a FK in place, so this uses the 12-step table-rebuild:
+    /// 1. Detect whether migration is needed (check FK SQL for CASCADE)
+    /// 2. Clean orphaned child rows (idempotent — safe to run on already-cleaned DBs)
+    /// 3. Rebuild each table with CASCADE FK definitions
+    /// 4. Run PRAGMA foreign_key_check to verify integrity
+    fn migrate_fk_cascade(conn: &Connection) -> anyhow::Result<()> {
+        // Check if constellation_fingerprints already has CASCADE.
+        // On a fresh DB created with init_schema (which now includes CASCADE),
+        // the DDL will already contain "ON DELETE CASCADE" and we skip.
+        let needs_fp_migration = {
+            let sql: Option<String> = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='constellation_fingerprints'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            match sql {
+                Some(ddl) => !ddl.to_lowercase().contains("on delete cascade"),
+                None => false, // table doesn't exist yet — init_schema will create it with CASCADE
+            }
+        };
+
+        let needs_spec_migration = {
+            let sql: Option<String> = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_spectrogram'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            match sql {
+                Some(ddl) => !ddl.to_lowercase().contains("on delete cascade"),
+                None => false,
+            }
+        };
+
+        if !needs_fp_migration && !needs_spec_migration {
+            return Ok(());
+        }
+
+        // Disable FK enforcement during the rebuild (required for table-rename).
+        // This is safe: we clean orphans first, then rebuild, then verify.
+        conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+
+        conn.execute_batch("BEGIN")?;
+
+        if needs_fp_migration {
+            // Step 1: Clean orphans (idempotent — no-op on already-clean DB)
+            conn.execute_batch(
+                "DELETE FROM constellation_fingerprints
+                 WHERE anchor_memory_id NOT IN (SELECT id FROM memories);
+                 DELETE FROM constellation_fingerprints
+                 WHERE target_memory_id NOT IN (SELECT id FROM memories);",
+            )?;
+
+            // Step 2: Create new table with CASCADE FKs
+            conn.execute_batch(
+                "CREATE TABLE constellation_fingerprints_new (
+                    id                TEXT PRIMARY KEY,
+                    fingerprint_hash  TEXT NOT NULL,
+                    anchor_memory_id  TEXT NOT NULL,
+                    target_memory_id  TEXT NOT NULL,
+                    wing              TEXT,
+                    anchor_hall       TEXT,
+                    target_hall       TEXT,
+                    time_delta_bucket TEXT,
+                    created_at        TEXT,
+                    FOREIGN KEY (anchor_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+                    FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+                )",
+            )?;
+
+            // Step 3: Copy surviving rows
+            conn.execute_batch(
+                "INSERT INTO constellation_fingerprints_new
+                 SELECT * FROM constellation_fingerprints",
+            )?;
+
+            // Step 4: Drop old, rename new
+            conn.execute_batch(
+                "DROP TABLE constellation_fingerprints;
+                 ALTER TABLE constellation_fingerprints_new RENAME TO constellation_fingerprints",
+            )?;
+
+            // Step 5: Recreate indexes
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_fp_hash ON constellation_fingerprints(fingerprint_hash);
+                 CREATE INDEX IF NOT EXISTS idx_fp_wing_hash
+                     ON constellation_fingerprints(wing, fingerprint_hash);
+                 CREATE INDEX IF NOT EXISTS idx_fp_wing_anchor_hall
+                     ON constellation_fingerprints(wing, anchor_hall);
+                 CREATE INDEX IF NOT EXISTS idx_fp_wing_target_hall
+                     ON constellation_fingerprints(wing, target_hall)",
+            )?;
+        }
+
+        if needs_spec_migration {
+            // Step 1: Clean orphans
+            conn.execute_batch(
+                "DELETE FROM memory_spectrogram
+                 WHERE memory_id NOT IN (SELECT id FROM memories)",
+            )?;
+
+            // Step 2: Create new table with CASCADE FK
+            conn.execute_batch(
+                "CREATE TABLE memory_spectrogram_new (
+                    memory_id         TEXT PRIMARY KEY,
+                    entity_density    REAL,
+                    action_type       TEXT,
+                    decision_polarity REAL,
+                    causal_depth      REAL,
+                    emotional_valence REAL,
+                    temporal_specificity REAL,
+                    novelty           REAL,
+                    peak_dimensions   TEXT,
+                    created_at        TEXT DEFAULT (datetime('now')),
+                    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+                )",
+            )?;
+
+            // Step 3: Copy surviving rows
+            conn.execute_batch(
+                "INSERT INTO memory_spectrogram_new
+                 SELECT * FROM memory_spectrogram",
+            )?;
+
+            // Step 4: Drop old, rename new
+            conn.execute_batch(
+                "DROP TABLE memory_spectrogram;
+                 ALTER TABLE memory_spectrogram_new RENAME TO memory_spectrogram",
+            )?;
+
+            // Step 5: Recreate indexes
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_spectrogram_action ON memory_spectrogram(action_type)",
+            )?;
+        }
+
+        // Step 6: Verify integrity — foreign_key_check should return no rows
+        let fk_violations: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        if fk_violations > 0 {
+            conn.execute_batch("ROLLBACK")?;
+            return Err(anyhow::anyhow!(
+                "FK cascade migration failed: {fk_violations} FK violations remain after orphan cleanup"
+            ));
+        }
+
+        conn.execute_batch("COMMIT")?;
+
+        Ok(())
+    }
+
+    /// Audit all FK relationships in the schema for orphaned child rows.
+    /// Returns a list of (relationship_description, orphan_count) pairs.
+    /// This is used as the gate check for enabling PRAGMA foreign_keys=ON (PR 2).
+    pub fn audit_fk_orphans(conn: &Connection) -> anyhow::Result<Vec<(String, i64)>> {
+        let mut results = Vec::new();
+
+        // constellation_fingerprints.anchor_memory_id → memories.id
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM constellation_fingerprints
+             WHERE anchor_memory_id NOT IN (SELECT id FROM memories)",
+            [],
+            |row| row.get(0),
+        )?;
+        results.push((
+            "constellation_fingerprints.anchor_memory_id → memories.id".into(),
+            count,
+        ));
+
+        // constellation_fingerprints.target_memory_id → memories.id
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM constellation_fingerprints
+             WHERE target_memory_id NOT IN (SELECT id FROM memories)",
+            [],
+            |row| row.get(0),
+        )?;
+        results.push((
+            "constellation_fingerprints.target_memory_id → memories.id".into(),
+            count,
+        ));
+
+        // memory_spectrogram.memory_id → memories.id
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory_spectrogram
+             WHERE memory_id NOT IN (SELECT id FROM memories)",
+            [],
+            |row| row.get(0),
+        )?;
+        results.push(("memory_spectrogram.memory_id → memories.id".into(), count));
+
+        // memory_annotations.memory_id → memories.id (already CASCADE, should be 0)
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory_annotations
+             WHERE memory_id NOT IN (SELECT id FROM memories)",
+            [],
+            |row| row.get(0),
+        )?;
+        results.push(("memory_annotations.memory_id → memories.id".into(), count));
+
+        // consolidation_edges.source_key → memories.key (already CASCADE, should be 0)
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM consolidation_edges
+             WHERE source_key NOT IN (SELECT key FROM memories)",
+            [],
+            |row| row.get(0),
+        )?;
+        results.push((
+            "consolidation_edges.source_key → memories.key".into(),
+            count,
+        ));
+
+        // co_retrieval_pairs: no FK constraint, but check logical orphans
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM co_retrieval_pairs
+             WHERE memory_id_a NOT IN (SELECT id FROM memories)
+                OR memory_id_b NOT IN (SELECT id FROM memories)",
+            [],
+            |row| row.get(0),
+        )?;
+        results.push((
+            "co_retrieval_pairs.memory_id_a/b → memories.id (no FK)".into(),
+            count,
+        ));
+
+        Ok(results)
     }
 
     #[cfg(test)]
@@ -4511,5 +4748,334 @@ mod tests {
         assert!(sources.contains("a"));
         assert!(sources.contains("b"));
         assert!(!sources.contains("c"));
+    }
+
+    // ── FK CASCADE migration tests ───────────────────────────────────
+
+    /// Helper: create a DB with the OLD schema (NO CASCADE on fingerprints/spectrogram)
+    /// and insert deliberately orphaned rows.
+    fn create_old_schema_db_with_orphans() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Disable FK enforcement so we can insert orphaned rows for testing
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+
+        // Minimal memories table
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                id TEXT PRIMARY KEY,
+                key TEXT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                wing TEXT,
+                hall TEXT,
+                signal_score REAL DEFAULT 0.5,
+                visibility TEXT NOT NULL DEFAULT 'private',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                source TEXT DEFAULT NULL,
+                device_id BLOB DEFAULT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0
+            );
+            CREATE TABLE constellation_fingerprints (
+                id TEXT PRIMARY KEY,
+                fingerprint_hash TEXT NOT NULL,
+                anchor_memory_id TEXT NOT NULL,
+                target_memory_id TEXT NOT NULL,
+                wing TEXT,
+                anchor_hall TEXT,
+                target_hall TEXT,
+                time_delta_bucket TEXT,
+                created_at TEXT,
+                FOREIGN KEY (anchor_memory_id) REFERENCES memories(id),
+                FOREIGN KEY (target_memory_id) REFERENCES memories(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fp_hash ON constellation_fingerprints(fingerprint_hash);
+            CREATE INDEX IF NOT EXISTS idx_fp_wing_hash ON constellation_fingerprints(wing, fingerprint_hash);
+            CREATE INDEX IF NOT EXISTS idx_fp_wing_anchor_hall ON constellation_fingerprints(wing, anchor_hall);
+            CREATE INDEX IF NOT EXISTS idx_fp_wing_target_hall ON constellation_fingerprints(wing, target_hall);
+            CREATE TABLE memory_spectrogram (
+                memory_id TEXT PRIMARY KEY,
+                entity_density REAL,
+                action_type TEXT,
+                decision_polarity REAL,
+                causal_depth REAL,
+                emotional_valence REAL,
+                temporal_specificity REAL,
+                novelty REAL,
+                peak_dimensions TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (memory_id) REFERENCES memories(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_spectrogram_action ON memory_spectrogram(action_type);
+            CREATE TABLE memory_annotations (
+                id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL,
+                description TEXT NOT NULL,
+                who TEXT NOT NULL,
+                why TEXT NOT NULL,
+                where_ TEXT,
+                when_ TEXT NOT NULL,
+                how TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            );
+            CREATE TABLE consolidation_edges (
+                source_key TEXT NOT NULL,
+                target_key TEXT NOT NULL,
+                consolidated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (source_key, target_key),
+                FOREIGN KEY (source_key) REFERENCES memories(key) ON DELETE CASCADE
+            );
+            CREATE TABLE co_retrieval_pairs (
+                memory_id_a TEXT NOT NULL,
+                memory_id_b TEXT NOT NULL,
+                co_count INTEGER NOT NULL DEFAULT 0,
+                last_updated TEXT NOT NULL,
+                PRIMARY KEY (memory_id_a, memory_id_b)
+            );",
+        )
+        .unwrap();
+
+        // Insert 2 valid memories
+        conn.execute_batch(
+            "INSERT INTO memories (id, key, content) VALUES ('m1', 'k1', 'valid memory 1');
+             INSERT INTO memories (id, key, content) VALUES ('m2', 'k2', 'valid memory 2');",
+        )
+        .unwrap();
+
+        // Insert valid fingerprints (both anchored to existing memories)
+        conn.execute_batch(
+            "INSERT INTO constellation_fingerprints (id, fingerprint_hash, anchor_memory_id, target_memory_id)
+             VALUES ('fp1', 'hash1', 'm1', 'm2');
+             INSERT INTO constellation_fingerprints (id, fingerprint_hash, anchor_memory_id, target_memory_id)
+             VALUES ('fp2', 'hash2', 'm2', 'm1');",
+        )
+        .unwrap();
+
+        // Insert ORPHANED fingerprints (reference non-existent memories)
+        conn.execute_batch(
+            "INSERT INTO constellation_fingerprints (id, fingerprint_hash, anchor_memory_id, target_memory_id)
+             VALUES ('fp_orphan1', 'hash3', 'DELETED_M', 'm1');
+             INSERT INTO constellation_fingerprints (id, fingerprint_hash, anchor_memory_id, target_memory_id)
+             VALUES ('fp_orphan2', 'hash4', 'm1', 'DELETED_M');
+             INSERT INTO constellation_fingerprints (id, fingerprint_hash, anchor_memory_id, target_memory_id)
+             VALUES ('fp_orphan3', 'hash5', 'GONE_A', 'GONE_B');",
+        )
+        .unwrap();
+
+        // Insert valid spectrogram row
+        conn.execute_batch(
+            "INSERT INTO memory_spectrogram (memory_id, entity_density) VALUES ('m1', 0.5)",
+        )
+        .unwrap();
+
+        // Insert ORPHANED spectrogram row
+        conn.execute_batch(
+            "INSERT INTO memory_spectrogram (memory_id, entity_density) VALUES ('DELETED_M', 0.8)",
+        )
+        .unwrap();
+
+        conn
+    }
+
+    #[test]
+    fn fk_cascade_migration_removes_orphans() {
+        let conn = create_old_schema_db_with_orphans();
+
+        // Pre-migration: 5 fingerprints (2 valid + 3 orphans), 2 spectrograms (1 valid + 1 orphan)
+        let fp_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM constellation_fingerprints", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(fp_count, 5, "pre-migration: 5 fingerprints");
+
+        let spec_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_spectrogram", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(spec_count, 2, "pre-migration: 2 spectrograms");
+
+        // Run migration
+        SqliteStore::migrate_fk_cascade(&conn).unwrap();
+
+        // Post-migration: orphans removed
+        let fp_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM constellation_fingerprints", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            fp_count, 2,
+            "post-migration: only 2 valid fingerprints remain"
+        );
+
+        let spec_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_spectrogram", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            spec_count, 1,
+            "post-migration: only 1 valid spectrogram remains"
+        );
+    }
+
+    #[test]
+    fn fk_cascade_migration_surviving_rows_intact() {
+        let conn = create_old_schema_db_with_orphans();
+        SqliteStore::migrate_fk_cascade(&conn).unwrap();
+
+        // Valid fingerprints still present with correct data
+        let hash: String = conn
+            .query_row(
+                "SELECT fingerprint_hash FROM constellation_fingerprints WHERE id = 'fp1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hash, "hash1");
+
+        // Valid spectrogram still present
+        let density: f64 = conn
+            .query_row(
+                "SELECT entity_density FROM memory_spectrogram WHERE memory_id = 'm1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((density - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn fk_cascade_migration_foreign_key_check_clean() {
+        let conn = create_old_schema_db_with_orphans();
+        SqliteStore::migrate_fk_cascade(&conn).unwrap();
+
+        // PRAGMA foreign_key_check should return 0 violations
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0, "no FK violations after migration");
+    }
+
+    #[test]
+    fn fk_cascade_active_after_migration() {
+        let conn = create_old_schema_db_with_orphans();
+        SqliteStore::migrate_fk_cascade(&conn).unwrap();
+
+        // Enable FK enforcement to test CASCADE behavior
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+
+        // Delete parent memory m1 — its fingerprints and spectrogram should cascade-delete
+        conn.execute("DELETE FROM memories WHERE id = 'm1'", [])
+            .unwrap();
+
+        // fp1 (anchor=m1, target=m2) and fp2 (anchor=m2, target=m1) should both be gone
+        // because m1 is referenced as anchor in fp1 and target in fp2
+        let fp_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM constellation_fingerprints", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            fp_count, 0,
+            "CASCADE deleted both fingerprints referencing m1"
+        );
+
+        // Spectrogram for m1 should be gone
+        let spec_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_spectrogram", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(spec_count, 0, "CASCADE deleted spectrogram for m1");
+    }
+
+    #[test]
+    fn fk_cascade_migration_idempotent() {
+        let conn = create_old_schema_db_with_orphans();
+
+        // Run migration twice
+        SqliteStore::migrate_fk_cascade(&conn).unwrap();
+        SqliteStore::migrate_fk_cascade(&conn).unwrap(); // second run: no-op
+
+        // Still 2 valid fingerprints
+        let fp_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM constellation_fingerprints", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(fp_count, 2);
+
+        // Still 1 valid spectrogram
+        let spec_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_spectrogram", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(spec_count, 1);
+
+        // FK check still clean
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+    }
+
+    #[test]
+    fn fk_cascade_ddl_contains_cascade_after_migration() {
+        let conn = create_old_schema_db_with_orphans();
+        SqliteStore::migrate_fk_cascade(&conn).unwrap();
+
+        // Verify the DDL now contains ON DELETE CASCADE
+        let fp_ddl: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='constellation_fingerprints'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let fp_lower = fp_ddl.to_lowercase();
+        assert!(
+            fp_lower.contains("on delete cascade"),
+            "fingerprints DDL should contain CASCADE: {fp_ddl}"
+        );
+
+        let spec_ddl: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_spectrogram'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let spec_lower = spec_ddl.to_lowercase();
+        assert!(
+            spec_lower.contains("on delete cascade"),
+            "spectrogram DDL should contain CASCADE: {spec_ddl}"
+        );
+    }
+
+    #[test]
+    fn audit_fk_orphans_reports_orphans() {
+        let conn = create_old_schema_db_with_orphans();
+
+        // Before migration, audit should find orphans
+        let results = SqliteStore::audit_fk_orphans(&conn).unwrap();
+        let anchor_orphans = results
+            .iter()
+            .find(|(desc, _)| desc.contains("anchor_memory_id"))
+            .unwrap()
+            .1;
+        assert!(anchor_orphans > 0, "should find orphaned anchor references");
+    }
+
+    #[test]
+    fn audit_fk_orphans_clean_after_migration() {
+        let conn = create_old_schema_db_with_orphans();
+        SqliteStore::migrate_fk_cascade(&conn).unwrap();
+
+        // After migration, all FK orphan counts should be 0
+        let results = SqliteStore::audit_fk_orphans(&conn).unwrap();
+        for (desc, count) in &results {
+            assert_eq!(*count, 0, "orphans remain on: {desc}");
+        }
     }
 }
