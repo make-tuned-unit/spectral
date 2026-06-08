@@ -552,111 +552,122 @@ impl SqliteStore {
 
         conn.execute_batch("BEGIN")?;
 
-        if needs_fp_migration {
-            // Step 1: Clean orphans (idempotent — no-op on already-clean DB)
-            conn.execute_batch(
-                "DELETE FROM constellation_fingerprints
-                 WHERE anchor_memory_id NOT IN (SELECT id FROM memories);
-                 DELETE FROM constellation_fingerprints
-                 WHERE target_memory_id NOT IN (SELECT id FROM memories);",
-            )?;
+        // Run the table-rebuild inside a closure so any error triggers ROLLBACK.
+        let rebuild_result: anyhow::Result<()> = (|| {
+            if needs_fp_migration {
+                // Step 1: Clean orphans (idempotent — no-op on already-clean DB)
+                conn.execute_batch(
+                    "DELETE FROM constellation_fingerprints
+                     WHERE anchor_memory_id NOT IN (SELECT id FROM memories);
+                     DELETE FROM constellation_fingerprints
+                     WHERE target_memory_id NOT IN (SELECT id FROM memories);",
+                )?;
 
-            // Step 2: Create new table with CASCADE FKs
-            conn.execute_batch(
-                "CREATE TABLE constellation_fingerprints_new (
-                    id                TEXT PRIMARY KEY,
-                    fingerprint_hash  TEXT NOT NULL,
-                    anchor_memory_id  TEXT NOT NULL,
-                    target_memory_id  TEXT NOT NULL,
-                    wing              TEXT,
-                    anchor_hall       TEXT,
-                    target_hall       TEXT,
-                    time_delta_bucket TEXT,
-                    created_at        TEXT,
-                    FOREIGN KEY (anchor_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
-                    FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
-                )",
-            )?;
+                // Step 2: Create new table with CASCADE FKs
+                conn.execute_batch(
+                    "CREATE TABLE constellation_fingerprints_new (
+                        id                TEXT PRIMARY KEY,
+                        fingerprint_hash  TEXT NOT NULL,
+                        anchor_memory_id  TEXT NOT NULL,
+                        target_memory_id  TEXT NOT NULL,
+                        wing              TEXT,
+                        anchor_hall       TEXT,
+                        target_hall       TEXT,
+                        time_delta_bucket TEXT,
+                        created_at        TEXT,
+                        FOREIGN KEY (anchor_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+                        FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+                    )",
+                )?;
 
-            // Step 3: Copy surviving rows
-            conn.execute_batch(
-                "INSERT INTO constellation_fingerprints_new
-                 SELECT * FROM constellation_fingerprints",
-            )?;
+                // Step 3: Copy surviving rows
+                conn.execute_batch(
+                    "INSERT INTO constellation_fingerprints_new
+                     SELECT * FROM constellation_fingerprints",
+                )?;
 
-            // Step 4: Drop old, rename new
-            conn.execute_batch(
-                "DROP TABLE constellation_fingerprints;
-                 ALTER TABLE constellation_fingerprints_new RENAME TO constellation_fingerprints",
-            )?;
+                // Step 4: Drop old, rename new
+                conn.execute_batch(
+                    "DROP TABLE constellation_fingerprints;
+                     ALTER TABLE constellation_fingerprints_new RENAME TO constellation_fingerprints",
+                )?;
 
-            // Step 5: Recreate indexes
-            conn.execute_batch(
-                "CREATE INDEX IF NOT EXISTS idx_fp_hash ON constellation_fingerprints(fingerprint_hash);
-                 CREATE INDEX IF NOT EXISTS idx_fp_wing_hash
-                     ON constellation_fingerprints(wing, fingerprint_hash);
-                 CREATE INDEX IF NOT EXISTS idx_fp_wing_anchor_hall
-                     ON constellation_fingerprints(wing, anchor_hall);
-                 CREATE INDEX IF NOT EXISTS idx_fp_wing_target_hall
-                     ON constellation_fingerprints(wing, target_hall)",
-            )?;
+                // Step 5: Recreate indexes
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_fp_hash ON constellation_fingerprints(fingerprint_hash);
+                     CREATE INDEX IF NOT EXISTS idx_fp_wing_hash
+                         ON constellation_fingerprints(wing, fingerprint_hash);
+                     CREATE INDEX IF NOT EXISTS idx_fp_wing_anchor_hall
+                         ON constellation_fingerprints(wing, anchor_hall);
+                     CREATE INDEX IF NOT EXISTS idx_fp_wing_target_hall
+                         ON constellation_fingerprints(wing, target_hall)",
+                )?;
+            }
+
+            if needs_spec_migration {
+                // Step 1: Clean orphans
+                conn.execute_batch(
+                    "DELETE FROM memory_spectrogram
+                     WHERE memory_id NOT IN (SELECT id FROM memories)",
+                )?;
+
+                // Step 2: Create new table with CASCADE FK
+                conn.execute_batch(
+                    "CREATE TABLE memory_spectrogram_new (
+                        memory_id         TEXT PRIMARY KEY,
+                        entity_density    REAL,
+                        action_type       TEXT,
+                        decision_polarity REAL,
+                        causal_depth      REAL,
+                        emotional_valence REAL,
+                        temporal_specificity REAL,
+                        novelty           REAL,
+                        peak_dimensions   TEXT,
+                        created_at        TEXT DEFAULT (datetime('now')),
+                        FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+                    )",
+                )?;
+
+                // Step 3: Copy surviving rows
+                conn.execute_batch(
+                    "INSERT INTO memory_spectrogram_new
+                     SELECT * FROM memory_spectrogram",
+                )?;
+
+                // Step 4: Drop old, rename new
+                conn.execute_batch(
+                    "DROP TABLE memory_spectrogram;
+                     ALTER TABLE memory_spectrogram_new RENAME TO memory_spectrogram",
+                )?;
+
+                // Step 5: Recreate indexes
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_spectrogram_action ON memory_spectrogram(action_type)",
+                )?;
+            }
+
+            // Step 6: Verify integrity — foreign_key_check should return no rows
+            let fk_violations: i64 =
+                conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get(0)
+                })?;
+            if fk_violations > 0 {
+                return Err(anyhow::anyhow!(
+                    "FK cascade migration: {fk_violations} FK violations remain after orphan cleanup"
+                ));
+            }
+
+            Ok(())
+        })();
+
+        match rebuild_result {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                // Explicit rollback on ANY error during the rebuild.
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
         }
-
-        if needs_spec_migration {
-            // Step 1: Clean orphans
-            conn.execute_batch(
-                "DELETE FROM memory_spectrogram
-                 WHERE memory_id NOT IN (SELECT id FROM memories)",
-            )?;
-
-            // Step 2: Create new table with CASCADE FK
-            conn.execute_batch(
-                "CREATE TABLE memory_spectrogram_new (
-                    memory_id         TEXT PRIMARY KEY,
-                    entity_density    REAL,
-                    action_type       TEXT,
-                    decision_polarity REAL,
-                    causal_depth      REAL,
-                    emotional_valence REAL,
-                    temporal_specificity REAL,
-                    novelty           REAL,
-                    peak_dimensions   TEXT,
-                    created_at        TEXT DEFAULT (datetime('now')),
-                    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-                )",
-            )?;
-
-            // Step 3: Copy surviving rows
-            conn.execute_batch(
-                "INSERT INTO memory_spectrogram_new
-                 SELECT * FROM memory_spectrogram",
-            )?;
-
-            // Step 4: Drop old, rename new
-            conn.execute_batch(
-                "DROP TABLE memory_spectrogram;
-                 ALTER TABLE memory_spectrogram_new RENAME TO memory_spectrogram",
-            )?;
-
-            // Step 5: Recreate indexes
-            conn.execute_batch(
-                "CREATE INDEX IF NOT EXISTS idx_spectrogram_action ON memory_spectrogram(action_type)",
-            )?;
-        }
-
-        // Step 6: Verify integrity — foreign_key_check should return no rows
-        let fk_violations: i64 =
-            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get(0)
-            })?;
-        if fk_violations > 0 {
-            conn.execute_batch("ROLLBACK")?;
-            return Err(anyhow::anyhow!(
-                "FK cascade migration failed: {fk_violations} FK violations remain after orphan cleanup"
-            ));
-        }
-
-        conn.execute_batch("COMMIT")?;
 
         Ok(())
     }
