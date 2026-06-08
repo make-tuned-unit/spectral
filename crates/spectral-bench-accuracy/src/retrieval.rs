@@ -350,6 +350,8 @@ pub fn retrieve_topk_fts(
     config: &RetrievalConfig,
     question_date: Option<&str>,
 ) -> Result<(Vec<String>, Vec<MemoryHit>)> {
+    // Floor at 40: prevents CLI overrides (e.g. --max-results 20) from cutting
+    // temporal evidence turns that rank at FTS position 21-40 after reranking.
     let output_size = config.max_results.max(40);
     let topk_config = RecallTopKConfig {
         k: output_size,
