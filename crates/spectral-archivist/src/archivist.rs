@@ -125,6 +125,7 @@ impl Archivist {
         config: ArchivistConfig,
     ) -> anyhow::Result<Self> {
         let conn = Connection::open(memory_db_path)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON")?;
         Ok(Self {
             conn,
             config,
