@@ -331,9 +331,15 @@ pub struct RecallTopKConfig {
     pub apply_entity_resolution: bool,
     /// Collapse `[Memory context]` reference duplicates. Default true.
     pub apply_context_dedup: bool,
-    /// Time anchor for recency decay. `None` = `Utc::now()`.
-    /// Set this to the question/query date when scoring historical data
-    /// so recency decay reflects distance from the question, not wall-clock.
+    /// Time anchor for recency decay.
+    ///
+    /// **`None` silently falls back to `Utc::now()` at re-ranking time.**
+    /// This is correct for live queries but silently wrong for historical
+    /// replay — recency decay will measure distance from wall-clock rather
+    /// than from the query's temporal context.
+    ///
+    /// Callers scoring historical data (bench, import replay, time-travel
+    /// queries) **must** set this to the question/query date.
     pub now: Option<chrono::DateTime<chrono::Utc>>,
 }
 
