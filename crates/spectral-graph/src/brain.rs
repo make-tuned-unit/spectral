@@ -989,10 +989,28 @@ impl Brain {
     /// have not been reinforced recently receive a gentle penalty (1% per week,
     /// capped at 50% of the original score). Reinforce useful results via
     /// `Brain::reinforce()` to lift them back up.
+    ///
+    /// **Time anchor defaults to `Utc::now()`**, which is correct for live
+    /// queries but wrong for historical replay. Use [`recall_at()`](Self::recall_at)
+    /// to anchor decay to a specific point in time.
     pub fn recall(
         &self,
         query: &str,
         context_visibility: Visibility,
+    ) -> Result<HybridRecallResult, Error> {
+        self.recall_at(query, context_visibility, Utc::now())
+    }
+
+    /// Hybrid recall with an explicit time anchor for recency decay.
+    ///
+    /// Identical to [`recall()`](Self::recall) but uses `now` instead of
+    /// `Utc::now()` for signal-score decay, so historical/replay queries
+    /// measure recency from the query date rather than wall-clock.
+    pub fn recall_at(
+        &self,
+        query: &str,
+        context_visibility: Visibility,
+        now: DateTime<Utc>,
     ) -> Result<HybridRecallResult, Error> {
         let tact = self
             .rt
@@ -1006,7 +1024,6 @@ impl Brain {
         // Filter by visibility, then apply time-based decay to signal scores.
         // Consolidated sources are already excluded at the SQL layer
         // (NOT IN consolidation_edges on fingerprint_search and fts_search).
-        let now = Utc::now();
         let memory_hits: Vec<_> = tact
             .memories
             .iter()
@@ -1034,9 +1051,19 @@ impl Brain {
 
     /// Convenience: recall with maximally-permissive context (returns everything).
     ///
-    /// Equivalent to `recall(query, Visibility::Private)`.
+    /// **Time anchor defaults to `Utc::now()`** — see [`recall()`](Self::recall).
+    /// Use [`recall_local_at()`](Self::recall_local_at) for historical queries.
     pub fn recall_local(&self, query: &str) -> Result<HybridRecallResult, Error> {
         self.recall(query, Visibility::Private)
+    }
+
+    /// Convenience: [`recall_at()`](Self::recall_at) with `Visibility::Private`.
+    pub fn recall_local_at(
+        &self,
+        query: &str,
+        now: DateTime<Utc>,
+    ) -> Result<HybridRecallResult, Error> {
+        self.recall_at(query, Visibility::Private, now)
     }
 
     /// Run TACT retrieval with a custom max_results (overriding the Brain's
