@@ -6,6 +6,16 @@ Format per item: title, source, effort estimate, dependencies, why it matters, e
 
 ---
 
+## 2026-06-10 update — two decisions ratified
+
+### Closed items
+
+**feat/temporal-synthesis-pipeline: CLOSED (negative result).** The extract→operate pipeline for temporal OPERATION cases measured 7/26 best-case against a 20/20 pre-committed kill criterion. RUN_NOTES recorded the shelving rationale: extraction from monolithic context drowns the model; chunked per-session extraction exposes a recall-vs-precision tradeoff with no sweet spot; code-side qualification ceilings at 5/26; LLM qualification broke cases code got right. Remote branch deleted. Do not re-attempt without new evidence.
+
+**n=500 bench: no descriptions.** Description density (qwen2.5:7b via Ollama) is NOT a prerequisite for the n=500 bench. Descriptions were measured as retrieval-neutral (RUN_NOTES: "INERT — retrieval-neutral, not the regression cause, not a lever"). The n=500 run proceeds without `--descriptions`. Full-corpus description generation moves to post-bench backlog as a future measured ablation.
+
+---
+
 ## 2026-05-11 update — bench checkpoint complete, three PRs shipped
 
 Today's shipping landed three PRs and an empirical baseline. State of `main` is now `e9a80d8` (post-#85) plus PR #86 in flight (proposal approved, implementation underway).
