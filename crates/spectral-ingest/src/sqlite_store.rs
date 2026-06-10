@@ -123,6 +123,10 @@ impl SqliteStore {
         Self::init_schema(&conn)?;
         Self::migrate_provenance_columns(&conn)?;
         Self::migrate_fk_cascade(&conn)?;
+        // Enable FK enforcement AFTER all migrations complete (migrate_fk_cascade
+        // turns FK OFF for table rebuilds). This is per-connection in SQLite and
+        // must be set on every connection before any DML runs.
+        conn.execute_batch("PRAGMA foreign_keys = ON")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             wing_cache: Arc::new(Mutex::new(LruCache::new(
@@ -137,6 +141,7 @@ impl SqliteStore {
         Self::init_schema(&conn)?;
         Self::migrate_provenance_columns(&conn)?;
         Self::migrate_fk_cascade(&conn)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             wing_cache: Arc::new(Mutex::new(LruCache::new(
