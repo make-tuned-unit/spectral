@@ -2878,10 +2878,8 @@ name = "spectral-cascade"
 version = "0.0.1"
 dependencies = [
  "chrono",
- "serde",
  "serde_json",
  "spectral-ingest",
- "thiserror",
 ]
 
 [[package]]

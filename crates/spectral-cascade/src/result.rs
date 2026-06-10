@@ -1,23 +1,18 @@
-//! Cascade result types.
+//! Pipeline result types.
 
-use crate::{LayerId, LayerResult};
 use spectral_ingest::MemoryHit;
 
-/// Outcome of a full cascade run.
+/// Outcome of a retrieval pipeline run.
 pub struct CascadeResult {
-    /// Per-layer outcomes in execution order.
-    pub layer_outcomes: Vec<(LayerId, LayerResult)>,
-    /// Merged hits from all layers, deduplicated by memory id.
+    /// Merged hits from retrieval, deduplicated by memory id.
     pub merged_hits: Vec<MemoryHit>,
-    /// Total tokens consumed across all layers.
+    /// Estimated tokens consumed (content_len / 4 + 5 per hit).
     pub total_tokens_used: usize,
-    /// If the cascade stopped early, which layer caused it.
-    pub stopped_at: Option<LayerId>,
-    /// Highest confidence reported by any layer.
+    /// Highest composite score among returned hits.
     pub max_confidence: f64,
-    /// Total LLM tokens consumed during recognition across all layers.
-    /// Current layers (AAAK, Episode, Constellation) all report 0 since
-    /// they use no LLMs — this is the empirical proof artifact for the
-    /// zero-LLM recognition claim.
+    /// Total LLM tokens consumed during retrieval. Structurally zero:
+    /// no `Brain::recall_*()` method makes an LLM call. This field is
+    /// the load-bearing receipt for the "no LLM in the recall path"
+    /// commitment — it exists so consumers can assert it equals 0.
     pub total_recognition_token_cost: usize,
 }

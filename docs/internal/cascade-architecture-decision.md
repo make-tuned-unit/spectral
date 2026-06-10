@@ -223,3 +223,7 @@ These require different designs. (1) is already solved. (2) involves schema chan
 - **If pipeline telemetry proves insufficient** for debugging retrieval quality after the PR #88 fix, the orchestrator's per-layer outcome model could be worth revisiting.
 
 Neither condition is imminent.
+
+---
+
+**2026-06-09 — Dead code removed** (`chore/cascade-reality-alignment`). Deleted `orchestrator.rs`, `LayerId`, `LayerResult`, `Layer` trait, and `CascadeConfig`. Simplified `CascadeResult` (removed `layer_outcomes`, `stopped_at`). Crate docs rewritten to describe the shipped single-pipeline architecture. Prior code recoverable via git history.

@@ -421,19 +421,17 @@ pub fn retrieve_graph(
     Ok(memories)
 }
 
-/// Telemetry from a cascade retrieval run.
+/// Telemetry from a retrieval pipeline run.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CascadeTelemetry {
-    pub stopped_at: Option<String>,
     pub max_confidence: f64,
     pub total_tokens_used: usize,
-    /// Total LLM tokens consumed during recognition across all layers.
-    /// Expected to be 0 for all current layers (empirical proof artifact).
+    /// Total LLM tokens consumed during retrieval. Structurally zero:
+    /// no Brain::recall_*() method makes an LLM call.
     pub total_recognition_token_cost: usize,
     /// Question-type classification used for routing (e.g. "Counting").
     #[serde(default)]
     pub question_type: Option<String>,
-    pub layer_outcomes: Vec<(String, String)>,
 }
 
 /// Retrieve memories via the cascade with question-type-aware routing.
@@ -463,29 +461,10 @@ pub fn retrieve_cascade(
 
     // Capture telemetry before consuming merged_hits
     let telemetry = CascadeTelemetry {
-        stopped_at: result.stopped_at.map(|id| id.to_string()),
         max_confidence: result.max_confidence,
         total_tokens_used: result.total_tokens_used,
         total_recognition_token_cost: result.total_recognition_token_cost,
         question_type: Some(format!("{qtype:?}")),
-        layer_outcomes: result
-            .layer_outcomes
-            .iter()
-            .map(|(id, r)| {
-                let status = match r {
-                    spectral_cascade::LayerResult::Sufficient { confidence, .. } => {
-                        format!("sufficient(confidence={confidence:.2})")
-                    }
-                    spectral_cascade::LayerResult::Partial { confidence, .. } => {
-                        format!("partial(confidence={confidence:.2})")
-                    }
-                    spectral_cascade::LayerResult::Skipped { reason, .. } => {
-                        format!("skipped({reason})")
-                    }
-                };
-                (id.to_string(), status)
-            })
-            .collect(),
     };
 
     // P2: Session-grouped formatting

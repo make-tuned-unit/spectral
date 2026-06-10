@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use chrono::{TimeZone, Utc};
-use spectral_cascade::orchestrator::CascadeConfig;
 use spectral_cascade::RecognitionContext;
 use spectral_core::device_id::DeviceId;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, RecallTopKConfig, RememberOpts};
+use spectral_graph::cascade_layers::CascadePipelineConfig;
 use spectral_tact::TactConfig;
 use tempfile::TempDir;
 
@@ -777,7 +777,7 @@ fn recall_cascade_produces_hits() {
         )
         .unwrap();
 
-    let config = CascadeConfig::default();
+    let config = CascadePipelineConfig::default();
     let result = brain
         .recall_cascade(
             "cascade architecture retrieval",
@@ -811,7 +811,7 @@ fn recall_cascade_accepts_context() {
         )
         .unwrap();
 
-    let config = CascadeConfig::default();
+    let config = CascadePipelineConfig::default();
 
     // Empty context
     let result = brain
@@ -862,7 +862,7 @@ fn recall_cascade_returns_diverse_episodes() {
         )
         .unwrap();
 
-    let config = CascadeConfig::default();
+    let config = CascadePipelineConfig::default();
     let result = brain
         .recall_cascade(
             "development coding debugging",
@@ -926,7 +926,7 @@ fn cascade_pipeline_returns_results() {
         )
         .unwrap();
 
-    let config = spectral_cascade::orchestrator::CascadeConfig::default();
+    let config = CascadePipelineConfig::default();
     let result = brain
         .recall_cascade(
             "PostgreSQL production database",
@@ -963,7 +963,7 @@ fn cascade_pipeline_returns_more_than_five_results() {
             .unwrap();
     }
 
-    let config = spectral_cascade::orchestrator::CascadeConfig::default();
+    let config = CascadePipelineConfig::default();
     let result = brain
         .recall_cascade(
             "pipeline architecture design milestone",
@@ -1099,7 +1099,7 @@ fn cascade_auto_reinforces_returned_memories() {
 
     // Run cascade recall — should auto-reinforce
     let context = RecognitionContext::empty();
-    let config = CascadeConfig::default();
+    let config = CascadePipelineConfig::default();
     let result = brain
         .recall_cascade("auth service Rust", &context, &config)
         .unwrap();
@@ -1138,7 +1138,7 @@ fn cascade_logs_retrieval_event() {
 
     // Cascade recall should log a retrieval event
     let context = RecognitionContext::empty();
-    let config = CascadeConfig::default();
+    let config = CascadePipelineConfig::default();
     let _ = brain
         .recall_cascade("jogging morning health", &context, &config)
         .unwrap();
@@ -1294,7 +1294,7 @@ fn brain_related_memories_after_cascade_retrievals() {
         .unwrap();
 
     // Run cascade retrievals that will return overlapping subsets
-    let cascade_config = CascadeConfig::default();
+    let cascade_config = CascadePipelineConfig::default();
     let ctx = RecognitionContext::empty();
     let _ = brain.recall_cascade("Rust programming", &ctx, &cascade_config);
     let _ = brain.recall_cascade("editor setup Rust", &ctx, &cascade_config);
@@ -1341,7 +1341,7 @@ fn cascade_with_session_id_logs_session_attribution() {
         .unwrap();
 
     let ctx = RecognitionContext::empty().with_session("test-session-42");
-    let cascade_config = CascadeConfig::default();
+    let cascade_config = CascadePipelineConfig::default();
     let _ = brain.recall_cascade("hiking mountains", &ctx, &cascade_config);
 
     let events = brain.events_for_session("test-session-42", 100).unwrap();
@@ -1381,7 +1381,7 @@ fn memories_for_session_aggregates_across_cascades() {
         .unwrap();
 
     let ctx = RecognitionContext::empty().with_session("agg-session");
-    let cascade_config = CascadeConfig::default();
+    let cascade_config = CascadePipelineConfig::default();
 
     // Two cascades in the same session with different queries
     let _ = brain.recall_cascade("Python data science", &ctx, &cascade_config);
@@ -1451,7 +1451,7 @@ fn co_retrieval_boost_lifts_co_retrieved_memories_in_cascade() {
     // Run cascade queries that return overlapping subsets.
     // "Rust programming editor Neovim" should co-retrieve
     // cr-rust and cr-editor but not cr-commute.
-    let cascade_config = CascadeConfig::default();
+    let cascade_config = CascadePipelineConfig::default();
     let ctx = RecognitionContext::empty();
     for _ in 0..5 {
         let _ = brain.recall_cascade("Rust programming editor Neovim", &ctx, &cascade_config);
@@ -1593,7 +1593,7 @@ fn compute_co_retrieval_boosts_normalization_and_edge_cases() {
 
     // Cascade queries that co-retrieve a+b more often than a+c.
     // "breakfast" matches a+b but not c; "like" matches all three.
-    let cascade_config = CascadeConfig::default();
+    let cascade_config = CascadePipelineConfig::default();
     let ctx = RecognitionContext::empty();
     for _ in 0..5 {
         let _ = brain.recall_cascade("breakfast apples bananas", &ctx, &cascade_config);

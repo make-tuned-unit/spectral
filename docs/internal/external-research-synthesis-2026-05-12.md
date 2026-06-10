@@ -222,7 +222,7 @@ Spectral's five architectural commitments:
 
 **Evidence**: MPQE reports 3-17% improvement in BM25 effectiveness on MS MARCO and TREC DL benchmarks. HyDE (Hypothetical Document Embeddings) is a well-validated technique, though originally designed for vector retrieval.
 
-**Applicability**: **Incompatible**. Requires an LLM call in the retrieval path, violating commitment #1 (deterministic recognition; no LLM-in-loop except in the actor). The LLM call would be a query expansion step before FTS, which is definitionally LLM-in-loop retrieval.
+**Applicability**: **Shipped (PR #157, +5.3pp accuracy).** Query expansion lives in `spectral-bench-accuracy/src/expansion.rs` as a consumer-side pre-retrieval step, OFF by default in the library (`ExpansionConfig.enabled = false`), ON by default in the bench CLI (`--no-expand-queries` to disable). The core commitment is preserved: no `Brain::recall_*()` method makes an LLM call; `total_recognition_token_cost` is structurally zero. Expansion runs *before* the recall entry point, not inside it.
 
 ### Technique 4: Multi-Signal Retrieval Fusion
 
@@ -250,7 +250,7 @@ Spectral's five architectural commitments:
 |-----------|--------|---------------------------|------|
 | Contextual BM25 (document enrichment) | Compatible (= item #8) | High — Anthropic-validated, maps to existing infra | Librarian pipeline + FTS index change |
 | WordNet query expansion | Compatible | Low-medium — general synonyms may not bridge domain gaps | WordNet integration |
-| LLM query expansion (HyDE) | Incompatible | N/A — violates no-LLM-in-loop | N/A |
+| LLM query expansion (HyDE) | Shipped (PR #157) | +5.3pp — consumer-side pre-retrieval, core recall path LLM-free | Haiku call per question |
 | Multi-signal fusion | Partially compatible (no vectors) | Medium — Spectral already does this; adding more signals helps | Per-signal implementation |
 | Session-level summary indexing | Compatible with modifications (= item #12) | Medium-high — broader vocabulary at session granularity | Summary generation + schema change |
 

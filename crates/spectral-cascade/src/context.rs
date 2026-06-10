@@ -3,17 +3,16 @@
 use chrono::{DateTime, Utc};
 use spectral_ingest::activity::ActivityEpisode;
 
-/// Ambient state carried into cascade recognition.
+/// Ambient state carried into retrieval pipeline re-ranking.
 ///
 /// Empty context ([`RecognitionContext::empty()`]) means no ambient signal
 /// is available — used by ad-hoc queries, the bench harness, and any
 /// caller without continuous-awareness data.
 ///
 /// Populated context carries recent activity, current time, optional
-/// wing focus, and optional persona. Layers use this to condition
-/// recognition decisions: AAAK filters by current activity wing,
-/// EpisodeLayer scores by recency-to-now, etc. (Behavior change ships
-/// in subsequent PRs; this PR adds the primitive only.)
+/// wing focus, and optional persona. The re-ranking pipeline uses this
+/// for ambient boost (wing alignment), recency anchoring, and session
+/// tagging on retrieval events.
 #[derive(Debug, Clone)]
 pub struct RecognitionContext {
     /// Recent activity episodes (typically last N minutes from the

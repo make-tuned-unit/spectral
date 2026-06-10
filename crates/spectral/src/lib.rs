@@ -301,7 +301,7 @@ impl Brain {
         self.inner.recall_topk_fts(query, config, visibility)
     }
 
-    /// Run the integrated cascade pipeline with ambient boost.
+    /// Run the integrated retrieval pipeline with ambient boost.
     ///
     /// Unlike [`recall()`](Brain::recall), this path takes a
     /// [`RecognitionContext`](spectral_graph::RecognitionContext) and applies
@@ -310,7 +310,7 @@ impl Brain {
         &self,
         query: &str,
         context: &spectral_graph::RecognitionContext,
-        config: &spectral_cascade::orchestrator::CascadeConfig,
+        config: &spectral_graph::cascade_layers::CascadePipelineConfig,
     ) -> Result<spectral_cascade::result::CascadeResult, Error> {
         self.inner.recall_cascade(query, context, config)
     }

@@ -203,7 +203,7 @@ fn events_for_session_returns_logged_events() {
 
     // Trigger a cascade recall with a session_id to log a session-tagged event.
     let ctx = spectral::graph::RecognitionContext::empty().with_session("test-sess-1");
-    let cfg = spectral_cascade::orchestrator::CascadeConfig::default();
+    let cfg = spectral_graph::cascade_layers::CascadePipelineConfig::default();
     let _ = brain.recall_cascade("Rust language", &ctx, &cfg);
 
     let events = brain.events_for_session("test-sess-1", 100).unwrap();
@@ -231,7 +231,7 @@ fn memories_for_session_returns_surfaced_ids() {
     seed(&brain);
 
     let ctx = spectral::graph::RecognitionContext::empty().with_session("test-sess-2");
-    let cfg = spectral_cascade::orchestrator::CascadeConfig::default();
+    let cfg = spectral_graph::cascade_layers::CascadePipelineConfig::default();
     let _ = brain.recall_cascade("Rust language", &ctx, &cfg);
 
     let mems = brain.memories_for_session("test-sess-2").unwrap();

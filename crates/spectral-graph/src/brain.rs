@@ -1191,47 +1191,25 @@ impl Brain {
         Ok(results)
     }
 
-    /// Run the integrated cascade pipeline: FTS K=40 → ambient boost →
-    /// signal/recency re-ranking → episode diversity → dedup.
+    /// Run the integrated retrieval pipeline with ambient boost.
     ///
-    /// Single retrieval path using all Spectral subsystems. No redundant FTS,
-    /// no AAAK contamination, no episode truncation.
+    /// TACT tiered search (fingerprint → wing → FTS fallback) supplemented
+    /// by raw FTS, then unified re-ranking: signal blend, ambient boost,
+    /// declarative density, co-retrieval, recency decay, entity cluster
+    /// boost, episode diversity cap, context chain dedup.
     pub fn recall_cascade(
         &self,
         query: &str,
         context: &spectral_cascade::RecognitionContext,
-        config: &spectral_cascade::orchestrator::CascadeConfig,
+        pipeline_config: &crate::cascade_layers::CascadePipelineConfig,
     ) -> Result<spectral_cascade::result::CascadeResult, Error> {
-        let pipeline_config = crate::cascade_layers::CascadePipelineConfig {
-            k: config.total_budget.clamp(20, 40),
-            ..Default::default()
-        };
-
-        let hits =
-            crate::cascade_layers::run_cascade_pipeline(self, query, context, &pipeline_config)?;
-
-        // Wrap in CascadeResult for backwards compatibility
-        let tokens_used = hits.iter().map(|h| h.content.len() / 4 + 5).sum();
-        let max_confidence = hits
-            .first()
-            .map(|h| h.signal_score.min(0.85))
-            .unwrap_or(0.0);
-
-        Ok(spectral_cascade::result::CascadeResult {
-            layer_outcomes: Vec::new(), // Pipeline doesn't use layer abstraction
-            merged_hits: hits,
-            total_tokens_used: tokens_used,
-            stopped_at: None,
-            max_confidence,
-            total_recognition_token_cost: 0,
-        })
+        self.recall_cascade_with_pipeline(query, context, pipeline_config)
     }
 
-    /// Run the cascade pipeline with a caller-supplied pipeline config.
+    /// Run the retrieval pipeline with a caller-supplied pipeline config.
     ///
-    /// Unlike `recall_cascade` which derives config from `CascadeConfig`,
-    /// this method accepts a `CascadePipelineConfig` directly, allowing
-    /// the bench harness to pass question-type-tuned profiles.
+    /// The bench harness uses this to pass question-type-tuned profiles
+    /// (varying K, episode diversity, recency half-life per question shape).
     pub fn recall_cascade_with_pipeline(
         &self,
         query: &str,
@@ -1248,10 +1226,8 @@ impl Brain {
             .unwrap_or(0.0);
 
         Ok(spectral_cascade::result::CascadeResult {
-            layer_outcomes: Vec::new(),
             merged_hits: hits,
             total_tokens_used: tokens_used,
-            stopped_at: None,
             max_confidence,
             total_recognition_token_cost: 0,
         })
