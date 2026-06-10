@@ -5,13 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Cascade orchestrator for Spectral: ordered recognition layers with token budgets."
+description = "Recognition context and result types for Spectral's retrieval pipeline."
 
 [dependencies]
 spectral-ingest = { path = "../spectral-ingest" }
-serde = { workspace = true }
 chrono = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
