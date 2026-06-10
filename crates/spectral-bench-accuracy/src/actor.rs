@@ -1,21 +1,31 @@
 //! Actor LLM trait — given a question and retrieved memories, produce an answer.
 
+use crate::report::TokenUsage;
 use crate::retrieval::QuestionType;
 use anyhow::Result;
 
 /// Actor that synthesizes an answer from retrieved memories.
 pub trait Actor: Send + Sync {
     /// Given a question, the question's date context, retrieved memories, and
-    /// classified question shape, produce an answer.
+    /// classified question shape, produce an answer and optional API token usage.
     fn answer(
         &self,
         question: &str,
         question_date: &str,
         memories: &[String],
         shape: QuestionType,
-    ) -> Result<String>;
+    ) -> Result<(String, Option<TokenUsage>)>;
     /// Identifier for the report.
     fn name(&self) -> &str;
+}
+
+/// Extract token usage from an Anthropic API response JSON.
+fn extract_usage(json: &serde_json::Value) -> Option<TokenUsage> {
+    let usage = json.get("usage")?;
+    Some(TokenUsage {
+        input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()),
+        output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()),
+    })
 }
 
 /// Actor that calls the Anthropic Messages API.
@@ -36,8 +46,11 @@ impl AnthropicActor {
         }
     }
 
-    /// Send a pre-built request body to the Anthropic API and return the text.
-    pub fn call_raw(&self, body: &serde_json::Value) -> anyhow::Result<String> {
+    /// Send a pre-built request body to the Anthropic API and return the text + usage.
+    pub fn call_raw(
+        &self,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<(String, Option<TokenUsage>)> {
         let resp = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
@@ -58,10 +71,12 @@ impl AnthropicActor {
         }
 
         let json: serde_json::Value = resp.json()?;
-        json["content"][0]["text"]
+        let usage = extract_usage(&json);
+        let text = json["content"][0]["text"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("Response missing content[0].text"))
+            .ok_or_else(|| anyhow::anyhow!("Response missing content[0].text"))?;
+        Ok((text, usage))
     }
 
     pub fn from_env() -> Result<Self> {
@@ -82,7 +97,7 @@ impl Actor for AnthropicActor {
         question_date: &str,
         memories: &[String],
         shape: QuestionType,
-    ) -> Result<String> {
+    ) -> Result<(String, Option<TokenUsage>)> {
         let memories_text = memories.join("\n");
         let template = shape.prompt_content();
         let prompt = template
@@ -116,6 +131,7 @@ impl Actor for AnthropicActor {
         }
 
         let json: serde_json::Value = resp.json()?;
+        let usage = extract_usage(&json);
         let text = json["content"][0]["text"]
             .as_str()
             .ok_or_else(|| {
@@ -125,7 +141,7 @@ impl Actor for AnthropicActor {
                 )
             })?
             .to_string();
-        Ok(text)
+        Ok((text, usage))
     }
 
     fn name(&self) -> &str {
@@ -153,8 +169,8 @@ impl Actor for MockActor {
         _question_date: &str,
         _memories: &[String],
         _shape: QuestionType,
-    ) -> Result<String> {
-        Ok(self.response.clone())
+    ) -> Result<(String, Option<TokenUsage>)> {
+        Ok((self.response.clone(), None))
     }
 
     fn name(&self) -> &str {

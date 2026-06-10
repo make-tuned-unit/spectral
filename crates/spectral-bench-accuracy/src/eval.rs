@@ -116,6 +116,8 @@ struct SingleResult {
     outcome_class: crate::report::OutcomeClass,
     /// Rendered memories text for replay.
     actor_context: String,
+    /// Per-question efficiency metrics.
+    efficiency: Option<crate::report::EfficiencyMetrics>,
 }
 
 impl AccuracyEval {
@@ -228,6 +230,7 @@ impl AccuracyEval {
                         r.outcome_class,
                         Some(r.actor_context),
                         question.question_date.clone(),
+                        r.efficiency,
                     );
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
@@ -261,6 +264,7 @@ impl AccuracyEval {
                         crate::report::OutcomeClass::TransportFailure,
                         None,
                         question.question_date.clone(),
+                        None,
                     );
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
@@ -306,20 +310,29 @@ impl AccuracyEval {
         }
 
         // Query expansion: augment question with synonym/domain terms for FTS
-        let retrieval_query = if let Some(ref exp_config) = self.expansion {
-            match crate::expansion::expand_query(&question.question, exp_config) {
-                Ok(expanded) => expanded,
-                Err(e) => {
-                    eprintln!(
-                        "  [expansion] {}: expansion failed, using original: {e}",
-                        question.question_id
-                    );
-                    question.question.clone()
+        let (retrieval_query, expansion_usage, expansion_wall_ms) =
+            if let Some(ref exp_config) = self.expansion {
+                let t = std::time::Instant::now();
+                match crate::expansion::expand_query(&question.question, exp_config) {
+                    Ok((expanded, usage)) => {
+                        let wall = t.elapsed().as_millis() as u64;
+                        (expanded, usage, wall)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "  [expansion] {}: expansion failed, using original: {e}",
+                            question.question_id
+                        );
+                        (
+                            question.question.clone(),
+                            None,
+                            t.elapsed().as_millis() as u64,
+                        )
+                    }
                 }
-            }
-        } else {
-            question.question.clone()
-        };
+            } else {
+                (question.question.clone(), None, 0)
+            };
 
         // Classify question shape for routing (use original question, not expanded)
         let qtype = retrieval::QuestionType::classify(&question.question);
@@ -351,6 +364,7 @@ impl AccuracyEval {
         // Retrieve — get raw hits for score dumping, formatted strings for actor
         // Use expanded query for retrieval, original question for actor prompt
         let question_date = question.question_date.as_deref();
+        let retrieval_start = std::time::Instant::now();
         let (memories, raw_hits, cascade_telemetry) = match effective_path {
             RetrievalPath::TopkFts => {
                 let (formatted, hits) = retrieval::retrieve_topk_fts(
@@ -386,6 +400,7 @@ impl AccuracyEval {
                 (formatted, hits, Some(telemetry))
             }
         };
+        let retrieval_wall_ms = retrieval_start.elapsed().as_millis() as u64;
         let memory_count = memories.len();
         // Extract keys from raw_hits when available (most reliable).
         // Fallback: extract session IDs from "--- Session <id> ---" headers
@@ -415,14 +430,17 @@ impl AccuracyEval {
         // Act — with retry on transient failures
         let actor_context = memories.join("\n");
         let question_date_str = question.question_date.as_deref().unwrap_or("unknown");
+        let actor_start = std::time::Instant::now();
         let actor_outcome = crate::retry::with_retry(4, &question.question_id, "actor", || {
             self.actor
                 .answer(&question.question, question_date_str, &memories, qtype)
         });
+        let actor_wall_ms = actor_start.elapsed().as_millis() as u64;
 
-        let (predicted, mut total_retries, outcome_class) = match actor_outcome {
+        let (predicted, actor_usage, mut total_retries, outcome_class) = match actor_outcome {
             crate::retry::CallOutcome::Success { value, retry_count } => {
-                (value, retry_count, crate::report::OutcomeClass::Ok)
+                let (text, usage) = value;
+                (text, usage, retry_count, crate::report::OutcomeClass::Ok)
             }
             crate::retry::CallOutcome::TransportFailure { error, retry_count } => {
                 eprintln!("[TRANSPORT] {}: {error}", question.question_id);
@@ -440,6 +458,7 @@ impl AccuracyEval {
                     retry_count,
                     outcome_class: crate::report::OutcomeClass::TransportFailure,
                     actor_context: actor_context.clone(),
+                    efficiency: None,
                 });
             }
             crate::retry::CallOutcome::AuthFailure { error } => {
@@ -458,6 +477,7 @@ impl AccuracyEval {
                     retry_count: 0,
                     outcome_class: crate::report::OutcomeClass::AuthFailure,
                     actor_context: actor_context.clone(),
+                    efficiency: None,
                 });
             }
         };
@@ -469,10 +489,11 @@ impl AccuracyEval {
                 .grade(&question.question, &predicted, &answer_text, category)
         });
 
-        let (grade, outcome_class) = match judge_outcome {
+        let (grade, judge_usage, outcome_class) = match judge_outcome {
             crate::retry::CallOutcome::Success { value, retry_count } => {
                 total_retries += retry_count;
-                (value, outcome_class)
+                let (g, u) = value;
+                (g, u, outcome_class)
             }
             crate::retry::CallOutcome::TransportFailure { error, retry_count } => {
                 eprintln!("[TRANSPORT] {} judge: {error}", question.question_id);
@@ -491,6 +512,7 @@ impl AccuracyEval {
                     retry_count: total_retries,
                     outcome_class: crate::report::OutcomeClass::TransportFailure,
                     actor_context: actor_context.clone(),
+                    efficiency: None,
                 });
             }
             crate::retry::CallOutcome::AuthFailure { error } => {
@@ -509,9 +531,70 @@ impl AccuracyEval {
                     retry_count: 0,
                     outcome_class: crate::report::OutcomeClass::AuthFailure,
                     actor_context,
+                    efficiency: None,
                 });
             }
         };
+
+        // ── Build efficiency metrics ──
+        let exp_in = expansion_usage.as_ref().and_then(|u| u.input_tokens);
+        let exp_out = expansion_usage.as_ref().and_then(|u| u.output_tokens);
+        let act_in = actor_usage.as_ref().and_then(|u| u.input_tokens);
+        let act_out = actor_usage.as_ref().and_then(|u| u.output_tokens);
+        let jdg_in = judge_usage.as_ref().and_then(|u| u.input_tokens);
+        let jdg_out = judge_usage.as_ref().and_then(|u| u.output_tokens);
+
+        // system_tokens = expansion + actor (judge excluded)
+        let system_tokens = match (act_in, act_out) {
+            (Some(ai), Some(ao)) => Some(exp_in.unwrap_or(0) + exp_out.unwrap_or(0) + ai + ao),
+            _ => None,
+        };
+
+        // Cost estimation
+        let expansion_model = self
+            .expansion
+            .as_ref()
+            .map(|c| c.model.as_str())
+            .unwrap_or("");
+        let exp_cost = if expansion_usage.is_some() {
+            crate::pricing::estimate_call_cost(expansion_model, exp_in, exp_out)
+        } else {
+            Some(0.0) // no expansion call = zero cost, not unknown
+        };
+        let actor_cost = crate::pricing::estimate_call_cost(self.actor.name(), act_in, act_out);
+        let judge_cost = crate::pricing::estimate_call_cost(self.judge.name(), jdg_in, jdg_out);
+
+        let estimated_cost_usd = match (exp_cost, actor_cost) {
+            (Some(e), Some(a)) => Some(e + a),
+            _ => None,
+        };
+
+        let efficiency = Some(crate::report::EfficiencyMetrics {
+            expansion_input_tokens: if self.expansion.is_some() {
+                Some(exp_in.unwrap_or(0))
+            } else {
+                Some(0)
+            },
+            expansion_output_tokens: if self.expansion.is_some() {
+                Some(exp_out.unwrap_or(0))
+            } else {
+                Some(0)
+            },
+            actor_input_tokens: act_in,
+            actor_output_tokens: act_out,
+            judge_input_tokens: jdg_in,
+            judge_output_tokens: jdg_out,
+            system_tokens_per_query: system_tokens,
+            retrieval_wall_ms: Some(retrieval_wall_ms),
+            expansion_wall_ms: if self.expansion.is_some() {
+                Some(expansion_wall_ms)
+            } else {
+                Some(0)
+            },
+            actor_wall_ms: Some(actor_wall_ms),
+            estimated_cost_usd,
+            judge_cost_usd: judge_cost,
+        });
 
         // Clean up brain directory
         let _ = std::fs::remove_dir_all(&brain_dir);
@@ -529,6 +612,7 @@ impl AccuracyEval {
             retry_count: total_retries,
             outcome_class,
             actor_context,
+            efficiency,
         })
     }
 
@@ -589,7 +673,7 @@ mod tests {
             _d: &str,
             _m: &[String],
             _shape: crate::retrieval::QuestionType,
-        ) -> anyhow::Result<String> {
+        ) -> anyhow::Result<(String, Option<crate::report::TokenUsage>)> {
             Err(anyhow::anyhow!("API returned 401: unauthorized"))
         }
         fn name(&self) -> &str {
@@ -617,14 +701,14 @@ mod tests {
             _d: &str,
             _m: &[String],
             _shape: crate::retrieval::QuestionType,
-        ) -> anyhow::Result<String> {
+        ) -> anyhow::Result<(String, Option<crate::report::TokenUsage>)> {
             let mut count = self.call_count.lock().unwrap();
             let current = *count;
             *count += 1;
             if current == self.fail_on {
                 Err(anyhow::anyhow!("API returned 429: rate limited"))
             } else {
-                Ok("test answer".into())
+                Ok(("test answer".into(), None))
             }
         }
         fn name(&self) -> &str {
@@ -650,7 +734,7 @@ mod tests {
             _d: &str,
             _m: &[String],
             _shape: crate::retrieval::QuestionType,
-        ) -> anyhow::Result<String> {
+        ) -> anyhow::Result<(String, Option<crate::report::TokenUsage>)> {
             Err(anyhow::anyhow!("{}", self.error_msg))
         }
         fn name(&self) -> &str {

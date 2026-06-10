@@ -1,6 +1,7 @@
 //! Judge LLM trait — grade predicted answers against ground truth.
 
 use crate::dataset::Category;
+use crate::report::TokenUsage;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +20,7 @@ pub trait Judge: Send + Sync {
         predicted: &str,
         ground_truth: &str,
         category: Category,
-    ) -> Result<GradeResult>;
+    ) -> Result<(GradeResult, Option<TokenUsage>)>;
     fn name(&self) -> &str;
 }
 
@@ -97,6 +98,15 @@ fn judge_prompt(question: &str, predicted: &str, ground_truth: &str, category: C
     )
 }
 
+/// Extract token usage from the Anthropic API response JSON.
+fn extract_usage(json: &serde_json::Value) -> Option<TokenUsage> {
+    let usage = json.get("usage")?;
+    Some(TokenUsage {
+        input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()),
+        output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()),
+    })
+}
+
 /// Judge that calls the Anthropic Messages API (or compatible endpoint).
 pub struct AnthropicJudge {
     api_key: String,
@@ -133,7 +143,7 @@ impl Judge for AnthropicJudge {
         predicted: &str,
         ground_truth: &str,
         category: Category,
-    ) -> Result<GradeResult> {
+    ) -> Result<(GradeResult, Option<TokenUsage>)> {
         let prompt = judge_prompt(question, predicted, ground_truth, category);
 
         let body = serde_json::json!({
@@ -162,6 +172,7 @@ impl Judge for AnthropicJudge {
         }
 
         let json: serde_json::Value = resp.json()?;
+        let usage = extract_usage(&json);
         let text = json["content"][0]["text"].as_str().ok_or_else(|| {
             anyhow::anyhow!(
                 "Judge response missing content[0].text: {}",
@@ -189,7 +200,7 @@ impl Judge for AnthropicJudge {
             }
         };
 
-        Ok(grade)
+        Ok((grade, usage))
     }
 
     fn name(&self) -> &str {
@@ -223,11 +234,14 @@ impl Judge for MockJudge {
         _predicted: &str,
         _ground_truth: &str,
         _category: Category,
-    ) -> Result<GradeResult> {
-        Ok(GradeResult {
-            correct: self.always_correct,
-            reasoning: Some("mock".into()),
-        })
+    ) -> Result<(GradeResult, Option<TokenUsage>)> {
+        Ok((
+            GradeResult {
+                correct: self.always_correct,
+                reasoning: Some("mock".into()),
+            },
+            None,
+        ))
     }
 
     fn name(&self) -> &str {
@@ -259,8 +273,9 @@ mod tests {
     #[test]
     fn mock_judge_always_pass() {
         let j = MockJudge::always_pass();
-        let r = j.grade("Q", "A", "A", Category::MultiSession).unwrap();
+        let (r, usage) = j.grade("Q", "A", "A", Category::MultiSession).unwrap();
         assert!(r.correct);
+        assert!(usage.is_none());
     }
 
     #[test]

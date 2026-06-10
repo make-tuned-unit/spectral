@@ -110,7 +110,7 @@ pub fn run_replay(config: &ReplayConfig) -> Result<EvalReport> {
                 &result.ground_truth,
                 result.category,
             ) {
-                Ok(grade) => {
+                Ok((grade, _usage)) => {
                     result.replayed_predicted = Some(result.predicted.clone());
                     result.replayed_correct = Some(grade.correct);
                     result.replayed_judge_reasoning = grade.reasoning;
@@ -163,7 +163,7 @@ pub fn run_replay(config: &ReplayConfig) -> Result<EvalReport> {
                         &result.ground_truth,
                         result.category,
                     ) {
-                        Ok(grade) => {
+                        Ok((grade, _usage)) => {
                             result.replayed_predicted = Some(predicted);
                             result.replayed_correct = Some(grade.correct);
                             result.replayed_judge_reasoning = grade.reasoning;
@@ -236,5 +236,6 @@ fn call_actor_raw(actor: &AnthropicActor, prompt: &str) -> Result<String> {
         "messages": [{"role": "user", "content": prompt}]
     });
 
-    actor.call_raw(&body)
+    let (text, _usage) = actor.call_raw(&body)?;
+    Ok(text)
 }

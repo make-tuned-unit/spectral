@@ -9,6 +9,78 @@ fn default_retrieval_path() -> String {
     "topk_fts".into()
 }
 
+/// Token usage from a single API call (from the Anthropic `usage` response field).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
+/// Per-question efficiency metrics.
+///
+/// All token counts come from the Anthropic API `usage` response field.
+/// No tokenizer estimates are used anywhere. `None` means the response
+/// lacked a usage field (counted in `missing_usage_count` on the report).
+///
+/// `system_tokens_per_query` = expansion_in + expansion_out + actor_in + actor_out.
+/// Judge tokens are tracked separately because the judge is a bench
+/// instrument, NOT part of the system under test.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EfficiencyMetrics {
+    /// Expansion call input tokens (0 when --no-expand-queries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expansion_input_tokens: Option<u64>,
+    /// Expansion call output tokens (0 when --no-expand-queries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expansion_output_tokens: Option<u64>,
+    /// Actor call input tokens (includes full formatted context).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_input_tokens: Option<u64>,
+    /// Actor call output tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_output_tokens: Option<u64>,
+    /// Judge call input tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_input_tokens: Option<u64>,
+    /// Judge call output tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_output_tokens: Option<u64>,
+    /// Headline metric: expansion_in + expansion_out + actor_in + actor_out.
+    /// Judge is excluded — it is bench instrument, not system cost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_tokens_per_query: Option<u64>,
+    /// Wall-clock ms for the full retrieval call (post-expansion, pre-actor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_wall_ms: Option<u64>,
+    /// Wall-clock ms for the expansion API call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expansion_wall_ms: Option<u64>,
+    /// Wall-clock ms for the actor API call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_wall_ms: Option<u64>,
+    /// Estimated cost in USD for system calls (expansion + actor).
+    /// `None` when model ID is unknown — never silently 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_usd: Option<f64>,
+    /// Estimated cost in USD for the judge call (bench instrument, separate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_cost_usd: Option<f64>,
+}
+
+/// Aggregate efficiency statistics for a run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EfficiencyAggregate {
+    pub mean_system_tokens: Option<f64>,
+    pub median_system_tokens: Option<f64>,
+    pub p95_system_tokens: Option<f64>,
+    pub mean_retrieval_wall_ms: Option<f64>,
+    pub median_retrieval_wall_ms: Option<f64>,
+    pub p95_retrieval_wall_ms: Option<f64>,
+    pub total_system_cost_usd: Option<f64>,
+    pub total_judge_cost_usd: Option<f64>,
+    pub missing_usage_count: usize,
+}
+
 /// Outcome classification for a question evaluation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -89,6 +161,9 @@ pub struct QuestionResult {
     /// Replayed judge reasoning (populated by --replay-actor).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replayed_judge_reasoning: Option<String>,
+    /// Per-question efficiency metrics (tokens, latency, cost).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub efficiency: Option<EfficiencyMetrics>,
 }
 
 /// Full evaluation report.
@@ -122,6 +197,12 @@ pub struct EvalReport {
     pub started_at: DateTime<Utc>,
     pub completed_at: DateTime<Utc>,
     pub duration_seconds: u64,
+    /// Aggregate efficiency metrics for the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub efficiency: Option<EfficiencyAggregate>,
+    /// Per-category efficiency breakdowns.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub efficiency_per_category: HashMap<String, EfficiencyAggregate>,
 }
 
 impl EvalReport {
@@ -145,6 +226,8 @@ impl EvalReport {
             started_at: Utc::now(),
             completed_at: Utc::now(),
             duration_seconds: 0,
+            efficiency: None,
+            efficiency_per_category: HashMap::new(),
         }
     }
 
@@ -168,6 +251,7 @@ impl EvalReport {
         outcome_class: OutcomeClass,
         actor_context: Option<String>,
         question_date: Option<String>,
+        efficiency: Option<EfficiencyMetrics>,
     ) {
         self.total_questions += 1;
 
@@ -230,6 +314,7 @@ impl EvalReport {
             replayed_predicted: None,
             replayed_correct: None,
             replayed_judge_reasoning: None,
+            efficiency,
         });
     }
 
@@ -238,7 +323,7 @@ impl EvalReport {
         self.results.iter().filter(|r| !r.correct).collect()
     }
 
-    /// Finalize the report.
+    /// Finalize the report (accuracy + efficiency aggregates).
     pub fn finalize(&mut self) {
         self.completed_at = Utc::now();
         self.duration_seconds = (self.completed_at - self.started_at).num_seconds() as u64;
@@ -249,6 +334,22 @@ impl EvalReport {
         } else {
             0.0
         };
+
+        // Compute efficiency aggregates
+        self.efficiency = Some(compute_efficiency_aggregate(&self.results));
+
+        // Per-category efficiency
+        let mut by_cat: HashMap<String, Vec<&QuestionResult>> = HashMap::new();
+        for r in &self.results {
+            by_cat
+                .entry(r.category.as_str().to_string())
+                .or_default()
+                .push(r);
+        }
+        for (cat, results) in &by_cat {
+            self.efficiency_per_category
+                .insert(cat.clone(), compute_efficiency_aggregate_refs(results));
+        }
     }
 
     /// Human-readable summary.
@@ -293,6 +394,40 @@ impl EvalReport {
             }
         }
 
+        // Efficiency summary
+        if let Some(ref eff) = self.efficiency {
+            lines.push(String::new());
+            lines.push("=== Efficiency (judge excluded from system cost) ===".to_string());
+            if let Some(mean) = eff.mean_system_tokens {
+                lines.push(format!(
+                    "system_tokens_per_query:  mean={:.0}  median={:.0}  p95={:.0}",
+                    mean,
+                    eff.median_system_tokens.unwrap_or(0.0),
+                    eff.p95_system_tokens.unwrap_or(0.0),
+                ));
+            }
+            if let Some(mean) = eff.mean_retrieval_wall_ms {
+                lines.push(format!(
+                    "retrieval_wall_ms:        mean={:.0}  median={:.0}  p95={:.0}",
+                    mean,
+                    eff.median_retrieval_wall_ms.unwrap_or(0.0),
+                    eff.p95_retrieval_wall_ms.unwrap_or(0.0),
+                ));
+            }
+            if let Some(sys_cost) = eff.total_system_cost_usd {
+                lines.push(format!("total system cost:        ${sys_cost:.4}"));
+            }
+            if let Some(judge_cost) = eff.total_judge_cost_usd {
+                lines.push(format!("total judge cost:         ${judge_cost:.4}"));
+            }
+            if eff.missing_usage_count > 0 {
+                lines.push(format!(
+                    "WARNING: {} API responses lacked usage field",
+                    eff.missing_usage_count
+                ));
+            }
+        }
+
         let failures = self.failures();
         if !failures.is_empty() {
             lines.push(String::new());
@@ -306,6 +441,112 @@ impl EvalReport {
         }
 
         lines.join("\n")
+    }
+}
+
+/// Compute percentile from a sorted slice.
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = (p / 100.0 * (sorted.len() as f64 - 1.0)).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+/// Compute efficiency aggregate from owned QuestionResult slice.
+fn compute_efficiency_aggregate(results: &[QuestionResult]) -> EfficiencyAggregate {
+    let refs: Vec<&QuestionResult> = results.iter().collect();
+    compute_efficiency_aggregate_refs(&refs)
+}
+
+/// Compute efficiency aggregate from QuestionResult references.
+fn compute_efficiency_aggregate_refs(results: &[&QuestionResult]) -> EfficiencyAggregate {
+    let mut sys_tokens: Vec<f64> = Vec::new();
+    let mut ret_wall: Vec<f64> = Vec::new();
+    let mut total_sys_cost = 0.0_f64;
+    let mut total_judge_cost = 0.0_f64;
+    let mut has_sys_cost = false;
+    let mut has_judge_cost = false;
+    let mut missing = 0usize;
+
+    for r in results {
+        let eff = match &r.efficiency {
+            Some(e) => e,
+            None => continue,
+        };
+        if let Some(st) = eff.system_tokens_per_query {
+            sys_tokens.push(st as f64);
+        }
+        if let Some(rw) = eff.retrieval_wall_ms {
+            ret_wall.push(rw as f64);
+        }
+        if let Some(c) = eff.estimated_cost_usd {
+            total_sys_cost += c;
+            has_sys_cost = true;
+        }
+        if let Some(c) = eff.judge_cost_usd {
+            total_judge_cost += c;
+            has_judge_cost = true;
+        }
+        // Count missing usage: actor is the minimum required signal
+        if eff.actor_input_tokens.is_none() {
+            missing += 1;
+        }
+    }
+
+    sys_tokens.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ret_wall.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let mean_sys = if sys_tokens.is_empty() {
+        None
+    } else {
+        Some(sys_tokens.iter().sum::<f64>() / sys_tokens.len() as f64)
+    };
+    let median_sys = if sys_tokens.is_empty() {
+        None
+    } else {
+        Some(percentile(&sys_tokens, 50.0))
+    };
+    let p95_sys = if sys_tokens.is_empty() {
+        None
+    } else {
+        Some(percentile(&sys_tokens, 95.0))
+    };
+
+    let mean_ret = if ret_wall.is_empty() {
+        None
+    } else {
+        Some(ret_wall.iter().sum::<f64>() / ret_wall.len() as f64)
+    };
+    let median_ret = if ret_wall.is_empty() {
+        None
+    } else {
+        Some(percentile(&ret_wall, 50.0))
+    };
+    let p95_ret = if ret_wall.is_empty() {
+        None
+    } else {
+        Some(percentile(&ret_wall, 95.0))
+    };
+
+    EfficiencyAggregate {
+        mean_system_tokens: mean_sys,
+        median_system_tokens: median_sys,
+        p95_system_tokens: p95_sys,
+        mean_retrieval_wall_ms: mean_ret,
+        median_retrieval_wall_ms: median_ret,
+        p95_retrieval_wall_ms: p95_ret,
+        total_system_cost_usd: if has_sys_cost {
+            Some(total_sys_cost)
+        } else {
+            None
+        },
+        total_judge_cost_usd: if has_judge_cost {
+            Some(total_judge_cost)
+        } else {
+            None
+        },
+        missing_usage_count: missing,
     }
 }
 
@@ -347,6 +588,7 @@ mod tests {
             OutcomeClass::Ok,
             None,
             None,
+            None,
         );
         report.record(
             "q2",
@@ -365,6 +607,7 @@ mod tests {
             OutcomeClass::Ok,
             None,
             None,
+            None,
         );
         report.record(
             "q3",
@@ -381,6 +624,7 @@ mod tests {
             None,
             0,
             OutcomeClass::Ok,
+            None,
             None,
             None,
         );
@@ -418,6 +662,7 @@ mod tests {
             replayed_predicted: None,
             replayed_correct: None,
             replayed_judge_reasoning: None,
+            efficiency: None,
         };
         let json = serde_json::to_string(&qr).unwrap();
         assert!(json.contains("\"question_id\":\"q42\""));

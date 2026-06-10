@@ -3,6 +3,7 @@
 //! Generates additional search terms to bridge FTS vocabulary gaps
 //! (e.g. "siblings" → "sisters brothers family members").
 
+use crate::report::TokenUsage;
 use anyhow::Result;
 
 /// Configuration for query expansion.
@@ -45,9 +46,12 @@ Question: {question}
 Output ONLY the terms, one per line, no numbering, no explanation.";
 
 /// Generate expansion terms for a question via LLM.
-pub fn expand_query(question: &str, config: &ExpansionConfig) -> Result<String> {
+pub fn expand_query(
+    question: &str,
+    config: &ExpansionConfig,
+) -> Result<(String, Option<TokenUsage>)> {
     if !config.enabled {
-        return Ok(question.to_string());
+        return Ok((question.to_string(), None));
     }
 
     let prompt = EXPANSION_PROMPT
@@ -80,6 +84,12 @@ pub fn expand_query(question: &str, config: &ExpansionConfig) -> Result<String> 
     }
 
     let json: serde_json::Value = resp.json()?;
+
+    let usage = json.get("usage").map(|u| TokenUsage {
+        input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()),
+        output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()),
+    });
+
     let terms_text = json["content"][0]["text"]
         .as_str()
         .unwrap_or("")
@@ -94,11 +104,11 @@ pub fn expand_query(question: &str, config: &ExpansionConfig) -> Result<String> 
         .collect();
 
     if terms.is_empty() {
-        return Ok(question.to_string());
+        return Ok((question.to_string(), usage));
     }
 
     eprintln!("  [expansion] +{} terms: {}", terms.len(), terms.join(", "));
-    Ok(format!("{} {}", question, terms.join(" ")))
+    Ok((format!("{} {}", question, terms.join(" ")), usage))
 }
 
 #[cfg(test)]
@@ -108,7 +118,8 @@ mod tests {
     #[test]
     fn disabled_expansion_returns_original() {
         let config = ExpansionConfig::default();
-        let result = expand_query("How many siblings?", &config).unwrap();
+        let (result, usage) = expand_query("How many siblings?", &config).unwrap();
         assert_eq!(result, "How many siblings?");
+        assert!(usage.is_none());
     }
 }
