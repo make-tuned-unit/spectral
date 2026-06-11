@@ -2,9 +2,12 @@
 //! questions through the same question-type routing the bench uses under
 //! `--use-cascade`, and outputs ordered hit keys for branch-vs-main comparison.
 //!
-//! Questions are the first 5 by question_id sort (non-temporal → cascade,
-//! Path A) plus the first 2 temporal-reasoning questions (→ topk_fts,
-//! Path B), giving both retrieval paths coverage.
+//! Questions are the first 5 by question_id sort that classify non-Temporal
+//! (→ cascade, Path A) plus the first 2 temporal-reasoning questions
+//! (→ topk_fts, Path B), giving both retrieval paths coverage. The plain
+//! first 5 would NOT give 5×Path A: 001be529 ("How long did I wait…")
+//! classifies Temporal, so it is skipped in favor of the next
+//! cascade-routed question.
 //!
 //! Run with:
 //!   cargo test -p spectral-bench-accuracy --test neutrality -- --nocapture
@@ -22,8 +25,9 @@ use spectral_bench_accuracy::ingest;
 use spectral_bench_accuracy::retrieval::{self, QuestionType, RetrievalConfig};
 
 /// Path to the 7-question neutrality subset (extracted from LongMemEval_S).
-/// First 5 non-temporal by question_id sort + first 2 temporal-reasoning.
-const DATASET_PATH: &str = "/tmp/neutrality_5q.json";
+/// First 5 non-temporal-classified by question_id sort + first 2
+/// temporal-reasoning.
+const DATASET_PATH: &str = "/tmp/neutrality_7q.json";
 
 #[test]
 fn neutrality_hit_keys() {
@@ -39,6 +43,9 @@ fn neutrality_hit_keys() {
 
     println!("=== NEUTRALITY PROOF: hit keys per question ===");
 
+    let mut cascade_count = 0;
+    let mut topk_fts_count = 0;
+
     for q in &questions {
         let brain_dir = dir.path().join(format!("brain_{}", q.question_id));
         let brain =
@@ -53,12 +60,14 @@ fn neutrality_hit_keys() {
         //   Everything else → cascade (Path A)
         let keys: Vec<String> = match effective_path {
             retrieval::RetrievalPath::TopkFts => {
+                topk_fts_count += 1;
                 let (_formatted, hits) =
                     retrieval::retrieve_topk_fts(&brain, &q.question, &config, question_date)
                         .unwrap();
                 hits.iter().map(|h| h.key.clone()).collect()
             }
             retrieval::RetrievalPath::Cascade => {
+                cascade_count += 1;
                 let (_formatted, hits, _telemetry) =
                     retrieval::retrieve_cascade(&brain, &q.question, &config, question_date)
                         .unwrap();
@@ -79,6 +88,12 @@ fn neutrality_hit_keys() {
 
         let _ = std::fs::remove_dir_all(&brain_dir);
     }
+
+    assert_eq!(cascade_count, 5, "expected 5 questions on Path A (cascade)");
+    assert_eq!(
+        topk_fts_count, 2,
+        "expected 2 questions on Path B (topk_fts)"
+    );
 
     println!("=== END ===");
 }
