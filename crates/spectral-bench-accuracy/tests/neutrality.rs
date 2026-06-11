@@ -73,7 +73,7 @@ fn neutrality_hit_keys() {
         Ok(d) => d,
         Err(e) => {
             // Dataset not present (e.g. CI) — skip, don't fail.
-            println!(
+            eprintln!(
                 "SKIP neutrality_hit_keys: LongMemEval_S dataset not found at {} ({e}). \
                  Set LONGMEMEVAL_S_JSON to run this test.",
                 path.display()
