@@ -60,8 +60,6 @@ pub mod llm;
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
-
 // ── Re-exports ──────────────────────────────────────────────────────
 
 pub use spectral_core::device_id::DeviceId;
@@ -80,6 +78,10 @@ pub use spectral_graph::brain::{
 pub use spectral_graph::Error;
 pub use spectral_ingest::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
 pub use spectral_tact::LlmClient;
+
+// Re-export chrono types used in the public API surface (recall_at, recall_local_at)
+// so consumers don't need to pin chrono as a direct dependency.
+pub use chrono::{DateTime, Utc};
 
 // Sub-crate access for advanced users
 pub use spectral_core as core;
