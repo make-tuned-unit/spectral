@@ -15,7 +15,16 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Free runner disk
+        if: runner.os == 'Linux'
+        run: |
+          echo "=== Before ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/.ghcup || true
+          if command -v docker &>/dev/null; then docker system prune -af || true; fi
+          echo "=== After ==="
+          df -h /
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Fix macOS cargo PATH
         if: runner.os == 'macOS'
@@ -34,7 +43,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -47,7 +56,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Free runner disk
+        run: |
+          echo "=== Before ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/.ghcup || true
+          if command -v docker &>/dev/null; then docker system prune -af || true; fi
+          echo "=== After ==="
+          df -h /
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build (default features)

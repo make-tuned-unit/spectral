@@ -151,8 +151,14 @@ fn concurrent_remembers_same_key() {
 /// constraints (e.g., NULL wing when the classifier always sets one).
 /// Since SqliteStore serializes on a Mutex, reads and writes never
 /// overlap — torn reads are impossible with a single Brain instance.
+///
+/// Uses an atomic write counter + generous deadline instead of a
+/// wall-clock race so the test is stable on slow CI runners.
 #[test]
 fn concurrent_reads_during_writes() {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
+
     let tmp = TempDir::new().unwrap();
     let brain = Arc::new(Brain::open(brain_config(&tmp)).unwrap());
 
@@ -165,11 +171,13 @@ fn concurrent_reads_during_writes() {
         )
         .unwrap();
 
-    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writes_done = Arc::new(AtomicBool::new(false));
+    let write_count = Arc::new(AtomicU32::new(0));
 
-    // Writer thread.
+    // Writer thread: signals after each write via atomic counter.
     let writer_brain = Arc::clone(&brain);
-    let writer_done = Arc::clone(&done);
+    let writer_done = Arc::clone(&writes_done);
+    let writer_count = Arc::clone(&write_count);
     let writer = thread::spawn(move || {
         for i in 0..20 {
             let key = format!("write-{i}");
@@ -177,24 +185,40 @@ fn concurrent_reads_during_writes() {
             writer_brain
                 .remember(&key, &content, Visibility::Private)
                 .unwrap_or_else(|e| panic!("writer {i}: {e}"));
+            writer_count.fetch_add(1, Ordering::Release);
         }
-        writer_done.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer_done.store(true, Ordering::Release);
     });
 
-    // Reader threads.
+    // Reader threads: run until >=1 successful read AND writer is done,
+    // or a generous 30s deadline expires.
     let mut readers = Vec::new();
     for reader_id in 0..3 {
         let brain = Arc::clone(&brain);
-        let done = Arc::clone(&done);
+        let writes_done = Arc::clone(&writes_done);
+        let write_count = Arc::clone(&write_count);
         readers.push(thread::spawn(move || {
-            let mut reads = 0;
-            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut reads: u32 = 0;
+
+            loop {
+                // Stop once writer is done AND we have at least one read,
+                // or if deadline expires.
+                if (writes_done.load(Ordering::Acquire) && reads > 0) || Instant::now() > deadline {
+                    break;
+                }
+
+                // Wait until at least one write has landed before reading,
+                // so we exercise genuine concurrent overlap.
+                if write_count.load(Ordering::Acquire) == 0 {
+                    thread::yield_now();
+                    continue;
+                }
+
                 let result =
                     brain.recall("apollo weather prediction observation", Visibility::Private);
                 match result {
                     Ok(r) => {
-                        // Verify no torn reads: every hit should have
-                        // non-empty key and content.
                         for hit in &r.memory_hits {
                             assert!(!hit.key.is_empty(), "reader {reader_id}: empty key");
                             assert!(!hit.content.is_empty(), "reader {reader_id}: empty content");
@@ -209,9 +233,14 @@ fn concurrent_reads_during_writes() {
     }
 
     writer.join().expect("writer panicked");
-    for r in readers {
+    for (i, r) in readers.into_iter().enumerate() {
         let reads = r.join().expect("reader panicked");
-        assert!(reads > 0, "reader should have completed at least one read");
+        assert!(
+            reads > 0,
+            "reader {i} completed 0 reads (writes_done={}, write_count={})",
+            writes_done.load(std::sync::atomic::Ordering::Relaxed),
+            write_count.load(std::sync::atomic::Ordering::Relaxed),
+        );
     }
 }
 

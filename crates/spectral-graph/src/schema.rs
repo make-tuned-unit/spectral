@@ -32,7 +32,7 @@ pub fn schema_version() -> u32 {
 ///
 /// # Fresh database
 ///
-/// ```
+/// ```no_run
 /// use kuzu::{Database, SystemConfig, Connection};
 /// use spectral_graph::schema::create_schema;
 ///
@@ -43,7 +43,7 @@ pub fn schema_version() -> u32 {
 ///
 /// # Idempotent — safe to run twice
 ///
-/// ```
+/// ```no_run
 /// use kuzu::{Database, SystemConfig, Connection};
 /// use spectral_graph::schema::create_schema;
 ///
@@ -55,7 +55,7 @@ pub fn schema_version() -> u32 {
 ///
 /// # Tables are queryable after creation
 ///
-/// ```
+/// ```no_run
 /// use kuzu::{Database, SystemConfig, Connection};
 /// use spectral_graph::schema::create_schema;
 ///

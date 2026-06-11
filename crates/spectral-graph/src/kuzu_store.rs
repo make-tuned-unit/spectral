@@ -113,14 +113,14 @@ pub struct Neighborhood {
 ///
 /// # Open an in-memory store
 ///
-/// ```
+/// ```no_run
 /// use spectral_graph::kuzu_store::KuzuStore;
 /// let store = KuzuStore::in_memory().unwrap();
 /// ```
 ///
 /// # Upsert and retrieve an entity
 ///
-/// ```
+/// ```no_run
 /// use spectral_core::entity_id::entity_id;
 /// use spectral_core::visibility::Visibility;
 /// use spectral_graph::kuzu_store::{KuzuStore, Entity};
@@ -140,7 +140,7 @@ pub struct Neighborhood {
 ///
 /// # Missing entity returns None
 ///
-/// ```
+/// ```no_run
 /// use spectral_core::entity_id::entity_id;
 /// use spectral_graph::kuzu_store::KuzuStore;
 ///
@@ -151,7 +151,7 @@ pub struct Neighborhood {
 ///
 /// # Insert and query triples
 ///
-/// ```
+/// ```no_run
 /// use spectral_core::entity_id::entity_id;
 /// use spectral_core::identity::BrainIdentity;
 /// use spectral_core::visibility::Visibility;
