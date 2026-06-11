@@ -79,6 +79,10 @@ pub use spectral_graph::Error;
 pub use spectral_ingest::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
 pub use spectral_tact::LlmClient;
 
+// Re-export chrono types used in the public API surface (recall_at, recall_local_at)
+// so consumers don't need to pin chrono as a direct dependency.
+pub use chrono::{DateTime, Utc};
+
 // Sub-crate access for advanced users
 pub use spectral_core as core;
 pub use spectral_graph as graph;
@@ -202,6 +206,10 @@ impl Brain {
     ///
     /// A `Private` context sees everything; a `Public` context sees only
     /// `Public` content. See [`Visibility::allows`] for the full matrix.
+    ///
+    /// **Time anchor defaults to `Utc::now()`** — correct for live queries,
+    /// wrong for historical replay. Use [`recall_at()`](Self::recall_at) to
+    /// anchor recency decay to the query date.
     pub fn recall(
         &self,
         query: &str,
@@ -210,9 +218,34 @@ impl Brain {
         self.inner.recall(query, context_visibility)
     }
 
+    /// Hybrid recall with an explicit time anchor for recency decay.
+    ///
+    /// Identical to [`recall()`](Self::recall) but uses `now` instead of
+    /// `Utc::now()` for signal-score decay.
+    pub fn recall_at(
+        &self,
+        query: &str,
+        context_visibility: Visibility,
+        now: DateTime<Utc>,
+    ) -> Result<HybridRecallResult, Error> {
+        self.inner.recall_at(query, context_visibility, now)
+    }
+
     /// Convenience: recall with maximally-permissive context (returns everything).
+    ///
+    /// **Time anchor defaults to `Utc::now()`** — use
+    /// [`recall_local_at()`](Self::recall_local_at) for historical queries.
     pub fn recall_local(&self, query: &str) -> Result<HybridRecallResult, Error> {
         self.inner.recall_local(query)
+    }
+
+    /// Convenience: [`recall_at()`](Self::recall_at) with `Visibility::Private`.
+    pub fn recall_local_at(
+        &self,
+        query: &str,
+        now: DateTime<Utc>,
+    ) -> Result<HybridRecallResult, Error> {
+        self.inner.recall_local_at(query, now)
     }
 
     /// Graph-only recall filtered by visibility context.

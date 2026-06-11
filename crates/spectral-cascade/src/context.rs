@@ -21,7 +21,12 @@ pub struct RecognitionContext {
     pub recent_activity: Vec<ActivityEpisode>,
 
     /// Current time. Used downstream for temporal decay and recency
-    /// weighting. Defaults to Utc::now() when empty() is called.
+    /// weighting.
+    ///
+    /// **Defaults to `Utc::now()` in [`empty()`](Self::empty).** This is
+    /// correct for live queries but silently wrong for historical replay —
+    /// use [`with_now()`](Self::with_now) to anchor recency to the query
+    /// date when scoring historical or time-travel data.
     pub now: DateTime<Utc>,
 
     /// Optional explicit wing focus. Set by consumers who know what
@@ -39,8 +44,11 @@ pub struct RecognitionContext {
 }
 
 impl RecognitionContext {
-    /// Empty context — no ambient signal. Use for bench, ad-hoc queries,
+    /// Empty context — no ambient signal. Use for live ad-hoc queries
     /// or any caller without continuous-awareness data.
+    ///
+    /// **`now` defaults to `Utc::now()`.** For historical/replay queries,
+    /// chain `.with_now(dt)` to anchor recency scoring correctly.
     pub fn empty() -> Self {
         Self {
             recent_activity: Vec::new(),
@@ -57,7 +65,11 @@ impl RecognitionContext {
         self
     }
 
-    /// Builder: set the time anchor (useful for tests and replay).
+    /// Builder: set the time anchor.
+    ///
+    /// **Required** for historical/replay queries so recency decay measures
+    /// distance from the query date, not wall-clock.
+    #[must_use]
     pub fn with_now(mut self, now: DateTime<Utc>) -> Self {
         self.now = now;
         self
