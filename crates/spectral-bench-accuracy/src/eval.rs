@@ -10,7 +10,7 @@ use crate::retrieval::{self, RetrievalConfig, RetrievalPath};
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Evaluation configuration.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -154,12 +154,34 @@ impl AccuracyEval {
             self.judge.name()
         );
 
-        let mut report = EvalReport::new(self.actor.name(), self.judge.name());
-        report.retrieval_path = match self.config.retrieval_path {
-            RetrievalPath::TopkFts => "topk_fts".into(),
-            RetrievalPath::Tact => "tact".into(),
-            RetrievalPath::Graph => "graph".into(),
-            RetrievalPath::Cascade => "cascade".into(),
+        let retrieval_path_label = match self.config.retrieval_path {
+            RetrievalPath::TopkFts => "topk_fts",
+            RetrievalPath::Tact => "tact",
+            RetrievalPath::Graph => "graph",
+            RetrievalPath::Cascade => "cascade",
+        };
+        let checkpoint_path = self.config.work_dir.join("checkpoint.json");
+        // Resume: if a checkpoint exists for this work-dir, continue from it
+        // rather than restarting at question 0. The loaded report carries the
+        // prior per-question results and counters; completed questions are
+        // skipped below and remain in the final report.
+        let mut report = match crate::report::load_report(&checkpoint_path) {
+            Ok(mut existing) if !existing.results.is_empty() => {
+                eprintln!(
+                    "Resuming from {}: {} completed question(s) will be skipped.",
+                    checkpoint_path.display(),
+                    existing.results.len()
+                );
+                // A prior run may have halted on errors; a clean resume must
+                // not inherit that terminal status.
+                existing.run_status = RunStatus::Completed;
+                existing
+            }
+            _ => {
+                let mut r = EvalReport::new(self.actor.name(), self.judge.name());
+                r.retrieval_path = retrieval_path_label.into();
+                r
+            }
         };
         let pb = ProgressBar::new(questions.len() as u64);
         pb.set_style(
@@ -169,8 +191,11 @@ impl AccuracyEval {
                 .progress_chars("#>-"),
         );
 
-        let checkpoint_path = self.config.work_dir.join("checkpoint.json");
-        let completed = self.load_completed_ids(&checkpoint_path);
+        let completed: HashSet<String> = report
+            .results
+            .iter()
+            .map(|r| r.question_id.clone())
+            .collect();
         let mut consecutive_errors: usize = 0;
         const MAX_CONSECUTIVE_ERRORS: usize = 3;
 
@@ -181,7 +206,7 @@ impl AccuracyEval {
                 std::io::BufWriter::new(std::fs::File::create(p).expect("create score dump file"))
             });
 
-        for (idx, question) in questions.iter().enumerate() {
+        for question in questions.iter() {
             if completed.contains(&question.question_id) {
                 pb.inc(1);
                 continue;
@@ -280,12 +305,12 @@ impl AccuracyEval {
 
             pb.inc(1);
 
-            // Checkpoint
-            if (idx + 1) % self.config.checkpoint_interval == 0 {
-                let mut cp = report.clone();
-                cp.finalize();
-                let _ = crate::report::save_report(&cp, &checkpoint_path);
-            }
+            // Durable checkpoint after every completed question, so an
+            // interruption resumes where it stopped (losing at most the
+            // question in flight). Consumed by the resume path above.
+            let mut cp = report.clone();
+            cp.finalize();
+            let _ = crate::report::save_report(&cp, &checkpoint_path);
         }
 
         pb.finish_with_message("done");
@@ -638,23 +663,6 @@ impl AccuracyEval {
 
         questions
     }
-
-    fn load_completed_ids(&self, checkpoint_path: &Path) -> HashSet<String> {
-        if let Ok(report) = crate::report::load_report(checkpoint_path) {
-            let mut ids: HashSet<String> = report
-                .results
-                .iter()
-                .map(|r| r.question_id.clone())
-                .collect();
-            // Also include questions that passed (not in failures)
-            // We need to reconstruct from per_category totals — simpler to just re-run
-            // For now, checkpoint means "these were attempted"
-            ids.clear(); // TODO: proper resume tracking
-            ids
-        } else {
-            HashSet::new()
-        }
-    }
 }
 
 #[cfg(test)]
@@ -808,6 +816,104 @@ mod tests {
         assert_eq!(report.total_questions, 2);
         assert_eq!(report.correct, 2);
         assert!((report.overall_accuracy - 1.0).abs() < 0.001);
+    }
+
+    /// Pins the resume contract that the old `ids.clear()` broke: a run whose
+    /// work-dir already holds a checkpoint must SKIP the completed questions
+    /// (not re-run them) and carry their prior results into the final report.
+    #[test]
+    fn resume_skips_completed_and_keeps_their_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds_path = dir.path().join("dataset.json");
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let mk = |id: &str| Question {
+            question_id: id.into(),
+            question_type: "multi-session".into(),
+            question: "What color is the car?".into(),
+            answer: serde_json::Value::String("Red".into()),
+            question_date: Some("2023/06/01 (Thu) 10:00".into()),
+            haystack_sessions: vec![vec![
+                Turn {
+                    role: "user".into(),
+                    content: "My car is red and I drive it every day".into(),
+                },
+                Turn {
+                    role: "assistant".into(),
+                    content: "Red cars are very visible on the road.".into(),
+                },
+            ]],
+            haystack_session_ids: vec!["s1".into()],
+            haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
+        };
+        let questions = vec![mk("q-done"), mk("q-todo")];
+        std::fs::write(&ds_path, serde_json::to_string(&questions).unwrap()).unwrap();
+
+        // Pre-populate a checkpoint marking q-done complete, with a sentinel
+        // `predicted` the MockActor would never produce. If resume re-ran it,
+        // the sentinel would be overwritten — which is exactly the regression.
+        let cat = Category::from_question_type("multi-session").unwrap();
+        let mut pre = crate::report::EvalReport::new("mock", "mock");
+        pre.record(
+            "q-done",
+            cat,
+            true,
+            "What color is the car?",
+            "SENTINEL_PRECOMPUTED",
+            "Red",
+            Some("precomputed".into()),
+            0,
+            Vec::new(),
+            0,
+            None,
+            None,
+            0,
+            crate::report::OutcomeClass::Ok,
+            None,
+            None,
+            None,
+        );
+        pre.finalize();
+        crate::report::save_report(&pre, &work.join("checkpoint.json")).unwrap();
+
+        let config = EvalConfig {
+            dataset_path: ds_path,
+            work_dir: work,
+            checkpoint_interval: 100,
+            ..Default::default()
+        };
+        let eval = AccuracyEval::new(
+            config,
+            Box::new(MockActor::new("freshly-run answer")),
+            Box::new(MockJudge::always_pass()),
+        );
+        let report = eval.run().unwrap();
+
+        // Both questions present exactly once.
+        assert_eq!(
+            report.results.len(),
+            2,
+            "final report must contain both questions"
+        );
+        assert_eq!(report.total_questions, 2);
+        let done = report
+            .results
+            .iter()
+            .find(|r| r.question_id == "q-done")
+            .expect("completed question must survive in the final report");
+        let todo = report
+            .results
+            .iter()
+            .find(|r| r.question_id == "q-todo")
+            .expect("missing question must be evaluated");
+        // q-done was loaded from the checkpoint, NOT re-evaluated.
+        assert_eq!(
+            done.predicted, "SENTINEL_PRECOMPUTED",
+            "completed question was re-run instead of resumed (the ids.clear() regression)"
+        );
+        // q-todo was the only question actually run.
+        assert_eq!(todo.predicted, "freshly-run answer");
     }
 
     #[test]
