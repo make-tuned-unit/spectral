@@ -191,8 +191,11 @@ impl AccuracyEval {
                 .progress_chars("#>-"),
         );
 
-        let completed: HashSet<String> =
-            report.results.iter().map(|r| r.question_id.clone()).collect();
+        let completed: HashSet<String> = report
+            .results
+            .iter()
+            .map(|r| r.question_id.clone())
+            .collect();
         let mut consecutive_errors: usize = 0;
         const MAX_CONSECUTIVE_ERRORS: usize = 3;
 
@@ -660,7 +663,6 @@ impl AccuracyEval {
 
         questions
     }
-
 }
 
 #[cfg(test)]
@@ -889,7 +891,11 @@ mod tests {
         let report = eval.run().unwrap();
 
         // Both questions present exactly once.
-        assert_eq!(report.results.len(), 2, "final report must contain both questions");
+        assert_eq!(
+            report.results.len(),
+            2,
+            "final report must contain both questions"
+        );
         assert_eq!(report.total_questions, 2);
         let done = report
             .results
