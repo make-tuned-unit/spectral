@@ -428,6 +428,36 @@ impl Brain {
     ///
     /// Creates `data_dir` if missing, generates identity on first run,
     /// opens both the graph database and memory store.
+    ///
+    /// # Known issue: schema-creation abort on Linux
+    ///
+    /// `Brain::open()` may abort with SIGABRT on Linux during schema
+    /// creation. The abort fires inside `create_schema` when kuzu
+    /// throws a C++ exception that the kuzu cxxbridge FFI layer fails
+    /// to convert into a Rust `Result::Err` — `std::terminate` fires
+    /// instead. macOS is unaffected.
+    ///
+    /// This is a kuzu FFI correctness issue (cxxbridge `trycatch`
+    /// should never call `std::terminate`). The platform difference
+    /// is not yet fully diagnosed; the underlying query appears to
+    /// behave differently on Linux.
+    ///
+    /// Earlier diagnoses attributed this to glibc 2.39 pthread
+    /// teardown behavior or to instance-count thresholds. Both were
+    /// incorrect; a single `Brain::open()` is sufficient to trigger
+    /// the abort.
+    ///
+    /// Reproducers (both `#[ignore]`d, in the `kuzu_schema_abort_repro`
+    /// module below): `single_brain_open_aborts_on_linux` and
+    /// `n_brains_coresident_recall_varied_drop_order`. The latter also
+    /// settles whether federation read-time fan-out can co-locate N
+    /// brains in one process. Run them on Linux via
+    /// `.github/workflows/kuzu-abort-diagnostic.yml`.
+    ///
+    /// Tracked at: <https://github.com/make-tuned-unit/spectral/issues/153>.
+    /// Upstream kuzu issue: not yet filed — it needs the Linux abort
+    /// backtrace produced by the diagnostic workflow (pending the
+    /// Ubuntu run / Permagent-collaborator hand-off).
     pub fn open(config: BrainConfig) -> Result<Self, Error> {
         std::fs::create_dir_all(&config.data_dir)?;
 
@@ -2410,5 +2440,172 @@ fn row_to_fingerprint(
         novelty: row.novelty,
         peak_dimensions: serde_json::from_str(&row.peak_dimensions).unwrap_or_default(),
         created_at: Utc::now(),
+    }
+}
+
+#[cfg(test)]
+mod kuzu_schema_abort_repro {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Reproducer for the kuzu schema-creation abort on Linux.
+    ///
+    /// A single `Brain::open()` aborts during schema creation on Linux
+    /// (a C++ exception thrown by kuzu inside create_schema is not
+    /// converted to a Rust Result by cxxbridge — std::terminate fires
+    /// and the process aborts with SIGABRT).
+    ///
+    /// Marked `#[ignore]` so it does not run in normal CI. Invoke:
+    ///
+    /// ```bash
+    /// cargo test -p spectral-graph \
+    ///     -- --ignored --nocapture single_brain_open_aborts_on_linux
+    /// ```
+    ///
+    /// Expected behavior:
+    /// - macOS: test passes, process exits cleanly (exit code 0)
+    /// - Ubuntu 24.04+: process aborts during Brain::open() with
+    ///   SIGABRT (exit code 134). The test will not complete.
+    ///
+    /// See `Brain::open` doc comment for context and issue links.
+    #[test]
+    #[ignore = "diagnostic reproducer; runs only with --ignored"]
+    fn single_brain_open_aborts_on_linux() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir: PathBuf = tempdir.path().join("brain");
+        std::mem::forget(tempdir);
+
+        let config = BrainConfig {
+            data_dir,
+            ontology_path: PathBuf::from("tests/fixtures/brain_ontology.toml"),
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        };
+
+        // On Linux this never returns successfully — abort fires
+        // inside Brain::open during schema creation.
+        let _brain = Brain::open(config).expect("brain open");
+    }
+
+    /// Federation topology probe + multi-brain extension of issue #153.
+    ///
+    /// Opens N (>= 3) independent `Brain` handles on N distinct `data_dir`s
+    /// in a SINGLE process, keeps them all alive simultaneously, runs
+    /// `recall_cascade` on each while its siblings are live, then drops them
+    /// in a deliberately non-stack (non-LIFO) order.
+    ///
+    /// Why this exists — two questions, one experiment:
+    ///  1. Federation v1 (read-time fan-out) wants a coordinator to open N
+    ///     child brains in one process and query each. This test is the
+    ///     empirical settler for "is in-process fan-out viable, or must the
+    ///     coordinator shard brains across processes + local IPC?".
+    ///  2. Issue #153 (kuzu Linux SIGABRT in create_schema): co-resident
+    ///     `Database` instances probe whether the FFI abort is sensitive to
+    ///     multiple live kuzu Databases / teardown order, beyond the
+    ///     single-brain `single_brain_open_aborts_on_linux` reproducer.
+    ///
+    /// Expected behavior:
+    /// - macOS: passes, clean exit. The Mac does NOT reproduce #153, so a
+    ///   green run here is NOT meaningful evidence — it only confirms the
+    ///   test logic compiles and that N brains can coexist on this platform.
+    /// - Ubuntu (glibc 2.39+): if #153 is purely a single-open schema abort,
+    ///   the FIRST `Brain::open` already aborts (SIGABRT, exit 134) and the
+    ///   test never reaches the multi-brain phases. If open instead succeeds,
+    ///   this verifies N co-resident recalls and a varied-order teardown —
+    ///   which would itself refine the #153 diagnosis.
+    ///
+    /// MUST run on Linux to be meaningful. Wired into
+    /// `.github/workflows/kuzu-abort-diagnostic.yml`. Running it needs the
+    /// Permagent collaborator's Ubuntu box — the #153 hand-off that has been
+    /// pending since the teardown-vs-schema diagnosis was corrected.
+    ///
+    /// ```bash
+    /// cargo test -p spectral-graph \
+    ///     -- --ignored --nocapture n_brains_coresident_recall
+    /// ```
+    #[test]
+    #[ignore = "diagnostic reproducer; Linux-only, runs only with --ignored"]
+    fn n_brains_coresident_recall_varied_drop_order() {
+        const N: usize = 3;
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let root = tempdir.path().to_path_buf();
+        std::mem::forget(tempdir);
+
+        let make_config = |i: usize| BrainConfig {
+            data_dir: root.join(format!("brain-{i}")),
+            ontology_path: PathBuf::from("tests/fixtures/brain_ontology.toml"),
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        };
+
+        // Phase 1 — open N brains on N distinct paths, all kept alive.
+        // On Linux, if #153 is a single-open schema abort, the process
+        // aborts HERE on i = 0 and never returns.
+        let mut brains: Vec<Option<Brain>> = (0..N)
+            .map(|i| Some(Brain::open(make_config(i)).expect("brain open")))
+            .collect();
+
+        // Distinct identities — confirms N truly independent handles with no
+        // global/static DB collision (per the fan-out feasibility audit).
+        let ids: std::collections::HashSet<String> = brains
+            .iter()
+            .map(|b| b.as_ref().unwrap().brain_id().to_string())
+            .collect();
+        assert_eq!(ids.len(), N, "expected N distinct brain identities");
+
+        // Phase 2 — seed + recall on each brain WHILE all siblings are live.
+        // Exercises the per-brain kuzu Connection::query path under
+        // co-residence (the federation fan-out read pattern).
+        for (i, slot) in brains.iter().enumerate() {
+            let brain = slot.as_ref().unwrap();
+            brain
+                .remember(
+                    &format!("fed-probe-{i}"),
+                    &format!("federation fan-out probe memory for brain {i}"),
+                    Visibility::Private,
+                )
+                .expect("remember");
+            let pipeline_config = crate::cascade_layers::CascadePipelineConfig::default();
+            let result = brain
+                .recall_cascade(
+                    "federation fan-out probe",
+                    &spectral_cascade::RecognitionContext::empty(),
+                    &pipeline_config,
+                )
+                .expect("recall_cascade");
+            assert!(
+                !result.merged_hits.is_empty(),
+                "brain {i} should recall its own seeded memory while siblings are live"
+            );
+        }
+
+        // Phase 3 — drop in a deliberately NON-LIFO order to probe
+        // teardown-order sensitivity (the original, since-disproven, #153
+        // teardown theory). Reaching the end on Linux without SIGABRT would
+        // itself be a notable result.
+        let drop_order = [1usize, 0, 2];
+        assert_eq!(drop_order.len(), N, "drop order must cover all N brains");
+        for &i in &drop_order {
+            drop(brains[i].take());
+        }
     }
 }

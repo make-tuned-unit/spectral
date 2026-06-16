@@ -1,3 +1,16 @@
+# Kuzu abort diagnostic (manual).
+#
+# Reproduces the Linux SIGABRT in kuzu schema creation (issue #153) and probes
+# whether N brains can be co-resident in one process (federation read-time
+# fan-out topology). Both reproducers live on `main` in
+# crates/spectral-graph/src/brain.rs (module `kuzu_schema_abort_repro`) and are
+# `#[ignore]`d, so they never run in normal CI.
+#
+# Manual only. Dispatch from main:
+#
+#     gh workflow run kuzu-abort-diagnostic.yml --ref main
+#
+# Meaningful ONLY on Linux (glibc 2.39+) — macOS does not reproduce #153.
 name: Kuzu abort diagnostic
 on:
   workflow_dispatch:
@@ -7,8 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: docs/kuzu-linux-teardown
       - uses: dtolnay/rust-toolchain@stable
       - name: Free disk space
         run: |
@@ -16,20 +27,24 @@ jobs:
             /usr/local/lib/android /usr/local/share/boost \
             /opt/hostedtoolcache/CodeQL
           sudo apt-get clean
-      - name: Run diagnostic test (single brain)
+      # Each reproducer runs in its OWN `cargo test` process so a SIGABRT in
+      # one cannot mask the result of another. Filters are exact test names;
+      # both tests live in module `kuzu_schema_abort_repro`.
+      - name: Single-brain schema-abort repro (issue #153)
         run: |
           cargo test -p spectral-graph -- --ignored --nocapture \
-            kuzu_schema_abort_repro 2>&1 \
+            single_brain_open_aborts_on_linux 2>&1 \
             | tee /tmp/spectral-schema-abort.log
-      - name: Run all spectral-graph tests (multi-brain abort repro)
+      - name: N-brain co-residence repro (federation topology + #153)
         if: always()
         run: |
-          cargo test -p spectral-graph -- --nocapture 2>&1 \
-            | tee /tmp/spectral-full-test.log || true
+          cargo test -p spectral-graph -- --ignored --nocapture \
+            n_brains_coresident_recall_varied_drop_order 2>&1 \
+            | tee /tmp/spectral-nbrain-abort.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: spectral-diagnostic-logs
           path: |
             /tmp/spectral-schema-abort.log
-            /tmp/spectral-full-test.log
+            /tmp/spectral-nbrain-abort.log
