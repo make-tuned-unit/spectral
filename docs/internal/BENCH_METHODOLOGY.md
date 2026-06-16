@@ -1,8 +1,17 @@
 # Spectral Accuracy Benchmark: Methodology
 
-**Status**: Publication artifact. Numbers TBD pending n=500 run.
+**Status**: Publication artifact. Results filled from the n=500 run.
 **Main SHA**: `f29c6c1` (all file:line citations on this SHA unless noted)
 **Date**: 2026-06-10
+**n=500 run**: executed on main `cdd793e` (#172), 2026-06-15→16
+(`started_at` 2026-06-15T17:31Z → `completed_at` 2026-06-16T01:00Z),
+actor & judge `claude-sonnet-4-6`, expansion-ON (Haiku 4.5), cascade path,
+`--max-results 40`, per-turn ingest. Report:
+`~/spectral-local-bench/eval-report-n500.json` (`spectral_version` 0.0.1).
+The run predates the #173 prompt-continuation strip; the integrity-checked
+401/492 applies that sanitizer to the on-disk answers via re-judge (no actor
+re-run) — see `pr-173-blast-radius-verification` and §f. **This campaign is
+expansion-ON only; the expansion-OFF ablation was not executed.**
 
 ---
 
@@ -422,60 +431,64 @@ delta smaller than 2pp is within noise.
 
 | Configuration | n | Correct | Accuracy (+/-2pp) | Clean Denominator | Transport Failures |
 |---------------|---|---------|-------------------|-------------------|--------------------|
-| Expansion OFF (zero-LLM) | 500 | TBD | TBD% | TBD | TBD |
-| Expansion ON (+ Haiku) | 500 | TBD | TBD% | TBD | TBD |
-| **Ablation delta** | | | **TBD pp** | | |
+| Expansion OFF (zero-LLM) | — | not run | not run | — | — |
+| Expansion ON (+ Haiku) | 500 | **401** | **81.5%** | 492 | 8 |
+| **Ablation delta** | | | **not run** | | |
+
+Expansion ON is the published configuration. `correct=401` is the
+integrity-checked count: the on-disk run scored 398/492 (80.9%) as-judged;
+the #173 blast-radius verification re-judged the prompt-continuation artifact
+cases (sanitizer applied, no actor re-run) and confirmed +3 true-negative→
+correct flips with 0 false positives → **401/492 = 81.5%**. The 8 transport
+failures (network, quarantined) give the clean denominator 492.
 
 ### Per-Category Accuracy (Expansion OFF)
 
-| Category | n | Correct | Accuracy (+/-2pp) |
-|----------|---|---------|-------------------|
-| single-session-user | 70 | TBD | TBD% |
-| single-session-assistant | 56 | TBD | TBD% |
-| knowledge-update | 78 | TBD | TBD% |
-| temporal-reasoning | 133 | TBD | TBD% |
-| multi-session | 133 | TBD | TBD% |
-| single-session-preference | 30 | TBD | TBD% |
+Not run in this campaign (expansion-ON only).
 
-### Per-Category Accuracy (Expansion ON)
+### Per-Category Accuracy (Expansion ON) — integrity-checked
+
+`n` is the clean (evaluated) denominator: dataset count minus that category's
+transport failures (8 total: 5 SSP, 2 MS, 1 SSA). Accuracy = correct / n.
 
 | Category | n | Correct | Accuracy (+/-2pp) |
 |----------|---|---------|-------------------|
-| single-session-user | 70 | TBD | TBD% |
-| single-session-assistant | 56 | TBD | TBD% |
-| knowledge-update | 78 | TBD | TBD% |
-| temporal-reasoning | 133 | TBD | TBD% |
-| multi-session | 133 | TBD | TBD% |
-| single-session-preference | 30 | TBD | TBD% |
+| single-session-user | 70 | 60 | 85.7% |
+| single-session-assistant | 55 | 51 | 92.7% |
+| knowledge-update | 78 | 68 | 87.2% |
+| temporal-reasoning | 133 | 110 | 82.7% |
+| multi-session | 131 | 98 | 74.8% |
+| single-session-preference | 25 | 14 | 56.0% |
+| **Overall** | **492** | **401** | **81.5%** |
+
+The integrity-check +3 vs the as-judged run lands on SSA (+1, `8b9d4367`),
+multi-session (+1, `55241a1f`), and SSP (+1, `b6025781`).
 
 ### Ablation Delta by Category
 
-| Category | Expansion OFF | Expansion ON | Delta (pp) |
-|----------|---------------|-------------|------------|
-| single-session-user | TBD% | TBD% | TBD |
-| single-session-assistant | TBD% | TBD% | TBD |
-| knowledge-update | TBD% | TBD% | TBD |
-| temporal-reasoning | TBD% | TBD% | TBD |
-| multi-session | TBD% | TBD% | TBD |
-| single-session-preference | TBD% | TBD% | TBD |
+Not computable — the expansion-OFF arm was not run.
 
 ### Efficiency Aggregates (Expansion OFF)
 
-| Metric | Mean | p50 | p95 |
-|--------|------|-----|-----|
-| system_tokens_per_query | TBD | TBD | TBD |
-| memory_layer_overhead_tokens | 0 | 0 | 0 |
-| retrieval_latency_ms | TBD | TBD | TBD |
+Not run. By construction memory_layer_overhead_tokens would be 0 (no LLM call
+in the recall path); system_tokens_per_query and retrieval_latency_ms would
+match the ON run minus the expansion call (retrieval is identical).
 
 ### Efficiency Aggregates (Expansion ON)
 
+n=492 instrumented. Percentile method: sorted array, index `round(p·(n−1))`
+(reproduces the report's precomputed aggregates). See `COST_BENCHMARK.md`.
+
 | Metric | Mean | p50 | p95 |
 |--------|------|-----|-----|
-| system_tokens_per_query | TBD | TBD | TBD |
-| expansion_input_tokens | TBD | TBD | TBD |
-| expansion_output_tokens | TBD | TBD | TBD |
-| memory_layer_overhead_tokens | TBD | TBD | TBD |
-| retrieval_latency_ms | TBD | TBD | TBD |
+| system_tokens_per_query | 16,554 | 15,476 | 25,476 |
+| expansion_input_tokens | 134 | 131 | 154 |
+| expansion_output_tokens | 35 | 35 | 47 |
+| memory_layer_overhead_tokens | 169 | 166 | 198 |
+| retrieval_latency_ms | 18.1 | 17 | 42 |
+
+Campaign cost: system $26.30 (actor $26.18 + expansion $0.12), judge $1.55
+(instrument, excluded from headline). Memory-layer overhead ≈ $0.25/1k queries.
 
 ### Architecture Comparison
 
@@ -497,8 +510,8 @@ table below.
 
 | System | Overhead tokens/query | $/1k queries (overhead) | Accuracy (LongMemEval) | Accuracy source |
 |--------|----------------------|------------------------|------------------------|-----------------|
-| **Spectral** (expansion OFF) | 0 | $0.00 | TBD% (+/-2pp) | This bench (n=500, methodology published) |
-| **Spectral** (expansion ON) | TBD | TBD | TBD% (+/-2pp) | This bench (n=500, methodology published) |
+| **Spectral** (expansion OFF) | 0 | $0.00 | not run | — (ablation not executed this campaign) |
+| **Spectral** (expansion ON) | 169 | $0.25 | 81.5% (+/-2pp) | This bench (n=492 clean, integrity-checked) |
 | **Mem0** | Undisclosed | Undisclosed | +26pp over OpenAI baseline (LOCOMO) | Self-reported (mem0.ai blog, methodology partial) |
 | **Zep** | Undisclosed | Undisclosed | Not published on LongMemEval | — |
 | **Memanto** | Undisclosed | Undisclosed | ~89.8% (LongMemEval, version unclear) | Self-reported (methodology unpublished) |
