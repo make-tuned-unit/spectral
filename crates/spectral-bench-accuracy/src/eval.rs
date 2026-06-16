@@ -85,6 +85,34 @@ pub fn estimate_cost(question_count: usize) -> f64 {
     estimate_cost_for_models(question_count, "claude-sonnet-4-6", "claude-sonnet-4-6")
 }
 
+/// Truncate an actor answer at the first prompt-continuation artifact.
+///
+/// The actor sometimes does not stop after answering and instead fabricates a
+/// follow-up turn — echoing the prompt scaffold ("Question:", "## Question",
+/// "Now answer the following question…") and then answering an unrelated,
+/// invented question. Downstream, the judge reads the full `predicted` blob and
+/// grades that trailing turn against the real question, scoring a correct answer
+/// wrong. Cutting at the first such marker recovers the actual answer. Markers
+/// are line-leading prompt scaffolding that a genuine answer is extremely
+/// unlikely to contain.
+fn strip_actor_continuation(answer: &str) -> String {
+    const MARKERS: &[&str] = &[
+        "\nQuestion:",
+        "\n## Question",
+        "\nNow answer the following question",
+    ];
+    let cut = MARKERS
+        .iter()
+        .filter_map(|m| answer.find(m))
+        .min()
+        .unwrap_or(answer.len());
+    // Also drop any trailing scaffold separator ("---") and whitespace left
+    // immediately before the cut.
+    answer[..cut]
+        .trim_end_matches(|c: char| c == '-' || c.is_whitespace())
+        .to_string()
+}
+
 /// The main evaluator.
 pub struct AccuracyEval {
     config: EvalConfig,
@@ -465,7 +493,17 @@ impl AccuracyEval {
         let (predicted, actor_usage, mut total_retries, outcome_class) = match actor_outcome {
             crate::retry::CallOutcome::Success { value, retry_count } => {
                 let (text, usage) = value;
-                (text, usage, retry_count, crate::report::OutcomeClass::Ok)
+                // The actor occasionally runs past its answer and fabricates a
+                // follow-up "Question:/Answer:" turn (prompt-continuation leak).
+                // The judge would then grade that trailing turn instead of the
+                // real answer. Truncate it here so both the judged text and the
+                // stored `predicted` contain only the actual answer.
+                (
+                    strip_actor_continuation(&text),
+                    usage,
+                    retry_count,
+                    crate::report::OutcomeClass::Ok,
+                )
             }
             crate::retry::CallOutcome::TransportFailure { error, retry_count } => {
                 eprintln!("[TRANSPORT] {}: {error}", question.question_id);
@@ -816,6 +854,106 @@ mod tests {
         assert_eq!(report.total_questions, 2);
         assert_eq!(report.correct, 2);
         assert!((report.overall_accuracy - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn strip_actor_continuation_cuts_trailing_fabricated_turns() {
+        // 55241a1f shape: real answer, then a fabricated "Question:/Answer:" turn.
+        let a = "The total number of comments is 12 + 21 = 33 comments.\n\nQuestion: When did I purchase my Sony FE 24-70mm f/2.8 GM lens?\n\nAnswer:";
+        assert_eq!(
+            strip_actor_continuation(a),
+            "The total number of comments is 12 + 21 = 33 comments."
+        );
+        // b6025781 shape: prompt-scaffold echo.
+        let b = "Here are some meal prep recipes.\n\n---\n\nNow answer the following question based on the conversation context above:\n\n## Question\nWhat gift for mom?";
+        assert_eq!(
+            strip_actor_continuation(b),
+            "Here are some meal prep recipes."
+        );
+        // 8b9d4367 shape: "## Question" markdown scaffold.
+        let c = "The company is Jaipur Rugs.\n## Question\nWhat about Bajaj Auto?";
+        assert_eq!(strip_actor_continuation(c), "The company is Jaipur Rugs.");
+        // Clean answer is unchanged.
+        let clean = "The car is red.";
+        assert_eq!(strip_actor_continuation(clean), "The car is red.");
+    }
+
+    /// Judge that records exactly what (question, predicted, ground_truth) it was
+    /// handed, so we can assert the pairing through the judge call.
+    struct RecordingJudge {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+    }
+    impl crate::judge::Judge for RecordingJudge {
+        fn grade(
+            &self,
+            question: &str,
+            predicted: &str,
+            ground_truth: &str,
+            _category: Category,
+        ) -> anyhow::Result<(crate::judge::GradeResult, Option<crate::report::TokenUsage>)>
+        {
+            self.seen.lock().unwrap().push((
+                question.to_string(),
+                predicted.to_string(),
+                ground_truth.to_string(),
+            ));
+            Ok((
+                crate::judge::GradeResult {
+                    correct: true,
+                    reasoning: None,
+                },
+                None,
+            ))
+        }
+        fn name(&self) -> &str {
+            "recording"
+        }
+    }
+
+    #[test]
+    fn judge_receives_correct_question_gt_and_sanitized_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds_path = dir.path().join("dataset.json");
+        let questions = vec![Question {
+            question_id: "q-pair".into(),
+            question_type: "multi-session".into(),
+            question: "What color is the car?".into(),
+            answer: serde_json::Value::String("Red".into()),
+            question_date: Some("2023/06/01 (Thu) 10:00".into()),
+            haystack_sessions: vec![vec![Turn {
+                role: "user".into(),
+                content: "My car is red and I drive it daily.".into(),
+            }]],
+            haystack_session_ids: vec!["s1".into()],
+            haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
+        }];
+        std::fs::write(&ds_path, serde_json::to_string(&questions).unwrap()).unwrap();
+
+        // Actor answers correctly, then runs past its answer into a fabricated turn.
+        let actor_text =
+            "The car is red.\n\nQuestion: When did I buy the Sony lens?\n\nAnswer:".to_string();
+        let config = EvalConfig {
+            dataset_path: ds_path,
+            work_dir: dir.path().join("work"),
+            max_questions: Some(1),
+            checkpoint_interval: 100,
+            ..Default::default()
+        };
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let judge = Box::new(RecordingJudge { seen: seen.clone() });
+        let eval = AccuracyEval::new(config, Box::new(MockActor::new(&actor_text)), judge);
+        let report = eval.run().unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "judge called exactly once");
+        let (q, predicted, gt) = &seen[0];
+        // Pairing: the judge got THIS question and THIS GT (no mispairing).
+        assert_eq!(q, "What color is the car?");
+        assert_eq!(gt, "Red");
+        // Fix: the judge graded the sanitized answer, not the fabricated trailing turn.
+        assert_eq!(predicted, "The car is red.");
+        // And the stored predicted is sanitized too.
+        assert_eq!(report.results[0].predicted, "The car is red.");
     }
 
     /// Pins the resume contract that the old `ids.clear()` broke: a run whose
