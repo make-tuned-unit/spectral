@@ -2468,4 +2468,116 @@ mod kuzu_schema_abort_repro {
         // inside Brain::open during schema creation.
         let _brain = Brain::open(config).expect("brain open");
     }
+
+    /// Federation topology probe + multi-brain extension of issue #153.
+    ///
+    /// Opens N (>= 3) independent `Brain` handles on N distinct `data_dir`s
+    /// in a SINGLE process, keeps them all alive simultaneously, runs
+    /// `recall_cascade` on each while its siblings are live, then drops them
+    /// in a deliberately non-stack (non-LIFO) order.
+    ///
+    /// Why this exists — two questions, one experiment:
+    ///  1. Federation v1 (read-time fan-out) wants a coordinator to open N
+    ///     child brains in one process and query each. This test is the
+    ///     empirical settler for "is in-process fan-out viable, or must the
+    ///     coordinator shard brains across processes + local IPC?".
+    ///  2. Issue #153 (kuzu Linux SIGABRT in create_schema): co-resident
+    ///     `Database` instances probe whether the FFI abort is sensitive to
+    ///     multiple live kuzu Databases / teardown order, beyond the
+    ///     single-brain `single_brain_open_aborts_on_linux` reproducer.
+    ///
+    /// Expected behavior:
+    /// - macOS: passes, clean exit. The Mac does NOT reproduce #153, so a
+    ///   green run here is NOT meaningful evidence — it only confirms the
+    ///   test logic compiles and that N brains can coexist on this platform.
+    /// - Ubuntu (glibc 2.39+): if #153 is purely a single-open schema abort,
+    ///   the FIRST `Brain::open` already aborts (SIGABRT, exit 134) and the
+    ///   test never reaches the multi-brain phases. If open instead succeeds,
+    ///   this verifies N co-resident recalls and a varied-order teardown —
+    ///   which would itself refine the #153 diagnosis.
+    ///
+    /// MUST run on Linux to be meaningful. Wired into
+    /// `.github/workflows/kuzu-abort-diagnostic.yml`. Running it needs the
+    /// Permagent collaborator's Ubuntu box — the #153 hand-off that has been
+    /// pending since the teardown-vs-schema diagnosis was corrected.
+    ///
+    /// ```bash
+    /// cargo test -p spectral-graph \
+    ///     -- --ignored --nocapture n_brains_coresident_recall
+    /// ```
+    #[test]
+    #[ignore = "diagnostic reproducer; Linux-only, runs only with --ignored"]
+    fn n_brains_coresident_recall_varied_drop_order() {
+        const N: usize = 3;
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let root = tempdir.path().to_path_buf();
+        std::mem::forget(tempdir);
+
+        let make_config = |i: usize| BrainConfig {
+            data_dir: root.join(format!("brain-{i}")),
+            ontology_path: PathBuf::from("tests/fixtures/brain_ontology.toml"),
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        };
+
+        // Phase 1 — open N brains on N distinct paths, all kept alive.
+        // On Linux, if #153 is a single-open schema abort, the process
+        // aborts HERE on i = 0 and never returns.
+        let mut brains: Vec<Option<Brain>> = (0..N)
+            .map(|i| Some(Brain::open(make_config(i)).expect("brain open")))
+            .collect();
+
+        // Distinct identities — confirms N truly independent handles with no
+        // global/static DB collision (per the fan-out feasibility audit).
+        let ids: std::collections::HashSet<String> = brains
+            .iter()
+            .map(|b| b.as_ref().unwrap().brain_id().to_string())
+            .collect();
+        assert_eq!(ids.len(), N, "expected N distinct brain identities");
+
+        // Phase 2 — seed + recall on each brain WHILE all siblings are live.
+        // Exercises the per-brain kuzu Connection::query path under
+        // co-residence (the federation fan-out read pattern).
+        for (i, slot) in brains.iter().enumerate() {
+            let brain = slot.as_ref().unwrap();
+            brain
+                .remember(
+                    &format!("fed-probe-{i}"),
+                    &format!("federation fan-out probe memory for brain {i}"),
+                    Visibility::Private,
+                )
+                .expect("remember");
+            let result = brain
+                .recall_cascade(
+                    "federation fan-out probe",
+                    &spectral_cascade::RecognitionContext::empty(),
+                    &spectral_cascade::orchestrator::CascadeConfig::default(),
+                )
+                .expect("recall_cascade");
+            assert!(
+                !result.merged_hits.is_empty(),
+                "brain {i} should recall its own seeded memory while siblings are live"
+            );
+        }
+
+        // Phase 3 — drop in a deliberately NON-LIFO order to probe
+        // teardown-order sensitivity (the original, since-disproven, #153
+        // teardown theory). Reaching the end on Linux without SIGABRT would
+        // itself be a notable result.
+        let drop_order = [1usize, 0, 2];
+        assert_eq!(drop_order.len(), N, "drop order must cover all N brains");
+        for &i in &drop_order {
+            drop(brains[i].take());
+        }
+    }
 }
