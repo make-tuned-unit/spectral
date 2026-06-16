@@ -35,6 +35,21 @@ cold queries where the query must be encoded. Sub-millisecond recall on 1,000
 memories. ~2,500 ingests/sec. No GPU, no model weights, no per-query encoding
 cost. See [benchmarks](benches/RESULTS.md) for the full breakdown.
 
+## Results (accuracy)
+
+On **LongMemEval-S** (500 long-term-memory QA questions), Spectral scores
+**81.5% (401/492)** with a Claude Sonnet 4.6 actor — at a memory-layer
+retrieval overhead of **~169 tokens/query** and **~17 ms median retrieval
+latency**, with no embedding model, no vector database, and no LLM call in the
+recall path (memory-layer overhead ≈ $0.25/1k queries).
+
+Honest framing: this is in-sample (the retrieval was developed against this
+dataset), so it is not a state-of-the-art claim; held-out numbers are expected
+to be lower. The denominator is 492 (8 transport failures quarantined), and
+most remaining failures are actor-side synthesis, not retrieval misses.
+
+Full results, per-category breakdown, and limitations: [docs/RESULTS.md](docs/RESULTS.md).
+
 ## Quick start
 
 Add Spectral via git dependency (crates.io publication coming soon):
