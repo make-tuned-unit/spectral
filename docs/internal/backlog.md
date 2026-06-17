@@ -16,7 +16,11 @@ Format per item: title, source, effort estimate, dependencies, why it matters, e
 - **Depends on:** Nothing. Unblocks a true deletion-propagation test for federation fan-out.
 - **Why it matters:** `Brain` exposes no per-key hard delete today — only `delete_wing_memories_before` (wing + time scoped). Federation v1's read-time isolation criterion ("a child-side deletion is reflected in the next fan-out") had to use `consolidate_into` as a **removal proxy**: consolidation filters the source out of recall (`sqlite_store.rs:1114,1216`), which is soft removal, not deletion. The memory still exists on disk. Federation's real deletion-propagation guarantee needs an actual hard delete of the row + its graph/FTS/consolidation traces.
 - **Note:** This is a **deliberate future core change** (touches `Brain` and the `MemoryStore` trait), explicitly **not** v1 scope — federation v1 was built above the `Brain` API with zero core changes by design.
-- **Out of scope:** federation v2 / write-merge / cross-brain dedup (all on hold pending the macOS/Apple-Silicon acceptance gate for #178).
+- **Out of scope:** federation v2 / write-merge / cross-brain dedup (federation v1 shipped + validated on macOS/M1; #178 merged; follow-on held until the next chapter is scoped).
+- **Permagent design input (2026-06-17, Reader dependency):**
+  - **Concrete use case:** Reader keys memories by content-hash. Re-ingesting an *updated* document creates a new-hash memory while the old-hash memory persists. v1's soft-filter (`consolidate_into`) leaves the superseded memory recall-able, so a federated Henry can surface the **stale version**.
+  - **Required contract:** `forget(key)` must **HARD-delete** — the superseded memory must be gone from recall, not just filtered. Reader will call it on re-ingest to drop the prior content-hash.
+  - **Cross-repo:** logged Permagent-side as a Reader dependency; the call site is **Reader re-ingest**. **Coordinate the API shape with the Permagent collaborator before building** — this is the deciding consumer.
 
 ---
 
