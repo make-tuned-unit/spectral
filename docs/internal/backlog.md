@@ -6,6 +6,20 @@ Format per item: title, source, effort estimate, dependencies, why it matters, e
 
 ---
 
+## 2026-06-16 update — federation v1 follow-on
+
+### New items
+
+**Item — `Brain::forget(key)`: per-key hard delete.**
+- **Source:** Federation v1 review (PR #178); fan-out feasibility audit (`FANOUT_FEASIBILITY.md`).
+- **Effort:** ~3-5h.
+- **Depends on:** Nothing. Unblocks a true deletion-propagation test for federation fan-out.
+- **Why it matters:** `Brain` exposes no per-key hard delete today — only `delete_wing_memories_before` (wing + time scoped). Federation v1's read-time isolation criterion ("a child-side deletion is reflected in the next fan-out") had to use `consolidate_into` as a **removal proxy**: consolidation filters the source out of recall (`sqlite_store.rs:1114,1216`), which is soft removal, not deletion. The memory still exists on disk. Federation's real deletion-propagation guarantee needs an actual hard delete of the row + its graph/FTS/consolidation traces.
+- **Note:** This is a **deliberate future core change** (touches `Brain` and the `MemoryStore` trait), explicitly **not** v1 scope — federation v1 was built above the `Brain` API with zero core changes by design.
+- **Out of scope:** federation v2 / write-merge / cross-brain dedup (all on hold pending the macOS/Apple-Silicon acceptance gate for #178).
+
+---
+
 ## 2026-06-10 update — two decisions ratified
 
 ### Closed items
