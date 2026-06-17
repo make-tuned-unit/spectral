@@ -9,6 +9,7 @@ pub mod canonicalize;
 pub mod cascade_layers;
 pub mod error;
 pub mod extract;
+pub mod federation;
 pub mod kuzu_store;
 pub mod ontology;
 pub mod provenance;
