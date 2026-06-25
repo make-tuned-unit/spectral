@@ -29,12 +29,12 @@
 //! - `Some(n)`: use exactly *n* bytes
 
 use crate::{
-    CompactionTier, ConsolidateOpts, ConsolidationEdge, ConsolidationResult, Episode, Fingerprint,
-    InvalidSourcePolicy, Memory, MemoryAnnotation, MemoryHit, MemoryStore, RelatedMemory,
-    RetrievalEvent, SkipReason, SpectrogramRow, WriteOutcome,
+    CompactionTier, ConsolidateOpts, ConsolidationEdge, ConsolidationResult, EntityField, Episode,
+    FieldSource, Fingerprint, InvalidSourcePolicy, Memory, MemoryAnnotation, MemoryHit,
+    MemoryStore, RelatedMemory, RetrievalEvent, SkipReason, SpectrogramRow, WriteOutcome,
 };
 use lru::LruCache;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -301,7 +301,22 @@ impl SqliteStore {
                 FOREIGN KEY (source_key) REFERENCES memories(key) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_consolidation_target
-                ON consolidation_edges(target_key);"
+                ON consolidation_edges(target_key);
+
+            CREATE TABLE IF NOT EXISTS entity_fields (
+                entity_id   TEXT NOT NULL,
+                field_name  TEXT NOT NULL,
+                value       TEXT NOT NULL,
+                source      TEXT NOT NULL,
+                source_url  TEXT,
+                updated_at  TEXT NOT NULL,
+                PRIMARY KEY (entity_id, field_name)
+            );
+            -- The composite PK already indexes the entity_id prefix (fast
+            -- per-entity load). This secondary index supports cross-entity
+            -- queries by field_name.
+            CREATE INDEX IF NOT EXISTS idx_entity_fields_name
+                ON entity_fields(field_name);"
         ))?;
         Ok(())
     }
@@ -2040,6 +2055,82 @@ impl MemoryStore for SqliteStore {
                 anyhow::bail!("memory not found: {id}");
             }
             Ok(())
+        })
+    }
+
+    fn set_entity_field(
+        &self,
+        entity_id: &str,
+        field_name: &str,
+        value: &str,
+        source: FieldSource,
+        source_url: Option<&str>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + '_>> {
+        let entity_id = entity_id.to_string();
+        let field_name = field_name.to_string();
+        let value = value.to_string();
+        let source = source.as_str().to_string();
+        let source_url = source_url.map(|s| s.to_string());
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // Provenance guard: an enriched write must not clobber a manual
+            // field. Read the stored source under the held lock so the
+            // check-then-write is atomic against other writers.
+            if source == "enriched" {
+                let existing: Option<String> = conn
+                    .query_row(
+                        "SELECT source FROM entity_fields \
+                         WHERE entity_id = ?1 AND field_name = ?2",
+                        params![entity_id, field_name],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if existing.as_deref() == Some("manual") {
+                    return Ok(false);
+                }
+            }
+            conn.execute(
+                "INSERT INTO entity_fields \
+                     (entity_id, field_name, value, source, source_url, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) \
+                 ON CONFLICT(entity_id, field_name) DO UPDATE SET \
+                     value = excluded.value, \
+                     source = excluded.source, \
+                     source_url = excluded.source_url, \
+                     updated_at = excluded.updated_at",
+                params![entity_id, field_name, value, source, source_url],
+            )?;
+            Ok(true)
+        })
+    }
+
+    fn get_entity_fields(
+        &self,
+        entity_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<EntityField>>> + Send + '_>> {
+        let entity_id = entity_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT field_name, value, source, source_url, updated_at \
+                 FROM entity_fields WHERE entity_id = ?1 ORDER BY field_name",
+            )?;
+            let rows: Vec<EntityField> = stmt
+                .query_map(params![entity_id], |row| {
+                    let source: String = row.get(2)?;
+                    Ok(EntityField {
+                        field_name: row.get(0)?,
+                        value: row.get(1)?,
+                        source: FieldSource::from_db(&source),
+                        source_url: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
         })
     }
 
@@ -3896,6 +3987,136 @@ mod tests {
         assert_eq!(second.description.as_deref(), Some("second"));
         // Timestamp should be updated (or at least present)
         assert!(second.description_generated_at.is_some());
+    }
+
+    // ── entity_fields ──
+
+    const E1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    #[tokio::test]
+    async fn entity_field_write_and_read_with_provenance() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        let applied = store
+            .set_entity_field(E1, "email", "j@x.com", FieldSource::Manual, None)
+            .await
+            .unwrap();
+        assert!(applied);
+        let applied = store
+            .set_entity_field(
+                E1,
+                "job_title",
+                "Eng Lead",
+                FieldSource::Enriched,
+                Some("https://linkedin.com/in/jane"),
+            )
+            .await
+            .unwrap();
+        assert!(applied);
+
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert_eq!(fields.len(), 2);
+        // Ordered by field_name: email, job_title.
+        let email = &fields[0];
+        assert_eq!(email.field_name, "email");
+        assert_eq!(email.value, "j@x.com");
+        assert_eq!(email.source, FieldSource::Manual);
+        assert_eq!(email.source_url, None);
+        assert!(email.updated_at.ends_with('Z'));
+
+        let job = &fields[1];
+        assert_eq!(job.field_name, "job_title");
+        assert_eq!(job.source, FieldSource::Enriched);
+        assert_eq!(
+            job.source_url.as_deref(),
+            Some("https://linkedin.com/in/jane")
+        );
+    }
+
+    #[tokio::test]
+    async fn enriched_write_does_not_clobber_manual_field() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        store
+            .set_entity_field(E1, "company", "Acme", FieldSource::Manual, None)
+            .await
+            .unwrap();
+
+        // Enriched write to the same field must be suppressed.
+        let applied = store
+            .set_entity_field(
+                E1,
+                "company",
+                "Globex",
+                FieldSource::Enriched,
+                Some("https://example.com"),
+            )
+            .await
+            .unwrap();
+        assert!(!applied, "enriched write should be suppressed");
+
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].value, "Acme");
+        assert_eq!(fields[0].source, FieldSource::Manual);
+        assert_eq!(fields[0].source_url, None);
+    }
+
+    #[tokio::test]
+    async fn manual_write_overwrites_any_source() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        store
+            .set_entity_field(E1, "company", "Globex", FieldSource::Enriched, None)
+            .await
+            .unwrap();
+        // Manual write always wins.
+        let applied = store
+            .set_entity_field(E1, "company", "Acme", FieldSource::Manual, None)
+            .await
+            .unwrap();
+        assert!(applied);
+
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert_eq!(fields[0].value, "Acme");
+        assert_eq!(fields[0].source, FieldSource::Manual);
+        // And a subsequent enriched write is now blocked.
+        let applied = store
+            .set_entity_field(E1, "company", "Initech", FieldSource::Enriched, None)
+            .await
+            .unwrap();
+        assert!(!applied);
+    }
+
+    #[tokio::test]
+    async fn enriched_write_updates_existing_enriched_field() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        store
+            .set_entity_field(E1, "job_title", "Engineer", FieldSource::Enriched, None)
+            .await
+            .unwrap();
+        let applied = store
+            .set_entity_field(
+                E1,
+                "job_title",
+                "Senior Engineer",
+                FieldSource::Enriched,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(applied);
+
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert_eq!(fields[0].value, "Senior Engineer");
+    }
+
+    #[tokio::test]
+    async fn get_entity_fields_empty_for_unknown_entity() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert!(fields.is_empty());
     }
 
     #[tokio::test]

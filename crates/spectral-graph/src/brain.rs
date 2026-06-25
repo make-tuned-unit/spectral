@@ -1512,6 +1512,40 @@ impl Brain {
         self.store.set_entity_description(entity_id, description)
     }
 
+    /// Write (insert-or-update) a typed field on an entity, with provenance.
+    ///
+    /// Enforces the manual-not-clobbered rule in the store: an `Enriched`
+    /// write never overwrites a `Manual` field. Returns `false` when such a
+    /// write was suppressed, `true` when applied.
+    pub fn set_entity_field(
+        &self,
+        entity_id: &EntityId,
+        field_name: &str,
+        value: &str,
+        source: spectral_ingest::FieldSource,
+        source_url: Option<&str>,
+    ) -> Result<bool, Error> {
+        self.rt
+            .block_on(self.memory_store.set_entity_field(
+                &entity_id.to_string(),
+                field_name,
+                value,
+                source,
+                source_url,
+            ))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Read all typed fields for an entity (provenance included).
+    pub fn get_entity_fields(
+        &self,
+        entity_id: &EntityId,
+    ) -> Result<Vec<spectral_ingest::EntityField>, Error> {
+        self.rt
+            .block_on(self.memory_store.get_entity_fields(&entity_id.to_string()))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// List memories where description IS NULL, ordered by created_at DESC.
     pub fn list_undescribed(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
         self.rt
