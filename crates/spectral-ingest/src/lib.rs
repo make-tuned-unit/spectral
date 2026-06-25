@@ -251,6 +251,53 @@ pub struct SpectrogramRow {
     pub peak_dimensions: String,
 }
 
+// ── Entity fields (typed, with provenance) ──────────────────────────
+
+/// Provenance of an entity field value.
+///
+/// `Manual` values are author-supplied (UI / direct entry); `Enriched`
+/// values come from an automated enrichment pass. The store enforces that an
+/// `Enriched` write never overwrites a field whose stored source is `Manual`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldSource {
+    Manual,
+    Enriched,
+}
+
+impl FieldSource {
+    /// Canonical lowercase string stored in the DB.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FieldSource::Manual => "manual",
+            FieldSource::Enriched => "enriched",
+        }
+    }
+
+    /// Parse from the DB string. Unknown values default to `Enriched` (the
+    /// non-protected source) so a corrupt row can never masquerade as a
+    /// manual value and block legitimate writes.
+    pub fn from_db(s: &str) -> FieldSource {
+        match s {
+            "manual" => FieldSource::Manual,
+            _ => FieldSource::Enriched,
+        }
+    }
+}
+
+/// A single typed field on a graph entity, carrying provenance.
+///
+/// `entity_id` is the entity's 64-hex content-addressed id (stored by value;
+/// there is no DB-level foreign key — graph entities live in the Kuzu store).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntityField {
+    pub field_name: String,
+    pub value: String,
+    pub source: FieldSource,
+    pub source_url: Option<String>,
+    pub updated_at: String,
+}
+
 // ── MemoryStore trait ───────────────────────────────────────────────
 
 /// Unified trait abstracting the memory storage backend.
@@ -494,6 +541,31 @@ pub trait MemoryStore: Send + Sync {
         &self,
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>>;
+
+    // ── Entity fields ──
+
+    /// Write (insert-or-update) a single typed field on an entity, with
+    /// provenance. `entity_id` is the entity's 64-hex content-addressed id.
+    ///
+    /// Provenance rule (enforced here, so it holds for every caller): an
+    /// `Enriched` write must NOT overwrite a field whose stored source is
+    /// `Manual`. When such a write is suppressed this returns `Ok(false)`;
+    /// an applied write returns `Ok(true)`.
+    fn set_entity_field(
+        &self,
+        entity_id: &str,
+        field_name: &str,
+        value: &str,
+        source: FieldSource,
+        source_url: Option<&str>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + '_>>;
+
+    /// Read all typed fields for an entity, ordered by field_name. Returns an
+    /// empty vec when the entity has no fields.
+    fn get_entity_fields(
+        &self,
+        entity_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<EntityField>>> + Send + '_>>;
 
     // ── Co-retrieval ──
 
