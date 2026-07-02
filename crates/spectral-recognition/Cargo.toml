@@ -1,0 +1,18 @@
+[package]
+name = "spectral-recognition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Deterministic recognition memory for Spectral: content peak-pair fingerprints, rarity-weighted familiarity scoring, and ambient routine tracking. No embeddings, every match auditable."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

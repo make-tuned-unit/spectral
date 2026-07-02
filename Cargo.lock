@@ -2941,6 +2941,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "spectral-recognition"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "spectral-spectrogram"
 version = "0.0.1"
 dependencies = [
