@@ -412,6 +412,11 @@ pub struct Brain {
     ingest_config: spectral_ingest::ingest::IngestConfig,
     activity_wing: String,
     redaction_policy: Box<dyn crate::activity::RedactionPolicy>,
+    /// Recognition engine (sidecar `recognition.db`). Memories are enrolled
+    /// at write time; `recognize()` answers "have I encountered this?".
+    recognition: Mutex<
+        spectral_recognition::RecognitionEngine<spectral_recognition::SqliteRecognitionStore>,
+    >,
     rt: tokio::runtime::Runtime,
 }
 
@@ -527,6 +532,16 @@ impl Brain {
             Err(e) => tracing::warn!("fingerprint backfill failed (non-fatal): {e}"),
         }
 
+        // Recognition engine: sidecar store next to the graph and memory DBs.
+        let recognition_store = spectral_recognition::SqliteRecognitionStore::open(
+            &config.data_dir.join("recognition.db"),
+        )
+        .map_err(|e| Error::Schema(format!("recognition store: {e}")))?;
+        let recognition = Mutex::new(spectral_recognition::RecognitionEngine::new(
+            recognition_store,
+            spectral_recognition::RecognitionConfig::default(),
+        ));
+
         Ok(Self {
             identity,
             device_id,
@@ -545,8 +560,28 @@ impl Brain {
             redaction_policy: config
                 .redaction_policy
                 .unwrap_or_else(|| Box::new(crate::activity::DefaultRedactionPolicy::default())),
+            recognition,
             rt,
         })
+    }
+
+    /// Recognition: "have I encountered this before — and what happened
+    /// last time?" Deterministic, no LLM, sub-millisecond; the result
+    /// carries the exact matched features behind the verdict.
+    ///
+    /// Distinct from recall: recall retrieves what's relevant to a query;
+    /// recognize judges whether a stimulus is a re-encounter and of what.
+    pub fn recognize(
+        &self,
+        stimulus: &str,
+    ) -> Result<spectral_recognition::RecognitionResult, Error> {
+        let engine = self
+            .recognition
+            .lock()
+            .map_err(|e| Error::Schema(format!("recognition lock poisoned: {e}")))?;
+        engine
+            .recognize(stimulus)
+            .map_err(|e| Error::Schema(format!("recognize: {e}")))
     }
 
     /// Returns this brain's stable identifier.
@@ -978,6 +1013,14 @@ impl Brain {
             self.memory_store
                 .set_declarative_density(&result.memory.id, density),
         );
+
+        // Enroll in the recognition index (idempotent per memory id;
+        // failures are non-fatal — recognition degrades, writes don't).
+        if let Ok(mut engine) = self.recognition.lock() {
+            if let Err(e) = engine.enroll(&result.memory.id, content) {
+                tracing::warn!("recognition enroll failed (non-fatal): {e}");
+            }
+        }
 
         // Compute and store spectrogram if enabled
         if self.enable_spectrogram {

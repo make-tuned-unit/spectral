@@ -15,6 +15,7 @@ spectral-cascade = { path = "../spectral-cascade" }
 spectral-graph = { path = "../spectral-graph" }
 spectral-tact = { path = "../spectral-tact" }
 spectral-spectrogram = { path = "../spectral-spectrogram" }
+spectral-recognition = { path = "../spectral-recognition" }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
