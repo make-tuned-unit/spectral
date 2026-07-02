@@ -65,6 +65,13 @@ pub struct SqliteStoreConfig {
     /// - `Some(0)` — disable mmap entirely (page cache only).
     /// - `Some(n)` — use exactly *n* bytes.
     pub mmap_size: Option<u64>,
+    /// FTS5 tokenizer spec for the memories index (e.g. `"porter unicode61"`).
+    ///
+    /// - `None` (default) — fall back to the `SPECTRAL_FTS_TOKENIZER` env var,
+    ///   then to SQLite's default (unicode61, no stemming).
+    /// - Applies when the FTS table is (re)created. An existing database keeps
+    ///   the tokenizer it was built with.
+    pub fts_tokenizer: Option<String>,
 }
 
 /// SQLite-backed memory store with FTS5 search.
@@ -120,8 +127,9 @@ impl SqliteStore {
              PRAGMA temp_store   = MEMORY;
              PRAGMA mmap_size    = {mmap_size};"
         ))?;
-        Self::init_schema(&conn)?;
-        Self::migrate_provenance_columns(&conn)?;
+        let fts_tokenizer = Self::resolve_fts_tokenizer(config);
+        Self::init_schema(&conn, fts_tokenizer.as_deref())?;
+        Self::migrate_provenance_columns(&conn, fts_tokenizer.as_deref())?;
         Self::migrate_fk_cascade(&conn)?;
         // Enable FK enforcement AFTER all migrations complete (migrate_fk_cascade
         // turns FK OFF for table rebuilds). This is per-connection in SQLite and
@@ -138,8 +146,9 @@ impl SqliteStore {
     /// Create an in-memory database (useful for tests).
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
-        Self::init_schema(&conn)?;
-        Self::migrate_provenance_columns(&conn)?;
+        let fts_tokenizer = Self::resolve_fts_tokenizer(&SqliteStoreConfig::default());
+        Self::init_schema(&conn, fts_tokenizer.as_deref())?;
+        Self::migrate_provenance_columns(&conn, fts_tokenizer.as_deref())?;
         Self::migrate_fk_cascade(&conn)?;
         conn.execute_batch("PRAGMA foreign_keys = ON")?;
         Ok(Self {
@@ -150,8 +159,37 @@ impl SqliteStore {
         })
     }
 
-    fn init_schema(conn: &Connection) -> anyhow::Result<()> {
-        conn.execute_batch(
+    /// Resolve the FTS tokenizer: explicit config, then env var, then None
+    /// (SQLite default). The spec is sanitized to bare words so it can be
+    /// embedded in a `tokenize = '…'` clause.
+    fn resolve_fts_tokenizer(config: &SqliteStoreConfig) -> Option<String> {
+        let raw = config
+            .fts_tokenizer
+            .clone()
+            .or_else(|| std::env::var("SPECTRAL_FTS_TOKENIZER").ok())?;
+        let safe: String = raw
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '_')
+            .collect();
+        let safe = safe.trim().to_string();
+        if safe.is_empty() {
+            None
+        } else {
+            Some(safe)
+        }
+    }
+
+    /// Render the optional `tokenize` argument for the FTS5 CREATE statement.
+    fn fts_tokenize_clause(fts_tokenizer: Option<&str>) -> String {
+        match fts_tokenizer {
+            Some(t) => format!(", tokenize = '{t}'"),
+            None => String::new(),
+        }
+    }
+
+    fn init_schema(conn: &Connection, fts_tokenizer: Option<&str>) -> anyhow::Result<()> {
+        let fts_tok = Self::fts_tokenize_clause(fts_tokenizer);
+        conn.execute_batch(&format!(
             "CREATE TABLE IF NOT EXISTS memories (
                 id            TEXT PRIMARY KEY,
                 key           TEXT NOT NULL UNIQUE,
@@ -173,7 +211,7 @@ impl SqliteStore {
 
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
                 key, content, description,
-                content=memories, content_rowid=rowid
+                content=memories, content_rowid=rowid{fts_tok}
             );
 
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -263,14 +301,17 @@ impl SqliteStore {
                 FOREIGN KEY (source_key) REFERENCES memories(key) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_consolidation_target
-                ON consolidation_edges(target_key);",
-        )?;
+                ON consolidation_edges(target_key);"
+        ))?;
         Ok(())
     }
 
     /// Idempotent migration: adds source/device_id/confidence columns to
     /// existing databases that lack them.
-    fn migrate_provenance_columns(conn: &Connection) -> anyhow::Result<()> {
+    fn migrate_provenance_columns(
+        conn: &Connection,
+        fts_tokenizer: Option<&str>,
+    ) -> anyhow::Result<()> {
         let mut has_source = false;
         let mut has_device_id = false;
         let mut has_confidence = false;
@@ -460,7 +501,8 @@ impl SqliteStore {
                 .is_some_and(|sql| sql.contains("description"))
         };
         if !fts_has_description {
-            conn.execute_batch(
+            let fts_tok = Self::fts_tokenize_clause(fts_tokenizer);
+            conn.execute_batch(&format!(
                 "DROP TRIGGER IF EXISTS memories_ai;
                  DROP TRIGGER IF EXISTS memories_ad;
                  DROP TRIGGER IF EXISTS memories_au;
@@ -468,7 +510,7 @@ impl SqliteStore {
 
                  CREATE VIRTUAL TABLE memories_fts USING fts5(
                      key, content, description,
-                     content=memories, content_rowid=rowid
+                     content=memories, content_rowid=rowid{fts_tok}
                  );
 
                  CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
@@ -487,8 +529,8 @@ impl SqliteStore {
                  END;
 
                  INSERT INTO memories_fts(rowid, key, content, description)
-                 SELECT rowid, key, content, COALESCE(description, '') FROM memories;",
-            )?;
+                 SELECT rowid, key, content, COALESCE(description, '') FROM memories;"
+            ))?;
         }
 
         // consolidation_edges table (for existing databases that don't have it)
@@ -2562,6 +2604,57 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn porter_tokenizer_bridges_plural_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("porter.db");
+        let store = SqliteStore::open_with_config(
+            &path,
+            &SqliteStoreConfig {
+                fts_tokenizer: Some("porter unicode61".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "session_1:turn:0:user".into(),
+            content: "I met with the doctor yesterday about my knee".into(),
+            wing: Some("general".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+        };
+        store.write(&mem, &[]).await.unwrap();
+
+        // Plural query matches singular content under porter stemming.
+        let hits = store
+            .fts_search(&["doctors".into()], 10)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1, "porter should bridge doctors→doctor");
+
+        // Control: the default tokenizer misses the same query.
+        let default_store = SqliteStore::open_in_memory().unwrap();
+        default_store.write(&mem, &[]).await.unwrap();
+        let hits = default_store
+            .fts_search(&["doctors".into()], 10)
+            .await
+            .unwrap();
+        assert!(hits.is_empty(), "default tokenizer has no stemming");
     }
 
     #[tokio::test]

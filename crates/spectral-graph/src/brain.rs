@@ -471,6 +471,7 @@ impl Brain {
             .unwrap_or_else(|| config.data_dir.join("memory.db"));
         let sqlite_config = spectral_ingest::sqlite_store::SqliteStoreConfig {
             mmap_size: config.sqlite_mmap_size,
+            ..Default::default()
         };
         let memory_store: Box<dyn MemoryStore> = Box::new(
             SqliteStore::open_with_config(&memory_db_path, &sqlite_config)

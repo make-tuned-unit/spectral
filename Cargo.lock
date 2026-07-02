@@ -2934,6 +2934,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "spectral-core",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

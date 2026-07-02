@@ -27,3 +27,4 @@ sqlite = ["dep:rusqlite", "dep:lru"]
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = "3"
