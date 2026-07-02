@@ -81,7 +81,8 @@ enum Command {
         #[arg(long)]
         descriptions: Option<PathBuf>,
 
-        /// Filter to a single question by ID (for targeted pre-validation).
+        /// Filter questions by ID: a single ID, a comma-separated list, or
+        /// "@path" to a file with one ID per line (targeted Tier-1 replays).
         #[arg(long)]
         question_id: Option<String>,
 

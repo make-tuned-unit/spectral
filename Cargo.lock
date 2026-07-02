@@ -2947,6 +2947,7 @@ name = "spectral-recognition"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

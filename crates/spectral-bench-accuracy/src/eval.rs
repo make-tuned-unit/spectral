@@ -683,7 +683,21 @@ impl AccuracyEval {
         let mut questions: Vec<&Question> = questions_all.iter().collect();
 
         if let Some(ref qid) = self.config.question_id {
-            questions.retain(|q| q.question_id == *qid);
+            // Accepts: a single ID, a comma-separated list, or "@path" to a
+            // file with one ID per line (targeted Tier-1 replays).
+            let ids: HashSet<String> = if let Some(path) = qid.strip_prefix('@') {
+                std::fs::read_to_string(path)
+                    .map(|s| {
+                        s.lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                qid.split(',').map(|s| s.trim().to_string()).collect()
+            };
+            questions.retain(|q| ids.contains(&q.question_id));
         }
 
         if let Some(ref cats) = self.config.categories {

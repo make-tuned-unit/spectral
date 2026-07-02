@@ -140,6 +140,16 @@ pub fn score_candidates(
     let n_pair = prints.pair_hashes.len() as f64;
     let n_gram = prints.gram_hashes.len() as f64;
     let total_potential = max_weight * (n_pair + config.gram_weight * n_gram);
+    // NOTE on scalar scope (measured, 2026-07-02): coverage familiarity
+    // separates DEGRADED re-encounters cleanly (AUC 0.95 on real data) but
+    // NOT paraphrases (AUC ~0.55) — paraphrases share few features with
+    // their source. Blending in absolute evidence (score/(score+k)) was
+    // tried and REJECTED: it lifted topical negatives more than paraphrase
+    // positives (degraded AUC fell to 0.83, paraphrase gained 0.02).
+    // Paraphrase handling lives at the VERDICT level, where it works: only
+    // 1.1% of paraphrases read as Novel via the familiar_min_score path.
+    // Downstream consumers should branch on `verdict`, not threshold this
+    // scalar across families.
     let familiarity = traces
         .first()
         .map(|t| {
