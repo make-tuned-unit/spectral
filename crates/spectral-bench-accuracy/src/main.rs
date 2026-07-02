@@ -208,6 +208,76 @@ enum Command {
         base_url: String,
     },
 
+    /// Tier-0 retrieval oracle: retrieval-only metrics over the dataset.
+    /// Zero LLM calls. Emits per-question JSONL (answer-key recall, rank,
+    /// context tokens, context hash) for paired comparison between configs.
+    Oracle {
+        /// Path to the LongMemEval_S dataset JSON
+        #[arg(long)]
+        dataset: PathBuf,
+
+        /// Working directory for brain instances (brains are kept for reuse)
+        #[arg(long, default_value = "oracle-work")]
+        work_dir: PathBuf,
+
+        /// Output JSONL path for per-question rows
+        #[arg(long, default_value = "oracle-rows.jsonl")]
+        output: PathBuf,
+
+        /// Config label recorded on every row (e.g. baseline, stemming)
+        #[arg(long, default_value = "baseline")]
+        label: String,
+
+        /// Maximum questions to evaluate (default: all)
+        #[arg(long)]
+        max_questions: Option<usize>,
+
+        /// Categories to include (comma-separated)
+        #[arg(long)]
+        categories: Option<String>,
+
+        /// Filter to a single question by ID
+        #[arg(long)]
+        question_id: Option<String>,
+
+        /// Ingestion strategy: per_turn or per_session
+        #[arg(long, default_value = "per_turn")]
+        ingest_strategy: String,
+
+        /// Explicit retrieval path (tact, graph, topk_fts, cascade).
+        /// Omit for per-question shape routing (published configuration).
+        #[arg(long)]
+        retrieval_path: Option<String>,
+
+        /// Maximum memories to retrieve (non-cascade paths)
+        #[arg(long, default_value = "40")]
+        max_results: usize,
+
+        /// Re-ingest brains even if they exist on disk.
+        /// Required after any ingest-affecting change (wing rules, stemming).
+        #[arg(long)]
+        fresh_brains: bool,
+
+        /// Delete brain dirs after the run instead of keeping them for reuse
+        #[arg(long)]
+        no_keep_brains: bool,
+
+        /// JSON map {question_id: expanded_query} to replay frozen expansion
+        #[arg(long)]
+        expansion_cache: Option<PathBuf>,
+    },
+
+    /// Paired diff of two oracle JSONL files (candidate vs baseline).
+    OracleDiff {
+        /// Baseline oracle rows (JSONL)
+        #[arg(long)]
+        baseline: PathBuf,
+
+        /// Candidate oracle rows (JSONL)
+        #[arg(long)]
+        candidate: PathBuf,
+    },
+
     /// Dry-run: ingest one question, retrieve, but don't call LLMs
     DryRun {
         /// Path to the LongMemEval_S dataset JSON
@@ -569,6 +639,81 @@ fn main() -> Result<()> {
                 base_url,
             };
             spectral_bench_accuracy::replay::run_replay(&config)?;
+        }
+
+        Command::Oracle {
+            dataset,
+            work_dir,
+            output,
+            label,
+            max_questions,
+            categories,
+            question_id,
+            ingest_strategy,
+            retrieval_path,
+            max_results,
+            fresh_brains,
+            no_keep_brains,
+            expansion_cache,
+        } => {
+            let cats = categories
+                .map(|s| {
+                    s.split(',')
+                        .map(|c| Category::from_question_type(c.trim()))
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
+
+            let strategy = match ingest_strategy.as_str() {
+                "per_session" => ingest::IngestStrategy::PerSession,
+                _ => ingest::IngestStrategy::PerTurn,
+            };
+
+            let path_override = retrieval_path.as_ref().map(|rp| match rp.as_str() {
+                "tact" => retrieval::RetrievalPath::Tact,
+                "graph" => retrieval::RetrievalPath::Graph,
+                "topk_fts" => retrieval::RetrievalPath::TopkFts,
+                "cascade" => retrieval::RetrievalPath::Cascade,
+                other => {
+                    eprintln!(
+                        "Unknown retrieval path: {other}. Valid: tact, graph, topk_fts, cascade"
+                    );
+                    std::process::exit(1);
+                }
+            });
+
+            let config = spectral_bench_accuracy::oracle::OracleConfig {
+                dataset_path: dataset,
+                work_dir,
+                output: output.clone(),
+                max_questions,
+                categories: cats,
+                question_id,
+                ingest_strategy: strategy,
+                retrieval: RetrievalConfig { max_results },
+                retrieval_path_override: path_override,
+                reuse_brains: !fresh_brains,
+                keep_brains: !no_keep_brains,
+                label,
+                expansion_cache,
+            };
+
+            eprintln!("Oracle run (zero LLM calls)...");
+            let rows = spectral_bench_accuracy::oracle::run_oracle(&config)?;
+            spectral_bench_accuracy::oracle::print_summary(&rows);
+            eprintln!("\nRows written to {}", output.display());
+        }
+
+        Command::OracleDiff {
+            baseline,
+            candidate,
+        } => {
+            let base = spectral_bench_accuracy::oracle::load_rows(&baseline)?;
+            let cand = spectral_bench_accuracy::oracle::load_rows(&candidate)?;
+            eprintln!("baseline: {} ({} rows)", baseline.display(), base.len());
+            eprintln!("candidate: {} ({} rows)", candidate.display(), cand.len());
+            spectral_bench_accuracy::oracle::print_summary(&cand);
+            spectral_bench_accuracy::oracle::print_diff(&base, &cand);
         }
 
         Command::DryRun { dataset, work_dir } => {

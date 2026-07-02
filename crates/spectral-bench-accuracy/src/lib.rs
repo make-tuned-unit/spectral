@@ -28,6 +28,7 @@ pub mod expansion;
 pub mod ingest;
 pub mod inspect;
 pub mod judge;
+pub mod oracle;
 pub mod pricing;
 pub mod replay;
 pub mod report;
