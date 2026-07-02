@@ -396,6 +396,12 @@ pub fn retrieve(brain: &Brain, question: &str, config: &RetrievalConfig) -> Resu
 /// - `SPECTRAL_DISABLE_RECENCY=1` — disable recency weighting
 /// - `SPECTRAL_DISABLE_ENTITY_RESOLUTION=1` — disable entity clustering
 /// - `SPECTRAL_DISABLE_CONTEXT_DEDUP=1` — disable context chain dedup
+/// - `SPECTRAL_TOPK_FETCH_MULT=N` — fetch N× the output size as the re-rank
+///   candidate pool (default 1). Recovers true evidence that broad porter
+///   stemming buries below a fixed bm25 LIMIT; a no-op on the default
+///   tokenizer, +0.8pp temporal session-recall with porter at N=3.
+/// - `SPECTRAL_TOPK_DECLARATIVE=1` — enable the declarative-density boost in
+///   the topk path (net-negative on temporal in Tier-0; off by default)
 ///
 /// When `question_date` is provided (format: "2023/05/30 (Tue) 23:40"),
 /// recency decay is anchored to that date instead of `Utc::now()`.
@@ -408,11 +414,24 @@ pub fn retrieve_topk_fts(
     // Floor at 40: prevents CLI overrides (e.g. --max-results 20) from cutting
     // temporal evidence turns that rank at FTS position 21-40 after reranking.
     let output_size = config.max_results.max(40);
+    // Candidate-fetch pool can be widened past the output size so the
+    // deterministic re-ranker has more material to work with. Broad FTS
+    // matching (porter stemming) pushes true evidence below a fixed bm25
+    // LIMIT; a wider pool lets re-ranking recover it. Output count stays at
+    // `output_size` (truncated below), but composition shifts toward the
+    // promoted high-signal turns, so context grows modestly (~+4% on the
+    // temporal slice at mult=3 — a no-op on the narrow default tokenizer).
+    let fetch_mult = std::env::var("SPECTRAL_TOPK_FETCH_MULT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|m| *m >= 1)
+        .unwrap_or(1);
     let topk_config = RecallTopKConfig {
-        k: output_size,
+        k: output_size * fetch_mult,
         apply_signal_score_weighting: std::env::var("SPECTRAL_DISABLE_SIGNAL_SCORE").is_err(),
         apply_recency_weighting: std::env::var("SPECTRAL_DISABLE_RECENCY").is_err(),
         apply_entity_resolution: std::env::var("SPECTRAL_DISABLE_ENTITY_RESOLUTION").is_err(),
+        apply_declarative_boost: std::env::var("SPECTRAL_TOPK_DECLARATIVE").is_ok(),
         apply_context_dedup: std::env::var("SPECTRAL_DISABLE_CONTEXT_DEDUP").is_err(),
         now: question_date.and_then(parse_question_date),
         ..RecallTopKConfig::default()
@@ -859,6 +878,90 @@ mod tests {
         // Without question_date, both are ~1200 days old — recency barely
         // distinguishes them; FTS rank dominates. Just verify both returned.
         assert!(hits_no_date.len() >= 2, "should return both memories");
+    }
+
+    #[test]
+    fn wider_fetch_pool_recovers_buried_high_signal_memory() {
+        // Mechanism behind SPECTRAL_TOPK_FETCH_MULT: broad FTS matching buries
+        // a true-evidence memory below a narrow bm25 LIMIT. A narrow fetch never
+        // sees it; a wider fetch pool lets re-ranking (signal blend) surface it.
+        use spectral_graph::brain::RecallTopKConfig;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ontology_path = dir.path().join("ontology.toml");
+        std::fs::write(&ontology_path, "version = 1\n").unwrap();
+        let brain = Brain::open(BrainConfig {
+            data_dir: dir.path().to_path_buf(),
+            ontology_path,
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        })
+        .unwrap();
+
+        // 20 filler memories repeat "widget" many times → high bm25 term
+        // frequency, so they occupy the top bm25 positions.
+        for i in 0..20 {
+            brain
+                .remember_with(
+                    &format!("filler-{i}"),
+                    "widget widget widget widget widget filler content",
+                    RememberOpts {
+                        visibility: Visibility::Private,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        // TARGET mentions "widget" once → low bm25 rank (buried below the
+        // fillers), but is reinforced to a high signal_score.
+        brain
+            .remember_with(
+                "target",
+                "widget appears once here amid otherwise unique evidence text",
+                RememberOpts {
+                    visibility: Visibility::Private,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let _ = brain.reinforce(spectral_graph::brain::ReinforceOpts {
+            memory_keys: vec!["target".into()],
+            strength: 1.0,
+        });
+
+        let cfg = |k: usize| RecallTopKConfig {
+            k,
+            apply_recency_weighting: false,
+            ..RecallTopKConfig::default()
+        };
+
+        // Narrow fetch (k=5): TARGET is below the bm25 cut → never fetched.
+        let narrow = brain
+            .recall_topk_fts("widget", &cfg(5), Visibility::Private)
+            .unwrap();
+        assert!(
+            !narrow.iter().any(|h| h.key == "target"),
+            "narrow fetch pool should exclude the buried target"
+        );
+
+        // Wide fetch (k=40): TARGET enters the pool and its high signal_score
+        // promotes it via re-ranking.
+        let wide = brain
+            .recall_topk_fts("widget", &cfg(40), Visibility::Private)
+            .unwrap();
+        assert!(
+            wide.iter().any(|h| h.key == "target"),
+            "wider fetch pool should recover the buried high-signal target"
+        );
     }
 
     // ── P1: Question-type routing tests ──────────────────────────────

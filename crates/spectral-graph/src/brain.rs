@@ -329,6 +329,12 @@ pub struct RecallTopKConfig {
     pub recency_half_life_days: f64,
     /// Boost top candidate within entity/wing clusters. Default true.
     pub apply_entity_resolution: bool,
+    /// Additive boost for first-person declarative content (answer-bearing
+    /// user-fact turns). Default false — kept off historically because the
+    /// signal blends into cascade; enabled selectively for the topk_fts path
+    /// where broad FTS matching (e.g. porter stemming) surfaces generic
+    /// distractor turns that this signal down-weights.
+    pub apply_declarative_boost: bool,
     /// Collapse `[Memory context]` reference duplicates. Default true.
     pub apply_context_dedup: bool,
     /// Time anchor for recency decay.
@@ -351,6 +357,7 @@ impl Default for RecallTopKConfig {
             apply_recency_weighting: true,
             recency_half_life_days: 365.0,
             apply_entity_resolution: true,
+            apply_declarative_boost: false,
             apply_context_dedup: true,
             now: None,
         }
@@ -1263,7 +1270,7 @@ impl Brain {
             apply_entity_boost: config.apply_entity_resolution,
             entity_boost_weight: 0.05,
             apply_ambient_boost: false,
-            apply_declarative_boost: false,
+            apply_declarative_boost: config.apply_declarative_boost,
             declarative_weight: 0.10,
             co_retrieval_weight: 0.10,
             apply_episode_diversity: false,

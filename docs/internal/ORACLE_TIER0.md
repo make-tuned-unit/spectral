@@ -76,6 +76,47 @@ requires re-ingest (`--fresh-brains`).
 **Tier-1 ask:** actor+judge on the 17 recall-changed questions + ~20 controls,
 n=3 → ≈ $6–8.
 
+#### 1a. Widen the re-rank candidate pool for porter — PASS Tier 0 (2026-07-02)
+
+`SPECTRAL_TOPK_FETCH_MULT=N` (topk_fts path only; default 1). Fetches N× the
+output size as the re-rank candidate pool, then truncates output to the same
+size. **Query-time only — no re-ingest.** Rationale: porter's stemming widens
+the FTS match set, so true evidence gets pushed below the fixed bm25 `LIMIT`
+and evicted before re-ranking ever sees it (verified on 9a707b82: porter
+surfaced generic `ultrachat_*` distractors that evicted a true answer turn,
+dropping session recall 2/2 → 1/2). A wider fetch pool lets the deterministic
+signal-blend re-ranker recover buried high-signal turns.
+
+Temporal-only oracle sweep (133 Q, porter brains, paired vs frozen default
+baseline):
+
+| config | sess-rec | regressions | improvements | Δkeys | ctx tok |
+|---|---|---|---|---|---|
+| porter, mult=1 (control) | 94.8% | 5 | 5 | +40 | 13,276 |
+| **porter, mult=3** | **95.6%** | **4** | **6** | **+42** | 13,785 |
+| porter, mult=3 + declarative | 95.1% | 6 | 5 | +51 | — |
+| porter, mult=5 | 95.6% | 5 | 6 | +40 | 14,138 |
+
+- **Attribution:** default tokenizer + mult=3 is an *exact no-op* (94.8% →
+  94.8%, 0 regressions, +3 keys) — narrow default matches already fit the
+  top-40. The gain exists *only with porter*, confirming the mechanism.
+- mult=3 is the knee: recovers gpt4_7abb270c, adds eac54add, deepens the
+  gpt4_e061b84g fix (0.33 → 0.67 session recall); mult=5 over-widens (new
+  regression 4dfccbf8). Declarative boost is net-negative (reshuffles rankings,
+  re-introduces regressions) — kept off by default.
+- **Not free:** output count is fixed at 40 but composition shifts toward the
+  promoted (longer) high-signal turns → +509 ctx tokens (+3.8%) on temporal.
+- 9a707b82 itself is *not* fully recovered (its evicted turn is a mid-signal
+  assistant turn indistinguishable from distractors at query time) — a genuine
+  porter-stemming loss deterministic re-ranking can't reach without oracle
+  knowledge of answer-session-ness.
+- Unit test: `wider_fetch_pool_recovers_buried_high_signal_memory`.
+
+**Tier-1 implication:** ship porter with `mult=3` as one bundle; the widening
+changes context composition (like porter and the cap), so it must clear the
+same paid actor-replay gate. Fold the mult=3 arm into the porter recall-changed
+replay set — no extra questions, the changed-context set already covers it.
+
 ### 2. Spectrogram enable — RETIRE from bench path
 
 `SPECTRAL_BENCH_SPECTROGRAM=1` (backlog item 22). **0/500 contexts changed.**
