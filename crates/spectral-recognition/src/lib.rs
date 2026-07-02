@@ -28,10 +28,15 @@
 mod extract;
 mod score;
 mod store;
+pub mod stream;
 
 pub use extract::{extract_landmarks, fingerprint_stimulus, Landmark, StimulusPrints};
 pub use score::{score_candidates, ScoreConfig};
 pub use store::{InMemoryRecognitionStore, RecognitionStore, SqliteRecognitionStore};
+pub use stream::{
+    centroid_of, make_cue, segment_stream, Centroid, CentroidConfig, CentroidTracker, Cue,
+    Segment, StreamConfig, StreamEvent, StreamTracker,
+};
 
 use anyhow::Result;
 
