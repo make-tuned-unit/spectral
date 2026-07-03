@@ -163,7 +163,13 @@ fn build_context_bundle(memories: &[MemoryHit], max_chars: usize) -> String {
         if char_count + entry.len() > max_chars {
             let remaining = max_chars.saturating_sub(char_count);
             if remaining > 50 {
-                parts.push(format!("{}...", &entry[..remaining.min(entry.len())]));
+                // Back off to a UTF-8 char boundary — a raw byte slice panics
+                // when `remaining` lands inside a multi-byte char (e.g. an em-dash).
+                let mut cut = remaining.min(entry.len());
+                while cut > 0 && !entry.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                parts.push(format!("{}...", &entry[..cut]));
             }
             break;
         }

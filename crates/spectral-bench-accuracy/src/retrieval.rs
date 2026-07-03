@@ -234,6 +234,51 @@ impl QuestionType {
     }
 }
 
+// ── Assistant-turn content cap (ROLE_TOKEN_PROBE, shape-gated) ──────
+
+/// Read the assistant-turn cap fraction from `SPECTRAL_ASSISTANT_CAP_FRAC`.
+///
+/// When set (e.g. 0.36), assistant-turn content in the actor context is
+/// truncated to that fraction of its original length. The prior probe showed
+/// this holds answer-key recall at −40% context tokens but regresses
+/// assistant-recall questions ~5pp — so call sites exempt GeneralRecall-shaped
+/// questions (classified from question text, not dataset labels).
+fn assistant_cap_frac() -> Option<f64> {
+    std::env::var("SPECTRAL_ASSISTANT_CAP_FRAC")
+        .ok()?
+        .parse::<f64>()
+        .ok()
+        .filter(|f| *f > 0.0 && *f < 1.0)
+}
+
+/// Effective cap for a question shape: GeneralRecall is exempt.
+fn cap_for_shape(qtype: QuestionType) -> Option<f64> {
+    match qtype {
+        QuestionType::GeneralRecall => None,
+        _ => assistant_cap_frac(),
+    }
+}
+
+/// Truncate content to `frac` of its byte length at a char boundary.
+/// Content at or below `CAP_MIN_LEN` is left alone — truncating short turns
+/// saves nothing and loses information.
+const CAP_MIN_LEN: usize = 120;
+
+fn cap_content(content: &str, frac: f64) -> String {
+    if content.len() <= CAP_MIN_LEN {
+        return content.to_string();
+    }
+    let cap = (((content.len() as f64) * frac) as usize).max(CAP_MIN_LEN);
+    if content.len() <= cap {
+        return content.to_string();
+    }
+    let mut end = cap.max(1).min(content.len());
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &content[..end])
+}
+
 // ── Session-grouped formatting (P2) ─────────────────────────────────
 
 /// Format memory hits grouped by session/episode for clearer multi-session context.
@@ -242,6 +287,11 @@ impl QuestionType {
 /// orders sessions chronologically, and presents turns in order within
 /// each session. Drops redundant per-turn metadata (date, wing, hall).
 pub fn format_hits_grouped(hits: &[MemoryHit]) -> Vec<String> {
+    format_hits_grouped_capped(hits, None)
+}
+
+/// Session-grouped formatting with an optional assistant-turn content cap.
+pub fn format_hits_grouped_capped(hits: &[MemoryHit], cap_frac: Option<f64>) -> Vec<String> {
     if hits.is_empty() {
         return Vec::new();
     }
@@ -298,7 +348,12 @@ pub fn format_hits_grouped(hits: &[MemoryHit]) -> Vec<String> {
             if role == "asst" && hit.content.len() < 40 {
                 continue;
             }
-            lines.push(format!("[{role}] {}", hit.content));
+            match (role, cap_frac) {
+                ("asst", Some(f)) => {
+                    lines.push(format!("[{role}] {}", cap_content(&hit.content, f)))
+                }
+                _ => lines.push(format!("[{role}] {}", hit.content)),
+            }
         }
     }
 
@@ -341,6 +396,12 @@ pub fn retrieve(brain: &Brain, question: &str, config: &RetrievalConfig) -> Resu
 /// - `SPECTRAL_DISABLE_RECENCY=1` — disable recency weighting
 /// - `SPECTRAL_DISABLE_ENTITY_RESOLUTION=1` — disable entity clustering
 /// - `SPECTRAL_DISABLE_CONTEXT_DEDUP=1` — disable context chain dedup
+/// - `SPECTRAL_TOPK_FETCH_MULT=N` — fetch N× the output size as the re-rank
+///   candidate pool (default 1). Recovers true evidence that broad porter
+///   stemming buries below a fixed bm25 LIMIT; a no-op on the default
+///   tokenizer, +0.8pp temporal session-recall with porter at N=3.
+/// - `SPECTRAL_TOPK_DECLARATIVE=1` — enable the declarative-density boost in
+///   the topk path (net-negative on temporal in Tier-0; off by default)
 ///
 /// When `question_date` is provided (format: "2023/05/30 (Tue) 23:40"),
 /// recency decay is anchored to that date instead of `Utc::now()`.
@@ -353,11 +414,24 @@ pub fn retrieve_topk_fts(
     // Floor at 40: prevents CLI overrides (e.g. --max-results 20) from cutting
     // temporal evidence turns that rank at FTS position 21-40 after reranking.
     let output_size = config.max_results.max(40);
+    // Candidate-fetch pool can be widened past the output size so the
+    // deterministic re-ranker has more material to work with. Broad FTS
+    // matching (porter stemming) pushes true evidence below a fixed bm25
+    // LIMIT; a wider pool lets re-ranking recover it. Output count stays at
+    // `output_size` (truncated below), but composition shifts toward the
+    // promoted high-signal turns, so context grows modestly (~+4% on the
+    // temporal slice at mult=3 — a no-op on the narrow default tokenizer).
+    let fetch_mult = std::env::var("SPECTRAL_TOPK_FETCH_MULT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|m| *m >= 1)
+        .unwrap_or(1);
     let topk_config = RecallTopKConfig {
-        k: output_size,
+        k: output_size * fetch_mult,
         apply_signal_score_weighting: std::env::var("SPECTRAL_DISABLE_SIGNAL_SCORE").is_err(),
         apply_recency_weighting: std::env::var("SPECTRAL_DISABLE_RECENCY").is_err(),
         apply_entity_resolution: std::env::var("SPECTRAL_DISABLE_ENTITY_RESOLUTION").is_err(),
+        apply_declarative_boost: std::env::var("SPECTRAL_TOPK_DECLARATIVE").is_ok(),
         apply_context_dedup: std::env::var("SPECTRAL_DISABLE_CONTEXT_DEDUP").is_err(),
         now: question_date.and_then(parse_question_date),
         ..RecallTopKConfig::default()
@@ -369,7 +443,18 @@ pub fn retrieve_topk_fts(
         .take(output_size)
         .collect();
 
-    let memories: Vec<String> = hits.iter().map(format_hit).collect();
+    let cap = cap_for_shape(QuestionType::classify(question));
+    let memories: Vec<String> = hits
+        .iter()
+        .map(|h| match cap {
+            Some(f) if h.key.contains(":assistant") => {
+                let mut capped = h.clone();
+                capped.content = cap_content(&h.content, f);
+                format_hit(&capped)
+            }
+            _ => format_hit(h),
+        })
+        .collect();
 
     Ok((memories, hits))
 }
@@ -476,7 +561,7 @@ pub fn retrieve_cascade(
         .into_iter()
         .take(pipeline_config.k)
         .collect();
-    let formatted = format_hits_grouped(&hits);
+    let formatted = format_hits_grouped_capped(&hits, cap_for_shape(qtype));
 
     Ok((formatted, hits, telemetry))
 }
@@ -793,6 +878,90 @@ mod tests {
         // Without question_date, both are ~1200 days old — recency barely
         // distinguishes them; FTS rank dominates. Just verify both returned.
         assert!(hits_no_date.len() >= 2, "should return both memories");
+    }
+
+    #[test]
+    fn wider_fetch_pool_recovers_buried_high_signal_memory() {
+        // Mechanism behind SPECTRAL_TOPK_FETCH_MULT: broad FTS matching buries
+        // a true-evidence memory below a narrow bm25 LIMIT. A narrow fetch never
+        // sees it; a wider fetch pool lets re-ranking (signal blend) surface it.
+        use spectral_graph::brain::RecallTopKConfig;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ontology_path = dir.path().join("ontology.toml");
+        std::fs::write(&ontology_path, "version = 1\n").unwrap();
+        let brain = Brain::open(BrainConfig {
+            data_dir: dir.path().to_path_buf(),
+            ontology_path,
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        })
+        .unwrap();
+
+        // 20 filler memories repeat "widget" many times → high bm25 term
+        // frequency, so they occupy the top bm25 positions.
+        for i in 0..20 {
+            brain
+                .remember_with(
+                    &format!("filler-{i}"),
+                    "widget widget widget widget widget filler content",
+                    RememberOpts {
+                        visibility: Visibility::Private,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        // TARGET mentions "widget" once → low bm25 rank (buried below the
+        // fillers), but is reinforced to a high signal_score.
+        brain
+            .remember_with(
+                "target",
+                "widget appears once here amid otherwise unique evidence text",
+                RememberOpts {
+                    visibility: Visibility::Private,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let _ = brain.reinforce(spectral_graph::brain::ReinforceOpts {
+            memory_keys: vec!["target".into()],
+            strength: 1.0,
+        });
+
+        let cfg = |k: usize| RecallTopKConfig {
+            k,
+            apply_recency_weighting: false,
+            ..RecallTopKConfig::default()
+        };
+
+        // Narrow fetch (k=5): TARGET is below the bm25 cut → never fetched.
+        let narrow = brain
+            .recall_topk_fts("widget", &cfg(5), Visibility::Private)
+            .unwrap();
+        assert!(
+            !narrow.iter().any(|h| h.key == "target"),
+            "narrow fetch pool should exclude the buried target"
+        );
+
+        // Wide fetch (k=40): TARGET enters the pool and its high signal_score
+        // promotes it via re-ranking.
+        let wide = brain
+            .recall_topk_fts("widget", &cfg(40), Visibility::Private)
+            .unwrap();
+        assert!(
+            wide.iter().any(|h| h.key == "target"),
+            "wider fetch pool should recover the buried high-signal target"
+        );
     }
 
     // ── P1: Question-type routing tests ──────────────────────────────
@@ -1348,5 +1517,71 @@ mod tests {
     fn format_grouped_empty_input() {
         let lines = format_hits_grouped(&[]);
         assert!(lines.is_empty());
+    }
+
+    // ── Assistant-turn cap tests ─────────────────────────────────────
+
+    #[test]
+    fn cap_content_truncates_at_fraction() {
+        let content = "a".repeat(1000);
+        let capped = cap_content(&content, 0.36);
+        // 360 chars + ellipsis
+        assert_eq!(capped.chars().count(), 361);
+        assert!(capped.ends_with('…'));
+    }
+
+    #[test]
+    fn cap_content_leaves_short_content_alone() {
+        assert_eq!(cap_content("short", 0.9), "short");
+        // Anything at or under CAP_MIN_LEN bytes is untouched at any fraction.
+        let borderline = "b".repeat(120);
+        assert_eq!(cap_content(&borderline, 0.1), borderline);
+    }
+
+    #[test]
+    fn cap_content_respects_char_boundaries() {
+        let content = "héllo wörld ünïcode cöntent hère with áccents évery whére ".repeat(20);
+        let capped = cap_content(&content, 0.3);
+        assert!(capped.ends_with('…'));
+        // Must not panic mid-codepoint and must be valid UTF-8 (implicit in String).
+        assert!(capped.len() < content.len());
+    }
+
+    #[test]
+    fn format_grouped_capped_truncates_assistant_only() {
+        let long_asst = "x".repeat(1000);
+        let long_user = "y".repeat(1000);
+        let hits = vec![
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                &long_user,
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+            make_test_hit(
+                "2",
+                "s1:turn:1:assistant",
+                &long_asst,
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
+        ];
+        let lines = format_hits_grouped_capped(&hits, Some(0.36));
+        let user_line = lines.iter().find(|l| l.starts_with("[user]")).unwrap();
+        let asst_line = lines.iter().find(|l| l.starts_with("[asst]")).unwrap();
+        assert!(user_line.len() > 1000, "user content must be untouched");
+        assert!(
+            asst_line.len() < 400,
+            "assistant content must be capped to ~360, got len {}",
+            asst_line.len()
+        );
+    }
+
+    #[test]
+    fn general_recall_shape_is_exempt_from_cap() {
+        // cap_for_shape consults the env var; without it set, every shape
+        // returns None. The exemption logic itself is shape-only.
+        assert_eq!(cap_for_shape(QuestionType::GeneralRecall), None);
     }
 }

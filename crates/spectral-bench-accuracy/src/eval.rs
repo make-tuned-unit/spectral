@@ -189,11 +189,48 @@ impl AccuracyEval {
             RetrievalPath::Cascade => "cascade",
         };
         let checkpoint_path = self.config.work_dir.join("checkpoint.json");
+        // Config fingerprint: a checkpoint may only be resumed by a run with
+        // the SAME configuration. Includes the question filter, routing, and
+        // all SPECTRAL_* env levers — two arms of an A/B comparison sharing a
+        // work_dir must never inherit each other's results (this silently
+        // produced identical A/B arms before the fingerprint existed).
+        let mut env_levers: Vec<String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("SPECTRAL_"))
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        env_levers.sort();
+        let config_fingerprint = blake3::hash(
+            format!(
+                "{:?}|{retrieval_path_label}|{}|{:?}|{}",
+                self.config.question_id,
+                self.config.use_cascade,
+                self.config.retrieval_path_override,
+                env_levers.join(",")
+            )
+            .as_bytes(),
+        )
+        .to_hex()
+        .to_string();
         // Resume: if a checkpoint exists for this work-dir, continue from it
         // rather than restarting at question 0. The loaded report carries the
         // prior per-question results and counters; completed questions are
         // skipped below and remain in the final report.
         let mut report = match crate::report::load_report(&checkpoint_path) {
+            Ok(existing)
+                if !existing.results.is_empty()
+                    // Empty fingerprint = legacy checkpoint: allow resume.
+                    && !existing.config_fingerprint.is_empty()
+                    && existing.config_fingerprint != config_fingerprint =>
+            {
+                eprintln!(
+                    "Checkpoint at {} belongs to a DIFFERENT configuration — starting fresh.",
+                    checkpoint_path.display()
+                );
+                let mut r = EvalReport::new(self.actor.name(), self.judge.name());
+                r.retrieval_path = retrieval_path_label.into();
+                r.config_fingerprint = config_fingerprint.clone();
+                r
+            }
             Ok(mut existing) if !existing.results.is_empty() => {
                 eprintln!(
                     "Resuming from {}: {} completed question(s) will be skipped.",
@@ -208,9 +245,11 @@ impl AccuracyEval {
             _ => {
                 let mut r = EvalReport::new(self.actor.name(), self.judge.name());
                 r.retrieval_path = retrieval_path_label.into();
+                r.config_fingerprint = config_fingerprint.clone();
                 r
             }
         };
+        report.config_fingerprint = config_fingerprint;
         let pb = ProgressBar::new(questions.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -683,7 +722,21 @@ impl AccuracyEval {
         let mut questions: Vec<&Question> = questions_all.iter().collect();
 
         if let Some(ref qid) = self.config.question_id {
-            questions.retain(|q| q.question_id == *qid);
+            // Accepts: a single ID, a comma-separated list, or "@path" to a
+            // file with one ID per line (targeted Tier-1 replays).
+            let ids: HashSet<String> = if let Some(path) = qid.strip_prefix('@') {
+                std::fs::read_to_string(path)
+                    .map(|s| {
+                        s.lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                qid.split(',').map(|s| s.trim().to_string()).collect()
+            };
+            questions.retain(|q| ids.contains(&q.question_id));
         }
 
         if let Some(ref cats) = self.config.categories {

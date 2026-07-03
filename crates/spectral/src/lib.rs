@@ -77,6 +77,7 @@ pub use spectral_graph::brain::{
 };
 pub use spectral_graph::Error;
 pub use spectral_ingest::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
+pub use spectral_recognition::{Evidence, RecognitionResult, TraceMatch, Verdict};
 pub use spectral_tact::LlmClient;
 
 // Re-export chrono types used in the public API surface (recall_at, recall_local_at)
@@ -87,6 +88,7 @@ pub use chrono::{DateTime, Utc};
 pub use spectral_core as core;
 pub use spectral_graph as graph;
 pub use spectral_ingest as ingest;
+pub use spectral_recognition as recognition;
 pub use spectral_spectrogram as spectrogram;
 pub use spectral_tact as tact;
 

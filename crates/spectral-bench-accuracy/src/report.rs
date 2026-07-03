@@ -175,6 +175,12 @@ pub struct EvalReport {
     /// Which retrieval path was used ("tact" or "graph").
     #[serde(default = "default_retrieval_path")]
     pub retrieval_path: String,
+    /// Fingerprint of the run configuration (question filter, routing, and
+    /// SPECTRAL_* env levers). A checkpoint is only resumable by a run whose
+    /// fingerprint matches — prevents A/B arms sharing a work_dir from
+    /// silently inheriting each other's results.
+    #[serde(default)]
+    pub config_fingerprint: String,
     pub total_questions: usize,
     pub correct: usize,
     pub overall_accuracy: f64,
@@ -213,6 +219,7 @@ impl EvalReport {
             actor_name: actor_name.into(),
             judge_name: judge_name.into(),
             retrieval_path: "tact".into(),
+            config_fingerprint: String::new(),
             total_questions: 0,
             correct: 0,
             overall_accuracy: 0.0,

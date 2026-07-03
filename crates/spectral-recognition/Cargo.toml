@@ -1,0 +1,24 @@
+[package]
+name = "spectral-recognition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Deterministic recognition memory for Spectral: content peak-pair fingerprints, rarity-weighted familiarity scoring, and ambient routine tracking. No embeddings, every match auditable."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = "0.10"
+reqwest = { workspace = true, features = ["blocking", "json"] }
+
+[dev-dependencies]
+tempfile = "3"
+# Neural embedding baseline (examples/embedding_baseline.rs only). Kept out of
+# the library's dependency graph on purpose: the recognition engine ships with
+# no embedding model. BGE-small-en-v1.5 matches the crate `spectral`'s existing
+# vector_comparison bench so the two neural comparisons stay consistent.
+fastembed = { version = "5", default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }

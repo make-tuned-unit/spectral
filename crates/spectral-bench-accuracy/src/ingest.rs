@@ -52,7 +52,9 @@ pub fn ingest_question(
         wing_rules: None,
         hall_rules: None,
         device_id: None,
-        enable_spectrogram: false,
+        // Backlog item 22: spectrogram attribution. Env-gated like the
+        // SPECTRAL_DISABLE_* ablation flags; default off (published config).
+        enable_spectrogram: std::env::var("SPECTRAL_BENCH_SPECTROGRAM").is_ok(),
         entity_policy: EntityPolicy::Strict,
         sqlite_mmap_size: None,
         activity_wing: "activity".into(),

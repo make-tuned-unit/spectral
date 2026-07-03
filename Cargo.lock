@@ -2815,6 +2815,7 @@ dependencies = [
  "spectral-core",
  "spectral-graph",
  "spectral-ingest",
+ "spectral-recognition",
  "spectral-spectrogram",
  "spectral-tact",
  "tempfile",
@@ -2866,10 +2867,14 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "spectral-core",
  "spectral-graph",
+ "spectral-ingest",
+ "tokio",
  "toml",
 ]
 
@@ -2910,6 +2915,7 @@ dependencies = [
  "spectral-cascade",
  "spectral-core",
  "spectral-ingest",
+ "spectral-recognition",
  "spectral-spectrogram",
  "spectral-tact",
  "strsim",
@@ -2934,9 +2940,24 @@ dependencies = [
  "serde_json",
  "sha2",
  "spectral-core",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "spectral-recognition"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "fastembed",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
