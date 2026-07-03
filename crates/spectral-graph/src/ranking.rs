@@ -263,7 +263,9 @@ impl Default for RerankingConfig {
             apply_ambient_boost: false,
             apply_declarative_boost: false,
             declarative_weight: 0.10,
-            co_retrieval_weight: 0.10,
+            // Disabled by default — degrades real-workload relevance.
+            // See docs/internal/tickets/coretrieval-regression.md.
+            co_retrieval_weight: 0.0,
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: true,
@@ -992,6 +994,7 @@ mod tests {
             apply_declarative_boost: false,
             apply_episode_diversity: false,
             apply_context_dedup: false,
+            co_retrieval_weight: 0.10, // default is now 0.0; test the mechanism
             ..Default::default()
         };
         let ctx = spectral_cascade::RecognitionContext::empty();
@@ -1022,6 +1025,7 @@ mod tests {
             apply_declarative_boost: false,
             apply_episode_diversity: false,
             apply_context_dedup: false,
+            co_retrieval_weight: 0.10, // default is now 0.0; test the mechanism
             ..Default::default()
         };
         let ctx = spectral_cascade::RecognitionContext::empty();

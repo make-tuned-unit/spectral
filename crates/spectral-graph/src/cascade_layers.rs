@@ -118,6 +118,12 @@ pub struct CascadePipelineConfig {
     pub max_per_episode: usize,
     /// Apply context chain dedup. Default true.
     pub apply_context_dedup: bool,
+    /// Additive weight for the co-retrieval (cross-query co-access) boost.
+    /// Default **0.0** (disabled): measured on Permagent's real workload, a
+    /// non-zero weight degrades top-5 relevance (~3–4.5:1 worse, p≈0) because a
+    /// dense generic co-access blob induces popularity bias. Kept as an opt-in
+    /// knob for retuning. See docs/internal/tickets/coretrieval-regression.md.
+    pub co_retrieval_weight: f64,
 }
 
 impl Default for CascadePipelineConfig {
@@ -131,6 +137,7 @@ impl Default for CascadePipelineConfig {
             apply_episode_diversity: true,
             max_per_episode: 5,
             apply_context_dedup: true,
+            co_retrieval_weight: 0.0,
         }
     }
 }
@@ -167,7 +174,7 @@ pub fn run_cascade_pipeline(
         apply_ambient_boost: config.apply_ambient_boost,
         apply_declarative_boost: true,
         declarative_weight: 0.10,
-        co_retrieval_weight: 0.10,
+        co_retrieval_weight: config.co_retrieval_weight,
         apply_episode_diversity: config.apply_episode_diversity,
         max_per_episode: config.max_per_episode,
         apply_context_dedup: config.apply_context_dedup,

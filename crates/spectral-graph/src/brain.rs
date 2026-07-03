@@ -1272,7 +1272,9 @@ impl Brain {
             apply_ambient_boost: false,
             apply_declarative_boost: config.apply_declarative_boost,
             declarative_weight: 0.10,
-            co_retrieval_weight: 0.10,
+            // Disabled: co-retrieval degrades real-workload relevance.
+            // See docs/internal/tickets/coretrieval-regression.md.
+            co_retrieval_weight: 0.0,
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: config.apply_context_dedup,
