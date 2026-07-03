@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "phase0"
 path = "src/bin/phase0.rs"
 
+[[bin]]
+name = "coret_ablation"
+path = "src/bin/coret_ablation.rs"
+
 [dependencies]
 spectral-core = { path = "../spectral-core" }
 spectral-graph = { path = "../spectral-graph" }
