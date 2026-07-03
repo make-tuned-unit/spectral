@@ -61,6 +61,12 @@ fn main() -> Result<()> {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(usize::MAX);
+    let paraphrases: Option<std::collections::HashMap<String, String>> = args
+        .iter()
+        .position(|a| a == "--paraphrases")
+        .and_then(|i| args.get(i + 1))
+        .map(|p| -> Result<_> { Ok(serde_json::from_str(&std::fs::read_to_string(p)?)?) })
+        .transpose()?;
 
     let conn =
         rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -93,12 +99,18 @@ fn main() -> Result<()> {
         t.elapsed().as_secs_f64() * 1e3 / known.len().max(1) as f64
     );
 
-    // Positives: degraded enrolled memories (same dropout + min-token gate).
-    let pos_texts: Vec<String> = known
-        .iter()
-        .map(|(id, c)| degrade(c, id, 30))
-        .filter(|s| s.split_whitespace().count() >= 5)
-        .collect();
+    // Positives: paraphrases (semantic) when provided, else degraded (lexical).
+    let pos_texts: Vec<String> = match &paraphrases {
+        Some(pm) => known
+            .iter()
+            .filter_map(|(id, _)| pm.get(id).cloned())
+            .collect(),
+        None => known
+            .iter()
+            .map(|(id, c)| degrade(c, id, 30))
+            .filter(|s| s.split_whitespace().count() >= 5)
+            .collect(),
+    };
     let t = std::time::Instant::now();
     let pos_vecs = embed_all(&mut model, pos_texts)?;
     let pos_n = pos_vecs.len();

@@ -27,18 +27,34 @@ The only variable across rows is the familiarity scalar.
 | **peak-pair engine (this crate)** | **0.9493** | ~1.5 ms | none |
 | BGE-small-en-v1.5, max cosine | 0.8658 | ~495 ms | 130 MB ONNX |
 
-The deterministic engine **beats** a standard dense-embedding retrieval by
-**+8.4 points of clean AUC at ~330× lower latency**, model-free and fully
-auditable (every verdict carries the exact matched features).
+> **CORRECTION (2026-07-03).** An earlier version of this doc claimed the
+> engine "beats neural embeddings by +8.4 points". That comparison was against
+> a single weak semantic model (BGE-small) on a lexical task — a soft target.
+> Measured against the *right* classical baselines (MinHash/SimHash/BM25) and on
+> both lexical AND semantic re-encounter, **the peak-pair engine is best at
+> neither regime.** Do not publish an accuracy claim for the engine. Full matrix:
 
-**Why embeddings lose here.** The task is "have I encountered *this*?", not
-"what is topically near this?". Degraded positives shed distinctive tokens but
-keep their rare anchors (identifiers, numbers, error codes); same-corpus
-held-out negatives are topically close and so score high cosine. Dense
-embeddings reward topical proximity — exactly the wrong axis. Peak-pairs key on
-rare-anchor co-occurrence, which survives degradation and is absent from
-topical near-misses. This is the recurrence thesis measured against the
-strongest cheap alternative.
+### Full baseline matrix — clean AUC (`classical_baselines` + `embedding_baseline`)
+
+| method | lexical (degraded copy) | semantic (paraphrase) | cost |
+|---|---|---|---|
+| **MinHash (128)** | **0.998** | 0.453 | model-free, ~µs |
+| peak-pair engine | 0.941 | 0.543 | model-free, ~1.5 ms, auditable |
+| SimHash (64-bit) | 0.898 | 0.418 | model-free, 1 popcount |
+| **BGE-small embedding** | 0.866 | **0.703** | 130 MB ONNX, ~495 ms |
+| BM25 | 0.746 | 0.593 | model-free |
+
+**Honest reading.** A ~30-line MinHash beats the engine on lexical
+re-encounter (0.998 vs 0.941) — that regime is Jaccard estimation, MinHash's
+home turf. On semantic re-encounter every deterministic method is near-random
+(0.42–0.59) and embeddings win (0.703); the engine's rare-anchor structure buys
+a little over raw shingles (0.54 vs MinHash 0.45) but loses to BM25 and to
+embeddings. **The engine has no regime where it is the most accurate method.**
+Its only genuine differentiators are auditability and the verdict/trace/stream
+wrapper — none of which is an accuracy advantage, and all of which could sit on
+top of MinHash. Right tool per regime: **MinHash for lexical dedup, embeddings
+for semantic.** Reproduce with `classical_baselines --db <brain>` (add
+`--paraphrases <json>` for the semantic column).
 
 Reproduce:
 
