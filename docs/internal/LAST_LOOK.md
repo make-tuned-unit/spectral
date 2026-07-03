@@ -65,39 +65,81 @@ Co-retrieval is a live, high-impact reranking signal on the real brain — it
 changes the top-5 membership for the **majority** of queries, and it is already
 ON in production at weight 0.10.
 
+### Does it help or hurt? Blind judge — HELPS on proxies, HURTS on the real workload
+
+Harness: `~/spectral-local-bench/coret_judge.py`. For each query whose top-5
+changed, both arms are presented as Set A / Set B with **position randomized per
+query**, and `claude-sonnet-4-6` picks the set more relevant to the query —
+**blind to which arm is co-retrieval**. Non-circular: the judge rates query↔memory
+relevance independently of the co-access graph. If co-retrieval pulled in
+co-occurrence *noise*, the judge would penalize it.
+
+**Correction to an earlier assumption:** real query text is NOT lost — Permagent
+already persists it in `recognition_events.query` (249 distinct real queries via
+`spawn_persist_recognition`). So we judged the REAL workload directly, not just
+proxies.
+
+| run | queries | co-ret ON wins | OFF wins | ties | decisive win-rate | p | verdict |
+|---|---|---|---|---|---|---|---|
+| **proxy** (content-derived) | 156 | 81 | 37 | 38 | 68.6% | 0.0001 | **HELPS** |
+| **real**, isolation cfg | 116 | 13 | 59 | 44 | 18.1% | ≈0 | **HURTS** |
+| **real**, production cfg (dedup+declarative, anchors 3) | 120 | 17 | 56 | 47 | 23.3% | ≈0 | **HURTS** |
+
+**The proxy "win" was a mirage; on real queries co-retrieval HURTS, ~3–4.5:1,
+p≈0, and it is robust to the config.** This is the recognition lesson repeating a
+third time: the enthusiastic proxy number (68.6%) inverted the moment it met the
+correct test. Why it flips: proxy queries are the first tokens of a memory, so
+their candidate pools are tight topical clusters and co-access boosting stays
+on-topic. Real user queries are short and conversational ("Give me a tour of the
+app", "continue"), and co-retrieval's boost is dominated by a dense generic
+co-occurrence blob (728 of 744 logged events each returned the *same* ~40
+memories) — classic popularity bias that pulls generic-but-irrelevant memories
+into the top-5.
+
+**This is a live production regression.** Co-retrieval runs at
+`co_retrieval_weight = 0.10` in `cascade_layers.rs:170`, and on the real workload
+it makes Permagent's surfaced context measurably *worse*. The actionable finding
+is to set `co_retrieval_weight` to 0 (or gate/retune it) — not to build on it.
+
+Caveats held honestly: the production-faithful pool run (`cascade_retrieve`
+candidates) is blocked by an unrelated **panic bug** in `spectral-tact/src/lib.rs:166`
+(slices a string mid-UTF-8 inside an em-dash on real memory content) — a real crash
+in the production retrieval path, filed separately. The two completed real-query
+runs use the FTS candidate pool; the co-retrieval mechanism, anchors, weight, and
+judge are identical to production, so the *direction* is trustworthy even if the
+exact magnitude in prod differs.
+
 ## What this means (no hope manufactured)
 
-1. **The loop is closed on "does it fire": emphatically yes.** This is the one
-   place Spectral demonstrably does something the boring stack can't, at scale.
-   It is not dead weight.
-2. **It just relocates the open question to "is the firing good?"** — which is
-   unmeasured and, on current data, unmeasurable. A signal that changes half the
-   top-5s while unvalidated is as much a **production risk** as an opportunity.
-3. **The decision vs the boring stack does not change today.** You still cannot
-   claim a recall win. But "co-retrieval: never measured" is now "co-retrieval:
-   fires hard, unvalidated, with a defined path to resolution."
+1. **The loop is closed on "does it fire": emphatically yes** — it changes >55%
+   of real-query top-5 sets. But firing is not the same as helping.
+2. **On the real workload it HURTS, decisively and robustly** — ~3–4.5:1, p≈0,
+   across both isolation and production configs, blind and non-circular. The proxy
+   "helps" result was a mirage that inverted under the correct test. This is the
+   project's meta-lesson (trust the hedged, distrust the enthusiastic) landing a
+   third time.
+3. **The decision vs the boring stack does NOT re-open — and the dismissal now
+   comes with an action.** Spectral's one differentiated signal is not a latent
+   win; measured honestly on real queries it is a **net-negative reranker running
+   live in production**. That is still a valuable finding — it says: turn
+   `co_retrieval_weight` down/off, and stop treating co-access as a moat.
 
-## The single next step that would actually resolve it
+## The single next step
 
-The blocker is a **non-circular relevance label on the real workload**. Two facts
-govern the path:
-- An LLM relevance judge is *not* circular (it rates query↔memory relevance
-  independently of the co-access graph) — so a label is obtainable.
-- But real query **text** isn't retained (`retrieval_events` stores only
-  `query_hash`). Today we can only judge *content-derived proxy* queries, not the
-  real ones.
+Not a research step — a **fix**. Set `co_retrieval_weight` to 0 (or gate + retune)
+and confirm in production. Query text is already logged (`recognition_events.query`),
+so the confirmation loop is cheap: the same blind judge on freshly logged real
+queries after the change. Optionally add a per-recall A/B outcome signal to make the
+confirmation continuous. Tracked in
+`docs/internal/tickets/permagent-coretrieval-regression.md`. Separately, file the
+`spectral-tact:166` UTF-8 slice panic — it crashes the production cascade retrieval
+path on real content.
 
-So the true unlock is a **Permagent-side data change: log the query text** (or an
-A/B outcome signal) going forward. With that, a tightly-scoped judge pass — only
-the ~55% of queries whose top-5 changed, arm A vs arm B, blind — settles whether
-co-retrieval helps, hurts, or is noise, for a small spend.
-
-Optional cheap directional check now: an LLM-judge pass over the proxy queries
-would hint at sign, but it is not the real workload and would not be decisive.
-
-**Bottom line:** Spectral remains, today, not-better-than-the-boring-stack for
-Permagent — the dismissal stands. But the last look found one real, differentiated,
-high-impact thread that is currently running **unvalidated in production**, and it
-converts a vague "never measured" into a crisp, cheap, well-defined experiment
-gated only on retaining query text. That is the one thing worth doing before —
-or instead of — shelving it.
+**Bottom line:** the last look changes nothing about the dismissal — Spectral is
+still not-better-than-the-boring-stack for Permagent — but it did not come away
+empty. It found that the one signal Spectral has that the boring stack lacks,
+co-retrieval, is **actively degrading production retrieval** on the real workload
+(~3–4.5:1 worse, p≈0), plus a real crash bug in the retrieval path. The honest
+value of building Spectral this far, on this axis, was to discover and be able to
+turn off a feature that is quietly making things worse. Fix those two, then shelve
+with a clear conscience.

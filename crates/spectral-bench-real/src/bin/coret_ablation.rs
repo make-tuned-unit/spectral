@@ -88,8 +88,33 @@ struct Cli {
     /// Anchor count for co-retrieval boost (top-N candidates as anchors).
     #[arg(long, default_value_t = 5)]
     anchors: usize,
+    /// Use REAL queries from this file (one per line) instead of proxy queries
+    /// derived from memory content. Pass the real Permagent query log here.
+    #[arg(long)]
+    queries_file: Option<String>,
+    /// Number of leading tokens of each query to use (proxy: 6; real: ~12).
+    #[arg(long, default_value_t = 6)]
+    query_tokens: usize,
+    /// Mirror the PRODUCTION cascade rerank config (context-dedup ON,
+    /// declarative-boost ON) instead of the isolation config. Membership may
+    /// differ between arms — this is the real production behavior.
+    #[arg(long, default_value_t = false)]
+    prod_config: bool,
+    /// Draw the candidate pool via production's cascade_retrieve (TACT+FTS)
+    /// instead of fts_search_direct — the production-faithful pool.
+    #[arg(long, default_value_t = false)]
+    cascade_pool: bool,
     #[arg(long)]
     out: Option<String>,
+    /// Dump changed-top5 queries (query + both arms' top-5 contents) as JSONL
+    /// for a blind relevance judge.
+    #[arg(long)]
+    dump: Option<String>,
+}
+
+fn snippet(s: &str) -> String {
+    let s = s.trim().replace('\n', " ");
+    s.chars().take(300).collect()
 }
 
 fn expand(p: &str) -> String {
@@ -146,42 +171,75 @@ fn main() -> Result<()> {
     let pairs = brain.rebuild_co_retrieval_index().context("rebuild coret")?;
     eprintln!("co_retrieval_pairs rebuilt from retrieval_events: {pairs}");
 
-    // Eval queries: derived from memories that appear in the co-access graph
-    // (so candidates can intersect the boost surface — the fairest shot).
-    let conn = Connection::open(&tmp_db)?;
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT m.content FROM memories m
-         WHERE m.id IN (
-            SELECT memory_id_a FROM co_retrieval_pairs
-            UNION SELECT memory_id_b FROM co_retrieval_pairs)
-         AND length(m.content) > 30
-         ORDER BY m.id LIMIT ?1",
-    )?;
-    let contents: Vec<String> = stmt
-        .query_map([cli.queries as i64], |r| r.get::<_, String>(0))?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
-    eprintln!("built {} candidate queries", contents.len());
+    // Eval queries: REAL Permagent queries (--queries-file) when provided,
+    // else proxy queries derived from memories in the co-access graph.
+    let contents: Vec<String> = if let Some(qf) = &cli.queries_file {
+        let raw = std::fs::read_to_string(qf).with_context(|| format!("read {qf}"))?;
+        let mut seen = std::collections::HashSet::new();
+        raw.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| l.len() >= 3 && seen.insert(l.clone()))
+            .take(cli.queries)
+            .collect()
+    } else {
+        let conn = Connection::open(&tmp_db)?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT m.content FROM memories m
+             WHERE m.id IN (
+                SELECT memory_id_a FROM co_retrieval_pairs
+                UNION SELECT memory_id_b FROM co_retrieval_pairs)
+             AND length(m.content) > 30
+             ORDER BY m.id LIMIT ?1",
+        )?;
+        let v = stmt
+            .query_map([cli.queries as i64], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        v
+    };
+    eprintln!(
+        "built {} {} queries",
+        contents.len(),
+        if cli.queries_file.is_some() { "REAL" } else { "proxy" }
+    );
 
     let ctx = RecognitionContext::empty();
     let mut cfg = RerankingConfig::default();
     cfg.apply_ambient_boost = false;
-    cfg.apply_context_dedup = false;   // isolate: identical membership both arms
     cfg.apply_episode_diversity = false;
     cfg.co_retrieval_weight = 0.10;
+    if cli.prod_config {
+        // Mirror production cascade_layers.rs: dedup + declarative ON.
+        cfg.apply_context_dedup = true;
+        cfg.apply_declarative_boost = true;
+        cfg.declarative_weight = 0.10;
+    } else {
+        cfg.apply_context_dedup = false; // isolate: identical membership both arms
+    }
+    eprintln!(
+        "config: {} (dedup={}, declarative={}, anchors={})",
+        if cli.prod_config { "PROD-MIRROR" } else { "ISOLATION" },
+        cfg.apply_context_dedup, cfg.apply_declarative_boost, cli.anchors
+    );
     let empty: HashMap<String, f64> = HashMap::new();
 
     let (mut evaluated, mut with_surface) = (0usize, 0usize);
     let (mut order_changed, mut set_changed) = (0usize, 0usize);
     let (mut sum_mean_delta, mut sum_boosted, mut max_delta_any) = (0.0f64, 0usize, 0usize);
+    let mut dump_lines: Vec<String> = Vec::new();
 
     for content in &contents {
-        let words: Vec<String> = tokens(content).into_iter().take(6).collect();
+        let words: Vec<String> = tokens(content).into_iter().take(cli.query_tokens).collect();
         if words.is_empty() {
             continue;
         }
-        let cands = match brain.fts_search_direct(&words, cli.pool) {
+        let pool_res = if cli.cascade_pool {
+            brain.cascade_retrieve(content, cli.pool) // raw query; TACT+FTS
+        } else {
+            brain.fts_search_direct(&words, cli.pool)
+        };
+        let cands = match pool_res {
             Ok(c) if c.len() >= 2 => c,
             _ => continue,
         };
@@ -202,6 +260,31 @@ fn main() -> Result<()> {
         }
         if d.top5_set_changed {
             set_changed += 1;
+            if cli.dump.is_some() {
+                let k = 5.min(off.len());
+                let arm_off: Vec<_> = off[..k]
+                    .iter()
+                    .map(|h| serde_json::json!({"id": h.id, "content": snippet(&h.content)}))
+                    .collect();
+                let ko = 5.min(on.len());
+                let arm_on: Vec<_> = on[..ko]
+                    .iter()
+                    .map(|h| serde_json::json!({"id": h.id, "content": snippet(&h.content)}))
+                    .collect();
+                let shown_query = if cli.queries_file.is_some() {
+                    snippet(content)
+                } else {
+                    words.join(" ")
+                };
+                dump_lines.push(
+                    serde_json::json!({
+                        "query": shown_query,
+                        "off": arm_off,   // co-retrieval OFF
+                        "on": arm_on,     // co-retrieval ON
+                    })
+                    .to_string(),
+                );
+            }
         }
         sum_mean_delta += d.mean_abs_rank_delta;
         max_delta_any = max_delta_any.max(d.max_rank_delta);
@@ -228,6 +311,11 @@ fn main() -> Result<()> {
     if let Some(p) = &cli.out {
         std::fs::write(p, &out)?;
         eprintln!("wrote {p}");
+    }
+
+    if let Some(dpath) = &cli.dump {
+        std::fs::write(dpath, dump_lines.join("\n"))?;
+        eprintln!("dumped {} changed-top5 queries -> {dpath}", dump_lines.len());
     }
 
     let _ = std::fs::remove_dir_all(&tmp);
