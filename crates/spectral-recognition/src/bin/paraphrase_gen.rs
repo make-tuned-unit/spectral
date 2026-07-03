@@ -11,7 +11,11 @@ const PROMPT: &str = "Rewrite this note in completely different words and senten
 Preserve every specific fact — names, numbers, dates, identifiers — but change all other \
 vocabulary and phrasing as much as possible. Output ONLY the rewrite, no preamble.\n\nNote:\n";
 
-fn paraphrase(client: &reqwest::blocking::Client, api_key: &str, content: &str) -> Result<(String, u64, u64)> {
+fn paraphrase(
+    client: &reqwest::blocking::Client,
+    api_key: &str,
+    content: &str,
+) -> Result<(String, u64, u64)> {
     let body = serde_json::json!({
         "model": "claude-haiku-4-5-20251001",
         "max_tokens": 1024,
@@ -56,10 +60,8 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| "paraphrases.json".to_string());
     let api_key = std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")?;
 
-    let conn = rusqlite::Connection::open_with_flags(
-        db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     // Deterministic sample: longest-content memories first give the
     // paraphraser room to actually rewrite; order by id for determinism.
     let mut stmt = conn.prepare(
@@ -67,15 +69,20 @@ fn main() -> Result<()> {
          ORDER BY id LIMIT ?1",
     )?;
     let memories: Vec<(String, String)> = stmt
-        .query_map([n as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .query_map([n as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
         .collect::<std::result::Result<_, _>>()?;
 
-    let mut cache: std::collections::BTreeMap<String, String> =
-        std::fs::read_to_string(&output)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-    eprintln!("{} memories, {} already paraphrased", memories.len(), cache.len());
+    let mut cache: std::collections::BTreeMap<String, String> = std::fs::read_to_string(&output)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    eprintln!(
+        "{} memories, {} already paraphrased",
+        memories.len(),
+        cache.len()
+    );
 
     let client = reqwest::blocking::Client::new();
     let (mut in_tok, mut out_tok, mut failures) = (0u64, 0u64, 0usize);

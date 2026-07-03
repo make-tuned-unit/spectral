@@ -83,10 +83,16 @@ pub fn cue_similarity(a: &Cue, b: &Cue) -> f64 {
             eq += 1.0;
         }
     }
-    let set_a: std::collections::HashSet<u16> =
-        a.0[PEAK_SLOTS].iter().copied().filter(|v| *v != 0).collect();
-    let set_b: std::collections::HashSet<u16> =
-        b.0[PEAK_SLOTS].iter().copied().filter(|v| *v != 0).collect();
+    let set_a: std::collections::HashSet<u16> = a.0[PEAK_SLOTS]
+        .iter()
+        .copied()
+        .filter(|v| *v != 0)
+        .collect();
+    let set_b: std::collections::HashSet<u16> = b.0[PEAK_SLOTS]
+        .iter()
+        .copied()
+        .filter(|v| *v != 0)
+        .collect();
     if !set_a.is_empty() || !set_b.is_empty() {
         let inter = set_a.intersection(&set_b).count() as f64;
         let union = (set_a.len() + set_b.len()) as f64 - inter;
@@ -388,7 +394,13 @@ pub fn centroid_of(segment: &Segment) -> Centroid {
             }
         }
     }
-    let argmax = |h: &[usize]| h.iter().enumerate().max_by_key(|(_, n)| **n).map(|(i, _)| i as u16).unwrap_or(0);
+    let argmax = |h: &[usize]| {
+        h.iter()
+            .enumerate()
+            .max_by_key(|(_, n)| **n)
+            .map(|(i, _)| i as u16)
+            .unwrap_or(0)
+    };
     Centroid {
         segment_id: segment.id.clone(),
         wing: segment.wing.clone(),
@@ -471,7 +483,11 @@ impl CentroidTracker {
 
     fn score(&self, c: &Centroid) -> f64 {
         let cfg = &self.config;
-        let dow = if c.dow == self.live_dow { cfg.w_dow } else { 0.0 };
+        let dow = if c.dow == self.live_dow {
+            cfg.w_dow
+        } else {
+            0.0
+        };
         let hour = if (c.hour as i32 - self.live_hour as i32).abs() <= 1 {
             cfg.w_hour
         } else {
@@ -577,7 +593,7 @@ pub fn segment_stream(
     let mut last_ts = 0i64;
     let mut seq = 0usize;
 
-    let mut flush = |cues: &mut Vec<Cue>, wing: &str, seq: &mut usize, out: &mut Vec<Segment>| {
+    let flush = |cues: &mut Vec<Cue>, wing: &str, seq: &mut usize, out: &mut Vec<Segment>| {
         if cues.len() >= min_len {
             for chunk in cues.chunks(max_len) {
                 out.push(Segment {
@@ -592,8 +608,8 @@ pub fn segment_stream(
     };
 
     for (cue, wing, ts) in items {
-        let boundary = !current.is_empty()
-            && (*wing != current_wing || ts - last_ts > gap_minutes * 60);
+        let boundary =
+            !current.is_empty() && (*wing != current_wing || ts - last_ts > gap_minutes * 60);
         if boundary {
             flush(&mut current, &current_wing, &mut seq, &mut segments);
         }
@@ -643,8 +659,14 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, StreamEvent::LockAcquired { .. }))
             .count();
-        assert_eq!(locks, 1, "one routine replay = exactly one lock: {all_events:?}");
-        assert!(t.current_lock().is_some(), "lock should persist through the routine");
+        assert_eq!(
+            locks, 1,
+            "one routine replay = exactly one lock: {all_events:?}"
+        );
+        assert!(
+            t.current_lock().is_some(),
+            "lock should persist through the routine"
+        );
     }
 
     #[test]
@@ -661,7 +683,10 @@ mod tests {
             .skip_while(|e| !matches!(e, StreamEvent::LockAcquired { .. }))
             .skip(1)
             .count();
-        assert_eq!(after_lock, 0, "no events after lock while matching: {events:?}");
+        assert_eq!(
+            after_lock, 0,
+            "no events after lock while matching: {events:?}"
+        );
     }
 
     #[test]
@@ -670,7 +695,10 @@ mod tests {
         for i in 0..20 {
             let c = cue("emailwing", 14, &[&format!("random{i}"), "totally", "new"]);
             let events = t.observe(&c);
-            assert!(events.is_empty(), "unrelated cues must not fire events: {events:?}");
+            assert!(
+                events.is_empty(),
+                "unrelated cues must not fire events: {events:?}"
+            );
         }
         assert!(t.current_lock().is_none());
     }
@@ -683,13 +711,18 @@ mod tests {
         events.extend(t.observe(&r[0]));
         events.extend(t.observe(&r[1]));
         events.extend(t.observe(&r[2]));
-        assert!(t.current_lock().is_some(), "should be locked after 3 matching cues");
+        assert!(
+            t.current_lock().is_some(),
+            "should be locked after 3 matching cues"
+        );
         // Diverge for lost_after_misses cues.
         for i in 0..3 {
             events.extend(t.observe(&cue("otherwing", 22, &[&format!("div{i}")])));
         }
         assert!(
-            events.iter().any(|e| matches!(e, StreamEvent::LockLost { .. })),
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::LockLost { .. })),
             "sustained divergence must lose the lock: {events:?}"
         );
         assert!(t.current_lock().is_none());
@@ -706,7 +739,9 @@ mod tests {
         // One interruption (a Slack ping mid-routine) — hysteresis holds.
         let events = t.observe(&cue("comms", 10, &["slack", "ping"]));
         assert!(
-            !events.iter().any(|e| matches!(e, StreamEvent::LockLost { .. })),
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::LockLost { .. })),
             "one odd cue must not break the lock (hysteresis)"
         );
         assert!(t.current_lock().is_some());

@@ -33,16 +33,16 @@ pub struct StimulusPrints {
 }
 
 const STOPWORDS: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "if", "then", "else", "when", "at", "by", "for",
-    "with", "about", "against", "between", "into", "through", "during", "before", "after",
-    "above", "below", "to", "from", "up", "down", "in", "out", "on", "off", "over", "under",
-    "again", "further", "once", "here", "there", "all", "any", "both", "each", "few", "more",
-    "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than",
-    "too", "very", "can", "will", "just", "should", "now", "i", "me", "my", "we", "our", "you",
-    "your", "he", "him", "his", "she", "her", "it", "its", "they", "them", "their", "what",
-    "which", "who", "this", "that", "these", "those", "am", "is", "are", "was", "were", "be",
-    "been", "being", "have", "has", "had", "having", "do", "does", "did", "doing", "of", "as",
-    "because", "until", "while", "how", "why", "where",
+    "a", "an", "the", "and", "or", "but", "if", "then", "else", "when", "at", "by", "for", "with",
+    "about", "against", "between", "into", "through", "during", "before", "after", "above",
+    "below", "to", "from", "up", "down", "in", "out", "on", "off", "over", "under", "again",
+    "further", "once", "here", "there", "all", "any", "both", "each", "few", "more", "most",
+    "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too",
+    "very", "can", "will", "just", "should", "now", "i", "me", "my", "we", "our", "you", "your",
+    "he", "him", "his", "she", "her", "it", "its", "they", "them", "their", "what", "which", "who",
+    "this", "that", "these", "those", "am", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "having", "do", "does", "did", "doing", "of", "as", "because", "until",
+    "while", "how", "why", "where",
 ];
 
 fn is_stopword(t: &str) -> bool {
@@ -56,7 +56,10 @@ fn is_stopword(t: &str) -> bool {
 fn is_anchor(raw: &str) -> bool {
     let has_digit = raw.chars().any(|c| c.is_ascii_digit());
     let has_sep = raw.contains('_') || raw.contains('-') || raw.contains('.');
-    let all_caps = raw.len() >= 2 && raw.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    let all_caps = raw.len() >= 2
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
     let inner_upper = raw.chars().skip(1).any(|c| c.is_ascii_uppercase());
     has_digit || (has_sep && raw.len() >= 4) || all_caps || inner_upper
 }
@@ -192,15 +195,14 @@ pub fn fingerprint_stimulus(content: &str, config: &RecognitionConfig) -> Stimul
     // distortion; exact geometry does not.
     let mut pair_hashes = Vec::new();
     for (i, a) in peaks.iter().enumerate() {
-        let mut taken = 0usize;
-        for b in peaks.iter().skip(i + 1) {
-            if b.position.saturating_sub(a.position) > config.pair_window {
-                break;
-            }
-            if taken >= config.fan_out {
-                break;
-            }
-            taken += 1;
+        // Pair with the next peaks within the target window, up to fan_out.
+        // Peaks are position-ordered, so take_while stops at the window edge.
+        let in_window = peaks
+            .iter()
+            .skip(i + 1)
+            .take_while(|b| b.position.saturating_sub(a.position) <= config.pair_window)
+            .take(config.fan_out);
+        for b in in_window {
             let (lo, hi) = if a.key <= b.key {
                 (a.key.as_str(), b.key.as_str())
             } else {
@@ -265,7 +267,10 @@ mod tests {
         );
         let keys: Vec<&str> = peaks.iter().map(|l| l.key.as_str()).collect();
         assert!(keys.contains(&"137"), "number preserved: {keys:?}");
-        assert!(keys.contains(&"OOMKilled"), "mixed-case id preserved: {keys:?}");
+        assert!(
+            keys.contains(&"OOMKilled"),
+            "mixed-case id preserved: {keys:?}"
+        );
         assert!(keys.contains(&"us-east-1"), "kebab id preserved: {keys:?}");
     }
 
@@ -306,9 +311,13 @@ mod tests {
         // Two texts sharing a long verbatim run must share at least one
         // selected gram hash (the MOSS guarantee, window+kgram-1 = 12).
         let cfg = config();
-        let shared = "the staging deploy failed with exit code 137 because the pod was OOMKilled today";
+        let shared =
+            "the staging deploy failed with exit code 137 because the pod was OOMKilled today";
         let a = fingerprint_stimulus(&format!("prefix words here {shared}"), &cfg);
-        let b = fingerprint_stimulus(&format!("{shared} and totally different tail content"), &cfg);
+        let b = fingerprint_stimulus(
+            &format!("{shared} and totally different tail content"),
+            &cfg,
+        );
         let set_a: std::collections::HashSet<u64> = a.gram_hashes.iter().map(|(h, _)| *h).collect();
         assert!(
             b.gram_hashes.iter().any(|(h, _)| set_a.contains(h)),

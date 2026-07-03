@@ -25,6 +25,7 @@
 //! No embeddings, no models, no LLM. Every verdict carries the exact
 //! features that produced it.
 
+pub mod eval;
 mod extract;
 mod score;
 mod store;
@@ -34,8 +35,8 @@ pub use extract::{extract_landmarks, fingerprint_stimulus, Landmark, StimulusPri
 pub use score::{score_candidates, ScoreConfig};
 pub use store::{InMemoryRecognitionStore, RecognitionStore, SqliteRecognitionStore};
 pub use stream::{
-    centroid_of, make_cue, segment_stream, Centroid, CentroidConfig, CentroidTracker, Cue,
-    Segment, StreamConfig, StreamEvent, StreamTracker,
+    centroid_of, make_cue, segment_stream, Centroid, CentroidConfig, CentroidTracker, Cue, Segment,
+    StreamConfig, StreamEvent, StreamTracker,
 };
 
 use anyhow::Result;
@@ -265,7 +266,9 @@ mod tests {
         // Same broad topic (kubernetes-ish ops) but a genuinely new event.
         let e = enrolled_engine();
         let r = e
-            .recognize("Provisioned a brand new GPU node group for the training cluster in Frankfurt")
+            .recognize(
+                "Provisioned a brand new GPU node group for the training cluster in Frankfurt",
+            )
             .unwrap();
         assert_eq!(
             r.verdict,
@@ -294,7 +297,10 @@ mod tests {
         let r = e.recognize(CORPUS[0].1).unwrap();
         // Double enrollment must not inflate evidence.
         assert_eq!(
-            r.traces.iter().filter(|t| t.memory_id == "m-deploy").count(),
+            r.traces
+                .iter()
+                .filter(|t| t.memory_id == "m-deploy")
+                .count(),
             1
         );
     }

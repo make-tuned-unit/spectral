@@ -183,7 +183,9 @@ impl RecognitionStore for SqliteRecognitionStore {
     fn enrolled_count(&self) -> Result<usize> {
         let n: i64 = self
             .conn
-            .query_row("SELECT COUNT(*) FROM recognition_enrolled", [], |r| r.get(0))?;
+            .query_row("SELECT COUNT(*) FROM recognition_enrolled", [], |r| {
+                r.get(0)
+            })?;
         Ok(n as usize)
     }
 
@@ -240,7 +242,11 @@ mod tests {
         let query = fingerprint_stimulus("deploy failed exit code 137 OOMKilled", &cfg);
         let a = sq.lookup_pairs(&query.pair_hashes).unwrap();
         let b = mem.lookup_pairs(&query.pair_hashes).unwrap();
-        assert_eq!(a.len(), b.len(), "both stores must return identical matches");
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "both stores must return identical matches"
+        );
         assert!(sq.is_enrolled("m1").unwrap());
         assert_eq!(sq.enrolled_count().unwrap(), 1);
     }

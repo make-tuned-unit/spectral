@@ -1552,7 +1552,13 @@ mod tests {
         let long_asst = "x".repeat(1000);
         let long_user = "y".repeat(1000);
         let hits = vec![
-            make_test_hit("1", "s1:turn:0:user", &long_user, "s1", "2023-05-20 12:00:00"),
+            make_test_hit(
+                "1",
+                "s1:turn:0:user",
+                &long_user,
+                "s1",
+                "2023-05-20 12:00:00",
+            ),
             make_test_hit(
                 "2",
                 "s1:turn:1:assistant",

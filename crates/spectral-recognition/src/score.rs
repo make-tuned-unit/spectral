@@ -85,7 +85,11 @@ pub fn score_candidates(
     for (matches, is_gram) in [(pair_matches, false), (gram_matches, true)] {
         for m in matches {
             let base = rarity(enrolled, m.doc_frequency);
-            let w = if is_gram { base * config.gram_weight } else { base };
+            let w = if is_gram {
+                base * config.gram_weight
+            } else {
+                base
+            };
             let a = acc.entry(m.memory_id.clone()).or_insert(Accum {
                 score: 0.0,
                 pair_hits: 0,

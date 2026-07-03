@@ -2641,10 +2641,7 @@ mod tests {
         store.write(&mem, &[]).await.unwrap();
 
         // Plural query matches singular content under porter stemming.
-        let hits = store
-            .fts_search(&["doctors".into()], 10)
-            .await
-            .unwrap();
+        let hits = store.fts_search(&["doctors".into()], 10).await.unwrap();
         assert_eq!(hits.len(), 1, "porter should bridge doctors→doctor");
 
         // Control: the default tokenizer misses the same query.

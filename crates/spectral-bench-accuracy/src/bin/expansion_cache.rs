@@ -35,11 +35,10 @@ fn main() -> Result<()> {
     let ds = spectral_bench_accuracy::dataset::load_dataset(std::path::Path::new(dataset))?;
 
     // Resume support: load existing cache, skip already-expanded questions.
-    let mut cache: std::collections::BTreeMap<String, String> =
-        std::fs::read_to_string(&output)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+    let mut cache: std::collections::BTreeMap<String, String> = std::fs::read_to_string(&output)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     eprintln!("{} questions, {} already cached", ds.len(), cache.len());
 
     let mut in_tok = 0u64;

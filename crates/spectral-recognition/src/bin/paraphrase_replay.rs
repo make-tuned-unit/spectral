@@ -6,15 +6,12 @@
 //! Usage: paraphrase_replay --db <memory.db> --paraphrases <paraphrases.json>
 
 use anyhow::{Context, Result};
+use spectral_recognition::eval::{
+    max_jaccard, roc_auc, split_9010, token_set, LABEL_NOISE_JACCARD,
+};
 use spectral_recognition::{
     InMemoryRecognitionStore, RecognitionConfig, RecognitionEngine, Verdict,
 };
-
-fn hash_id(id: &str) -> u64 {
-    use sha2::{Digest, Sha256};
-    let d = Sha256::digest(id.as_bytes());
-    u64::from_be_bytes(d[..8].try_into().unwrap())
-}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -32,18 +29,15 @@ fn main() -> Result<()> {
     let paraphrases: std::collections::BTreeMap<String, String> =
         serde_json::from_str(&std::fs::read_to_string(para_path)?)?;
 
-    let conn = rusqlite::Connection::open_with_flags(
-        db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt =
         conn.prepare("SELECT id, content FROM memories WHERE LENGTH(content) >= 60 ORDER BY id")?;
     let memories: Vec<(String, String)> = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         .collect::<std::result::Result<_, _>>()?;
 
-    let (known, held_out): (Vec<_>, Vec<_>) =
-        memories.iter().partition(|(id, _)| hash_id(id) % 10 != 0);
+    let (known, held_out) = split_9010(&memories);
 
     let mut engine = RecognitionEngine::new(
         InMemoryRecognitionStore::default(),
@@ -78,26 +72,11 @@ fn main() -> Result<()> {
     let pos_n = scores.len();
 
     // Negatives with label-noise exclusion (same as replay.rs).
-    let token_set = |s: &str| -> std::collections::HashSet<String> {
-        s.split_whitespace()
-            .map(|t| t.to_lowercase())
-            .filter(|t| t.len() >= 3)
-            .collect()
-    };
     let enrolled_sets: Vec<std::collections::HashSet<String>> =
         known.iter().map(|(_, c)| token_set(c)).collect();
     let mut clean_neg = 0usize;
     for (_id, content) in &held_out {
-        let hs = token_set(content);
-        let max_j = enrolled_sets
-            .iter()
-            .map(|es| {
-                let i = hs.intersection(es).count() as f64;
-                let u = (hs.len() + es.len()) as f64 - i;
-                if u > 0.0 { i / u } else { 0.0 }
-            })
-            .fold(0.0f64, f64::max);
-        if max_j >= 0.5 {
+        if max_jaccard(&token_set(content), &enrolled_sets) >= LABEL_NOISE_JACCARD {
             continue; // true near-dupe — not a valid negative
         }
         let r = engine.recognize(content)?;
@@ -105,13 +84,7 @@ fn main() -> Result<()> {
         clean_neg += 1;
     }
 
-    let mut auc_num = 0.0f64;
-    for p in scores.iter().filter(|s| s.1) {
-        for n in scores.iter().filter(|s| !s.1) {
-            auc_num += if p.0 > n.0 { 1.0 } else if p.0 == n.0 { 0.5 } else { 0.0 };
-        }
-    }
-    let auc = auc_num / (pos_n as f64 * clean_neg as f64).max(1.0);
+    let auc = roc_auc(&scores);
 
     println!("== paraphrase recognition replay ==");
     println!("enrolled:               {}", known.len());
@@ -137,7 +110,11 @@ fn main() -> Result<()> {
         }
         let r = engine.recognize(para)?;
         if r.verdict == Verdict::Novel {
-            let orig = known.iter().find(|(i, _)| i == id).map(|(_, c)| c.as_str()).unwrap_or("");
+            let orig = known
+                .iter()
+                .find(|(i, _)| i == id)
+                .map(|(_, c)| c.as_str())
+                .unwrap_or("");
             miss_report.push_str(&format!(
                 "--- MISS {id} (fam {:.3}, peaks {})\nORIG: {}\nPARA: {}\n\n",
                 r.familiarity,
@@ -148,7 +125,8 @@ fn main() -> Result<()> {
         }
     }
     // The dump contains real memory content — keep it OUT of the repo tree.
-    let dump = std::env::var("HOME").unwrap_or_default() + "/spectral-local-bench/paraphrase-misses.txt";
+    let dump =
+        std::env::var("HOME").unwrap_or_default() + "/spectral-local-bench/paraphrase-misses.txt";
     std::fs::write(&dump, &miss_report)?;
     println!("miss dump:              {dump}");
     Ok(())

@@ -9,8 +9,7 @@
 
 use anyhow::{Context, Result};
 use spectral_recognition::{
-    extract_landmarks, make_cue, segment_stream, RecognitionConfig, StreamConfig, StreamEvent,
-    StreamTracker,
+    extract_landmarks, make_cue, segment_stream, RecognitionConfig, StreamEvent,
 };
 
 fn parse_ts(s: &str) -> Option<i64> {
@@ -52,10 +51,8 @@ fn main() -> Result<()> {
         .and_then(|i| args.get(i + 1))
         .context("--db <path> required")?;
 
-    let conn = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt = conn.prepare(
         "SELECT COALESCE(wing,'general'), content, created_at FROM memories
          WHERE created_at IS NOT NULL ORDER BY created_at",
@@ -91,8 +88,7 @@ fn main() -> Result<()> {
         anyhow::bail!("not enough timestamped memories ({})", items.len());
     }
 
-    let span_days =
-        (items.last().unwrap().2 - items.first().unwrap().2) as f64 / 86400.0;
+    let span_days = (items.last().unwrap().2 - items.first().unwrap().2) as f64 / 86400.0;
     let split = items.first().unwrap().2
         + ((items.last().unwrap().2 - items.first().unwrap().2) as f64 * 0.6) as i64;
     let (past, live): (Vec<_>, Vec<_>) = items.into_iter().partition(|(_, _, t)| *t <= split);
@@ -117,8 +113,7 @@ fn main() -> Result<()> {
 
     // Track the live tail. Boundaries are WING-BLIND (time gap only) so the
     // ground-truth label can't leak into recognition.
-    let live_days =
-        (live.last().map(|x| x.2).unwrap_or(split) - split) as f64 / 86400.0;
+    let live_days = (live.last().map(|x| x.2).unwrap_or(split) - split) as f64 / 86400.0;
     let mut locks = 0usize;
     let mut wing_correct = 0usize;
     let mut transfers = 0usize;
@@ -170,7 +165,10 @@ fn main() -> Result<()> {
 
     println!("== ambient stream replay (centroid tracker, wing-blind) ==");
     println!("reference segments:     {n_segments}");
-    println!("live cues tracked:      {} over {live_days:.0} days", live.len());
+    println!(
+        "live cues tracked:      {} over {live_days:.0} days",
+        live.len()
+    );
     println!(
         "lock events:            {} acquired + {transfers} transferred ({:.1}/day)",
         locks,
