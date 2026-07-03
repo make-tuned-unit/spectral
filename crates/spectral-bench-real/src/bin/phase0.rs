@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use spectral_ingest::ingest::{ingest_with, IngestConfig, IngestOpts};
@@ -89,7 +89,7 @@ fn splitmix64(mut x: u64) -> u64 {
 struct Classical {
     a: Vec<u64>,
     b: Vec<u64>,
-    sigs: Vec<[u64; MINHASH_K]>,           // MinHash signature per doc
+    sigs: Vec<[u64; MINHASH_K]>, // MinHash signature per doc
     postings: HashMap<String, Vec<(usize, u32)>>, // term -> (doc, tf)
     doc_len: Vec<u32>,
     avg_len: f64,
@@ -98,8 +98,12 @@ struct Classical {
 
 impl Classical {
     fn build(docs: &[Doc]) -> Self {
-        let a: Vec<u64> = (0..MINHASH_K).map(|i| splitmix64(i as u64 * 2 + 1) | 1).collect();
-        let b: Vec<u64> = (0..MINHASH_K).map(|i| splitmix64(i as u64 * 2 + 2)).collect();
+        let a: Vec<u64> = (0..MINHASH_K)
+            .map(|i| splitmix64(i as u64 * 2 + 1) | 1)
+            .collect();
+        let b: Vec<u64> = (0..MINHASH_K)
+            .map(|i| splitmix64(i as u64 * 2 + 2))
+            .collect();
         let mut sigs = Vec::with_capacity(docs.len());
         let mut postings: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
         let mut doc_len = Vec::with_capacity(docs.len());
@@ -138,7 +142,11 @@ impl Classical {
             b,
             sigs,
             postings,
-            avg_len: if n > 0 { total_len as f64 / n as f64 } else { 0.0 },
+            avg_len: if n > 0 {
+                total_len as f64 / n as f64
+            } else {
+                0.0
+            },
             doc_len,
             n,
         }
@@ -199,11 +207,11 @@ fn build_queries(docs: &[Doc], n: usize) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn dir_bytes(path: &PathBuf) -> u64 {
+fn dir_bytes(path: &Path) -> u64 {
     let mut total = 0;
     for suffix in ["", "-wal", "-shm"] {
         let p = if suffix.is_empty() {
-            path.clone()
+            path.to_path_buf()
         } else {
             PathBuf::from(format!("{}{}", path.display(), suffix))
         };
@@ -241,7 +249,10 @@ async fn main() -> Result<()> {
 
     // corpus token stats (for the analytical embed cost)
     let total_chars: usize = docs.iter().map(|d| d.content.len()).sum();
-    let total_words: usize = docs.iter().map(|d| d.content.split_whitespace().count()).sum();
+    let total_words: usize = docs
+        .iter()
+        .map(|d| d.content.split_whitespace().count())
+        .sum();
     let est_tokens = (total_chars as f64 / 4.0).round() as u64; // OpenAI ~4 chars/token
 
     // ── T1a: Spectral ambient-ingest path ──────────────────────────
@@ -281,8 +292,14 @@ async fn main() -> Result<()> {
     for q in &queries {
         let r1 = store.fts_search(q, 10).await?;
         let r2 = store.fts_search(q, 10).await?;
-        let k1: Vec<(&str, u64)> = r1.iter().map(|h| (h.id.as_str(), h.signal_score.to_bits())).collect();
-        let k2: Vec<(&str, u64)> = r2.iter().map(|h| (h.id.as_str(), h.signal_score.to_bits())).collect();
+        let k1: Vec<(&str, u64)> = r1
+            .iter()
+            .map(|h| (h.id.as_str(), h.signal_score.to_bits()))
+            .collect();
+        let k2: Vec<(&str, u64)> = r2
+            .iter()
+            .map(|h| (h.id.as_str(), h.signal_score.to_bits()))
+            .collect();
         if k1 == k2 {
             spectral_stable += 1;
         }

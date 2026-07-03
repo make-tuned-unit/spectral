@@ -2867,10 +2867,14 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "spectral-core",
  "spectral-graph",
+ "spectral-ingest",
+ "tokio",
  "toml",
 ]
 
