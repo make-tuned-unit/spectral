@@ -128,6 +128,30 @@ impl QuestionType {
             return Self::Temporal;
         }
 
+        // ── Preference sub-gate (before Factual catch-all) ──
+        // "What should I serve" is a preference question, not factual.
+        // Check preference signals before the ^what gate to prevent
+        // preference questions from being swallowed by Factual.
+        if Regex::new(r"\b(suggest|recommend|tips?|advice|recommendations?|what should i)\b")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::GeneralPreference;
+        }
+        if Regex::new(r"\bany (tips?|advice|suggestions?|ideas?|thoughts?|recommendations?)\b")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::GeneralPreference;
+        }
+        // Conversational preference: "Do you think [I should / it would be]"
+        if Regex::new(r"\bdo you think\b")
+            .unwrap()
+            .is_match(&q)
+        {
+            return Self::GeneralPreference;
+        }
+
         // Factual (with sub-gate)
         if Regex::new(r"^(?:what|where|who|which)\b")
             .unwrap()
@@ -143,21 +167,6 @@ impl QuestionType {
                 return Self::FactualCurrentState;
             }
             return Self::Factual;
-        }
-
-        // ── Level 2: General sub-gates ──
-
-        if Regex::new(r"\b(suggest|recommend|tips?|advice|recommendations?|what should i)\b")
-            .unwrap()
-            .is_match(&q)
-        {
-            return Self::GeneralPreference;
-        }
-        if Regex::new(r"\bany (tips?|advice|suggestions?|ideas?|thoughts?|recommendations?)\b")
-            .unwrap()
-            .is_match(&q)
-        {
-            return Self::GeneralPreference;
         }
         if Regex::new(r"\b(remind me|going back to|previous|earlier conversation|we (discussed|talked about)|can you remind me)\b")
             .unwrap()
@@ -1145,6 +1154,44 @@ mod tests {
         assert_eq!(
             QuestionType::classify("Do you have any suggestions for my trip?"),
             QuestionType::GeneralPreference
+        );
+    }
+
+    #[test]
+    fn classify_preference_before_factual() {
+        // "What should I X" must route to GeneralPreference, not Factual
+        assert_eq!(
+            QuestionType::classify("What should I serve for dinner this weekend with my homegrown ingredients?"),
+            QuestionType::GeneralPreference
+        );
+    }
+
+    #[test]
+    fn classify_do_you_think_as_preference() {
+        assert_eq!(
+            QuestionType::classify("I've been sneezing quite a bit lately. Do you think it might be my living room?"),
+            QuestionType::GeneralPreference
+        );
+        assert_eq!(
+            QuestionType::classify("I've been feeling nostalgic lately. Do you think it would be a good idea to attend a concert?"),
+            QuestionType::GeneralPreference
+        );
+    }
+
+    #[test]
+    fn classify_factual_not_broken_by_preference_gate() {
+        // Pure factual questions starting with "what" must still route to Factual
+        assert_eq!(
+            QuestionType::classify("What degree did I graduate with?"),
+            QuestionType::Factual
+        );
+        assert_eq!(
+            QuestionType::classify("What type of camera lens did I purchase most recently?"),
+            QuestionType::Factual
+        );
+        assert_eq!(
+            QuestionType::classify("What did I buy for my sister's birthday gift?"),
+            QuestionType::Factual
         );
     }
 
