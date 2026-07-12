@@ -54,10 +54,32 @@ SPECTRAL_<FLAG>=1 cargo run -p spectral-bench-accuracy -- oracle --dataset <path
   near-dup source agrees). Requires an embedding channel — a positioning
   decision that trades away the zero-embedding / least-expensive differentiation.
 
-## The single blocking dependency
+## Results — real-corpus run (2026-07-12)
 
-Every gated call above needs **LongMemEval-S on the machine** (or a
-representative real corpus). It is not present here. With it, the whole table
-resolves in a few deterministic oracle runs — no LLM spend for the recall@K
-gate; the actor-accuracy arm is the only paid step and is optional for the
-recall decision.
+Dataset obtained (HuggingFace `xiaowu0162/longmemeval` → `longmemeval_s`, 500
+questions, MIT, non-gated) and placed at
+`~/spectral-local-bench/longmemeval/longmemeval_s.json`. Tier-0 oracle,
+zero-LLM/$0, release build, per-question shape routing (published config).
+Metric = answer-**session** recall@40 (sess-rec) and answer-**key** recall
+(key-rec).
+
+| Arm | Category | n | sess-rec@40 | key-rec | rank1 | verdict |
+|---|---|---|---|---|---|---|
+| baseline | multi-session | 30 | **98.3%** | 48.6% | 1.6 | — |
+| +number-words | multi-session | 30 | 98.3% | 48.6% | 1.6 | **null** (inert; no numbers in these queries) |
+| +fusion | multi-session | 30 | 98.3% | 48.4% | 1.6 | **null** (no lift; noise) |
+| baseline | temporal-reasoning | 25 | **100.0%** | 52.7% | 1.4 | — |
+| +number-words | temporal-reasoning | 25 | 99.3% | 52.8% | 1.4 | **REGRESSION** −0.7% sess-rec |
+
+**Resolutions (both stay default-OFF — now with real evidence, not just discipline):**
+- **Fusion → keep OFF.** Zero recall@40 lift on real multi-session data. Confirms the synthetic analysis exactly: retrieval already surfaces answer sessions at **98–100% at K=40**, so a tight-k *reordering* lever has no headroom. Its second FTS index would be pure cost.
+- **Number-words → keep OFF.** Not merely neutral — it **regressed** temporal sess-rec 100.0% → 99.3% (the OR-expansion diluted the candidate pool and dropped one answer session), with no compensating key-rec gain. Defaulting it ON would have hurt real recall. The measure-before-default discipline caught a real regression.
+
+**The headline finding:** at LongMemEval's K=40, baseline retrieval recall is
+**already ~98–100%** (answer sessions). This is the empirical confirmation, on
+the real corpus, of the earlier analysis — recall@K is near-ceiling, so the
+levers that reorder within the pool cannot move the number, and the remaining
+gap is **actor synthesis** (key-rec ~49–53% and the actor's use of context),
+not retrieval. Future recall-side effort has low ceiling; the leverage is
+actor-side. The default-path fixes shipped this arc (separator tokenization,
+recency correctness+safety) sit under these healthy baselines without regression.
