@@ -147,8 +147,10 @@ impl Judge for AnthropicJudge {
         let prompt = judge_prompt(question, predicted, ground_truth, category);
 
         let body = serde_json::json!({
+            // 512 truncated verbose/thinking-model judges (e.g. sonnet-5) mid-JSON,
+            // losing the closing brace -> parse failure -> false "incorrect".
             "model": self.model,
-            "max_tokens": 512,
+            "max_tokens": 2048,
             "messages": [{"role": "user", "content": prompt}]
         });
 
@@ -173,9 +175,9 @@ impl Judge for AnthropicJudge {
 
         let json: serde_json::Value = resp.json()?;
         let usage = extract_usage(&json);
-        let text = json["content"][0]["text"].as_str().ok_or_else(|| {
+        let text = crate::actor::extract_text(&json).ok_or_else(|| {
             anyhow::anyhow!(
-                "Judge response missing content[0].text: {}",
+                "Judge response missing a text block: {}",
                 serde_json::to_string(&json).unwrap_or_default()
             )
         })?;
