@@ -28,7 +28,9 @@ Spectral gives your agent two complementary memory systems behind a single
 ontology validation and multi-hop traversal, and a fingerprint store (SQLite +
 FTS5) for fast topical retrieval using deterministic SHA-256 fingerprints.
 The fingerprint approach is inspired by Shazam's audio matching. No embedding
-model required.
+model required. Full-text recall porter-stems by default, so plural and
+inflected queries match singular content ("doctors" → "doctor") — still
+deterministic, still zero tokens.
 
 The numbers: 6.8x faster than neural vector search (BGE-small-en-v1.5) on
 cold queries where the query must be encoded. Sub-millisecond recall on 1,000

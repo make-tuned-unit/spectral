@@ -90,6 +90,8 @@ fn open_existing_brain(brain_dir: &Path) -> Result<Brain> {
         enable_spectrogram: std::env::var("SPECTRAL_BENCH_SPECTROGRAM").is_ok(),
         entity_policy: EntityPolicy::Strict,
         sqlite_mmap_size: None,
+        fts_tokenizer: None,
+        read_only: false,
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: Some(TactConfig {

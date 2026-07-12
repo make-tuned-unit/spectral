@@ -229,6 +229,8 @@ pub async fn ingest_with(
         description: None,
         description_generated_at: None,
         content_hash: None, // Computed by store.write()
+        source_brain_id: None, // Stamped by Brain after write (signing)
+        signature: None,
     };
 
     let fingerprints = if signal_score >= config.signal_threshold {

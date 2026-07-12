@@ -2866,6 +2866,7 @@ name = "spectral-bench-real"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "rusqlite",
  "serde",
@@ -2874,6 +2875,7 @@ dependencies = [
  "spectral-core",
  "spectral-graph",
  "spectral-ingest",
+ "spectral-recognition",
  "tokio",
  "toml",
 ]

@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "spectral-audit"
 path = "src/bin/audit.rs"
 
+[[bin]]
+name = "desc_context"
+path = "src/bin/desc_context.rs"
+
 [dependencies]
 spectral-core = { path = "../spectral-core" }
 spectral-graph = { path = "../spectral-graph" }

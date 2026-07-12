@@ -19,10 +19,32 @@ path = "src/bin/phase0.rs"
 name = "coret_ablation"
 path = "src/bin/coret_ablation.rs"
 
+[[bin]]
+name = "poison_bench"
+path = "src/bin/poison_bench.rs"
+
+[[bin]]
+name = "recognition_bench"
+path = "src/bin/recognition_bench.rs"
+
+[[bin]]
+name = "recurrence_bench"
+path = "src/bin/recurrence_bench.rs"
+
+[[bin]]
+name = "recall_debug"
+path = "src/bin/recall_debug.rs"
+
+[[bin]]
+name = "anticipatory_bench"
+path = "src/bin/anticipatory_bench.rs"
+
 [dependencies]
+chrono = { workspace = true }
 spectral-core = { path = "../spectral-core" }
 spectral-graph = { path = "../spectral-graph" }
 spectral-ingest = { path = "../spectral-ingest", features = ["sqlite"] }
+spectral-recognition = { path = "../spectral-recognition" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

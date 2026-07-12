@@ -78,6 +78,31 @@ pub struct BrainConfig {
     /// - `Some(0)`: disable mmap
     /// - `Some(n)`: use exactly *n* bytes
     pub sqlite_mmap_size: Option<u64>,
+    /// FTS5 tokenizer for the memories full-text index. See
+    /// [`spectral_ingest::sqlite_store::SqliteStoreConfig::fts_tokenizer`].
+    ///
+    /// - `None` (default): `SPECTRAL_FTS_TOKENIZER` env var if set, else
+    ///   `"porter unicode61"` — deterministic stemming that bridges
+    ///   plural/inflected queries to singular content at zero runtime cost.
+    /// - `Some("unicode61")`: explicit no-stemming tokenizer.
+    ///
+    /// A brain built with a different tokenizer is migrated (one-time FTS
+    /// index rebuild) on open.
+    pub fts_tokenizer: Option<String>,
+    /// Open the brain strictly read-only. Default false.
+    ///
+    /// Read-only open **never mutates the brain**: no directory or identity
+    /// creation, no schema DDL, no migrations, no FTS tokenizer rebuild, no
+    /// fingerprint backfill. Recall paths skip their ambient writes
+    /// (auto-reinforce, retrieval-event logging, recognition enroll), and
+    /// write APIs return [`Error::ReadOnly`]. Underlying stores are opened
+    /// with driver-level read-only flags as defense in depth.
+    ///
+    /// This is the required mode for federated read-time fan-out over a
+    /// brain you don't own: without it, merely opening a peer's brain runs
+    /// migrations against it and every recall bumps its signal scores and
+    /// logs your query metadata into its store.
+    pub read_only: bool,
     /// Wing name for activity episodes. Default "activity".
     pub activity_wing: String,
     /// Redaction policy applied to activity episodes before storage.
@@ -89,6 +114,32 @@ pub struct BrainConfig {
     /// are still derived from `BrainConfig::wing_rules`/`hall_rules`
     /// so consumers don't have to duplicate them.
     pub tact_config: Option<TactConfig>,
+}
+
+/// Outcome of [`Brain::forget`]: the per-substrate SQLite deletion receipt,
+/// whether the recognition sidecar dropped the memory, and a verification
+/// probe confirming the content is no longer recall- or recognize-able.
+/// "Verified forgetting" is the receipt plus the probe: deletion that is
+/// checked across substrates rather than assumed from a single boolean.
+#[derive(Debug, Clone)]
+pub struct ForgetReport {
+    /// Per-substrate SQLite deletion counts.
+    pub store: spectral_ingest::ForgetReceipt,
+    /// Whether the recognition sidecar had the memory enrolled and removed it.
+    pub recognition_removed: bool,
+    /// Post-delete probe: `recall_topk_fts` for the deleted content returned
+    /// zero hits carrying the forgotten key. `true` = verified gone.
+    pub recall_clear: bool,
+    /// Post-delete probe: `recognize` on the deleted content did not return a
+    /// `Recognized` verdict naming the forgotten memory. `true` = verified gone.
+    pub recognize_clear: bool,
+}
+
+impl ForgetReport {
+    /// The memory existed and every substrate + probe confirms it is gone.
+    pub fn fully_forgotten(&self) -> bool {
+        self.store.existed && self.recall_clear && self.recognize_clear
+    }
 }
 
 /// Result of a successful assertion.
@@ -171,6 +222,24 @@ pub struct RememberResult {
     pub device_id: Option<DeviceId>,
     pub confidence: f64,
     pub write_outcome: spectral_ingest::WriteOutcome,
+    /// Set when the written content re-encountered an existing memory
+    /// (ambient recurrence feedback). The prior memory has been reinforced,
+    /// and consumers (e.g. a Librarian) can use this to consolidate the
+    /// near-duplicate. `None` when recurrence feedback is off or no prior
+    /// match crossed the familiarity threshold.
+    pub recurrence: Option<Recurrence>,
+}
+
+/// A detected content recurrence: the incoming memory re-encountered a prior
+/// memory (recognition, not exact hash — this catches paraphrase/degraded
+/// restatements). Recurrence is an ambient importance signal — the system
+/// strengthens what keeps coming up, deterministically and without an LLM.
+#[derive(Debug, Clone)]
+pub struct Recurrence {
+    /// The prior memory this content re-encountered (strongest match).
+    pub matched_memory_id: String,
+    /// Recognition familiarity of the re-encounter, in [0, 1].
+    pub familiarity: f64,
 }
 
 /// Options for `Brain::ingest_text()`.
@@ -319,8 +388,17 @@ pub struct AaakResult {
 /// Configuration for [`Brain::recall_topk_fts`].
 #[derive(Debug, Clone)]
 pub struct RecallTopKConfig {
-    /// Number of FTS candidates to retrieve. Default 40.
+    /// Number of results to return. Default 40.
     pub k: usize,
+    /// Candidate-pool multiplier: fetch `k × fetch_mult` FTS candidates as
+    /// the re-ranking pool, then truncate to `k` after re-ranking. Default 3.
+    ///
+    /// Broad FTS matching (porter stemming) can bury true evidence below a
+    /// fixed bm25 LIMIT; a wider pool lets the deterministic re-ranker
+    /// (signal, recency, entity) recover it. Validated at 3 on the temporal
+    /// slice (+0.8pp session recall, ~+4% context tokens; 5 over-widens) —
+    /// see docs/internal/TIER1_PORTER_WIDEN.md. Set to 1 to disable widening.
+    pub fetch_mult: usize,
     /// Blend signal_score into FTS ranking. Default true.
     pub apply_signal_score_weighting: bool,
     /// Apply exponential recency decay. Default true.
@@ -353,6 +431,7 @@ impl Default for RecallTopKConfig {
     fn default() -> Self {
         Self {
             k: 40,
+            fetch_mult: 3,
             apply_signal_score_weighting: true,
             apply_recency_weighting: true,
             recency_half_life_days: 365.0,
@@ -396,6 +475,8 @@ pub struct AuditReport {
 ///     enable_spectrogram: false,
 ///     entity_policy: spectral_graph::brain::EntityPolicy::Strict,
 ///     sqlite_mmap_size: None,
+///     fts_tokenizer: None,
+///     read_only: false,
 ///     activity_wing: "activity".into(),
 ///     redaction_policy: None,
 ///     tact_config: None,
@@ -424,8 +505,27 @@ pub struct Brain {
     recognition: Mutex<
         spectral_recognition::RecognitionEngine<spectral_recognition::SqliteRecognitionStore>,
     >,
+    /// Opened with `read_only = true`: write APIs return [`Error::ReadOnly`]
+    /// and recall paths skip their ambient writes (auto-reinforce,
+    /// retrieval-event logging).
+    read_only: bool,
+    /// Ambient recurrence feedback: when new content re-encounters an existing
+    /// memory (recognition), reinforce that prior memory. Enabled via
+    /// `SPECTRAL_RECURRENCE_FEEDBACK=1`. Off by default (measure before
+    /// defaulting — the co-retrieval lesson).
+    recurrence_feedback: bool,
     rt: tokio::runtime::Runtime,
 }
+
+/// Minimum recognition familiarity for an incoming write to count as a
+/// recurrence of a prior memory (recurrence feedback). Calibrated for
+/// high-confidence re-encounters — restatements that reuse the salient
+/// specifics (the recognition strong regime), not loose paraphrases (its weak
+/// regime, which needs embeddings) — to avoid false reinforcement.
+const RECURRENCE_MIN_FAMILIARITY: f64 = 0.4;
+/// Reinforcement strength applied to a recurring prior memory. Bounded and
+/// small: recurrence nudges importance, it does not saturate it.
+const RECURRENCE_STRENGTH: f64 = 0.05;
 
 impl std::fmt::Debug for Brain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -471,19 +571,46 @@ impl Brain {
     /// backtrace produced by the diagnostic workflow (pending the
     /// Ubuntu run / Permagent-collaborator hand-off).
     pub fn open(config: BrainConfig) -> Result<Self, Error> {
-        std::fs::create_dir_all(&config.data_dir)?;
+        if config.read_only {
+            if !config.data_dir.is_dir() {
+                return Err(Error::Schema(format!(
+                    "read-only open requires an existing brain: {} not found",
+                    config.data_dir.display()
+                )));
+            }
+        } else {
+            std::fs::create_dir_all(&config.data_dir)?;
+        }
 
+        // `load_or_create` only writes when identity files are absent — a
+        // state a read-only open must reject rather than repair.
+        if config.read_only && !config.data_dir.join("brain.id").exists() {
+            return Err(Error::Schema(format!(
+                "read-only open requires an existing brain identity in {}",
+                config.data_dir.display()
+            )));
+        }
         let identity = BrainIdentity::load_or_create(&config.data_dir).map_err(Error::Core)?;
         let ontology_path = config.ontology_path.clone();
         let ontology = Ontology::load(&config.ontology_path)?;
-        let store = KuzuStore::open(&config.data_dir.join("graph.kz"))?;
+        let graph_path = config.data_dir.join("graph.kz");
+        let store = if config.read_only {
+            KuzuStore::open_read_only(&graph_path)?
+        } else {
+            KuzuStore::open(&graph_path)?
+        };
 
         let memory_db_path = config
             .memory_db_path
             .unwrap_or_else(|| config.data_dir.join("memory.db"));
         let sqlite_config = spectral_ingest::sqlite_store::SqliteStoreConfig {
             mmap_size: config.sqlite_mmap_size,
-            ..Default::default()
+            fts_tokenizer: config.fts_tokenizer.clone(),
+            read_only: config.read_only,
+            // Opt-in via SPECTRAL_FTS_FUSION (resolved inside the store); no
+            // BrainConfig field yet — keeps this an env-gated experimental lever
+            // like the stopword/anticipatory levers.
+            fts_fusion: false,
         };
         let memory_store: Box<dyn MemoryStore> = Box::new(
             SqliteStore::open_with_config(&memory_db_path, &sqlite_config)
@@ -533,16 +660,31 @@ impl Brain {
 
         // One-time backfill: fix legacy fingerprints with "unknown" time_delta_bucket (PR #65).
         // Idempotent — returns 0 on subsequent opens once all buckets are valid.
-        match rt.block_on(memory_store.backfill_fingerprint_time_buckets()) {
-            Ok(0) => {}
-            Ok(n) => tracing::info!(count = n, "backfilled legacy fingerprint time buckets"),
-            Err(e) => tracing::warn!("fingerprint backfill failed (non-fatal): {e}"),
+        // Skipped read-only: opening must not mutate the brain.
+        if !config.read_only {
+            match rt.block_on(memory_store.backfill_fingerprint_time_buckets()) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(count = n, "backfilled legacy fingerprint time buckets"),
+                Err(e) => tracing::warn!("fingerprint backfill failed (non-fatal): {e}"),
+            }
         }
 
         // Recognition engine: sidecar store next to the graph and memory DBs.
-        let recognition_store = spectral_recognition::SqliteRecognitionStore::open(
-            &config.data_dir.join("recognition.db"),
-        )
+        // Read-only mode opens an existing sidecar without DDL; a brain that
+        // predates the sidecar gets an empty in-memory index (recognize()
+        // returns Novel) rather than a file created in someone else's brain.
+        let recognition_db = config.data_dir.join("recognition.db");
+        let recognition_store = if config.read_only {
+            if recognition_db.exists() {
+                spectral_recognition::SqliteRecognitionStore::open_read_only(&recognition_db)
+            } else {
+                spectral_recognition::SqliteRecognitionStore::open(std::path::Path::new(
+                    ":memory:",
+                ))
+            }
+        } else {
+            spectral_recognition::SqliteRecognitionStore::open(&recognition_db)
+        }
         .map_err(|e| Error::Schema(format!("recognition store: {e}")))?;
         let recognition = Mutex::new(spectral_recognition::RecognitionEngine::new(
             recognition_store,
@@ -568,8 +710,27 @@ impl Brain {
                 .redaction_policy
                 .unwrap_or_else(|| Box::new(crate::activity::DefaultRedactionPolicy::default())),
             recognition,
+            read_only: config.read_only,
+            recurrence_feedback: std::env::var("SPECTRAL_RECURRENCE_FEEDBACK")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             rt,
         })
+    }
+
+    /// Whether this brain was opened read-only.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Guard for write APIs: returns [`Error::ReadOnly`] naming the blocked
+    /// operation when the brain was opened with `read_only = true`.
+    fn ensure_writable(&self, op: &'static str) -> Result<(), Error> {
+        if self.read_only {
+            Err(Error::ReadOnly(op))
+        } else {
+            Ok(())
+        }
     }
 
     /// Recognition: "have I encountered this before — and what happened
@@ -596,6 +757,44 @@ impl Brain {
         self.identity.brain_id()
     }
 
+    /// Returns this brain's public verifying key (for signature verification
+    /// by federated peers).
+    pub fn verifying_key(&self) -> &spectral_core::identity::VerifyingKey {
+        self.identity.verifying_key()
+    }
+
+    /// Verify a memory hit's signed provenance against a contributor's public
+    /// key. Returns `true` only if the hit carries a signature and
+    /// source-brain id, the key matches that id, and the signature is valid
+    /// over the hit's content hash, creation time, and visibility.
+    ///
+    /// `pubkey` must be resolved from the hit's `source_brain_id` out of band
+    /// (via the contributor grant set) — a `BrainId` cannot be inverted to
+    /// its key. Returns `false` for unsigned/legacy hits.
+    pub fn verify_hit(
+        hit: &spectral_ingest::MemoryHit,
+        pubkey: &spectral_core::identity::VerifyingKey,
+    ) -> bool {
+        let (Some(sbid_bytes), Some(sig_bytes), Some(created_at)) =
+            (hit.source_brain_id, hit.signature.as_deref(), hit.created_at.as_deref())
+        else {
+            return false;
+        };
+        let Ok(sig) = spectral_core::identity::Signature::from_slice(sig_bytes) else {
+            return false;
+        };
+        let source_id = BrainId::from_bytes(sbid_bytes);
+        let content_hash = blake3::hash(hit.content.as_bytes()).to_hex().to_string();
+        spectral_core::identity::verify_memory_signature(
+            &source_id,
+            pubkey,
+            &content_hash,
+            created_at,
+            &hit.visibility,
+            &sig,
+        )
+    }
+
     /// Returns the device ID associated with this brain instance.
     pub fn device_id(&self) -> &DeviceId {
         &self.device_id
@@ -619,6 +818,7 @@ impl Brain {
         confidence: f64,
         visibility: Visibility,
     ) -> Result<AssertResult, Error> {
+        self.ensure_writable("assert")?;
         let pred_def = self
             .ontology
             .predicates
@@ -670,6 +870,7 @@ impl Brain {
         confidence: f64,
         visibility: Visibility,
     ) -> Result<AssertResult, Error> {
+        self.ensure_writable("assert_typed")?;
         let (subject_type, subject_mention) = subject;
         let (object_type, object_mention) = object;
 
@@ -980,6 +1181,7 @@ impl Brain {
         content: &str,
         opts: RememberOpts,
     ) -> Result<RememberResult, Error> {
+        self.ensure_writable("remember_with")?;
         let memory_id = format!(
             "{:016x}",
             u64::from_be_bytes(
@@ -1021,6 +1223,64 @@ impl Brain {
                 .set_declarative_density(&result.memory.id, density),
         );
 
+        // Sign the contribution (best-effort — a signing failure degrades
+        // provenance but must not block the write). Signs over the STORED
+        // content hash, creation time, and visibility, so verification later
+        // recomputes the exact payload. Read the row back to get the values
+        // the store actually persisted (created_at default, cleaned content).
+        if let Ok(Some(stored)) = self
+            .rt
+            .block_on(self.memory_store.fetch_by_ids(std::slice::from_ref(&result.memory.id)))
+            .map(|v| v.into_iter().next())
+        {
+            if let (Some(content_hash), Some(created_at)) =
+                (stored.content_hash.as_deref(), stored.created_at.as_deref())
+            {
+                let sig = self
+                    .identity
+                    .sign_memory(content_hash, created_at, &stored.visibility);
+                let sbid = *self.identity.brain_id().as_bytes();
+                let _ = self.rt.block_on(self.memory_store.set_signature(
+                    &result.memory.id,
+                    &sbid,
+                    &sig.to_bytes(),
+                ));
+            }
+        }
+
+        // Ambient recurrence feedback: BEFORE enrolling the new memory, check
+        // whether its content re-encounters an EXISTING memory (recognition
+        // sees only priors — the new one isn't enrolled yet). If so, strengthen
+        // that prior (recurrence = importance) and surface the match so a
+        // consumer can consolidate the near-duplicate. Content-driven and
+        // deterministic — the opposite of the co-retrieval popularity signal.
+        // Only on genuinely new writes; a self-match is impossible pre-enroll.
+        let mut recurrence = None;
+        if self.recurrence_feedback
+            && matches!(result.write_outcome, spectral_ingest::WriteOutcome::Inserted)
+        {
+            let rec = self
+                .recognition
+                .lock()
+                .ok()
+                .and_then(|engine| engine.recognize(content).ok());
+            if let Some(rec) = rec {
+                if rec.familiarity >= RECURRENCE_MIN_FAMILIARITY {
+                    if let Some(top) = rec.traces.first() {
+                        if top.memory_id != result.memory.id {
+                            if let Ok(Some(prior)) = self.get_memory(&top.memory_id) {
+                                let _ = self.reinforce_by_id(&prior.key, RECURRENCE_STRENGTH);
+                            }
+                            recurrence = Some(Recurrence {
+                                matched_memory_id: top.memory_id.clone(),
+                                familiarity: rec.familiarity,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // Enroll in the recognition index (idempotent per memory id;
         // failures are non-fatal — recognition degrades, writes don't).
         if let Ok(mut engine) = self.recognition.lock() {
@@ -1031,7 +1291,8 @@ impl Brain {
 
         // Compute and store spectrogram if enabled
         if self.enable_spectrogram {
-            let context = AnalysisContext::default();
+            let context =
+                self.spectrogram_context(result.memory.wing.as_deref(), &result.memory.id);
             let fp = self.spectrogram_analyzer.analyze(&result.memory, &context);
             let peak_json = serde_json::to_string(&fp.peak_dimensions).unwrap_or_default();
             let _ = self.rt.block_on(self.memory_store.write_spectrogram(
@@ -1057,6 +1318,7 @@ impl Brain {
             device_id: result.memory.device_id.map(DeviceId::from_bytes),
             confidence: result.memory.confidence,
             write_outcome: result.write_outcome,
+            recurrence,
         })
     }
 
@@ -1181,16 +1443,7 @@ impl Brain {
 
         // Step 2: If TACT returned fewer than K, supplement with FTS
         if hits.len() < k {
-            let words: Vec<String> = query
-                .split_whitespace()
-                .filter(|w| w.len() > 1)
-                .map(|w| {
-                    w.chars()
-                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                        .collect::<String>()
-                })
-                .filter(|w| w.len() > 1)
-                .collect();
+            let words = fts_query_words(query);
 
             if !words.is_empty() {
                 let fts_hits = self.fts_search_direct(&words, k)?;
@@ -1227,35 +1480,29 @@ impl Brain {
 
     /// Top-K FTS retrieval with additive re-ranking signals. No LLM cost.
     ///
-    /// Retrieves `config.k` candidates via full-text search, then applies
-    /// configurable re-ranking (signal score weighting, recency decay,
-    /// entity clustering boost, context chain dedup). Returns results
-    /// sorted by final blended score.
+    /// Retrieves `config.k × config.fetch_mult` candidates via full-text
+    /// search, applies configurable re-ranking (signal score weighting,
+    /// recency decay, entity clustering boost, context chain dedup), and
+    /// returns the top `config.k` by final blended score. The widened fetch
+    /// pool lets re-ranking recover evidence that broad (porter-stemmed)
+    /// matching would otherwise bury below the bm25 LIMIT.
     pub fn recall_topk_fts(
         &self,
         query: &str,
         config: &RecallTopKConfig,
         visibility: Visibility,
     ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
-        // Sanitize: strip FTS5 special characters and short words
-        let words: Vec<String> = query
-            .split_whitespace()
-            .filter(|w| w.len() > 1)
-            .map(|w| {
-                w.chars()
-                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                    .collect::<String>()
-            })
-            .filter(|w| w.len() > 1)
-            .collect();
+        // Sanitize: strip possessives / FTS5 special characters / short words.
+        let words = fts_query_words(query);
 
         if words.is_empty() {
             return Ok(Vec::new());
         }
 
+        let fetch_k = config.k.saturating_mul(config.fetch_mult.max(1));
         let mut candidates = self
             .rt
-            .block_on(self.memory_store.fts_search(&words, config.k))
+            .block_on(self.memory_store.fts_search(&words, fetch_k))
             .map_err(|e| Error::Schema(e.to_string()))?;
 
         // Filter by visibility
@@ -1284,27 +1531,86 @@ impl Brain {
             None => spectral_cascade::RecognitionContext::empty(),
         };
         let co_boosts = crate::ranking::compute_co_retrieval_boosts(self, &candidates, 3);
-        let results = crate::ranking::apply_reranking_pipeline(
+        let mut results = crate::ranking::apply_reranking_pipeline(
             candidates,
             &reranking_config,
             &ctx,
             &co_boosts,
         );
+        // Truncate the widened re-rank pool back to the requested k.
+        results.truncate(config.k);
 
-        // Best-effort retrieval event logging
-        let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();
-        let event = spectral_ingest::RetrievalEvent {
-            query_hash: spectral_ingest::hash_query(query),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            memory_ids_json: serde_json::to_string(&memory_ids).unwrap_or_default(),
-            method: "topk_fts".into(),
-            wing: None,
-            question_type: None,
-            session_id: None,
-        };
-        let _ = self.log_retrieval_event(&event);
+        // Best-effort retrieval event logging. Skipped read-only: recall
+        // over a brain you don't own must not write your query metadata
+        // into its store.
+        if !self.read_only {
+            let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();
+            let event = spectral_ingest::RetrievalEvent {
+                query_hash: spectral_ingest::hash_query(query),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                memory_ids_json: serde_json::to_string(&memory_ids).unwrap_or_default(),
+                method: "topk_fts".into(),
+                wing: None,
+                question_type: None,
+                session_id: None,
+            };
+            let _ = self.log_retrieval_event(&event);
+        }
+
+        // Anticipatory augmentation (opt-in, `SPECTRAL_ANTICIPATORY_RECALL=1`).
+        // Surface memories the query did NOT match but that the top hits are
+        // specifically associated with (lift over co-retrieval history) — "what
+        // you need before you ask". Appended AFTER the k query-matches (they
+        // supplement, never displace) and AFTER event logging (anticipated
+        // memories aren't logged as retrieved, avoiding a feedback runaway).
+        // Visibility-filtered like everything else.
+        if !results.is_empty() && fts_anticipatory_enabled() {
+            self.append_anticipated(&mut results, visibility);
+        }
 
         Ok(results)
+    }
+
+    /// Append lift-associated memories (anticipatory recall) to a result set,
+    /// skipping ones already present, respecting `visibility`, capped small.
+    fn append_anticipated(
+        &self,
+        results: &mut Vec<spectral_ingest::MemoryHit>,
+        visibility: Visibility,
+    ) {
+        const MAX_ANTICIPATED: usize = 3;
+        const MIN_LIFT: f64 = 1.0; // above-baseline association only
+        const SEED_HITS: usize = 3;
+
+        let mut present: std::collections::HashSet<String> =
+            results.iter().map(|h| h.id.clone()).collect();
+        let seeds: Vec<String> = results.iter().take(SEED_HITS).map(|h| h.id.clone()).collect();
+        let mut added = 0usize;
+        for seed in seeds {
+            if added >= MAX_ANTICIPATED {
+                break;
+            }
+            let recs = self
+                .rt
+                .block_on(self.memory_store.recommend_by_lift(&seed, MAX_ANTICIPATED, 2))
+                .unwrap_or_default();
+            for r in recs {
+                if added >= MAX_ANTICIPATED {
+                    break;
+                }
+                if r.lift < MIN_LIFT || present.contains(&r.memory_id) {
+                    continue;
+                }
+                if let Ok(Some(m)) = self.get_memory(&r.memory_id) {
+                    if !str_to_vis(&m.visibility).allows(visibility) {
+                        continue;
+                    }
+                    present.insert(r.memory_id.clone());
+                    results.push(memory_to_hit(m));
+                    added += 1;
+                }
+            }
+        }
     }
 
     /// Run the integrated retrieval pipeline with ambient boost.
@@ -1432,6 +1738,7 @@ impl Brain {
         content: &str,
         visibility: Visibility,
     ) -> Result<IngestResult, Error> {
+        self.ensure_writable("ingest_document")?;
         let document_id = *blake3::hash(content.as_bytes()).as_bytes();
 
         self.store
@@ -1498,6 +1805,7 @@ impl Brain {
 
     /// Set the description field on a memory and update description_generated_at to now.
     pub fn set_description(&self, id: &str, description: &str) -> Result<(), Error> {
+        self.ensure_writable("set_description")?;
         self.rt
             .block_on(self.memory_store.set_description(id, description))
             .map_err(|e| Error::Schema(e.to_string()))
@@ -1509,6 +1817,7 @@ impl Brain {
         entity_id: &EntityId,
         description: &str,
     ) -> Result<(), Error> {
+        self.ensure_writable("set_entity_description")?;
         self.store.set_entity_description(entity_id, description)
     }
 
@@ -1528,12 +1837,87 @@ impl Brain {
         target_key: &str,
         opts: &spectral_ingest::ConsolidateOpts,
     ) -> Result<spectral_ingest::ConsolidationResult, Error> {
+        self.ensure_writable("consolidate_into")?;
         self.rt
             .block_on(
                 self.memory_store
                     .consolidate_into(source_keys, target_key, opts),
             )
             .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Hard-delete a memory by key across every substrate, then verify it is
+    /// gone — the "verified forgetting" / right-to-be-forgotten primitive.
+    ///
+    /// Unlike [`consolidate_into`](Self::consolidate_into) (which only hides a
+    /// source from two read paths while the row and all its fingerprints,
+    /// spectrograms, and recognition features persist), this removes:
+    /// the `memories` row and its FTS shadow; constellation fingerprints;
+    /// spectrogram; annotations; consolidation edges; co-retrieval pairs;
+    /// retrieval-event references; and the recognition-sidecar pair/gram
+    /// index. It then re-probes recall and recognition for the deleted
+    /// content and reports whether both are clear.
+    ///
+    /// Graph triples (from `assert`/`ingest_*`) are a separate provenance
+    /// substrate keyed by entity/document, not by memory key, and are not
+    /// touched here.
+    ///
+    /// Returns a [`ForgetReport`]; `report.store.existed == false` means no
+    /// such memory. Errors only on store failure.
+    pub fn forget(&self, key: &str) -> Result<ForgetReport, Error> {
+        self.ensure_writable("forget")?;
+
+        // Capture the content before deletion so the verification probe has
+        // something to search for; also gives us the id for recognition.
+        let memory_id = format!(
+            "{:016x}",
+            u64::from_be_bytes(
+                blake3::hash(key.as_bytes()).as_bytes()[..8]
+                    .try_into()
+                    .unwrap()
+            )
+        );
+        let content = self
+            .get_memory(&memory_id)?
+            .map(|m| m.content)
+            .unwrap_or_default();
+
+        let store = self
+            .rt
+            .block_on(self.memory_store.delete_memory_by_key(key))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
+        // Recognition sidecar is a separate DB with no FK to memories.
+        let recognition_removed = match self.recognition.lock() {
+            Ok(mut engine) => engine.forget(&memory_id).unwrap_or(false),
+            Err(_) => false,
+        };
+
+        // Verification probe. If the memory never existed, treat probes as
+        // vacuously clear so `fully_forgotten()` keys off `existed`.
+        let (recall_clear, recognize_clear) = if !store.existed || content.is_empty() {
+            (true, true)
+        } else {
+            let recall_clear = self
+                .recall_topk_fts(&content, &RecallTopKConfig::default(), Visibility::Private)
+                .map(|hits| !hits.iter().any(|h| h.key == key))
+                .unwrap_or(true);
+            let recognize_clear = match self.recognize(&content) {
+                Ok(r) => !matches!(
+                    r.verdict,
+                    spectral_recognition::Verdict::Recognized { memory_id: ref mid } if *mid == memory_id
+                ),
+                Err(_) => true,
+            };
+            (recall_clear, recognize_clear)
+        };
+
+        Ok(ForgetReport {
+            store,
+            recognition_removed,
+            recall_clear,
+            recognize_clear,
+        })
     }
 
     /// List consolidation edges, optionally filtered to a specific target.
@@ -1564,9 +1948,32 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
+    /// Anticipatory recall: recommend memories associated with `memory_id`,
+    /// ranked by **lift** (context-specific association) rather than raw
+    /// co-retrieval count. This is the ambient read-time signal — surfacing
+    /// the memories the user's current context is *specifically* associated
+    /// with, deterministically and with no LLM. Lift suppresses
+    /// globally-popular memories (the bias that sank raw co-retrieval), the
+    /// same way recommender systems avoid recommending bestsellers to everyone.
+    /// `min_co_count` filters low-evidence pairs (2 is a sensible floor).
+    pub fn recommend(
+        &self,
+        memory_id: &str,
+        limit: usize,
+        min_co_count: u64,
+    ) -> Result<Vec<spectral_ingest::RelatedMemory>, Error> {
+        self.rt
+            .block_on(
+                self.memory_store
+                    .recommend_by_lift(memory_id, limit, min_co_count),
+            )
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// Rebuild the co_retrieval_pairs index from retrieval_events data.
     /// Returns the number of pairs written.
     pub fn rebuild_co_retrieval_index(&self) -> Result<usize, Error> {
+        self.ensure_writable("rebuild_co_retrieval_index")?;
         self.rt
             .block_on(self.memory_store.rebuild_co_retrieval_index())
             .map_err(|e| Error::Schema(e.to_string()))
@@ -1575,6 +1982,7 @@ impl Brain {
     /// Backfill content_hash for all rows with NULL content_hash.
     /// Returns count of rows updated. Idempotent — safe to re-run.
     pub fn backfill_content_hashes(&self) -> Result<usize, Error> {
+        self.ensure_writable("backfill_content_hashes")?;
         self.rt
             .block_on(self.memory_store.backfill_content_hashes())
             .map_err(|e| Error::Schema(e.to_string()))
@@ -1658,9 +2066,11 @@ impl Brain {
                     description: None,
                     description_generated_at: None,
                     content_hash: None,
+                    source_brain_id: None,
+                    signature: None,
                 };
-                self.spectrogram_analyzer
-                    .analyze(&mem, &AnalysisContext::default())
+                let context = self.spectrogram_context(mem.wing.as_deref(), &mem.id);
+                self.spectrogram_analyzer.analyze(&mem, &context)
             }
         };
 
@@ -1724,6 +2134,8 @@ impl Brain {
                         episode_id: mem.episode_id.clone(),
                         declarative_density: mem.declarative_density,
                         description: mem.description.clone(),
+                        source_brain_id: None,
+                        signature: None,
                     },
                     resonance_score: rmatch.resonance_score,
                     matched_dimensions: rmatch.matched_dimensions.clone(),
@@ -1740,6 +2152,7 @@ impl Brain {
     /// Compute and store spectrograms for memories that don't have one.
     /// Returns count of spectrograms generated. Idempotent.
     pub fn backfill_spectrograms(&self) -> Result<usize, Error> {
+        self.ensure_writable("backfill_spectrograms")?;
         let mut total = 0;
         loop {
             let ids = self
@@ -1757,7 +2170,7 @@ impl Brain {
                 .map_err(|e| Error::Schema(e.to_string()))?;
 
             for mem in &memories {
-                let context = AnalysisContext::default();
+                let context = self.spectrogram_context(mem.wing.as_deref(), &mem.id);
                 let fp = self.spectrogram_analyzer.analyze(mem, &context);
                 let peak_json = serde_json::to_string(&fp.peak_dimensions).unwrap_or_default();
                 self.rt
@@ -1782,6 +2195,7 @@ impl Brain {
     /// Backfill declarative_density for memories that don't have one.
     /// Computes density from content and stores the result. Returns count updated.
     pub fn backfill_declarative_density(&self) -> Result<usize, Error> {
+        self.ensure_writable("backfill_declarative_density")?;
         // Fetch memories with NULL declarative_density in batches
         let mut total = 0;
         loop {
@@ -1819,6 +2233,7 @@ impl Brain {
     /// Recomputes bucket from anchor/target memory created_at timestamps and
     /// updates the fingerprint hash to match. Returns count of updated rows.
     pub fn backfill_fingerprint_time_buckets(&self) -> Result<usize, Error> {
+        self.ensure_writable("backfill_fingerprint_time_buckets")?;
         self.rt
             .block_on(self.memory_store.backfill_fingerprint_time_buckets())
             .map_err(|e| Error::Schema(e.to_string()))
@@ -1830,6 +2245,7 @@ impl Brain {
     /// `last_reinforced_at` to now. This resets the decay clock for those
     /// memories, causing them to rank higher in future recalls.
     pub fn reinforce(&self, opts: ReinforceOpts) -> Result<ReinforceResult, Error> {
+        self.ensure_writable("reinforce")?;
         let mut memories_reinforced = 0;
         let mut memories_not_found = Vec::new();
 
@@ -1876,6 +2292,7 @@ impl Brain {
     ///
     /// Requires a configured `LlmClient`.
     pub fn ingest_text(&self, text: &str, opts: IngestTextOpts) -> Result<IngestTextResult, Error> {
+        self.ensure_writable("ingest_text")?;
         let llm = self.llm_client.as_ref().ok_or(Error::MissingLlmClient)?;
 
         // Build prompt with ontology predicates
@@ -1987,6 +2404,7 @@ impl Brain {
         &self,
         episodes: &[crate::activity::ActivityEpisode],
     ) -> Result<crate::activity::IngestActivityStats, Error> {
+        self.ensure_writable("ingest_activity")?;
         use crate::activity::IngestActivityStats;
 
         let mut stats = IngestActivityStats {
@@ -2042,6 +2460,8 @@ impl Brain {
                 description: None,
                 description_generated_at: None,
                 content_hash: None, // Computed by store.write()
+                source_brain_id: None,
+                signature: None,
             };
 
             let _outcome = self
@@ -2152,6 +2572,7 @@ impl Brain {
 
     /// Prune activity episodes older than the cutoff. Returns count pruned.
     pub fn prune_activity_older_than(&self, cutoff: DateTime<Utc>) -> Result<usize, Error> {
+        self.ensure_writable("prune_activity_older_than")?;
         let before = cutoff.to_rfc3339();
         self.rt
             .block_on(
@@ -2164,6 +2585,7 @@ impl Brain {
     /// Keep only the most recent `per_bundle` activity episodes per bundle_id.
     /// Returns count pruned.
     pub fn prune_activity_keep_recent(&self, per_bundle: usize) -> Result<usize, Error> {
+        self.ensure_writable("prune_activity_keep_recent")?;
         self.rt
             .block_on(
                 self.memory_store
@@ -2217,6 +2639,7 @@ impl Brain {
         memory_id: &str,
         input: spectral_ingest::AnnotationInput,
     ) -> Result<spectral_ingest::MemoryAnnotation, Error> {
+        self.ensure_writable("annotate")?;
         let annotation = spectral_ingest::MemoryAnnotation {
             id: format!(
                 "ann-{:016x}",
@@ -2265,6 +2688,7 @@ impl Brain {
         memory_id: &str,
         tier: spectral_ingest::CompactionTier,
     ) -> Result<(), Error> {
+        self.ensure_writable("set_compaction_tier")?;
         self.rt
             .block_on(self.memory_store.set_compaction_tier(memory_id, tier))
             .map_err(|e| Error::Schema(e.to_string()))
@@ -2288,6 +2712,45 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
+    /// Build the novelty-analysis context for a memory: the concatenated
+    /// content of *other* memories in the same wing. Without this corpus the
+    /// novelty dimension degenerates to 1.0 for every memory — the measured
+    /// failure in docs/internal/SPECTROGRAM_AUDIT.md ("novelty 1.0 for
+    /// 497/497"). The corpus is capped to bound ingest cost on large wings;
+    /// `list_wing_memories` returns high-signal-first, so the cap keeps the
+    /// most representative content.
+    fn spectrogram_context(&self, wing: Option<&str>, exclude_id: &str) -> AnalysisContext {
+        const MAX_CORPUS_CHARS: usize = 65_536;
+        const MAX_CORPUS_MEMORIES: usize = 256;
+        let Some(wing) = wing else {
+            return AnalysisContext::default();
+        };
+        // wing_search is bounded (top-signal N) and LRU-cached, so ingest
+        // cost stays flat on large wings — unlike list_wing_memories, which
+        // would materialize the whole wing per remember().
+        let mems = self
+            .rt
+            .block_on(
+                self.memory_store
+                    .wing_search(wing, &[], MAX_CORPUS_MEMORIES),
+            )
+            .unwrap_or_default();
+        let mut corpus = String::new();
+        for m in &mems {
+            if m.id == exclude_id {
+                continue;
+            }
+            if corpus.len() + m.content.len() + 1 > MAX_CORPUS_CHARS {
+                break;
+            }
+            corpus.push_str(&m.content);
+            corpus.push(' ');
+        }
+        AnalysisContext {
+            wing_corpus: corpus,
+        }
+    }
+
     /// Audit a single memory's spectrogram with full introspection.
     pub fn audit_spectrogram(&self, memory_id: &str) -> Result<AuditReport, Error> {
         let mems = self
@@ -2300,7 +2763,7 @@ impl Brain {
             .find(|m| m.id == memory_id)
             .ok_or_else(|| Error::Schema(format!("memory not found: {memory_id}")))?;
 
-        let context = AnalysisContext::default();
+        let context = self.spectrogram_context(mem.wing.as_deref(), &mem.id);
         let (fingerprint, introspection) = self
             .spectrogram_analyzer
             .analyze_with_introspection(mem, &context);
@@ -2313,11 +2776,10 @@ impl Brain {
             fingerprint,
             introspection,
             signal_score: mem.signal_score,
-            created_at: mem.created_at.as_deref().and_then(|s| {
-                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                    .ok()
-                    .map(|dt| dt.and_utc())
-            }),
+            created_at: mem
+                .created_at
+                .as_deref()
+                .and_then(crate::ranking::parse_created_at),
         })
     }
 
@@ -2412,7 +2874,240 @@ fn visibility_to_str(v: Visibility) -> String {
     .to_string()
 }
 
-fn str_to_vis(s: &str) -> Visibility {
+/// Conservative FTS stopword set: pure function words with negligible
+/// content-homograph risk. Deliberately EXCLUDES ambiguous tokens that are
+/// often content in personal memory (e.g. "it"/"IT", "us"/"US", "can",
+/// "may", "will", "march", "in", "on", "at") — dropping those would lose real
+/// matches. These only ever pollute the candidate pool (a turn matching only
+/// "is" has nothing to do with the query).
+const FTS_STOPWORDS: &[&str] = &[
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "am",
+    "of", "to", "and", "or", "what", "which", "how", "did", "does", "do",
+    "that", "this", "these", "those", "for", "with", "there", "here",
+];
+
+fn is_fts_stopword(w: &str) -> bool {
+    FTS_STOPWORDS.contains(&w)
+}
+
+/// Whether to drop stopwords from FTS queries (`SPECTRAL_FTS_STOPWORDS=1`).
+/// Off by default — measure on the real bench before defaulting (the porter /
+/// co-retrieval discipline). The possessive fix below is unconditional (a
+/// clear bug fix, no downside); stopword removal is a behavior change with
+/// tradeoffs, so it is gated.
+fn fts_stopwords_enabled() -> bool {
+    std::env::var("SPECTRAL_FTS_STOPWORDS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Whether recall should append anticipatory (lift-associated) memories to its
+/// results (`SPECTRAL_ANTICIPATORY_RECALL=1`). Off by default — it only helps
+/// once real co-retrieval history exists, and it changes the result contract
+/// (a few extras beyond the requested k), so it is opt-in per the same
+/// measure-before-defaulting discipline as the stopword lever.
+fn fts_anticipatory_enabled() -> bool {
+    std::env::var("SPECTRAL_ANTICIPATORY_RECALL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Project a stored [`Memory`] into a [`MemoryHit`] for anticipatory
+/// augmentation. `hits = 0` marks it as not query-matched (surfaced by
+/// association, not keyword overlap) so a consumer can distinguish it.
+fn memory_to_hit(m: spectral_ingest::Memory) -> spectral_ingest::MemoryHit {
+    spectral_ingest::MemoryHit {
+        id: m.id,
+        key: m.key,
+        content: m.content,
+        wing: m.wing,
+        hall: m.hall,
+        signal_score: m.signal_score,
+        visibility: m.visibility,
+        hits: 0,
+        source: m.source,
+        device_id: m.device_id,
+        confidence: m.confidence,
+        created_at: m.created_at,
+        last_reinforced_at: m.last_reinforced_at,
+        episode_id: m.episode_id,
+        declarative_density: m.declarative_density,
+        description: m.description,
+        source_brain_id: m.source_brain_id,
+        signature: m.signature,
+    }
+}
+
+/// Sanitize a natural-language query into FTS search terms. Reads the
+/// stopword flag; see [`fts_query_words_opts`]. Applies number-word bridging
+/// when `SPECTRAL_NUMBER_NORMALIZE` is set.
+pub(crate) fn fts_query_words(query: &str) -> Vec<String> {
+    let mut words = fts_query_words_opts(query, fts_stopwords_enabled());
+    if number_normalize_enabled() {
+        expand_number_words(query, &mut words);
+    }
+    expand_aliases(&mut words, query_aliases());
+    words
+}
+
+/// Consumer-curated query alias/synonym table, loaded once from the JSON file at
+/// `SPECTRAL_QUERY_ALIASES` (`{"term": ["expansion", ...], ...}`); empty (a
+/// no-op) if the var is unset or the file is unreadable. This is the deterministic
+/// answer to the semantic-bridging gap that pure lexical matching cannot close
+/// (`CEO`↔`chief executive`, `k8s`↔`kubernetes`): the near-duplicate literature
+/// endorses exactly ONE synonym approach — a **controlled vocabulary** the
+/// consumer owns, not a general thesaurus (which harms precision). Spectral
+/// supplies the mechanism; Permagent supplies the (bounded, domain) table.
+fn query_aliases() -> &'static std::collections::HashMap<String, Vec<String>> {
+    static QUERY_ALIASES: std::sync::OnceLock<std::collections::HashMap<String, Vec<String>>> =
+        std::sync::OnceLock::new();
+    QUERY_ALIASES.get_or_init(|| {
+        std::env::var("SPECTRAL_QUERY_ALIASES")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    })
+}
+
+/// Expand query terms with consumer-curated aliases: for each term matching an
+/// alias key (case-insensitive), append the alias's expansion terms, each
+/// re-tokenized into individual FTS terms (so multi-word expansions like
+/// `"chief executive"` become `chief`, `executive`). Additive recall expansion;
+/// the re-ranker handles precision. No-op on an empty table.
+fn expand_aliases(
+    words: &mut Vec<String>,
+    aliases: &std::collections::HashMap<String, Vec<String>>,
+) {
+    if aliases.is_empty() {
+        return;
+    }
+    let mut additions: Vec<String> = Vec::new();
+    for w in words.iter() {
+        if let Some(expansions) = aliases.get(&w.to_lowercase()) {
+            for exp in expansions {
+                for t in exp.split(|c: char| !c.is_alphanumeric()) {
+                    if t.len() > 1
+                        && !words.iter().any(|x| x.eq_ignore_ascii_case(t))
+                        && !additions.iter().any(|x| x.eq_ignore_ascii_case(t))
+                    {
+                        additions.push(t.to_string());
+                    }
+                }
+            }
+        }
+    }
+    words.extend(additions);
+}
+
+/// Bidirectional digit ↔ word pairs for conservative number bridging. Deliberately
+/// a **closed, unambiguous** set — cardinals 2–12 only. `one`/`zero` are excluded
+/// (article / rare) and words like `second`/`quarter`/`half` are excluded because
+/// they are common non-numeric content (time unit, fraction), the same homograph
+/// discipline as the stopword set. Number words are universal English, not a
+/// domain vocabulary, so this is safe where a general synonym table would not be.
+const NUMBER_PAIRS: &[(&str, &str)] = &[
+    ("2", "two"),
+    ("3", "three"),
+    ("4", "four"),
+    ("5", "five"),
+    ("6", "six"),
+    ("7", "seven"),
+    ("8", "eight"),
+    ("9", "nine"),
+    ("10", "ten"),
+    ("11", "eleven"),
+    ("12", "twelve"),
+];
+
+/// Whether to bridge digit/number-word query terms (`SPECTRAL_NUMBER_NORMALIZE=1`).
+/// Off by default — measure on the real bench before defaulting, per the
+/// porter/stopword discipline. Directly targets LongMemEval's counting/number
+/// category: `three dogs` and `3 dogs` should retrieve each other.
+fn number_normalize_enabled() -> bool {
+    std::env::var("SPECTRAL_NUMBER_NORMALIZE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Ensure both surface forms of any number in the query are present as MATCH
+/// terms. Scans the **raw** query (not the length-filtered word list) because a
+/// single digit like `3` is dropped by the `len > 1` filter before it can
+/// bridge; both forms are then appended (bypassing that filter, since `3` is a
+/// valid FTS token). Additive recall expansion; the re-ranker handles precision.
+fn expand_number_words(raw_query: &str, words: &mut Vec<String>) {
+    let ensure = |words: &mut Vec<String>, term: &str| {
+        if !words.iter().any(|x| x.eq_ignore_ascii_case(term)) {
+            words.push(term.to_string());
+        }
+    };
+    for tok in raw_query.split(|c: char| !c.is_alphanumeric()) {
+        if tok.is_empty() {
+            continue;
+        }
+        let lt = tok.to_lowercase();
+        for (digit, word) in NUMBER_PAIRS {
+            if lt == *digit || lt == *word {
+                ensure(words, digit);
+                ensure(words, word);
+            }
+        }
+    }
+}
+
+/// Sanitize a query into FTS terms.
+///
+/// **Splits on the characters FTS5/unicode61 treats as token separators**
+/// (everything except alphanumerics and the intra-token `-` / `_` / apostrophe),
+/// so the query is tokenized the same way the stored content was. The previous
+/// version *deleted* those characters, which silently **merged** adjacent tokens
+/// and dropped the answer from the candidate pool entirely: `alice@acme.io`
+/// became `aliceacmeio` (matches nothing), `and/or` became `andor`, and — the
+/// original symptom — the possessive `Marcus's` became `Marcuss`. Splitting
+/// fixes the whole class; the possessive is then just a trailing one-char token.
+/// A trailing possessive `'s` (ASCII or Unicode apostrophe) is still stripped so
+/// `Marcus's` → `Marcus` matches the entity `Marcus`. Words shorter than two
+/// characters are dropped.
+///
+/// When `drop_stopwords`, also removes conservative function words
+/// ([`FTS_STOPWORDS`]) that only pollute the pool (a turn matching solely on
+/// "is" is unrelated to the query). Guard: if that would empty the query, the
+/// unfiltered words are kept so an all-function-word query still recalls.
+pub(crate) fn fts_query_words_opts(query: &str, drop_stopwords: bool) -> Vec<String> {
+    let words: Vec<String> = query
+        .split(|c: char| {
+            !(c.is_alphanumeric() || c == '_' || c == '-' || c == '\'' || c == '\u{2019}')
+        })
+        .map(|w| {
+            // Strip a trailing possessive: "Marcus's" / "Marcus’s" -> "Marcus".
+            let base = w
+                .strip_suffix("'s")
+                .or_else(|| w.strip_suffix("\u{2019}s"))
+                .unwrap_or(w);
+            // Trim apostrophes stranded at token edges by the split.
+            base.trim_matches(|c: char| c == '\'' || c == '\u{2019}')
+                .to_string()
+        })
+        .filter(|w| w.len() > 1)
+        .collect();
+
+    if !drop_stopwords {
+        return words;
+    }
+    let filtered: Vec<String> = words
+        .iter()
+        .filter(|w| !is_fts_stopword(&w.to_lowercase()))
+        .cloned()
+        .collect();
+    // Fallback: never let stopword removal empty a query.
+    if filtered.is_empty() {
+        words
+    } else {
+        filtered
+    }
+}
+
+pub(crate) fn str_to_vis(s: &str) -> Visibility {
     match s {
         "team" => Visibility::Team,
         "org" => Visibility::Org,
@@ -2435,11 +3130,7 @@ fn decayed_signal_score(
     let last_touch = last_reinforced_at
         .as_deref()
         .or(created_at.as_deref())
-        .and_then(|s| {
-            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                .ok()
-                .map(|dt| dt.and_utc())
-        });
+        .and_then(crate::ranking::parse_created_at);
 
     let last_touch = match last_touch {
         Some(t) => t,
@@ -2497,6 +3188,110 @@ fn row_to_fingerprint(
 }
 
 #[cfg(test)]
+mod fts_query_words_tests {
+    use super::*;
+
+    #[test]
+    fn strips_possessive_ascii_and_unicode() {
+        assert_eq!(fts_query_words_opts("Marcus's title", false), vec!["Marcus", "title"]);
+        assert_eq!(fts_query_words_opts("Marcus\u{2019}s title", false), vec!["Marcus", "title"]);
+    }
+
+    #[test]
+    fn splits_on_separators_instead_of_merging() {
+        // Regression: separators were deleted, merging adjacent tokens so the
+        // query never matched the content-tokenized form. They must SPLIT.
+        assert_eq!(
+            fts_query_words_opts("alice@acme.io", false),
+            vec!["alice", "acme", "io"],
+            "@ and . must split, not merge into 'aliceacmeio'"
+        );
+        assert_eq!(fts_query_words_opts("and/or clause", false), vec!["and", "or", "clause"]);
+        assert_eq!(fts_query_words_opts("api.acme.dev cert", false), vec!["api", "acme", "dev", "cert"]);
+        // Intra-token hyphen/underscore are preserved (FTS re-tokenizes them).
+        assert_eq!(fts_query_words_opts("blue-green deploy", false), vec!["blue-green", "deploy"]);
+        // Possessive still handled after the split change.
+        assert_eq!(fts_query_words_opts("Sarah's role", false), vec!["Sarah", "role"]);
+    }
+
+    #[test]
+    fn alias_expansion_bridges_and_tokenizes_multiword() {
+        let mut aliases = std::collections::HashMap::new();
+        aliases.insert("ceo".to_string(), vec!["chief executive officer".to_string()]);
+        aliases.insert("k8s".to_string(), vec!["kubernetes".to_string()]);
+        let mut w = vec!["ceo".to_string(), "budget".to_string()];
+        expand_aliases(&mut w, &aliases);
+        // Multi-word expansion is tokenized into individual FTS terms.
+        for t in ["chief", "executive", "officer"] {
+            assert!(w.iter().any(|x| x == t), "{t} should be added: {w:?}");
+        }
+        // Case-insensitive key match.
+        let mut w2 = vec!["K8s".to_string()];
+        expand_aliases(&mut w2, &aliases);
+        assert!(w2.iter().any(|x| x == "kubernetes"), "K8s should bridge: {w2:?}");
+        // Empty table is a no-op.
+        let mut w3 = vec!["ceo".to_string()];
+        expand_aliases(&mut w3, &std::collections::HashMap::new());
+        assert_eq!(w3, vec!["ceo".to_string()]);
+    }
+
+    #[test]
+    fn query_aliases_empty_by_default() {
+        // With no SPECTRAL_QUERY_ALIASES file, the table is empty (no-op).
+        assert!(query_aliases().is_empty());
+    }
+
+    #[test]
+    fn number_words_bridge_both_directions_conservatively() {
+        // digit -> word (single digit survives via the raw scan)
+        let mut w = vec!["puppies".to_string()];
+        expand_number_words("3 puppies", &mut w);
+        assert!(w.iter().any(|x| x == "three"), "3 should bridge to three: {w:?}");
+        // word -> digit
+        let mut w2 = vec!["kids".to_string()];
+        expand_number_words("five kids", &mut w2);
+        assert!(w2.iter().any(|x| x == "5"), "five should bridge to 5: {w2:?}");
+        // Excluded homographs must NOT bridge (ambiguous content words).
+        let mut w3 = vec!["thing".to_string()];
+        expand_number_words("one second", &mut w3);
+        assert!(!w3.iter().any(|x| x == "1"), "'one' must not bridge (article): {w3:?}");
+        assert!(!w3.iter().any(|x| x == "2"), "'second' must not bridge (time unit): {w3:?}");
+    }
+
+    #[test]
+    fn drops_stopwords_only_when_enabled() {
+        // Off: function words survive (legacy behavior).
+        assert_eq!(
+            fts_query_words_opts("What is the deploy status", false),
+            vec!["What", "is", "the", "deploy", "status"]
+        );
+        // On: pure function words dropped, content kept.
+        assert_eq!(
+            fts_query_words_opts("What is the deploy status", true),
+            vec!["deploy", "status"]
+        );
+    }
+
+    #[test]
+    fn stopword_removal_never_empties_query() {
+        // An all-function-word query falls back to the unfiltered terms so it
+        // still recalls something rather than returning nothing.
+        let out = fts_query_words_opts("what is that", true);
+        assert!(!out.is_empty(), "must not empty an all-stopword query");
+    }
+
+    #[test]
+    fn does_not_drop_content_homographs() {
+        // Ambiguous tokens that are often content are deliberately NOT stopwords.
+        let out = fts_query_words_opts("the IT team can march in May", true);
+        for kept in ["IT", "team", "can", "march", "in", "May"] {
+            assert!(out.iter().any(|w| w == kept), "{kept} must be kept, got {out:?}");
+        }
+        assert!(!out.iter().any(|w| w == "the"), "'the' should be dropped");
+    }
+}
+
+#[cfg(test)]
 mod kuzu_schema_abort_repro {
     use super::*;
     use std::path::PathBuf;
@@ -2539,6 +3334,8 @@ mod kuzu_schema_abort_repro {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
@@ -2605,6 +3402,8 @@ mod kuzu_schema_abort_repro {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,

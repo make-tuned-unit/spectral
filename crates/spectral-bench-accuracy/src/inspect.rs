@@ -256,6 +256,8 @@ mod tests {
             episode_id: None,
             declarative_density: None,
             description: None,
+            source_brain_id: None,
+            signature: None,
         }];
 
         let mut buf = Vec::new();

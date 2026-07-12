@@ -69,6 +69,16 @@ pub struct Memory {
     /// Content hash for dedup (blake3 hex of content). `None` for pre-backfill rows.
     #[serde(default)]
     pub content_hash: Option<String>,
+    /// Brain that authored this memory (32-byte `BrainId`). `None` for
+    /// unsigned/legacy memories. Set at write time in a signed brain; the
+    /// authenticated origin for multi-contributor federation.
+    #[serde(default)]
+    pub source_brain_id: Option<[u8; 32]>,
+    /// Ed25519 signature over `(source_brain_id, content_hash, created_at,
+    /// visibility)` (see `spectral_core::identity::memory_signing_payload`).
+    /// `None` for unsigned/legacy memories. 64 bytes when present.
+    #[serde(default)]
+    pub signature: Option<Vec<u8>>,
 }
 
 /// Compaction tier for memory lifecycle management.
@@ -118,6 +128,36 @@ pub enum WriteOutcome {
     Inserted,
     NoOp,
     ContentUpdated,
+}
+
+// ── Forget receipt ──────────────────────────────────────────────────
+
+/// Per-substrate deletion counts from a hard delete of one memory. Every
+/// place a memory leaves a trace in the SQLite store is a field here, so a
+/// caller can audit that right-to-be-forgotten actually reached each
+/// substrate rather than trusting a single boolean. The recognition sidecar
+/// and graph store live outside this store and are reported separately by
+/// the `Brain`-level forget.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ForgetReceipt {
+    /// Whether a `memories` row matched the key (the memory existed).
+    pub existed: bool,
+    /// `memories` rows deleted (0 or 1).
+    pub memory_rows: usize,
+    /// `constellation_fingerprints` rows removed (anchor or target).
+    pub fingerprints: usize,
+    /// `memory_spectrogram` rows removed.
+    pub spectrograms: usize,
+    /// `memory_annotations` rows removed.
+    pub annotations: usize,
+    /// `consolidation_edges` rows removed (as source or target).
+    pub consolidation_edges: usize,
+    /// `co_retrieval_pairs` rows removed (as either member).
+    pub co_retrieval_pairs: usize,
+    /// `retrieval_events` rows scrubbed (JSON referenced this memory id).
+    pub retrieval_events: usize,
+    /// `memories_fts` rows removed (via the AFTER DELETE trigger).
+    pub fts_rows: usize,
 }
 
 // ── Fingerprint ─────────────────────────────────────────────────────
@@ -175,6 +215,15 @@ pub struct MemoryHit {
     /// Prose description of this memory (written by external agents like Librarian).
     #[serde(default)]
     pub description: Option<String>,
+    /// Authoring brain (32-byte `BrainId`). `None` for unsigned/legacy
+    /// memories. Carried on the hit so a federated consumer can attribute and
+    /// verify it without a second lookup.
+    #[serde(default)]
+    pub source_brain_id: Option<[u8; 32]>,
+    /// Ed25519 signature over the memory's signed payload. `None` for
+    /// unsigned/legacy memories.
+    #[serde(default)]
+    pub signature: Option<Vec<u8>>,
 }
 
 // ── Episode ────────────────────────────────────────────────────────
@@ -379,6 +428,30 @@ pub trait MemoryStore: Send + Sync {
         before: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
 
+    /// Hard-delete a single memory by key, purging every SQLite substrate it
+    /// touches (row, FTS, fingerprints, spectrogram, annotations,
+    /// consolidation edges, co-retrieval pairs, retrieval-event references)
+    /// and returning a per-substrate receipt. Unlike `consolidate_into`
+    /// (soft hide), the content is gone and unrecoverable from this store.
+    /// Non-FK substrates (co-retrieval, retrieval events, consolidation
+    /// edges as target) are scrubbed explicitly; FK-CASCADE substrates and
+    /// the FTS trigger fire from the row delete.
+    fn delete_memory_by_key(
+        &self,
+        key: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<ForgetReceipt>> + Send + '_>>;
+
+    /// Stamp a memory's signed-provenance columns (`source_brain_id`,
+    /// `signature`). Called after write, once the signable payload (the
+    /// stored content hash, creation time, and visibility) is fixed. No-op
+    /// (0 rows) if the id does not exist.
+    fn set_signature(
+        &self,
+        memory_id: &str,
+        source_brain_id: &[u8; 32],
+        signature: &[u8],
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
     /// For each distinct `source` in a wing, keep only the most recent
     /// `keep` memories (by created_at), deleting the rest.
     /// Returns the total number of deleted rows.
@@ -505,6 +578,20 @@ pub trait MemoryStore: Send + Sync {
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RelatedMemory>>> + Send + '_>>;
 
+    /// Anticipatory-recall recommendation: memories associated with the seed
+    /// ranked by **lift** (`co_count · total / (occ(seed) · occ(this))`)
+    /// rather than raw `co_count`. Lift is the association measure recommender
+    /// systems use to avoid recommending globally-popular items to everyone —
+    /// it surfaces memories *specifically* associated with the seed's context,
+    /// which is the fix for the popularity bias that sank raw co-retrieval.
+    /// `min_co_count` filters noise (pairs seen fewer times). `None` ranks all.
+    fn recommend_by_lift(
+        &self,
+        memory_id: &str,
+        limit: usize,
+        min_co_count: u64,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RelatedMemory>>> + Send + '_>>;
+
     /// Rebuild the co_retrieval_pairs index from scratch using retrieval_events.
     /// Returns the number of pairs written.
     fn rebuild_co_retrieval_index(
@@ -572,6 +659,13 @@ pub struct RelatedMemory {
     pub memory_id: String,
     /// Number of times the two memories co-occurred in retrievals.
     pub co_count: u64,
+    /// **Lift** association: `P(this | seed) / P(this)` =
+    /// `co_count · total / (occ(seed) · occ(this))`. >1 means this memory is
+    /// *more* associated with the seed than its baseline popularity — the
+    /// signal that suppresses globally-popular memories (which raw `co_count`
+    /// ranking does not). `0.0` on the raw (`related_memories`) path.
+    #[serde(default)]
+    pub lift: f64,
     /// Full memory if cheap to join. `None` in v1 — caller fetches via `get_memory`.
     pub memory: Option<Memory>,
 }

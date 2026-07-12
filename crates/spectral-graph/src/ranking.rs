@@ -48,8 +48,8 @@ pub fn apply_recency_weight(candidates: &mut [MemoryHit], half_life_days: f64, n
         let age_days = hit
             .created_at
             .as_deref()
-            .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
-            .map(|dt| (now - dt.and_utc()).num_hours() as f64 / 24.0)
+            .and_then(parse_created_at)
+            .map(|dt| (now - dt).num_hours() as f64 / 24.0)
             .unwrap_or(0.0)
             .max(0.0);
 
@@ -281,6 +281,29 @@ impl Default for RerankingConfig {
 ///
 /// `co_retrieval_boosts` is a pre-computed map of memory_id -> normalized
 /// affinity [0.0, 1.0]. Empty map = no co-retrieval data (identity behavior).
+/// Maximum additive contribution of the recency signal to a composite score
+/// (comparable to the declarative/entity boosts). Small on purpose: recency is
+/// a tiebreaker favoring fresh content, never a force that can bury a relevant
+/// old answer.
+const RECENCY_BOOST_WEIGHT: f64 = 0.1;
+
+/// Parse a stored `created_at` string into a UTC datetime, accepting BOTH the
+/// SQLite `datetime('now')` format (`%Y-%m-%d %H:%M:%S`, how natively-created
+/// memories are stored) AND RFC3339 (`2016-07-14T12:00:00+00:00`, how
+/// `RememberOpts.created_at` historical imports are stored — see
+/// `ingest.rs`). The recency parser previously accepted only the former, so
+/// recency ranking was silently inert for every imported memory. Shared by all
+/// `created_at`/`last_reinforced_at` parse sites so the whole crate reads the
+/// timestamp formats the ingest layer writes.
+pub(crate) fn parse_created_at(s: &str) -> Option<DateTime<Utc>> {
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.and_utc());
+    }
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
 pub fn apply_reranking_pipeline(
     candidates: Vec<MemoryHit>,
     config: &RerankingConfig,
@@ -336,19 +359,25 @@ pub fn apply_reranking_pipeline(
         }
     }
 
-    // Recency decay: multiplicative on composite score
+    // Recency: ADDITIVE bounded boost for fresh content (was a multiplicative
+    // decay that could annihilate an old-but-relevant answer's score and demote
+    // it out of top-K). Additive with a small weight means a genuinely more
+    // relevant old memory still outranks fresher noise, while fresh content gets
+    // a mild edge on ties — consistent with the other additive boosts and safe
+    // for LongMemEval's multi-session/temporal answers, which are often old.
     if config.apply_recency {
         let now = context.now;
         for (i, hit) in candidates.iter().enumerate() {
             let age_days = hit
                 .created_at
                 .as_deref()
-                .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
-                .map(|dt| (now - dt.and_utc()).num_hours() as f64 / 24.0)
+                .and_then(parse_created_at)
+                .map(|dt| (now - dt).num_hours() as f64 / 24.0)
                 .unwrap_or(0.0)
                 .max(0.0);
-            let recency_factor = 0.5_f64.powf(age_days / config.recency_half_life_days);
-            scores[i] *= recency_factor;
+            // freshness in [0,1]: 1.0 = brand new, -> 0 as age grows.
+            let freshness = 0.5_f64.powf(age_days / config.recency_half_life_days);
+            scores[i] += RECENCY_BOOST_WEIGHT * freshness;
         }
     }
 
@@ -429,6 +458,8 @@ mod tests {
             episode_id: None,
             declarative_density: None,
             description: None,
+            source_brain_id: None,
+            signature: None,
         }
     }
 
@@ -516,6 +547,8 @@ mod tests {
                 episode_id: None,
                 declarative_density: None,
                 description: None,
+                source_brain_id: None,
+                signature: None,
             },
             MemoryHit {
                 id: "dup2".into(),
@@ -534,6 +567,8 @@ mod tests {
                 episode_id: None,
                 declarative_density: None,
                 description: None,
+                source_brain_id: None,
+                signature: None,
             },
             MemoryHit {
                 id: "clean".into(),
@@ -552,6 +587,8 @@ mod tests {
                 episode_id: None,
                 declarative_density: None,
                 description: None,
+                source_brain_id: None,
+                signature: None,
             },
         ];
 
@@ -748,6 +785,8 @@ mod tests {
             episode_id: None,
             declarative_density: None,
             description: None,
+            source_brain_id: None,
+            signature: None,
         }
     }
 
@@ -853,44 +892,56 @@ mod tests {
 
     #[test]
     fn recency_uses_context_now_not_utc_now() {
-        // Memories from 2023. If recency uses Utc::now() (2026), both are
-        // ~1000 days old and get near-identical decay. If it correctly uses
-        // context.now (2023-05-30), the May memory is 10 days old while the
-        // January memory is 140 days old — a meaningful difference.
-        let candidates = vec![
-            make_hit("old_jan", 0.6, None, Some("2023-01-10 12:00:00")),
-            make_hit("recent_may", 0.6, None, Some("2023-05-20 12:00:00")),
-        ];
-
+        // Recency is a BOUNDED additive tiebreaker (weight 0.1): it can reorder
+        // near-adjacent FTS neighbors but must NOT override a large relevance
+        // gap (that was the old multiplicative behavior, which could annihilate
+        // an old-but-relevant answer). Build a pool where `old_jan` sits just
+        // above `recent_may` in FTS order with a small gap, so recency decides —
+        // and verify it uses context.now: anchored to the 2023 question date,
+        // the fresher May memory is lifted above the older January one.
+        let make_pool = || {
+            let mut v: Vec<MemoryHit> = (0..8)
+                .map(|i| make_hit(&format!("f{i}"), 0.6, None, Some("2023-05-25 12:00:00")))
+                .collect();
+            v.push(make_hit("old_jan", 0.6, None, Some("2023-01-10 12:00:00"))); // FTS idx 8
+            v.push(make_hit("recent_may", 0.6, None, Some("2023-05-20 12:00:00"))); // FTS idx 9
+            v.extend(
+                (0..8).map(|i| make_hit(&format!("g{i}"), 0.6, None, Some("2023-05-25 12:00:00"))),
+            );
+            v
+        };
         let config = RerankingConfig {
             apply_signal_score: false,
             apply_recency: true,
-            recency_half_life_days: 90.0,
+            recency_half_life_days: 30.0,
             apply_entity_boost: false,
             apply_ambient_boost: false,
             apply_episode_diversity: false,
             apply_context_dedup: false,
             ..Default::default()
         };
+        let pos = |r: &[MemoryHit], id: &str| r.iter().position(|h| h.id == id).unwrap();
 
-        // Context with now = 2023-05-30 (question date)
+        // Anchored to the question date (2023-05-30): recent_may (10d) is much
+        // fresher than old_jan (140d), so recency lifts it above its FTS-superior
+        // neighbor.
         let question_now = Utc.with_ymd_and_hms(2023, 5, 30, 23, 40, 0).unwrap();
         let ctx = spectral_cascade::RecognitionContext::empty().with_now(question_now);
-        let result = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
-
-        // recent_may is 10 days old → high recency factor
-        // old_jan is 140 days old → much lower recency factor
-        // Despite old_jan being first in FTS order, recent_may should rank first
-        assert_eq!(
-            result[0].id, "recent_may",
-            "recent memory should rank first when context.now is question_date"
+        let result = apply_reranking_pipeline(make_pool(), &config, &ctx, &empty_co_boosts());
+        assert!(
+            pos(&result, "recent_may") < pos(&result, "old_jan"),
+            "with context.now=question_date, recency lifts the fresher memory above its adjacent older neighbor"
         );
 
-        // Verify the scores actually differ meaningfully
-        let score_diff = result[0].signal_score - result[1].signal_score;
+        // If recency instead (wrongly) used a far-future now, BOTH 2023 memories
+        // are ~equally ancient, recency contributions ~equal, and the FTS order
+        // (old_jan above recent_may) is preserved.
+        let far_future = Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap();
+        let ctx2 = spectral_cascade::RecognitionContext::empty().with_now(far_future);
+        let result2 = apply_reranking_pipeline(make_pool(), &config, &ctx2, &empty_co_boosts());
         assert!(
-            score_diff > 0.05,
-            "score difference should be meaningful with 90-day half-life, got {score_diff:.4}"
+            pos(&result2, "old_jan") < pos(&result2, "recent_may"),
+            "with a far-future now both are equally old; FTS order (old_jan first) is preserved"
         );
     }
 
