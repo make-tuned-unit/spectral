@@ -1741,6 +1741,82 @@ fn brain_related_memories_after_cascade_retrievals() {
 }
 
 #[test]
+fn layered_consolidation_loop_deterministic_end_to_end() {
+    // The full ambient → consolidation → provenance-drill-down loop, all $0/no-LLM.
+    // Models the multi-session case that trips actors: three separate mentions of
+    // the same wedding. Ambient co-retrieval flags them as a recurring cluster;
+    // an extractive summary consolidates them into one abstract memory linked to
+    // its sources; layered recall then surfaces the abstract memory (sources
+    // hidden from ordinary recall) and drills down to the exact evidence.
+    use spectral_ingest::CompactionTier;
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let sources = ["w1", "w2", "w3"];
+    brain.remember("w1", "Attended the wedding of Rachel and Mike at the lakeside venue", Visibility::Private).unwrap();
+    brain.remember("w2", "Rachel and Mike's wedding was lovely, great toast from the best man", Visibility::Private).unwrap();
+    brain.remember("w3", "The wedding for Rachel and Mike had a live band and dancing", Visibility::Private).unwrap();
+    brain.remember("distract", "Booked a dentist appointment for next Tuesday morning", Visibility::Private).unwrap();
+
+    // Ambient signal: usage repeatedly co-retrieves the three wedding mentions.
+    for _ in 0..4 {
+        let _ = brain.recall_topk_fts("Rachel Mike wedding", &RecallTopKConfig::default(), Visibility::Private).unwrap();
+    }
+    let pairs = brain.rebuild_co_retrieval_index().unwrap();
+    assert!(pairs > 0, "co-retrieval history should exist");
+
+    // Candidate selection surfaces the recurring wedding cluster.
+    let candidates = brain.consolidation_candidates(1, 100).unwrap();
+    let cluster = candidates
+        .iter()
+        .find(|c| c.member_keys.iter().filter(|k| sources.contains(&k.as_str())).count() >= 2)
+        .expect("wedding cluster should be a consolidation candidate");
+    assert!(cluster.cohesion > 0.0, "cluster has an ambient cohesion score");
+
+    // Consolidate the cluster deterministically (extractive, $0). Use exactly the
+    // three wedding sources.
+    let members: Vec<String> = sources.iter().map(|s| s.to_string()).collect();
+    brain.consolidate_extractive(&members, "wedding:rachel-mike", CompactionTier::DailyRollup).unwrap();
+
+    // Ordinary recall now surfaces the abstract memory, NOT the raw sources.
+    let plain = brain.recall_topk_fts("Rachel Mike wedding", &RecallTopKConfig::default(), Visibility::Private).unwrap();
+    assert!(plain.iter().any(|h| h.key == "wedding:rachel-mike"), "abstract memory is recalled");
+    for s in &sources {
+        assert!(!plain.iter().any(|h| &h.key == s), "raw source {s} is hidden from ordinary recall after consolidation");
+    }
+
+    // Layered recall drills down: the abstract hit carries its source memories.
+    let layered = brain.recall_with_provenance("Rachel Mike wedding", &RecallTopKConfig::default(), Visibility::Private, 10).unwrap();
+    let abstract_hit = layered.iter().find(|l| l.hit.key == "wedding:rachel-mike").expect("abstract hit present");
+    let source_keys: std::collections::HashSet<&str> = abstract_hit.sources.iter().map(|h| h.key.as_str()).collect();
+    for s in &sources {
+        assert!(source_keys.contains(s), "provenance drill-down includes source {s}");
+    }
+}
+
+#[test]
+fn consolidate_with_accepts_a_custom_summarizer() {
+    // The summarizer seam accepts any closure (e.g. a sparse LLM) — here a
+    // deterministic stand-in — and stores its output as the abstraction content.
+    use spectral_ingest::CompactionTier;
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    brain.remember("a", "The Q2 revenue was 4.2 million dollars", Visibility::Private).unwrap();
+    brain.remember("b", "Q2 revenue came in at 4.2M, up from Q1", Visibility::Private).unwrap();
+
+    let members = vec!["a".to_string(), "b".to_string()];
+    brain
+        .consolidate_with(&members, "q2:summary", CompactionTier::DailyRollup, |contents| {
+            format!("SUMMARY of {} sources: Q2 revenue = $4.2M", contents.len())
+        })
+        .unwrap();
+
+    let m = brain.get_memory(&brain_memory_id("q2:summary")).unwrap().unwrap();
+    assert!(m.content.starts_with("SUMMARY of 2 sources"), "summarizer output stored: {}", m.content);
+    assert_eq!(m.compaction_tier, Some(CompactionTier::DailyRollup));
+}
+
+#[test]
 fn anticipatory_recall_augments_query_miss_when_enabled() {
     // A query that keyword-matches only one memory should, with the
     // anticipatory flag ON, also surface a lift-associated memory it MISSED —

@@ -463,6 +463,60 @@ impl Brain {
         self.inner.list_unconsolidated(limit)
     }
 
+    /// Layered / provenance-linked recall: each hit paired with its
+    /// ground-truth source memories (drill-down through `consolidation_edges`).
+    /// See [`spectral_graph::brain::Brain::recall_with_provenance`].
+    pub fn recall_with_provenance(
+        &self,
+        query: &str,
+        config: &RecallTopKConfig,
+        visibility: Visibility,
+        max_sources_per_hit: usize,
+    ) -> Result<Vec<spectral_graph::brain::LayeredHit>, Error> {
+        self.inner
+            .recall_with_provenance(query, config, visibility, max_sources_per_hit)
+    }
+
+    /// Recognition/co-retrieval-driven consolidation candidates (recurring
+    /// clusters worth abstracting). See
+    /// [`spectral_graph::brain::Brain::consolidation_candidates`].
+    pub fn consolidation_candidates(
+        &self,
+        min_co_count: u64,
+        scan_limit: usize,
+    ) -> Result<Vec<spectral_graph::brain::ConsolidationCandidate>, Error> {
+        self.inner.consolidation_candidates(min_co_count, scan_limit)
+    }
+
+    /// Consolidate sources into a higher-tier abstraction whose content comes
+    /// from `summarize` (the one optional-LLM seam). See
+    /// [`spectral_graph::brain::Brain::consolidate_with`].
+    pub fn consolidate_with<F>(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        tier: spectral_ingest::CompactionTier,
+        summarize: F,
+    ) -> Result<spectral_graph::brain::RememberResult, Error>
+    where
+        F: FnOnce(&[String]) -> String,
+    {
+        self.inner
+            .consolidate_with(source_keys, target_key, tier, summarize)
+    }
+
+    /// Deterministic `$0` extractive consolidation (no LLM). See
+    /// [`spectral_graph::brain::Brain::consolidate_extractive`].
+    pub fn consolidate_extractive(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        tier: spectral_ingest::CompactionTier,
+    ) -> Result<spectral_graph::brain::RememberResult, Error> {
+        self.inner
+            .consolidate_extractive(source_keys, target_key, tier)
+    }
+
     /// Annotate a memory with contextual who/where/why/how metadata.
     ///
     /// Writes a [`spectral_ingest::MemoryAnnotation`] row to the

@@ -242,6 +242,38 @@ pub struct Recurrence {
     pub familiarity: f64,
 }
 
+/// A recalled memory paired with its ground-truth source memories — the
+/// provenance chain from `consolidation_edges`. This is layered recall: the
+/// actor receives the compact/abstract memory it matched, plus (on demand) the
+/// exact source turns that memory was distilled from, so it can verify or
+/// re-aggregate without re-deriving from scattered raw turns. Deterministic
+/// "abstraction → ground truth" drill-down, no extra LLM cost.
+#[derive(Debug, Clone)]
+pub struct LayeredHit {
+    /// The matched memory (may be an abstract/consolidated summary or a raw turn).
+    pub hit: spectral_ingest::MemoryHit,
+    /// Source memories consolidated into `hit`. Empty when `hit` is itself raw
+    /// (no consolidation edges point at it).
+    pub sources: Vec<spectral_ingest::MemoryHit>,
+}
+
+/// A cluster of related memories worth abstracting into a single higher-tier
+/// memory. Selected by the deterministic ambient signals — recognition
+/// recurrence (the spectrogram/MinHash engine flagging re-encounters) and/or
+/// co-retrieval (what the user's usage pulls together) — so any downstream
+/// summarizer (an extractive `$0` default or a sparse LLM) only ever runs on
+/// high-value, already-recurring groups.
+#[derive(Debug, Clone)]
+pub struct ConsolidationCandidate {
+    /// Member memory keys in the cluster (always ≥ 2).
+    pub member_keys: Vec<String>,
+    /// Cluster cohesion in [0, 1] — normalized strength of the ambient signal
+    /// that grouped these (co-retrieval affinity or recognition familiarity).
+    pub cohesion: f64,
+    /// Which ambient signal produced this candidate.
+    pub signal: &'static str,
+}
+
 /// Options for `Brain::ingest_text()`.
 #[derive(Debug)]
 pub struct IngestTextOpts {
@@ -1937,6 +1969,217 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
+    // ── Layered / provenance-linked recall + ambient consolidation ──────────
+    //
+    // Deterministic, LLM-optional layered memory. Recall surfaces compact
+    // abstract memories and (on demand) their ground-truth sources; the
+    // recognition/co-retrieval ambient signals pick what recurs enough to
+    // abstract; the summarizer that produces an abstraction is a pluggable
+    // closure (extractive `$0` default, or a sparse consumer-supplied LLM).
+
+    /// Recall with provenance-linked drill-down: run normal recall (which
+    /// surfaces abstract/consolidated memories and hides their now-consolidated
+    /// sources), then attach each hit's source memories from
+    /// `consolidation_edges`, visibility-filtered and capped at
+    /// `max_sources_per_hit`. The actor gets a compact context *plus* the exact
+    /// evidence each summary rests on — the deterministic analogue of
+    /// abstraction→ground-truth drill-down, at no extra LLM cost.
+    pub fn recall_with_provenance(
+        &self,
+        query: &str,
+        config: &RecallTopKConfig,
+        visibility: Visibility,
+        max_sources_per_hit: usize,
+    ) -> Result<Vec<LayeredHit>, Error> {
+        let hits = self.recall_topk_fts(query, config, visibility)?;
+        let mut out = Vec::with_capacity(hits.len());
+        for hit in hits {
+            let mut sources = Vec::new();
+            if max_sources_per_hit > 0 {
+                for edge in self.list_consolidated(Some(&hit.key))? {
+                    if sources.len() >= max_sources_per_hit {
+                        break;
+                    }
+                    if let Ok(Some(m)) = self.get_memory(&key_to_id(&edge.source_key)) {
+                        if str_to_vis(&m.visibility).allows(visibility) {
+                            sources.push(memory_to_hit(m));
+                        }
+                    }
+                }
+            }
+            out.push(LayeredHit { hit, sources });
+        }
+        Ok(out)
+    }
+
+    /// Surface consolidation candidates from the **co-retrieval ambient signal**:
+    /// cluster unconsolidated memories that the user's usage repeatedly pulls
+    /// together (`co_count ≥ min_co_count`). These recurring groups are the
+    /// high-value targets for abstraction, so a downstream summarizer only ever
+    /// runs on them. Deterministic, `$0`; empty until co-retrieval history
+    /// exists (rebuild it with [`rebuild_co_retrieval_index`](Self::rebuild_co_retrieval_index)).
+    /// Recognition recurrence (the spectrogram/MinHash re-encounter signal,
+    /// surfaced at write time via [`RememberResult::recurrence`]) is the
+    /// complementary content-similarity signal.
+    pub fn consolidation_candidates(
+        &self,
+        min_co_count: u64,
+        scan_limit: usize,
+    ) -> Result<Vec<ConsolidationCandidate>, Error> {
+        use std::collections::HashMap;
+        let keys = self.list_unconsolidated(scan_limit)?;
+        if keys.len() < 2 {
+            return Ok(Vec::new());
+        }
+        // Union-find over the scan set; union two memories when they co-occur in
+        // retrievals at least `min_co_count` times. Track summed co_count per
+        // cluster for a cohesion score.
+        let in_set: std::collections::HashSet<&str> = keys.iter().map(|s| s.as_str()).collect();
+        let mut parent: HashMap<String, String> = keys.iter().map(|k| (k.clone(), k.clone())).collect();
+        fn find(parent: &mut HashMap<String, String>, k: &str) -> String {
+            let p = parent.get(k).cloned().unwrap_or_else(|| k.to_string());
+            if p == k {
+                return p;
+            }
+            let root = find(parent, &p);
+            parent.insert(k.to_string(), root.clone());
+            root
+        }
+        let mut edge_strength: HashMap<(String, String), u64> = HashMap::new();
+        for key in &keys {
+            let related = self
+                .related_memories(&key_to_id(key), 20)
+                .unwrap_or_default();
+            for rel in related {
+                if rel.co_count < min_co_count {
+                    continue;
+                }
+                // related_memories keys by memory_id; recover the key via the row.
+                let other_key = match self.get_memory(&rel.memory_id) {
+                    Ok(Some(m)) => m.key,
+                    _ => continue,
+                };
+                if !in_set.contains(other_key.as_str()) || other_key == *key {
+                    continue;
+                }
+                let pair = if *key < other_key {
+                    (key.clone(), other_key.clone())
+                } else {
+                    (other_key.clone(), key.clone())
+                };
+                edge_strength.insert(pair.clone(), rel.co_count);
+                let a = find(&mut parent, key);
+                let b = find(&mut parent, &other_key);
+                if a != b {
+                    parent.insert(a, b);
+                }
+            }
+        }
+        // Group keys by cluster root.
+        let mut clusters: HashMap<String, Vec<String>> = HashMap::new();
+        for key in &keys {
+            let root = find(&mut parent, key);
+            clusters.entry(root).or_default().push(key.clone());
+        }
+        let max_co = edge_strength.values().copied().max().unwrap_or(1) as f64;
+        let mut out: Vec<ConsolidationCandidate> = clusters
+            .into_values()
+            .filter(|members| members.len() >= 2)
+            .map(|mut members| {
+                members.sort();
+                // Cohesion: mean of the cluster's internal edge strengths, normalized.
+                let strengths: Vec<u64> = edge_strength
+                    .iter()
+                    .filter(|((a, b), _)| members.contains(a) && members.contains(b))
+                    .map(|(_, &c)| c)
+                    .collect();
+                let cohesion = if strengths.is_empty() {
+                    0.0
+                } else {
+                    (strengths.iter().sum::<u64>() as f64 / strengths.len() as f64) / max_co
+                };
+                ConsolidationCandidate {
+                    member_keys: members,
+                    cohesion,
+                    signal: "co_retrieval",
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| b.cohesion.partial_cmp(&a.cohesion).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(out)
+    }
+
+    /// Consolidate `source_keys` into a single higher-tier memory at
+    /// `target_key`, whose content is produced by `summarize` (given the source
+    /// contents in order). This is the one seam where an LLM *may* be used —
+    /// pass a sparse consumer-supplied closure for a real abstraction, or the
+    /// deterministic extractive default (see
+    /// [`consolidate_extractive`](Self::consolidate_extractive)) for `$0`. The
+    /// resulting memory is tagged `compaction_tier` and the sources are linked
+    /// to it via `consolidation_edges` (hiding them from ordinary recall while
+    /// keeping them reachable through [`recall_with_provenance`](Self::recall_with_provenance)).
+    /// Returns the abstraction's `RememberResult`.
+    pub fn consolidate_with<F>(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        tier: spectral_ingest::CompactionTier,
+        summarize: F,
+    ) -> Result<RememberResult, Error>
+    where
+        F: FnOnce(&[String]) -> String,
+    {
+        self.ensure_writable("consolidate_with")?;
+        // Gather source contents (skip missing).
+        let mut contents = Vec::with_capacity(source_keys.len());
+        for k in source_keys {
+            if let Some(m) = self.get_memory(&key_to_id(k))? {
+                contents.push(m.content);
+            }
+        }
+        if contents.is_empty() {
+            return Err(Error::Schema("no valid source memories to consolidate".into()));
+        }
+        let summary = summarize(&contents);
+        // Write the abstraction, tagged with its compaction tier.
+        let result = self.remember_with(
+            target_key,
+            &summary,
+            RememberOpts {
+                visibility: Visibility::Private,
+                compaction_tier: Some(tier),
+                ..Default::default()
+            },
+        )?;
+        // Link sources → target (hides sources from ordinary recall; provenance
+        // preserved).
+        self.consolidate_into(
+            source_keys,
+            target_key,
+            &spectral_ingest::ConsolidateOpts::default(),
+        )?;
+        Ok(result)
+    }
+
+    /// Deterministic `$0` extractive summary: the longest source content (a
+    /// reasonable "most complete restatement" heuristic), used as the default
+    /// abstraction when no LLM summarizer is supplied. Convenience wrapper over
+    /// [`consolidate_with`](Self::consolidate_with).
+    pub fn consolidate_extractive(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        tier: spectral_ingest::CompactionTier,
+    ) -> Result<RememberResult, Error> {
+        self.consolidate_with(source_keys, target_key, tier, |contents| {
+            contents
+                .iter()
+                .max_by_key(|c| c.len())
+                .cloned()
+                .unwrap_or_default()
+        })
+    }
+
     /// Return memories most frequently co-retrieved with the given memory_id.
     pub fn related_memories(
         &self,
@@ -2915,6 +3158,16 @@ fn fts_anticipatory_enabled() -> bool {
 /// Project a stored [`Memory`] into a [`MemoryHit`] for anticipatory
 /// augmentation. `hits = 0` marks it as not query-matched (surfaced by
 /// association, not keyword overlap) so a consumer can distinguish it.
+/// Derive a memory's stable id from its key (blake3 of the key, first 8 bytes as
+/// hex) — the same derivation `remember`/`forget` use, so a `consolidation_edges`
+/// key can be resolved to its row via `get_memory`.
+fn key_to_id(key: &str) -> String {
+    format!(
+        "{:016x}",
+        u64::from_be_bytes(blake3::hash(key.as_bytes()).as_bytes()[..8].try_into().unwrap())
+    )
+}
+
 fn memory_to_hit(m: spectral_ingest::Memory) -> spectral_ingest::MemoryHit {
     spectral_ingest::MemoryHit {
         id: m.id,
