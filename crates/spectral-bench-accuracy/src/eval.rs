@@ -457,7 +457,7 @@ impl AccuracyEval {
         // Use expanded query for retrieval, original question for actor prompt
         let question_date = question.question_date.as_deref();
         let retrieval_start = std::time::Instant::now();
-        let (memories, raw_hits, cascade_telemetry) = match effective_path {
+        let (mut memories, raw_hits, cascade_telemetry) = match effective_path {
             RetrievalPath::TopkFts => {
                 let (formatted, hits) = retrieval::retrieve_topk_fts(
                     &brain,
@@ -518,6 +518,22 @@ impl AccuracyEval {
                 })
                 .collect()
         };
+
+        // Optional read-time consolidation pre-pass (SPECTRAL_CONSOLIDATE_CONTEXT=1):
+        // one sparse haiku call dedups cross-session mentions into an entity-keyed
+        // atom list, prepended to the context (the raw sessions remain below for
+        // grounding). Falls back silently to the flat context on any error.
+        if std::env::var("SPECTRAL_CONSOLIDATE_CONTEXT").map(|v| v == "1").unwrap_or(false) {
+            if let Some(atoms) = crate::consolidate::consolidate_context(&question.question, &memories) {
+                memories.insert(
+                    0,
+                    format!(
+                        "=== CONSOLIDATED CANDIDATE ITEMS (deduplicated across sessions; use as the \
+candidate set, then verify against the raw sessions below) ===\n{atoms}"
+                    ),
+                );
+            }
+        }
 
         // Act — with retry on transient failures
         let actor_context = memories.join("\n");

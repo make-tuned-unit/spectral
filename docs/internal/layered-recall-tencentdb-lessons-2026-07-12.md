@@ -45,6 +45,36 @@ the system runs incredibly cheaply (or free) while offering the layered,
 auditable, provenance-linked context that helps the actor where we measured the
 real headroom.
 
+## A/B result — a sparse read-time LLM consolidation pre-pass HURTS (measured)
+
+Tested the tempting shortcut: a `SPECTRAL_CONSOLIDATE_CONTEXT=1` pre-pass that
+makes one cheap **haiku** call to dedup cross-session mentions into an
+entity-keyed atom list, prepended to the actor context (raw sessions kept for
+grounding). Paired on 25 held-out multi-session questions, sonnet actor+judge,
+intervention counting prompts held constant:
+
+| arm | accuracy |
+|---|---|
+| flat context | **80.0%** (20/25) |
+| + read-time haiku consolidation | **70.8%** (17/24) |
+| delta | **−9.2 pp** |
+
+**It makes counting worse.** Mechanism (confirmed on the flips): the cheap
+consolidation model is a **lossy intermediate** — it drops/merges items wrongly
+(e.g. omitted the coffee maker from a 5-item kitchen list; mangled a jog detail
+so the actor refused to answer) — and the strong actor **over-trusts** the
+pre-digested candidate set, so the weak model's errors propagate and can't be
+recovered even though the raw evidence is still in context.
+
+**Lesson (reinforces Spectral's thesis):** do NOT insert a weak LLM in the
+critical path as a lossy pre-digest. The strong actor + deterministic counting
+prompt already dedups better. The env flag is kept OFF by default as a measured-
+negative ablation. The **deterministic** `recall_with_provenance` (provenance
+drill-down, no lossy LLM intermediate) is the right shape; if LLM consolidation
+is used at all it must be high-quality and **offline/write-time** (durable atoms
+via Permagent's Librarian), and the actor must treat atoms as hints, not ground
+truth.
+
 ## Next
 - Port a sparse-LLM summarizer into Permagent's Librarian (the `summarize`
   closure) and A/B multi-session counting with `recall_with_provenance` context
