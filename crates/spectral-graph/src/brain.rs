@@ -2180,6 +2180,24 @@ impl Brain {
         })
     }
 
+    /// Store a **pre-computed** abstraction over `source_keys` — the entry point
+    /// for an external Librarian that generated the atom offline with a strong
+    /// model. Identical storage semantics to
+    /// [`consolidate_with`](Self::consolidate_with) (higher-tier memory + source
+    /// linkage), but the caller supplies the final `content` directly instead of
+    /// a closure. Because the sources stay reachable via
+    /// [`recall_with_provenance`](Self::recall_with_provenance), the atom is an
+    /// additive hint, never an authoritative lossy replacement.
+    pub fn consolidate_as(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        tier: spectral_ingest::CompactionTier,
+        content: &str,
+    ) -> Result<RememberResult, Error> {
+        self.consolidate_with(source_keys, target_key, tier, |_| content.to_string())
+    }
+
     /// Return memories most frequently co-retrieved with the given memory_id.
     pub fn related_memories(
         &self,

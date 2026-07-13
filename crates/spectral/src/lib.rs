@@ -517,6 +517,20 @@ impl Brain {
             .consolidate_extractive(source_keys, target_key, tier)
     }
 
+    /// Store a pre-computed abstraction (e.g. a Librarian-generated atom) over
+    /// the given sources. See
+    /// [`spectral_graph::brain::Brain::consolidate_as`].
+    pub fn consolidate_as(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        tier: spectral_ingest::CompactionTier,
+        content: &str,
+    ) -> Result<spectral_graph::brain::RememberResult, Error> {
+        self.inner
+            .consolidate_as(source_keys, target_key, tier, content)
+    }
+
     /// Annotate a memory with contextual who/where/why/how metadata.
     ///
     /// Writes a [`spectral_ingest::MemoryAnnotation`] row to the
