@@ -29,6 +29,10 @@ pub enum Error {
     #[error("schema: {0}")]
     Schema(String),
 
+    /// The brain was opened read-only; write APIs are unavailable.
+    #[error("read-only brain: '{0}' is not available (opened with read_only = true)")]
+    ReadOnly(&'static str),
+
     /// Subject or object could not be resolved to an ontology entity.
     #[error("unresolved mention: '{mention}'")]
     UnresolvedMention {

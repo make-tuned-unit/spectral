@@ -119,9 +119,8 @@ impl DescriptionGenerator for AnthropicDescriber {
         }
 
         let json: serde_json::Value = resp.json()?;
-        let text = json["content"][0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing content[0].text in describe response"))?
+        let text = crate::actor::extract_text(&json)
+            .ok_or_else(|| anyhow::anyhow!("Missing text block in describe response"))?
             .trim()
             .to_string();
         Ok(text)
@@ -599,6 +598,8 @@ mod tests {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,

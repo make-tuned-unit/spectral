@@ -6,12 +6,35 @@ Format per item: title, source, effort estimate, dependencies, why it matters, e
 
 ---
 
+## 2026-07-10 update — porter + pool-widening shipped as library defaults
+
+### Closed items
+
+**Porter stemming + fetch-pool widening: SHIPPED as defaults (was: env-var-only, Tier-1 validated but unadopted).**
+- `"porter unicode61"` is now the default FTS tokenizer (`DEFAULT_FTS_TOKENIZER` in `spectral-ingest`), configurable via `BrainConfig::fts_tokenizer` / `BrainBuilder::fts_tokenizer()` / `SqliteStoreConfig::fts_tokenizer` / `SPECTRAL_FTS_TOKENIZER`. Existing brains are migrated by a one-time FTS index rebuild on open (`migrate_fts_tokenizer`, drop + recreate + repopulate; memories table untouched).
+- `RecallTopKConfig::fetch_mult` (default 3) moves the re-rank pool widening from a bench env hack into the library: fetch `k × fetch_mult` candidates, re-rank, truncate to `k`. `SPECTRAL_TOPK_FETCH_MULT` remains as a bench ablation override.
+- Evidence basis: ORACLE_TIER0.md (zero-evidence 8→4, key-recall 51.8→54.7%), TIER1_PORTER_WIDEN.md (mult=3 knee, accuracy-neutral and strictly cheaper at the actor level), TIER1_RESULTS.md (porter-only 46/60 vs expansion-only 43/60 — deterministic pipeline at parity with the LLM-assisted one).
+- **Remaining (paid):** the pre-registered porter-only, expansion-OFF full n=500 run (~$26) to convert the published headline to "zero-LLM end-to-end at parity" (expected within ±2pp of 81.5%).
+- **Note (judge cluster):** the ~3 "question↔answer pairing" eval-bug cases from N500_FAILURE_ANALYSIS (`55241a1f`, `8b9d4367`, `b6025781`) were already recovered by the PR #173 continuation-sanitizer re-judge — they are the 398→401 correction. The remaining judge-cluster upside is the abstention-rubric review (~3–6 cases, judgment call, not free).
+
+---
+
+## 2026-07-11 — recency decay inconsistency FIXED (option (a): parser + additive-bounded)
+
+**Item — recency date-format mismatch: recency ranking did nothing for `RememberOpts.created_at` imports. — FIXED.**
+- **Was:** `ingest.rs:224` stores an explicit `RememberOpts.created_at` as **RFC3339** (`2016-07-14T12:00:00+00:00`), but the recency parser accepted only `"%Y-%m-%d %H:%M:%S"` → parse failed → `age=0` → `factor=1.0` → recency silently inert for every imported memory (native memories got it; imports didn't — inconsistent by origin). Found via `spectral-bench-real --bin recency_probe`.
+- **Fix (option (a)):** `ranking.rs::parse_created_at` now accepts **both** the SQLite and RFC3339 formats (recency is consistent for native + import), AND recency changed from a **multiplicative decay** (`score *= 0.5^(age/365)`, which could annihilate an old-but-relevant answer to ~rank 51 and drop it from top-K) to a **bounded additive boost** (`score += 0.1 · freshness`, `RECENCY_BOOST_WEIGHT`). Recency is now a gentle tiebreaker that lifts fresh content among near-equal-relevance neighbors but cannot bury a genuinely more-relevant old answer — safe for LongMemEval's multi-session/temporal case. Validated: `recency_probe` shows recency now active for imports (ON rank 6 ≠ OFF rank 1) AND a 10-yr-old relevant answer stays in top-40 (old multiplier would have annihilated it). `ranking::recency_uses_context_now_not_utc_now` rewritten for the bounded semantics; full graph/ingest suites green.
+- **All parse sites unified (no loose ends):** every `created_at`/`last_reinforced_at` parser in `spectral-graph` now routes through the shared dual-format `ranking::parse_created_at` — `ranking.rs` (recency + standalone `apply_recency_weight`), `cascade_layers.rs` (ambient freshness boost), and `brain.rs:2780`/`3135` (introspection created_at + novelty score). The other crates' parsers (`sqlite_store::parse_ts`, `ingest::parse_timestamp_secs`) were already dual-format. So RFC3339 imports are now handled consistently everywhere a timestamp is read, not just in recency. Graph **244/0**, ingest **128/0**, clippy clean.
+- **Only genuinely-open item:** whether recency should be default-ON for a given corpus is a real-corpus tuning question — but it can no longer cause a severe recall regression either way (bounded additive).
+
 ## 2026-06-16 update — federation v1 follow-on
 
 ### New items
 
-**Item — `Brain::forget(key)`: per-key hard delete.**
-- **Source:** Federation v1 review (PR #178); fan-out feasibility audit (`FANOUT_FEASIBILITY.md`).
+**Item — `Brain::forget(key)`: per-key hard delete. — SHIPPED + VALIDATED against Permagent's Reader contract (2026-07-11).**
+- **Status:** `Brain::forget(key) -> ForgetReport` shipped. Hard-deletes the row and every substrate trace (FTS shadow, constellation fingerprints, spectrogram, consolidation edges, co-retrieval pairs, retrieval-event references, recognition index) via `MemoryStore::delete_memory_by_key` + recognition `forget`, then runs a **built-in verification probe**: `recall_clear` re-runs recall on the deleted content and confirms the key no longer surfaces, `recognize_clear` confirms recognition no longer fires. `ForgetReport::fully_forgotten()` ANDs the per-substrate counts with both probes.
+- **Permagent contract validation:** the exact Reader re-ingest scenario is covered by `brain_tests::forget_supersedes_prior_version_reader_reingest_scenario` — ingest v1 (content-hash A) + v2 (content-hash B), `forget(v1_key)`, then assert (a) v1 is gone from recall (not soft-filtered — `fts_rows == 1` purged, `recall_clear`), (b) v2 (the replacement) SURVIVES, (c) a **read-only replica** of the same brain (the federated-Henry fan-out path) cannot surface the stale version. The "federated peer surfaces the stale version" risk is closed because forget removes the underlying FTS row, so every read-only replica inherits the deletion. Substrate coverage also proven by `forget_hard_deletes_across_substrates_and_verifies` and `sqlite_store::delete_memory_by_key_purges_substrates`.
+- **Original source:** Federation v1 review (PR #178); fan-out feasibility audit (`FANOUT_FEASIBILITY.md`).
 - **Effort:** ~3-5h.
 - **Depends on:** Nothing. Unblocks a true deletion-propagation test for federation fan-out.
 - **Why it matters:** `Brain` exposes no per-key hard delete today — only `delete_wing_memories_before` (wing + time scoped). Federation v1's read-time isolation criterion ("a child-side deletion is reflected in the next fan-out") had to use `consolidate_into` as a **removal proxy**: consolidation filters the source out of recall (`sqlite_store.rs:1114,1216`), which is soft removal, not deletion. The memory still exists on disk. Federation's real deletion-propagation guarantee needs an actual hard delete of the row + its graph/FTS/consolidation traces.

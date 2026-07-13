@@ -143,6 +143,8 @@ mod tests {
                 declarative_density: None,
                 description: None,
                 hits: 3,
+                source_brain_id: None,
+                signature: None,
             },
             MemoryHit {
                 id: "b".into(),
@@ -161,6 +163,8 @@ mod tests {
                 declarative_density: None,
                 description: None,
                 hits: 2,
+                source_brain_id: None,
+                signature: None,
             },
         ];
         let secondary = vec![
@@ -181,6 +185,8 @@ mod tests {
                 declarative_density: None,
                 description: None,
                 hits: 1,
+                source_brain_id: None,
+                signature: None,
             },
             MemoryHit {
                 id: "c".into(),
@@ -199,6 +205,8 @@ mod tests {
                 declarative_density: None,
                 description: None,
                 hits: 1,
+                source_brain_id: None,
+                signature: None,
             },
         ];
 

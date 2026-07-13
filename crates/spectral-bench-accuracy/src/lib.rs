@@ -21,6 +21,7 @@
 //! ```
 
 pub mod actor;
+pub mod consolidate;
 pub mod dataset;
 pub mod describe;
 pub mod eval;

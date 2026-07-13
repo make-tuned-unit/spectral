@@ -14,6 +14,15 @@ use crate::store::FeatureMatch;
 use crate::{Evidence, RecognitionResult, StimulusPrints, TraceMatch, Verdict};
 use std::collections::HashMap;
 
+/// A MinHash lexical match: a candidate memory and the shingle-set
+/// **containment** of the stimulus in it (fraction of the probe's shingles the
+/// candidate contains — high for a partial/degraded re-encounter).
+#[derive(Debug, Clone)]
+pub struct MinHashMatch {
+    pub memory_id: String,
+    pub similarity: f64,
+}
+
 /// Thresholds and weights for verdict formation.
 #[derive(Debug, Clone)]
 pub struct ScoreConfig {
@@ -72,12 +81,22 @@ fn rarity(enrolled: usize, df: usize) -> f64 {
 }
 
 /// Score candidates and form a verdict.
+///
+/// `minhash_matches` are the shingle-containment channel (candidate memory +
+/// containment of the stimulus in it); `minhash_weight` scales a full
+/// (containment 1.0) match relative to a maximally-rare pair hit, and
+/// `min_similarity` gates evidence. Pass an empty slice / `minhash_weight =
+/// 0.0` to run the legacy pair+gram-only engine.
+#[allow(clippy::too_many_arguments)]
 pub fn score_candidates(
     prints: &StimulusPrints,
     pair_matches: &[FeatureMatch],
     gram_matches: &[FeatureMatch],
+    minhash_matches: &[MinHashMatch],
     enrolled: usize,
     config: &ScoreConfig,
+    minhash_weight: f64,
+    min_similarity: f64,
 ) -> RecognitionResult {
     let stimulus_features = prints.pair_hashes.len() + prints.gram_hashes.len();
     let mut acc: HashMap<String, Accum> = HashMap::new();
@@ -105,6 +124,35 @@ pub fn score_candidates(
             a.evidence.push(Evidence {
                 feature: m.label.clone(),
                 memory_id: m.memory_id.clone(),
+                weight: w,
+            });
+        }
+    }
+
+    // MinHash channel: a strong, normalized lexical-overlap signal. A match's
+    // contribution scales with its estimated Jaccard and the maximum rarity
+    // unit, so a near-identical re-encounter contributes as much as several
+    // rare pair hits, while a topical near-miss (low Jaccard) contributes
+    // little. `best_similarity` also lifts the familiarity scalar below.
+    let rarity_unit = rarity(enrolled, 1);
+    let mut best_similarity = 0.0f64;
+    if minhash_weight > 0.0 {
+        for mm in minhash_matches {
+            if mm.similarity < min_similarity {
+                continue;
+            }
+            best_similarity = best_similarity.max(mm.similarity);
+            let w = mm.similarity * minhash_weight * rarity_unit;
+            let a = acc.entry(mm.memory_id.clone()).or_insert(Accum {
+                score: 0.0,
+                pair_hits: 0,
+                gram_hits: 0,
+                evidence: Vec::new(),
+            });
+            a.score += w;
+            a.evidence.push(Evidence {
+                feature: format!("minhash: containment {:.2}", mm.similarity),
+                memory_id: mm.memory_id.clone(),
                 weight: w,
             });
         }
@@ -154,7 +202,7 @@ pub fn score_candidates(
     // 1.1% of paraphrases read as Novel via the familiar_min_score path.
     // Downstream consumers should branch on `verdict`, not threshold this
     // scalar across families.
-    let familiarity = traces
+    let coverage_familiarity = traces
         .first()
         .map(|t| {
             if total_potential > 0.0 {
@@ -164,6 +212,13 @@ pub fn score_candidates(
             }
         })
         .unwrap_or(0.0);
+    // Fuse the coverage-based scalar with the MinHash lexical scalar by taking
+    // the stronger channel: a true re-encounter reads high on at least one
+    // (geometric coverage OR token-set overlap), while a topical near-miss
+    // reads low on both. MinHash is a normalized [0,1] similarity (not the
+    // rejected absolute-evidence blend), and is the sharper lexical
+    // discriminator (RECOGNITION_BASELINE: AUC ~0.998 vs peak-pair ~0.941).
+    let familiarity = coverage_familiarity.max(best_similarity);
 
     let (verdict, odds_of_old) = match traces.first() {
         None => (Verdict::Novel, 0.0),
@@ -250,7 +305,7 @@ mod tests {
             fm(4, "b", "pair: common2", 90),
             fm(5, "b", "pair: common3", 90),
         ];
-        let r = score_candidates(&prints, &pair_matches, &[], 100, &ScoreConfig::default());
+        let r = score_candidates(&prints, &pair_matches, &[], &[], 100, &ScoreConfig::default(), 0.0, 0.0);
         assert_eq!(r.traces[0].memory_id, "a", "rarity must beat raw count");
     }
 
@@ -267,7 +322,7 @@ mod tests {
                 ]
             })
             .collect();
-        let r = score_candidates(&prints, &pair_matches, &[], 100, &ScoreConfig::default());
+        let r = score_candidates(&prints, &pair_matches, &[], &[], 100, &ScoreConfig::default(), 0.0, 0.0);
         assert!(
             !matches!(r.verdict, Verdict::Recognized { .. }),
             "ambiguous dual-match must not lock: {:?}",
@@ -279,7 +334,7 @@ mod tests {
     #[test]
     fn no_matches_is_novel_with_full_novelty() {
         let prints = prints_with(10);
-        let r = score_candidates(&prints, &[], &[], 100, &ScoreConfig::default());
+        let r = score_candidates(&prints, &[], &[], &[], 100, &ScoreConfig::default(), 0.0, 0.0);
         assert_eq!(r.verdict, Verdict::Novel);
         assert_eq!(r.familiarity, 0.0);
         assert_eq!(r.novelty, 1.0);
@@ -290,7 +345,7 @@ mod tests {
         let prints = prints_with(10);
         let pair = vec![fm(1, "a", "pair: x", 1)];
         let gram = vec![fm(2, "b", "run: 'x y z'", 1)];
-        let r = score_candidates(&prints, &pair, &gram, 100, &ScoreConfig::default());
+        let r = score_candidates(&prints, &pair, &gram, &[], 100, &ScoreConfig::default(), 0.0, 0.0);
         let a = r.traces.iter().find(|t| t.memory_id == "a").unwrap();
         let b = r.traces.iter().find(|t| t.memory_id == "b").unwrap();
         assert!(b.score > a.score * 1.9, "gram evidence must weigh ~2x");

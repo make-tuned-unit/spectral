@@ -37,16 +37,12 @@ pub fn ambient_boost_for_hit(hit: &MemoryHit, context: &RecognitionContext) -> f
         boost *= 1.5;
     }
 
-    if let Some(ref created_str) = hit.created_at {
-        if let Ok(created) = chrono::NaiveDateTime::parse_from_str(created_str, "%Y-%m-%d %H:%M:%S")
-        {
-            let created_utc = created.and_utc();
-            let age_minutes = (context.now - created_utc).num_minutes();
-            if (0..60).contains(&age_minutes) {
-                boost *= 1.3;
-            } else if (60..1440).contains(&age_minutes) {
-                boost *= 1.1;
-            }
+    if let Some(created_utc) = hit.created_at.as_deref().and_then(crate::ranking::parse_created_at) {
+        let age_minutes = (context.now - created_utc).num_minutes();
+        if (0..60).contains(&age_minutes) {
+            boost *= 1.3;
+        } else if (60..1440).contains(&age_minutes) {
+            boost *= 1.1;
         }
     }
 
@@ -190,28 +186,32 @@ pub fn run_cascade_pipeline(
     );
 
     // ── Recall→Recognition feedback: auto-reinforce + event logging ──
-    // Both are best-effort: failures never block retrieval.
+    // Both are best-effort: failures never block retrieval. Both are
+    // skipped entirely on a read-only brain: federated read-time fan-out
+    // must not mutate a member's ranking state (score inflation, decay
+    // clock resets) or write the caller's query metadata into its store.
+    if !brain.is_read_only() {
+        // Auto-reinforce returned memories with a small strength nudge.
+        // Repeated retrievals accumulate; this makes the Archivist's
+        // decay/boost loop functional without caller-explicit reinforcement.
+        const AUTO_REINFORCE_STRENGTH: f64 = 0.01;
+        for hit in &results {
+            let _ = brain.reinforce_by_id(&hit.key, AUTO_REINFORCE_STRENGTH);
+        }
 
-    // Auto-reinforce returned memories with a small strength nudge.
-    // Repeated retrievals accumulate; this makes the Archivist's
-    // decay/boost loop functional without caller-explicit reinforcement.
-    const AUTO_REINFORCE_STRENGTH: f64 = 0.01;
-    for hit in &results {
-        let _ = brain.reinforce_by_id(&hit.key, AUTO_REINFORCE_STRENGTH);
+        // Log retrieval event for future co-access mining / pattern detection.
+        let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();
+        let event = spectral_ingest::RetrievalEvent {
+            query_hash: spectral_ingest::hash_query(query),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            memory_ids_json: serde_json::to_string(&memory_ids).unwrap_or_default(),
+            method: "cascade".into(),
+            wing: results.first().and_then(|h| h.wing.clone()),
+            question_type: None, // Set by bench caller if applicable
+            session_id: context.session_id.clone(),
+        };
+        let _ = brain.log_retrieval_event(&event);
     }
-
-    // Log retrieval event for future co-access mining / pattern detection.
-    let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();
-    let event = spectral_ingest::RetrievalEvent {
-        query_hash: spectral_ingest::hash_query(query),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        memory_ids_json: serde_json::to_string(&memory_ids).unwrap_or_default(),
-        method: "cascade".into(),
-        wing: results.first().and_then(|h| h.wing.clone()),
-        question_type: None, // Set by bench caller if applicable
-        session_id: context.session_id.clone(),
-    };
-    let _ = brain.log_retrieval_event(&event);
 
     Ok(results)
 }

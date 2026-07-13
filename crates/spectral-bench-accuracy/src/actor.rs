@@ -28,6 +28,30 @@ fn extract_usage(json: &serde_json::Value) -> Option<TokenUsage> {
     })
 }
 
+/// Extract the assistant's text from a Messages API response. Thinking-enabled
+/// models (e.g. sonnet-5) return a `thinking` block as `content[0]` and the
+/// answer as a later `text` block, so we scan for the first block with a `text`
+/// field rather than assuming `content[0]`.
+pub(crate) fn extract_text(json: &serde_json::Value) -> Option<String> {
+    json.get("content")?
+        .as_array()?
+        .iter()
+        .find_map(|block| {
+            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                block.get("text").and_then(|t| t.as_str()).map(String::from)
+            } else {
+                None
+            }
+        })
+        // Fallback: any block that happens to carry a text field.
+        .or_else(|| {
+            json["content"]
+                .as_array()?
+                .iter()
+                .find_map(|b| b.get("text").and_then(|t| t.as_str()).map(String::from))
+        })
+}
+
 /// Actor that calls the Anthropic Messages API.
 pub struct AnthropicActor {
     api_key: String,
@@ -72,10 +96,8 @@ impl AnthropicActor {
 
         let json: serde_json::Value = resp.json()?;
         let usage = extract_usage(&json);
-        let text = json["content"][0]["text"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("Response missing content[0].text"))?;
+        let text = extract_text(&json)
+            .ok_or_else(|| anyhow::anyhow!("Response missing a text block"))?;
         Ok((text, usage))
     }
 
@@ -132,15 +154,12 @@ impl Actor for AnthropicActor {
 
         let json: serde_json::Value = resp.json()?;
         let usage = extract_usage(&json);
-        let text = json["content"][0]["text"]
-            .as_str()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Actor response missing content[0].text: {}",
-                    serde_json::to_string(&json).unwrap_or_default()
-                )
-            })?
-            .to_string();
+        let text = extract_text(&json).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Actor response missing a text block: {}",
+                serde_json::to_string(&json).unwrap_or_default()
+            )
+        })?;
         Ok((text, usage))
     }
 

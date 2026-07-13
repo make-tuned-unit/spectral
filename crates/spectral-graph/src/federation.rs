@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 
 use spectral_cascade::RecognitionContext;
 use spectral_core::identity::BrainId;
+use spectral_core::visibility::Visibility;
 use spectral_ingest::MemoryHit;
 
 use crate::brain::Brain;
@@ -45,6 +46,86 @@ use crate::error::Error;
 /// Default provenance weight applied to a child's hits: rank purely on the
 /// child's own `signal_score`.
 pub const DEFAULT_BRAIN_WEIGHT: f64 = 1.0;
+
+/// Default Reciprocal Rank Fusion constant. 60 is the value from Cormack et
+/// al. (2009), the de-facto standard used across search/RAG systems.
+pub const DEFAULT_RRF_K: f64 = 60.0;
+
+/// How the coordinator fuses each child's ranked results into one list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FusionMethod {
+    /// **Reciprocal Rank Fusion** (the field-standard rank-fusion method,
+    /// Cormack et al. 2009) — the default. Each child contributes
+    /// `weight / (k + rank)` for every result, summed across children by
+    /// content identity. Because it ranks on *position*, not the member's
+    /// self-asserted `signal_score`, it is immune to the score-inflation
+    /// poisoning attack; because contributions *sum across* children, content
+    /// independently returned by multiple members naturally outranks a lone
+    /// assertion (corroboration for free). One widely-accepted primitive
+    /// subsumes both the anti-flooding and corroboration guarantees.
+    Rrf {
+        /// The RRF `k` constant (default [`DEFAULT_RRF_K`]). Larger `k`
+        /// flattens the contribution of top ranks.
+        k: f64,
+    },
+    /// Rank purely on the member's raw `signal_score × weight`. This is the
+    /// legacy behavior and is **vulnerable** to a member self-asserting max
+    /// scores to dominate the merge — kept only for reproducing v1 results
+    /// and for the poisoning benchmark's "undefended" arm.
+    RawScore,
+}
+
+/// How the coordinator merges and trusts hits across children.
+///
+/// The threat this addresses (verified in the 2026 memory-poisoning
+/// literature, see docs/internal/federation-fundamentals-2026-07-10.md): a
+/// member fully controls its own memories' `signal_score`, timestamps, and
+/// content, so ranking a merged fan-out on raw `signal_score × weight` lets a
+/// single malicious peer flood the top of every result by self-asserting
+/// score-1.0, keyword-stuffed memories. RRF fusion removes that cheap attack
+/// and rewards cross-member agreement; the `per_child_cap` bounds flooding
+/// volume. None of this stops a *signed* insider — that is what signed
+/// provenance ([`Brain::verify_hit`](crate::brain::Brain::verify_hit)) is for.
+#[derive(Debug, Clone)]
+pub struct MergePolicy {
+    /// Rank-fusion method across children. Default [`FusionMethod::Rrf`].
+    pub fusion: FusionMethod,
+    /// Cap on the number of hits contributed per child (its top-N by own
+    /// order), applied before fusion. Flooding-volume defense: one member
+    /// cannot crowd out the others regardless of how many hits it returns.
+    /// `None` = uncapped. Default `None`.
+    pub per_child_cap: Option<usize>,
+}
+
+impl Default for MergePolicy {
+    fn default() -> Self {
+        Self {
+            fusion: FusionMethod::Rrf { k: DEFAULT_RRF_K },
+            per_child_cap: None,
+        }
+    }
+}
+
+impl MergePolicy {
+    /// The legacy v1 behavior: rank on raw `signal_score × weight`, no fusion,
+    /// no cap. Kept for reproducing v1 results and as the poisoning
+    /// benchmark's undefended baseline; **not** recommended for multi-user
+    /// federation.
+    pub fn raw_scores() -> Self {
+        Self {
+            fusion: FusionMethod::RawScore,
+            per_child_cap: None,
+        }
+    }
+}
+
+/// Coordinator-side content fingerprint for corroboration: normalized
+/// (trimmed, lowercased, whitespace-collapsed) content hashed with blake3.
+/// Computed here because `MemoryHit` carries no content hash in v1.
+fn content_fingerprint(content: &str) -> [u8; 32] {
+    let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    *blake3::hash(normalized.to_lowercase().as_bytes()).as_bytes()
+}
 
 /// A directory of the child brains a coordinator knows about, mapping
 /// [`BrainId`] → on-disk `data_dir`.
@@ -173,7 +254,14 @@ impl FederationCoordinator {
     ) -> &mut Self {
         let id = *brain.brain_id();
         self.registry.register(id, data_dir);
-        self.children.push(Child { brain, weight });
+        // Mirror the registry's replace-on-duplicate semantics: re-adding a
+        // BrainId swaps the child handle instead of double-counting its hits.
+        let child = Child { brain, weight };
+        if let Some(existing) = self.children.iter_mut().find(|c| c.brain.brain_id() == &id) {
+            *existing = child;
+        } else {
+            self.children.push(child);
+        }
         self
     }
 
@@ -195,6 +283,17 @@ impl FederationCoordinator {
     /// Fan a recall out across all child brains and return one merged,
     /// provenance-ranked result.
     ///
+    /// `visibility` is the **federation boundary**: only hits whose own
+    /// visibility label admits this context cross it (`content >= context`,
+    /// same rule as single-brain recall). A coordinator merging brains
+    /// contributed by different users passes [`Visibility::Team`] (or
+    /// stricter) so members' `Private` memories never leave their brain; a
+    /// coordinator over one user's own brains may pass
+    /// [`Visibility::Private`] to see everything. Enforcement happens here,
+    /// coordinator-side, because the underlying cascade path does not
+    /// filter — and the child's labels are self-asserted, so this is
+    /// honest-participant privacy, not mandatory access control.
+    ///
     /// Each child is queried live (no cache), so any child-side change is
     /// reflected here on the next call. Ranking is by **provenance-weighted
     /// score** descending; ties break by origin [`BrainId`] bytes (it is not
@@ -203,54 +302,150 @@ impl FederationCoordinator {
     /// v1 queries children **sequentially**. Because `recall_cascade` is
     /// `&self`, this is trivially parallelizable (one thread per child) if the
     /// measured latency warrants it.
+    ///
+    /// Merging uses the default [`MergePolicy`] (Reciprocal Rank Fusion). Use
+    /// [`fan_out_recall_with_policy`](Self::fan_out_recall_with_policy) to
+    /// override.
     pub fn fan_out_recall(
         &self,
         query: &str,
         context: &RecognitionContext,
         config: &CascadePipelineConfig,
+        visibility: Visibility,
     ) -> Result<FanoutResult, Error> {
-        let mut ranked: Vec<LabeledHit> = Vec::new();
-        let mut per_brain: Vec<(BrainId, usize)> = Vec::with_capacity(self.children.len());
+        self.fan_out_recall_with_policy(query, context, config, visibility, &MergePolicy::default())
+    }
+
+    /// Fan-out recall with an explicit [`MergePolicy`] controlling how member
+    /// scores are trusted and combined (poisoning-resistance knobs).
+    pub fn fan_out_recall_with_policy(
+        &self,
+        query: &str,
+        context: &RecognitionContext,
+        config: &CascadePipelineConfig,
+        visibility: Visibility,
+        policy: &MergePolicy,
+    ) -> Result<FanoutResult, Error> {
+        let mut contributions: Vec<(BrainId, f64, Vec<MemoryHit>)> =
+            Vec::with_capacity(self.children.len());
         let mut recognition_token_cost = 0usize;
 
         for child in &self.children {
             let origin = *child.brain.brain_id();
             let result = child.brain.recall_cascade(query, context, config)?;
             recognition_token_cost += result.total_recognition_token_cost;
-            per_brain.push((origin, result.merged_hits.len()));
-            for hit in result.merged_hits {
-                let effective_score = hit.signal_score * child.weight;
-                ranked.push(LabeledHit {
-                    origin,
-                    effective_score,
-                    hit,
-                });
-            }
+            let visible = result
+                .merged_hits
+                .into_iter()
+                .filter(|hit| crate::brain::str_to_vis(&hit.visibility).allows(visibility))
+                .collect::<Vec<_>>();
+            contributions.push((origin, child.weight, visible));
         }
 
-        // Merge-and-rank. Primary key: provenance-weighted score, descending.
-        // Tiebreak by origin BrainId bytes (BrainId is NOT Ord) then memory id
-        // — both ascending — for a total, deterministic order.
-        ranked.sort_by(|a, b| {
-            b.effective_score
-                .total_cmp(&a.effective_score)
-                .then_with(|| a.origin.as_bytes().cmp(b.origin.as_bytes()))
-                .then_with(|| a.hit.id.cmp(&b.hit.id))
-        });
-
-        // Dedup seam (intentionally a no-op in v1): overlapping memories from
-        // different brains are BOTH kept — distinct provenance, defer-to-
-        // ranking. A future content-hash dedup would slot HERE, collapsing
-        // equal-content hits and keeping the highest-ranked provenance.
-        // `MemoryHit` carries no content hash today, so v1 cannot dedup by
-        // content without a core change; this is out of scope by design.
-
+        let (ranked, per_brain) = merge_and_rank(contributions, policy);
         Ok(FanoutResult {
             ranked,
             per_brain,
             recognition_token_cost,
         })
     }
+}
+
+/// Merge per-child recall contributions into one provenance-ranked list under
+/// a [`MergePolicy`]. Pure and side-effect free — the trust/anti-poisoning
+/// logic lives here so it is testable on synthetic hits with controlled
+/// signal scores, independent of the retrieval stack.
+///
+/// `contributions` is `(origin, weight, hits_in_child_order)` per child.
+/// Returns the ranked hits and the per-brain contribution counts (post-cap).
+fn merge_and_rank(
+    contributions: Vec<(BrainId, f64, Vec<MemoryHit>)>,
+    policy: &MergePolicy,
+) -> (Vec<LabeledHit>, Vec<(BrainId, usize)>) {
+    let mut ranked: Vec<LabeledHit> = Vec::new();
+    let mut per_brain: Vec<(BrainId, usize)> = Vec::with_capacity(contributions.len());
+
+    // Apply the per-child cap first, then record each hit with its
+    // within-child rank (needed for RRF).
+    let mut capped: Vec<(BrainId, f64, Vec<MemoryHit>)> = Vec::with_capacity(contributions.len());
+    for (origin, weight, mut hits) in contributions {
+        if let Some(cap) = policy.per_child_cap {
+            hits.truncate(cap);
+        }
+        per_brain.push((origin, hits.len()));
+        capped.push((origin, weight, hits));
+    }
+
+    match &policy.fusion {
+        FusionMethod::RawScore => {
+            // Legacy / undefended: rank on the member's self-asserted score.
+            for (origin, weight, hits) in capped {
+                for hit in hits {
+                    ranked.push(LabeledHit {
+                        origin,
+                        effective_score: hit.signal_score * weight,
+                        hit,
+                    });
+                }
+            }
+        }
+        FusionMethod::Rrf { k } => {
+            // Reciprocal Rank Fusion, deduplicated per origin. A member
+            // contributes AT MOST ONCE per content identity (its best rank),
+            // so it cannot self-corroborate by flooding identical copies — the
+            // exact attack the poisoning benchmark surfaced. Contributions then
+            // sum ACROSS DISTINCT origins, so content independently returned by
+            // K members outranks a lone assertion (genuine corroboration).
+            // Every surviving copy carries the fused score, preserving each
+            // origin's provenance.
+            let mut best_rank: HashMap<([u8; 32], [u8; 32]), usize> = HashMap::new();
+            for (origin, _weight, hits) in &capped {
+                let obytes = *origin.as_bytes();
+                for (rank, hit) in hits.iter().enumerate() {
+                    let fp = content_fingerprint(&hit.content);
+                    best_rank
+                        .entry((obytes, fp))
+                        .and_modify(|r| *r = (*r).min(rank))
+                        .or_insert(rank);
+                }
+            }
+            // weight lookup by origin bytes.
+            let weight_of: HashMap<[u8; 32], f64> =
+                capped.iter().map(|(o, w, _)| (*o.as_bytes(), *w)).collect();
+            let mut fused: HashMap<[u8; 32], f64> = HashMap::new();
+            for ((obytes, fp), rank) in &best_rank {
+                let w = weight_of.get(obytes).copied().unwrap_or(1.0);
+                *fused.entry(*fp).or_insert(0.0) += w / (k + *rank as f64);
+            }
+            for (origin, _weight, hits) in capped {
+                for hit in hits {
+                    let score = *fused
+                        .get(&content_fingerprint(&hit.content))
+                        .unwrap_or(&0.0);
+                    ranked.push(LabeledHit {
+                        origin,
+                        effective_score: score,
+                        hit,
+                    });
+                }
+            }
+        }
+    }
+
+    // Primary key: effective (fused) score, descending. Tiebreak by origin
+    // BrainId bytes (BrainId is NOT Ord) then memory id — both ascending — for
+    // a total, deterministic order.
+    ranked.sort_by(|a, b| {
+        b.effective_score
+            .total_cmp(&a.effective_score)
+            .then_with(|| a.origin.as_bytes().cmp(b.origin.as_bytes()))
+            .then_with(|| a.hit.id.cmp(&b.hit.id))
+    });
+
+    // Overlapping memories from different brains are BOTH kept — distinct
+    // provenance — but share the fused score, so a corroborated item's copies
+    // sit together at the top while each origin's receipt is preserved.
+    (ranked, per_brain)
 }
 
 #[cfg(test)]
@@ -273,6 +468,8 @@ mod tests {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
@@ -346,6 +543,7 @@ mod tests {
                 "shared topic",
                 &RecognitionContext::empty(),
                 &CascadePipelineConfig::default(),
+                Visibility::Private,
             )
             .unwrap();
 
@@ -408,6 +606,7 @@ mod tests {
                     "recall probe token",
                     &RecognitionContext::empty(),
                     &CascadePipelineConfig::default(),
+                    Visibility::Private,
                 )
                 .unwrap()
         };
@@ -482,6 +681,7 @@ mod tests {
                 query,
                 &RecognitionContext::empty(),
                 &CascadePipelineConfig::default(),
+                Visibility::Private,
             )
             .unwrap();
         assert!(
@@ -508,6 +708,7 @@ mod tests {
                 query,
                 &RecognitionContext::empty(),
                 &CascadePipelineConfig::default(),
+                Visibility::Private,
             )
             .unwrap();
         assert!(
@@ -546,10 +747,14 @@ mod tests {
         // Warm one query (first recall pays one-time setup), then measure.
         let ctx = RecognitionContext::empty();
         let cfg = CascadePipelineConfig::default();
-        let _ = henry.fan_out_recall("latency probe", &ctx, &cfg).unwrap();
+        let _ = henry
+            .fan_out_recall("latency probe", &ctx, &cfg, Visibility::Private)
+            .unwrap();
 
         let start = std::time::Instant::now();
-        let result = henry.fan_out_recall("latency probe", &ctx, &cfg).unwrap();
+        let result = henry
+            .fan_out_recall("latency probe", &ctx, &cfg, Visibility::Private)
+            .unwrap();
         let elapsed = start.elapsed();
 
         eprintln!(
@@ -565,6 +770,374 @@ mod tests {
         assert!(
             elapsed.as_secs() < 5,
             "fan-out latency wildly out of range: {elapsed:?}"
+        );
+    }
+
+    /// Federation boundary: a Team-context fan-out must not surface any
+    /// child's Private memories; the child's Public memories still cross.
+    /// A Private-context fan-out (single-user coordinator) sees everything.
+    #[test]
+    fn fan_out_visibility_boundary_filters_private() {
+        let tmp = TempDir::new().unwrap();
+        let (a, a_dir) = open_child(&tmp, "a");
+
+        a.remember(
+            "priv",
+            "shared topic private secret memory",
+            Visibility::Private,
+        )
+        .unwrap();
+        a.remember("pub", "shared topic public note memory", Visibility::Public)
+            .unwrap();
+
+        let mut henry = FederationCoordinator::new();
+        henry.add_brain(a, a_dir);
+
+        let team = henry
+            .fan_out_recall(
+                "shared topic memory",
+                &RecognitionContext::empty(),
+                &CascadePipelineConfig::default(),
+                Visibility::Team,
+            )
+            .unwrap();
+        assert!(
+            !team
+                .ranked
+                .iter()
+                .any(|h| h.hit.content.contains("private secret")),
+            "Private memory crossed a Team federation boundary"
+        );
+        assert!(
+            team.ranked
+                .iter()
+                .any(|h| h.hit.content.contains("public note")),
+            "Public memory should cross a Team federation boundary"
+        );
+
+        let own = henry
+            .fan_out_recall(
+                "shared topic memory",
+                &RecognitionContext::empty(),
+                &CascadePipelineConfig::default(),
+                Visibility::Private,
+            )
+            .unwrap();
+        assert!(
+            own.ranked
+                .iter()
+                .any(|h| h.hit.content.contains("private secret")),
+            "Private-context fan-out over one's own brains should see private memories"
+        );
+    }
+
+    /// A child opened read-only participates in fan-out without being
+    /// mutated: no signal-score inflation, no retrieval events written, and
+    /// write APIs on the handle are rejected.
+    #[test]
+    fn read_only_child_is_not_mutated_by_fan_out() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("member");
+
+        // Build the member brain read-write, then close it.
+        {
+            let owner = Brain::open(child_config(dir.clone())).unwrap();
+            owner
+                .remember(
+                    "fact",
+                    "shared topic member fact memory",
+                    Visibility::Public,
+                )
+                .unwrap();
+        }
+
+        // Reopen read-only and federate over it.
+        let ro = Brain::open(BrainConfig {
+            read_only: true,
+            ..child_config(dir.clone())
+        })
+        .unwrap();
+        assert!(ro.is_read_only());
+        // Write APIs are rejected with a dedicated error.
+        match ro.remember("nope", "should fail", Visibility::Private) {
+            Err(Error::ReadOnly(_)) => {}
+            other => panic!("expected Error::ReadOnly, got {other:?}"),
+        }
+
+        let baseline_events = ro.count_retrieval_events().unwrap();
+        let mut henry = FederationCoordinator::new();
+        henry.add_brain(ro, dir.clone());
+        let result = henry
+            .fan_out_recall(
+                "shared topic member fact",
+                &RecognitionContext::empty(),
+                &CascadePipelineConfig::default(),
+                Visibility::Team,
+            )
+            .unwrap();
+        assert!(
+            result
+                .ranked
+                .iter()
+                .any(|h| h.hit.content.contains("member fact")),
+            "read-only child should still serve hits"
+        );
+        let signal_after_ro = result.ranked[0].hit.signal_score;
+        drop(henry);
+
+        // Reopen read-write: the fan-out must have left no trace.
+        let owner = Brain::open(child_config(dir)).unwrap();
+        assert_eq!(
+            owner.count_retrieval_events().unwrap(),
+            baseline_events,
+            "fan-out over a read-only child must not log retrieval events into it"
+        );
+        let hits = owner
+            .recall_topk_fts(
+                "member fact",
+                &crate::brain::RecallTopKConfig::default(),
+                Visibility::Private,
+            )
+            .unwrap();
+        let stored_signal = hits
+            .iter()
+            .find(|h| h.key == "fact")
+            .expect("member fact present")
+            .signal_score;
+        assert!(
+            (stored_signal - signal_after_ro).abs() < 1e-9,
+            "fan-out over a read-only child must not auto-reinforce its memories \
+             (stored {stored_signal}, seen {signal_after_ro})"
+        );
+    }
+
+    /// Poisoning defense: a member that floods the fan-out with self-asserted
+    /// max-signal memories must NOT out-rank an honest answer under the
+    /// default RRF policy — whereas under the legacy raw-score policy it buries
+    /// it. Tested on the pure [`merge_and_rank`] with controlled signal scores
+    /// so the result is deterministic and independent of the retrieval stack.
+    #[test]
+    fn rrf_blocks_self_asserted_score_dominance() {
+        fn hit(id: &str, content: &str, signal: f64) -> MemoryHit {
+            MemoryHit {
+                id: id.into(),
+                key: id.into(),
+                content: content.into(),
+                wing: None,
+                hall: None,
+                signal_score: signal,
+                visibility: "public".into(),
+                hits: 1,
+                source: None,
+                device_id: None,
+                confidence: 1.0,
+                created_at: None,
+                last_reinforced_at: None,
+                episode_id: None,
+                declarative_density: None,
+                description: None,
+                source_brain_id: None,
+                signature: None,
+            }
+        }
+        let honest = BrainId::from_bytes([1u8; 32]);
+        let attacker = BrainId::from_bytes([2u8; 32]);
+
+        // Honest: one genuinely relevant answer at a moderate signal.
+        // Attacker: five poisons all self-asserted to the maximum signal 1.0.
+        let contributions = || {
+            vec![
+                (honest, 1.0, vec![hit("h1", "the authoritative answer", 0.5)]),
+                (
+                    attacker,
+                    1.0,
+                    (0..5)
+                        .map(|i| hit(&format!("p{i}"), &format!("poison payload {i}"), 1.0))
+                        .collect(),
+                ),
+            ]
+        };
+
+        let honest_rank = |ranked: &[LabeledHit]| -> usize {
+            ranked.iter().position(|h| h.origin == honest).unwrap()
+        };
+        let attacker_above_honest = |ranked: &[LabeledHit]| -> usize {
+            let hr = honest_rank(ranked);
+            ranked[..hr].iter().filter(|h| h.origin == attacker).count()
+        };
+
+        // Raw scores: all five poisons (signal 1.0) outrank the honest answer
+        // (0.5) — the honest answer is buried at rank 5. This is the attack.
+        let (raw, _) = merge_and_rank(contributions(), &MergePolicy::raw_scores());
+        assert_eq!(
+            attacker_above_honest(&raw),
+            5,
+            "raw-score merge buries the honest answer under the whole flood"
+        );
+
+        // Default policy (RRF): ranks on within-child *position*, not the
+        // self-asserted score, so the attacker's flood contributes a decaying
+        // 1/(k+rank) series. The honest answer (the top of its own list) ties
+        // the attacker's single top poison and wins the deterministic
+        // tiebreak; every other poison sinks below it. Flood neutralized.
+        let (safe, _) = merge_and_rank(contributions(), &MergePolicy::default());
+        assert_eq!(
+            attacker_above_honest(&safe),
+            0,
+            "RRF must lift the honest answer above the whole flood, {} still above",
+            attacker_above_honest(&safe)
+        );
+        assert_eq!(honest_rank(&safe), 0, "honest answer should be at the top under RRF");
+    }
+
+    /// RRF self-corroboration defense (regression for the bug the poisoning
+    /// benchmark surfaced): a single member flooding MANY identical copies of a
+    /// poison must NOT out-rank content genuinely corroborated by two distinct
+    /// members. RRF dedupes contributions per origin, so the flood counts once.
+    #[test]
+    fn rrf_ignores_self_corroboration_by_identical_flood() {
+        fn hit(id: &str, content: &str) -> MemoryHit {
+            MemoryHit {
+                id: id.into(),
+                key: id.into(),
+                content: content.into(),
+                wing: None,
+                hall: None,
+                signal_score: 1.0,
+                visibility: "public".into(),
+                hits: 1,
+                source: None,
+                device_id: None,
+                confidence: 1.0,
+                created_at: None,
+                last_reinforced_at: None,
+                episode_id: None,
+                declarative_density: None,
+                description: None,
+                source_brain_id: None,
+                signature: None,
+            }
+        }
+        let honest_a = BrainId::from_bytes([1u8; 32]);
+        let honest_b = BrainId::from_bytes([2u8; 32]);
+        let attacker = BrainId::from_bytes([9u8; 32]);
+
+        // Two honest members independently return the SAME genuine answer;
+        // the attacker returns SIX identical copies of a poison.
+        let contributions = vec![
+            (honest_a, 1.0, vec![hit("ha", "the genuine corroborated answer")]),
+            (honest_b, 1.0, vec![hit("hb", "the genuine corroborated answer")]),
+            (
+                attacker,
+                1.0,
+                (0..6).map(|i| hit(&format!("p{i}"), "the attacker poison")).collect(),
+            ),
+        ];
+
+        let (ranked, _) = merge_and_rank(contributions, &MergePolicy::default());
+        assert!(
+            ranked[0].hit.content.contains("genuine"),
+            "genuine 2-member corroboration must outrank a 6x identical self-flood; top was {:?}",
+            ranked[0].hit.content
+        );
+        // The poison must not appear until after the corroborated answer.
+        let poison_rank = ranked.iter().position(|h| h.origin == attacker).unwrap();
+        let honest_rank = ranked.iter().position(|h| h.origin != attacker).unwrap();
+        assert!(honest_rank < poison_rank, "honest content must rank above the flood");
+    }
+
+    /// Corroboration boost: content independently contributed by two members
+    /// outranks an uncorroborated memory that would otherwise tie, and a lone
+    /// member cannot self-corroborate by returning duplicates.
+    #[test]
+    fn corroboration_boost_rewards_independent_agreement() {
+        let tmp = TempDir::new().unwrap();
+        let (a, a_dir) = open_child(&tmp, "a");
+        let (b, b_dir) = open_child(&tmp, "b");
+
+        let agreed = "shared topic the corroborated fact everyone agrees on";
+        a.remember("a-agreed", agreed, Visibility::Public).unwrap();
+        b.remember("b-agreed", agreed, Visibility::Public).unwrap();
+        // A lone extra memory in a, same text as itself won't self-corroborate.
+        a.remember(
+            "a-solo",
+            "shared topic a solo uncorroborated claim from a only",
+            Visibility::Public,
+        )
+        .unwrap();
+
+        let mut henry = FederationCoordinator::new();
+        henry.add_brain(a, a_dir);
+        henry.add_brain(b, b_dir);
+
+        let result = henry
+            .fan_out_recall(
+                "shared topic fact claim",
+                &RecognitionContext::empty(),
+                &CascadePipelineConfig::default(),
+                Visibility::Team,
+            )
+            .unwrap();
+
+        // The corroborated content (2 independent origins) ranks first.
+        assert!(
+            result.ranked[0].hit.content.contains("corroborated fact"),
+            "independently-agreed content should outrank uncorroborated content, \
+             got top: {:?}",
+            result.ranked[0].hit.content
+        );
+        // Both origins of the agreed fact are still present (no dedup).
+        let agreed_origins: std::collections::HashSet<BrainId> = result
+            .ranked
+            .iter()
+            .filter(|h| h.hit.content.contains("corroborated fact"))
+            .map(|h| h.origin)
+            .collect();
+        assert_eq!(agreed_origins.len(), 2, "both contributors should be visible");
+    }
+
+    /// Per-child cap bounds one member's contribution regardless of how many
+    /// hits it returns.
+    #[test]
+    fn per_child_cap_bounds_contribution() {
+        let tmp = TempDir::new().unwrap();
+        let (a, a_dir) = open_child(&tmp, "a");
+        let (b, b_dir) = open_child(&tmp, "b");
+
+        for i in 0..6 {
+            a.remember(
+                &format!("a-{i}"),
+                &format!("shared topic memory number {i} from a"),
+                Visibility::Public,
+            )
+            .unwrap();
+        }
+        b.remember("b-1", "shared topic memory from b", Visibility::Public)
+            .unwrap();
+
+        let a_id = *a.brain_id();
+        let mut henry = FederationCoordinator::new();
+        henry.add_brain(a, a_dir);
+        henry.add_brain(b, b_dir);
+
+        let policy = MergePolicy {
+            per_child_cap: Some(2),
+            ..MergePolicy::default()
+        };
+        let result = henry
+            .fan_out_recall_with_policy(
+                "shared topic memory",
+                &RecognitionContext::empty(),
+                &CascadePipelineConfig::default(),
+                Visibility::Team,
+                &policy,
+            )
+            .unwrap();
+
+        let a_count = result.ranked.iter().filter(|h| h.origin == a_id).count();
+        assert!(
+            a_count <= 2,
+            "per-child cap should bound a's contribution to 2, got {a_count}"
         );
     }
 }

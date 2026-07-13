@@ -148,6 +148,23 @@ impl Brain {
         self.inner.brain_id()
     }
 
+    /// Returns this brain's public verifying key (for peers to verify its
+    /// signed contributions).
+    pub fn verifying_key(&self) -> &spectral_core::identity::VerifyingKey {
+        self.inner.verifying_key()
+    }
+
+    /// Verify a memory hit's signed provenance against a contributor's public
+    /// key. `true` only if the hit is signed, the key matches its
+    /// `source_brain_id`, and the signature covers its content, timestamp,
+    /// and visibility. See [`spectral_graph::brain::Brain::verify_hit`].
+    pub fn verify_hit(
+        hit: &spectral_ingest::MemoryHit,
+        pubkey: &spectral_core::identity::VerifyingKey,
+    ) -> bool {
+        spectral_graph::brain::Brain::verify_hit(hit, pubkey)
+    }
+
     /// Assert a fact: subject, predicate, object.
     ///
     /// Both sides are canonicalized through the ontology; the predicate
@@ -281,6 +298,34 @@ impl Brain {
         self.inner.backfill_spectrograms()
     }
 
+    /// Hard-delete a memory by key across every substrate and verify it is
+    /// gone (right-to-be-forgotten). Returns a [`ForgetReport`] with
+    /// per-substrate deletion counts and post-delete recall/recognize probes.
+    /// Unlike consolidation (soft hide), the content becomes unrecoverable.
+    pub fn forget(&self, key: &str) -> Result<spectral_graph::brain::ForgetReport, Error> {
+        self.inner.forget(key)
+    }
+
+    /// Audit a single memory's spectrogram with full dimension introspection.
+    pub fn audit_spectrogram(
+        &self,
+        memory_id: &str,
+    ) -> Result<spectral_graph::brain::AuditReport, Error> {
+        self.inner.audit_spectrogram(memory_id)
+    }
+
+    /// Recognition: "have I encountered this before — and what happened
+    /// last time?" Deterministic, no LLM, sub-millisecond; the result
+    /// carries the exact matched features behind the verdict
+    /// ([`RecognitionResult`] with [`Verdict`], familiarity, novelty,
+    /// traces, and evidence).
+    ///
+    /// Distinct from recall: recall retrieves what's relevant to a query;
+    /// recognize judges whether a stimulus is a re-encounter and of what.
+    pub fn recognize(&self, stimulus: &str) -> Result<RecognitionResult, Error> {
+        self.inner.recognize(stimulus)
+    }
+
     /// Reinforce memories that the caller found useful from a recall result.
     pub fn reinforce(&self, opts: ReinforceOpts) -> Result<ReinforceResult, Error> {
         self.inner.reinforce(opts)
@@ -388,6 +433,29 @@ impl Brain {
         self.inner.set_entity_description(entity_id, description)
     }
 
+    /// Write (insert-or-update) a typed field on an entity, with provenance.
+    /// An `Enriched` write never overwrites a `Manual` field (enforced in the
+    /// store). Returns `false` when suppressed, `true` when applied.
+    pub fn set_entity_field(
+        &self,
+        entity_id: &spectral_core::entity_id::EntityId,
+        field_name: &str,
+        value: &str,
+        source: spectral_ingest::FieldSource,
+        source_url: Option<&str>,
+    ) -> Result<bool, Error> {
+        self.inner
+            .set_entity_field(entity_id, field_name, value, source, source_url)
+    }
+
+    /// Read all typed fields for an entity (provenance included).
+    pub fn get_entity_fields(
+        &self,
+        entity_id: &spectral_core::entity_id::EntityId,
+    ) -> Result<Vec<spectral_ingest::EntityField>, Error> {
+        self.inner.get_entity_fields(entity_id)
+    }
+
     /// List memories where description IS NULL, ordered by created_at DESC.
     pub fn list_undescribed(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
         self.inner.list_undescribed(limit)
@@ -416,6 +484,74 @@ impl Brain {
     /// List memory keys not consolidated as sources.
     pub fn list_unconsolidated(&self, limit: usize) -> Result<Vec<String>, Error> {
         self.inner.list_unconsolidated(limit)
+    }
+
+    /// Layered / provenance-linked recall: each hit paired with its
+    /// ground-truth source memories (drill-down through `consolidation_edges`).
+    /// See [`spectral_graph::brain::Brain::recall_with_provenance`].
+    pub fn recall_with_provenance(
+        &self,
+        query: &str,
+        config: &RecallTopKConfig,
+        visibility: Visibility,
+        max_sources_per_hit: usize,
+    ) -> Result<Vec<spectral_graph::brain::LayeredHit>, Error> {
+        self.inner
+            .recall_with_provenance(query, config, visibility, max_sources_per_hit)
+    }
+
+    /// Recognition/co-retrieval-driven consolidation candidates (recurring
+    /// clusters worth abstracting). See
+    /// [`spectral_graph::brain::Brain::consolidation_candidates`].
+    pub fn consolidation_candidates(
+        &self,
+        min_co_count: u64,
+        scan_limit: usize,
+    ) -> Result<Vec<spectral_graph::brain::ConsolidationCandidate>, Error> {
+        self.inner.consolidation_candidates(min_co_count, scan_limit)
+    }
+
+    /// Consolidate sources into a higher-tier abstraction whose content comes
+    /// from `summarize` (the one optional-LLM seam). See
+    /// [`spectral_graph::brain::Brain::consolidate_with`].
+    pub fn consolidate_with<F>(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        tier: spectral_ingest::CompactionTier,
+        summarize: F,
+    ) -> Result<spectral_graph::brain::RememberResult, Error>
+    where
+        F: FnOnce(&[String]) -> String,
+    {
+        self.inner
+            .consolidate_with(source_keys, target_key, tier, summarize)
+    }
+
+    /// Deterministic `$0` extractive consolidation (no LLM). See
+    /// [`spectral_graph::brain::Brain::consolidate_extractive`].
+    pub fn consolidate_extractive(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        tier: spectral_ingest::CompactionTier,
+    ) -> Result<spectral_graph::brain::RememberResult, Error> {
+        self.inner
+            .consolidate_extractive(source_keys, target_key, tier)
+    }
+
+    /// Store a pre-computed abstraction (e.g. a Librarian-generated atom) over
+    /// the given sources. See
+    /// [`spectral_graph::brain::Brain::consolidate_as`].
+    pub fn consolidate_as(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        tier: spectral_ingest::CompactionTier,
+        content: &str,
+    ) -> Result<spectral_graph::brain::RememberResult, Error> {
+        self.inner
+            .consolidate_as(source_keys, target_key, tier, content)
     }
 
     /// Annotate a memory with contextual who/where/why/how metadata.
@@ -495,6 +631,21 @@ impl Brain {
         self.inner.related_memories(memory_id, limit)
     }
 
+    /// Anticipatory recall: recommend memories associated with `memory_id`,
+    /// ranked by **lift** (context-specific association) rather than raw
+    /// co-retrieval count — a recommender over the user's own memories that
+    /// surfaces what their current context is *specifically* associated with,
+    /// suppressing globally-popular blobs. Deterministic, no LLM. See
+    /// [`spectral_graph::brain::Brain::recommend`].
+    pub fn recommend(
+        &self,
+        memory_id: &str,
+        limit: usize,
+        min_co_count: u64,
+    ) -> Result<Vec<spectral_ingest::RelatedMemory>, Error> {
+        self.inner.recommend(memory_id, limit, min_co_count)
+    }
+
     /// Count all retrieval events in the database.
     ///
     /// Read-only. Scans the `retrieval_events` table. Useful for
@@ -558,6 +709,8 @@ pub struct BrainBuilder {
     device_id: Option<DeviceId>,
     enable_spectrogram: bool,
     entity_policy: Option<EntityPolicy>,
+    fts_tokenizer: Option<String>,
+    read_only: bool,
     auto_ontology: bool,
 }
 
@@ -630,6 +783,28 @@ impl BrainBuilder {
         self
     }
 
+    /// Set the FTS5 tokenizer for the memories full-text index.
+    ///
+    /// Default (unset): the `SPECTRAL_FTS_TOKENIZER` env var if present,
+    /// otherwise `"porter unicode61"` — deterministic stemming that bridges
+    /// plural/inflected queries to singular content. Pass `"unicode61"` to
+    /// disable stemming. A brain built with a different tokenizer is
+    /// migrated (one-time FTS index rebuild) on open.
+    pub fn fts_tokenizer(mut self, tokenizer: impl Into<String>) -> Self {
+        self.fts_tokenizer = Some(tokenizer.into());
+        self
+    }
+
+    /// Open the brain strictly read-only: opening never mutates the brain
+    /// (no directory/identity creation, no migrations, no FTS rebuild),
+    /// recall paths skip their ambient writes, and write APIs return
+    /// `Error::ReadOnly`. Required mode for federated read-time fan-out
+    /// over a brain you don't own. Fails if the brain does not exist.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
     /// Use `<data_dir>/ontology.toml` if it exists, or an empty ontology.
     fn auto_ontology(mut self) -> Self {
         self.auto_ontology = true;
@@ -668,6 +843,8 @@ impl BrainBuilder {
             enable_spectrogram: self.enable_spectrogram,
             entity_policy: self.entity_policy.unwrap_or_default(),
             sqlite_mmap_size: None,
+            fts_tokenizer: self.fts_tokenizer,
+            read_only: self.read_only,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,

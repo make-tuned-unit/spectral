@@ -27,12 +27,14 @@
 
 pub mod eval;
 mod extract;
+pub mod minhash;
 mod score;
 mod store;
 pub mod stream;
 
 pub use extract::{extract_landmarks, fingerprint_stimulus, Landmark, StimulusPrints};
-pub use score::{score_candidates, ScoreConfig};
+pub use minhash::MinHashConfig;
+pub use score::{score_candidates, MinHashMatch, ScoreConfig};
 pub use store::{InMemoryRecognitionStore, RecognitionStore, SqliteRecognitionStore};
 pub use stream::{
     centroid_of, make_cue, segment_stream, Centroid, CentroidConfig, CentroidTracker, Cue, Segment,
@@ -56,6 +58,9 @@ pub struct RecognitionConfig {
     /// Winnowing window size. Guarantee: shared runs >= window + kgram - 1
     /// tokens are always detected.
     pub window: usize,
+    /// MinHash lexical-similarity channel (widely-accepted near-duplicate
+    /// sketch). Set `minhash.weight = 0.0` to disable.
+    pub minhash: MinHashConfig,
     /// Verdict thresholds and evidence weighting.
     pub score: ScoreConfig,
 }
@@ -68,6 +73,7 @@ impl Default for RecognitionConfig {
             pair_window: 16,
             kgram: 5,
             window: 8,
+            minhash: MinHashConfig::default(),
             score: ScoreConfig::default(),
         }
     }
@@ -146,15 +152,35 @@ impl<S: RecognitionStore> RecognitionEngine<S> {
         &self.store
     }
 
-    /// Enroll a memory: extract landmarks, index pair + gram fingerprints,
-    /// update document-frequency counts. Idempotent per memory_id.
+    /// Enroll a memory: extract landmarks, index pair + gram fingerprints and
+    /// the shingle-set (MinHash) channel, update document-frequency counts.
+    /// Idempotent per memory_id.
     pub fn enroll(&mut self, memory_id: &str, content: &str) -> Result<()> {
         if self.store.is_enrolled(memory_id)? {
             return Ok(());
         }
         let prints = fingerprint_stimulus(content, &self.config);
         self.store.index_memory(memory_id, &prints)?;
+        // Shingle-set channel (best-effort — a store without MinHash support
+        // or an older read-only index must not break enrollment). Inverted
+        // shingle index: store the shingle SET (for containment scoring) keyed
+        // by each of its shingles (blocking). A probe sharing ANY shingle
+        // becomes a candidate — maximal recall, which matters for heavily
+        // degraded re-encounters. (MinHash-LSH banding remains available in
+        // `minhash` for larger-scale deployments.)
+        if self.config.minhash.weight > 0.0 {
+            let set = minhash::shingle_set(content, self.config.minhash.shingle);
+            let _ = self.store.index_minhash(memory_id, &set, &set);
+        }
         Ok(())
+    }
+
+    /// Forget a memory: remove all of its pair/gram fingerprints and its
+    /// enrolled marker. After this, `recognize()` no longer surfaces the
+    /// memory. Returns `true` if it was enrolled. This is the recognition
+    /// half of hard delete / right-to-be-forgotten.
+    pub fn forget(&mut self, memory_id: &str) -> Result<bool> {
+        self.store.forget_memory(memory_id)
     }
 
     /// Recognize a stimulus against everything enrolled.
@@ -163,12 +189,38 @@ impl<S: RecognitionStore> RecognitionEngine<S> {
         let pair_matches = self.store.lookup_pairs(&prints.pair_hashes)?;
         let gram_matches = self.store.lookup_grams(&prints.gram_hashes)?;
         let enrolled = self.store.enrolled_count()?;
+
+        // MinHash channel: sketch the stimulus, find LSH band candidates, and
+        // score each by CONTAINMENT (fraction of the probe's shingles present
+        // in the candidate) — the re-encounter-appropriate similarity, high
+        // even when the probe is a degraded fragment. Best-effort: a lookup
+        // failure (e.g. an older index without MinHash tables) degrades to
+        // pair+gram only.
+        let minhash_matches = if self.config.minhash.weight > 0.0 {
+            let probe_set = minhash::shingle_set(stimulus, self.config.minhash.shingle);
+            match self.store.lookup_minhash(&probe_set) {
+                Ok(cands) => cands
+                    .into_iter()
+                    .map(|(memory_id, cand_set)| MinHashMatch {
+                        similarity: minhash::containment(&probe_set, &cand_set),
+                        memory_id,
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+
         Ok(score_candidates(
             &prints,
             &pair_matches,
             &gram_matches,
+            &minhash_matches,
             enrolled,
             &self.config.score,
+            self.config.minhash.weight,
+            self.config.minhash.min_similarity,
         ))
     }
 }

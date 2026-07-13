@@ -205,6 +205,20 @@ impl KuzuStore {
         Ok(Self { db })
     }
 
+    /// Open an existing Kuzu database read-only. No schema DDL runs; any
+    /// write attempted later fails at the engine level. Fails if the
+    /// database does not exist.
+    pub fn open_read_only(path: &Path) -> Result<Self, Error> {
+        if !path.exists() {
+            return Err(Error::Schema(format!(
+                "read-only open requires an existing graph database: {} not found",
+                path.display()
+            )));
+        }
+        let db = Database::new(path, SystemConfig::default().read_only(true))?;
+        Ok(Self { db })
+    }
+
     /// Create an in-memory Kuzu database (useful for tests).
     pub fn in_memory() -> Result<Self, Error> {
         let db = Database::in_memory(SystemConfig::default())?;

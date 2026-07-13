@@ -16,6 +16,8 @@ fn brain_with_spectrogram(tmp: &TempDir) -> Brain {
         enable_spectrogram: true,
         entity_policy: spectral_graph::brain::EntityPolicy::Strict,
         sqlite_mmap_size: None,
+        fts_tokenizer: None,
+        read_only: false,
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
@@ -35,6 +37,8 @@ fn brain_without_spectrogram(tmp: &TempDir) -> Brain {
         enable_spectrogram: false,
         entity_policy: spectral_graph::brain::EntityPolicy::Strict,
         sqlite_mmap_size: None,
+        fts_tokenizer: None,
+        read_only: false,
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
@@ -102,6 +106,46 @@ fn disabled_spectrogram_skips_computation() {
     assert_eq!(
         count, 1,
         "disabled spectrogram should not have written one during ingest"
+    );
+}
+
+#[test]
+fn novelty_uses_wing_corpus_not_constant_one() {
+    // Regression for docs/internal/SPECTROGRAM_AUDIT.md: novelty was 1.0 for
+    // 497/497 memories because the analyzer always received an empty wing
+    // corpus. With the corpus wired, a near-duplicate of existing wing
+    // content must score low novelty, while genuinely new content scores high.
+    let tmp = TempDir::new().unwrap();
+    let brain = brain_with_spectrogram(&tmp);
+
+    let first = brain
+        .remember(
+            "apollo-original",
+            "Decided to use Apollo for weather prediction strategy on polymarket",
+            Visibility::Private,
+        )
+        .unwrap();
+    // First memory in the wing has no prior corpus — novelty legitimately 1.0.
+    let audit_first = brain.audit_spectrogram(&first.memory_id).unwrap();
+    assert!(
+        audit_first.fingerprint.novelty > 0.9,
+        "first memory in wing should be novel, got {}",
+        audit_first.fingerprint.novelty
+    );
+
+    // Near-duplicate in the same wing: most words already in the corpus.
+    let dup = brain
+        .remember(
+            "apollo-repeat",
+            "Decided to use Apollo for weather prediction strategy on polymarket again",
+            Visibility::Private,
+        )
+        .unwrap();
+    let audit_dup = brain.audit_spectrogram(&dup.memory_id).unwrap();
+    assert!(
+        audit_dup.fingerprint.novelty < 0.5,
+        "near-duplicate should score low novelty, got {}",
+        audit_dup.fingerprint.novelty
     );
 }
 

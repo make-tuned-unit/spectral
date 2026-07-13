@@ -31,6 +31,19 @@ pub trait RecognitionStore {
     fn lookup_pairs(&self, hashes: &[(u64, String)]) -> Result<Vec<FeatureMatch>>;
     /// All stored gram-feature matches for the given stimulus hashes.
     fn lookup_grams(&self, hashes: &[(u64, String)]) -> Result<Vec<FeatureMatch>>;
+    /// Remove every trace of a memory from the index (pairs, grams, MinHash,
+    /// and the enrolled marker). Returns `true` if the memory was enrolled.
+    /// Required for hard delete / right-to-be-forgotten: without it,
+    /// `recognize()` keeps surfacing content whose source memory was deleted.
+    fn forget_memory(&mut self, memory_id: &str) -> Result<bool>;
+
+    /// Index a memory's MinHash signature and its LSH band hashes.
+    fn index_minhash(&mut self, memory_id: &str, signature: &[u64], bands: &[u64]) -> Result<()>;
+
+    /// Find candidate memories sharing at least one MinHash band with the
+    /// probe, returning each candidate's stored signature so the caller can
+    /// compute the estimated Jaccard. Deduplicated by memory id.
+    fn lookup_minhash(&self, probe_bands: &[u64]) -> Result<Vec<(String, Vec<u64>)>>;
 }
 
 // ── In-memory implementation ────────────────────────────────────────
@@ -41,6 +54,10 @@ pub struct InMemoryRecognitionStore {
     /// hash → [(memory_id, label)]
     pairs: HashMap<u64, Vec<(String, String)>>,
     grams: HashMap<u64, Vec<(String, String)>>,
+    /// memory_id → MinHash signature
+    minhash_sig: HashMap<String, Vec<u64>>,
+    /// band hash → [memory_id]
+    minhash_bands: HashMap<u64, Vec<String>>,
 }
 
 impl InMemoryRecognitionStore {
@@ -99,6 +116,53 @@ impl RecognitionStore for InMemoryRecognitionStore {
     fn lookup_grams(&self, hashes: &[(u64, String)]) -> Result<Vec<FeatureMatch>> {
         Ok(Self::lookup(&self.grams, hashes))
     }
+
+    fn forget_memory(&mut self, memory_id: &str) -> Result<bool> {
+        let was_enrolled = self.enrolled.remove(memory_id);
+        for entries in self.pairs.values_mut() {
+            entries.retain(|(id, _)| id != memory_id);
+        }
+        for entries in self.grams.values_mut() {
+            entries.retain(|(id, _)| id != memory_id);
+        }
+        self.pairs.retain(|_, v| !v.is_empty());
+        self.grams.retain(|_, v| !v.is_empty());
+        self.minhash_sig.remove(memory_id);
+        for ids in self.minhash_bands.values_mut() {
+            ids.retain(|id| id != memory_id);
+        }
+        self.minhash_bands.retain(|_, v| !v.is_empty());
+        Ok(was_enrolled)
+    }
+
+    fn index_minhash(&mut self, memory_id: &str, signature: &[u64], bands: &[u64]) -> Result<()> {
+        self.minhash_sig
+            .insert(memory_id.to_string(), signature.to_vec());
+        for &b in bands {
+            let ids = self.minhash_bands.entry(b).or_default();
+            if !ids.iter().any(|id| id == memory_id) {
+                ids.push(memory_id.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn lookup_minhash(&self, probe_bands: &[u64]) -> Result<Vec<(String, Vec<u64>)>> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for b in probe_bands {
+            if let Some(ids) = self.minhash_bands.get(b) {
+                for id in ids {
+                    if seen.insert(id.clone()) {
+                        if let Some(sig) = self.minhash_sig.get(id) {
+                            out.push((id.clone(), sig.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 // ── SQLite implementation ───────────────────────────────────────────
@@ -130,9 +194,38 @@ impl SqliteRecognitionStore {
                 label TEXT NOT NULL,
                 PRIMARY KEY (hash, memory_id, label)
              ) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS recognition_minhash_sig (
+                memory_id TEXT PRIMARY KEY,
+                sig       BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS recognition_minhash_bands (
+                band_hash INTEGER NOT NULL,
+                memory_id TEXT NOT NULL,
+                PRIMARY KEY (band_hash, memory_id)
+             ) WITHOUT ROWID;
              CREATE INDEX IF NOT EXISTS idx_rec_pairs_hash ON recognition_pairs(hash);
-             CREATE INDEX IF NOT EXISTS idx_rec_grams_hash ON recognition_grams(hash);",
+             CREATE INDEX IF NOT EXISTS idx_rec_grams_hash ON recognition_grams(hash);
+             CREATE INDEX IF NOT EXISTS idx_rec_minhash_band ON recognition_minhash_bands(band_hash);",
         )?;
+        Ok(Self { conn })
+    }
+
+    /// Open an existing recognition database strictly read-only: no DDL
+    /// runs, and any later write (enroll) fails at the driver level. Fails
+    /// if the file does not exist.
+    pub fn open_read_only(path: &std::path::Path) -> Result<Self> {
+        use rusqlite::OpenFlags;
+        if !path.exists() {
+            anyhow::bail!(
+                "read-only open requires an existing recognition database: {} not found",
+                path.display()
+            );
+        }
+        let conn = rusqlite::Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.execute_batch("PRAGMA query_only = ON;")?;
         Ok(Self { conn })
     }
 
@@ -219,6 +312,70 @@ impl RecognitionStore for SqliteRecognitionStore {
 
     fn lookup_grams(&self, hashes: &[(u64, String)]) -> Result<Vec<FeatureMatch>> {
         self.lookup_table("recognition_grams", hashes)
+    }
+
+    fn forget_memory(&mut self, memory_id: &str) -> Result<bool> {
+        let tx = self.conn.transaction()?;
+        let removed = tx.execute(
+            "DELETE FROM recognition_enrolled WHERE memory_id = ?1",
+            [memory_id],
+        )?;
+        tx.execute("DELETE FROM recognition_pairs WHERE memory_id = ?1", [memory_id])?;
+        tx.execute("DELETE FROM recognition_grams WHERE memory_id = ?1", [memory_id])?;
+        tx.execute("DELETE FROM recognition_minhash_sig WHERE memory_id = ?1", [memory_id])?;
+        tx.execute("DELETE FROM recognition_minhash_bands WHERE memory_id = ?1", [memory_id])?;
+        tx.commit()?;
+        Ok(removed > 0)
+    }
+
+    fn index_minhash(&mut self, memory_id: &str, signature: &[u64], bands: &[u64]) -> Result<()> {
+        let sig_bytes = crate::minhash::signature_to_bytes(signature);
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO recognition_minhash_sig (memory_id, sig) VALUES (?1, ?2)",
+            rusqlite::params![memory_id, sig_bytes],
+        )?;
+        {
+            let mut ins = tx.prepare_cached(
+                "INSERT OR IGNORE INTO recognition_minhash_bands (band_hash, memory_id) VALUES (?1, ?2)",
+            )?;
+            for &b in bands {
+                ins.execute(rusqlite::params![b as i64, memory_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn lookup_minhash(&self, probe_bands: &[u64]) -> Result<Vec<(String, Vec<u64>)>> {
+        if probe_bands.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Distinct candidate memory ids sharing any band, joined to signatures.
+        let placeholders = probe_bands
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT DISTINCT b.memory_id, s.sig
+             FROM recognition_minhash_bands b
+             JOIN recognition_minhash_sig s ON s.memory_id = b.memory_id
+             WHERE b.band_hash IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let params: Vec<i64> = probe_bands.iter().map(|&b| b as i64).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            let id: String = r.get(0)?;
+            let sig: Vec<u8> = r.get(1)?;
+            Ok((id, crate::minhash::signature_from_bytes(&sig)))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 }
 

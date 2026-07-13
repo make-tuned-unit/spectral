@@ -90,10 +90,7 @@ pub fn expand_query(
         output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()),
     });
 
-    let terms_text = json["content"][0]["text"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let terms_text = crate::actor::extract_text(&json).unwrap_or_default();
 
     // Combine original question with expansion terms
     let terms: Vec<&str> = terms_text

@@ -171,6 +171,8 @@ fn main() -> Result<()> {
         hall_rules: None,
         entity_policy: EntityPolicy::Strict,
         sqlite_mmap_size: None,
+        fts_tokenizer: None,
+        read_only: false,
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,

@@ -57,6 +57,8 @@ pub fn ingest_question(
         enable_spectrogram: std::env::var("SPECTRAL_BENCH_SPECTROGRAM").is_ok(),
         entity_policy: EntityPolicy::Strict,
         sqlite_mmap_size: None,
+        fts_tokenizer: None,
+        read_only: false,
         activity_wing: "activity".into(),
         redaction_policy: None,
         // Override TACT to return up to 20 results — multi-session questions

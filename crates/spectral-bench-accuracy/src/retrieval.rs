@@ -251,6 +251,32 @@ fn assistant_cap_frac() -> Option<f64> {
         .filter(|f| *f > 0.0 && *f < 1.0)
 }
 
+/// Whether to surface the Librarian's per-memory `description` into the actor
+/// context (`SPECTRAL_ACTOR_DESCRIPTIONS=1`). Off by default. Descriptions are
+/// already used at retrieval time (FTS column, item #8, +2.5pp); this flag
+/// additionally shows the description gloss to the actor as a labeled
+/// `[librarian: …]` note attached to the turn, to test whether the actor's
+/// SYNTHESIS improves (the categories the FTS enrichment alone could not
+/// move). A clean on/off ablation: apply the same descriptions in both arms
+/// (constant FTS effect); toggle only whether the actor sees them.
+fn actor_descriptions_enabled() -> bool {
+    std::env::var("SPECTRAL_ACTOR_DESCRIPTIONS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Append the Librarian description as a labeled note when the flag is on and
+/// the description is non-empty. Kept short and clearly provenanced so the
+/// actor never confuses the gloss with the user's own words.
+fn with_description(line: String, hit: &MemoryHit, show: bool) -> String {
+    match (show, hit.description.as_deref()) {
+        (true, Some(desc)) if !desc.trim().is_empty() => {
+            format!("{line} [librarian: {}]", desc.trim())
+        }
+        _ => line,
+    }
+}
+
 /// Effective cap for a question shape: GeneralRecall is exempt.
 fn cap_for_shape(qtype: QuestionType) -> Option<f64> {
     match qtype {
@@ -327,6 +353,7 @@ pub fn format_hits_grouped_capped(hits: &[MemoryHit], cap_frac: Option<f64>) -> 
     });
 
     // Build output lines
+    let show_desc = actor_descriptions_enabled();
     let mut lines = Vec::new();
     for (ep_id, ep_hits) in &episodes {
         let date = ep_hits
@@ -348,12 +375,11 @@ pub fn format_hits_grouped_capped(hits: &[MemoryHit], cap_frac: Option<f64>) -> 
             if role == "asst" && hit.content.len() < 40 {
                 continue;
             }
-            match (role, cap_frac) {
-                ("asst", Some(f)) => {
-                    lines.push(format!("[{role}] {}", cap_content(&hit.content, f)))
-                }
-                _ => lines.push(format!("[{role}] {}", hit.content)),
-            }
+            let line = match (role, cap_frac) {
+                ("asst", Some(f)) => format!("[{role}] {}", cap_content(&hit.content, f)),
+                _ => format!("[{role}] {}", hit.content),
+            };
+            lines.push(with_description(line, hit, show_desc));
         }
     }
 
@@ -371,7 +397,8 @@ pub fn format_hit(hit: &spectral_ingest::MemoryHit) -> String {
         .unwrap_or("unknown-date");
     let wing = hit.wing.as_deref().unwrap_or("?");
     let hall = hit.hall.as_deref().unwrap_or("?");
-    format!("[{date}] [{wing}/{hall}] {}: {}", hit.key, hit.content)
+    let line = format!("[{date}] [{wing}/{hall}] {}: {}", hit.key, hit.content);
+    with_description(line, hit, actor_descriptions_enabled())
 }
 
 /// Retrieve memories relevant to a question from a brain.
@@ -397,9 +424,10 @@ pub fn retrieve(brain: &Brain, question: &str, config: &RetrievalConfig) -> Resu
 /// - `SPECTRAL_DISABLE_ENTITY_RESOLUTION=1` — disable entity clustering
 /// - `SPECTRAL_DISABLE_CONTEXT_DEDUP=1` — disable context chain dedup
 /// - `SPECTRAL_TOPK_FETCH_MULT=N` — fetch N× the output size as the re-rank
-///   candidate pool (default 1). Recovers true evidence that broad porter
-///   stemming buries below a fixed bm25 LIMIT; a no-op on the default
-///   tokenizer, +0.8pp temporal session-recall with porter at N=3.
+///   candidate pool (default: the library default, 3). Recovers true evidence
+///   that broad porter stemming buries below a fixed bm25 LIMIT; a no-op on
+///   an unstemmed tokenizer, +0.8pp temporal session-recall with porter at
+///   N=3. Set to 1 to disable widening.
 /// - `SPECTRAL_TOPK_DECLARATIVE=1` — enable the declarative-density boost in
 ///   the topk path (net-negative on temporal in Tier-0; off by default)
 ///
@@ -414,20 +442,21 @@ pub fn retrieve_topk_fts(
     // Floor at 40: prevents CLI overrides (e.g. --max-results 20) from cutting
     // temporal evidence turns that rank at FTS position 21-40 after reranking.
     let output_size = config.max_results.max(40);
-    // Candidate-fetch pool can be widened past the output size so the
-    // deterministic re-ranker has more material to work with. Broad FTS
-    // matching (porter stemming) pushes true evidence below a fixed bm25
-    // LIMIT; a wider pool lets re-ranking recover it. Output count stays at
-    // `output_size` (truncated below), but composition shifts toward the
-    // promoted high-signal turns, so context grows modestly (~+4% on the
-    // temporal slice at mult=3 — a no-op on the narrow default tokenizer).
+    // Candidate-fetch pool widening now lives in the library
+    // (`RecallTopKConfig::fetch_mult`, default 3); the env var remains as an
+    // ablation override. Broad FTS matching (porter stemming) pushes true
+    // evidence below a fixed bm25 LIMIT; a wider pool lets re-ranking recover
+    // it. Output count stays at `output_size`, but composition shifts toward
+    // the promoted high-signal turns, so context grows modestly (~+4% on the
+    // temporal slice at mult=3 — a no-op on an unstemmed tokenizer).
     let fetch_mult = std::env::var("SPECTRAL_TOPK_FETCH_MULT")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|m| *m >= 1)
-        .unwrap_or(1);
+        .unwrap_or_else(|| RecallTopKConfig::default().fetch_mult);
     let topk_config = RecallTopKConfig {
-        k: output_size * fetch_mult,
+        k: output_size,
+        fetch_mult,
         apply_signal_score_weighting: std::env::var("SPECTRAL_DISABLE_SIGNAL_SCORE").is_err(),
         apply_recency_weighting: std::env::var("SPECTRAL_DISABLE_RECENCY").is_err(),
         apply_entity_resolution: std::env::var("SPECTRAL_DISABLE_ENTITY_RESOLUTION").is_err(),
@@ -603,6 +632,49 @@ mod tests {
         assert_eq!(config.max_results, 40);
     }
 
+    fn hit_with_description(desc: Option<&str>) -> MemoryHit {
+        MemoryHit {
+            id: "id".into(),
+            key: "s1:turn:0:user".into(),
+            content: "the pod was oomkilled at 512mi".into(),
+            wing: Some("infra".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.6,
+            visibility: "private".into(),
+            hits: 1,
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: Some("2023-06-15 12:00:00".into()),
+            last_reinforced_at: None,
+            episode_id: Some("s1".into()),
+            declarative_density: None,
+            description: desc.map(|s| s.to_string()),
+            source_brain_id: None,
+            signature: None,
+        }
+    }
+
+    #[test]
+    fn with_description_injects_only_when_shown_and_present() {
+        let hit = hit_with_description(Some("summary: an out-of-memory kill during reindex"));
+        let base = "[user] the pod was oomkilled at 512mi".to_string();
+
+        // Off: unchanged.
+        assert_eq!(with_description(base.clone(), &hit, false), base);
+        // On: labeled librarian note appended.
+        let shown = with_description(base.clone(), &hit, true);
+        assert!(shown.starts_with(&base));
+        assert!(shown.contains("[librarian: summary: an out-of-memory kill during reindex]"));
+
+        // On but no description: unchanged (no empty note).
+        let hit_none = hit_with_description(None);
+        assert_eq!(with_description(base.clone(), &hit_none, true), base);
+        // On but blank description: unchanged.
+        let hit_blank = hit_with_description(Some("   "));
+        assert_eq!(with_description(base.clone(), &hit_blank, true), base);
+    }
+
     #[test]
     fn retrieve_includes_created_at_in_format() {
         let dir = tempfile::tempdir().unwrap();
@@ -620,6 +692,8 @@ mod tests {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
@@ -670,6 +744,8 @@ mod tests {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
@@ -733,6 +809,8 @@ mod tests {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
@@ -817,6 +895,8 @@ mod tests {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
@@ -901,6 +981,8 @@ mod tests {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
@@ -938,29 +1020,37 @@ mod tests {
             strength: 1.0,
         });
 
-        let cfg = |k: usize| RecallTopKConfig {
-            k,
+        let cfg = |fetch_mult: usize| RecallTopKConfig {
+            k: 20,
+            fetch_mult,
             apply_recency_weighting: false,
             ..RecallTopKConfig::default()
         };
 
-        // Narrow fetch (k=5): TARGET is below the bm25 cut → never fetched.
+        // Unwidened pool (fetch_mult=1): TARGET sits at bm25 position 21,
+        // below the k=20 fetch cut → never enters the re-rank pool.
         let narrow = brain
-            .recall_topk_fts("widget", &cfg(5), Visibility::Private)
+            .recall_topk_fts("widget", &cfg(1), Visibility::Private)
             .unwrap();
         assert!(
             !narrow.iter().any(|h| h.key == "target"),
-            "narrow fetch pool should exclude the buried target"
+            "unwidened fetch pool should exclude the buried target"
         );
 
-        // Wide fetch (k=40): TARGET enters the pool and its high signal_score
-        // promotes it via re-ranking.
+        // Widened pool (fetch_mult=3, the default): TARGET enters the pool
+        // and its high signal_score promotes it past low-signal fillers in
+        // re-ranking; output is still truncated to k.
         let wide = brain
-            .recall_topk_fts("widget", &cfg(40), Visibility::Private)
+            .recall_topk_fts("widget", &cfg(3), Visibility::Private)
             .unwrap();
         assert!(
             wide.iter().any(|h| h.key == "target"),
-            "wider fetch pool should recover the buried high-signal target"
+            "widened fetch pool should recover the buried high-signal target"
+        );
+        assert!(
+            wide.len() <= 20,
+            "output should be truncated to k, got {}",
+            wide.len()
         );
     }
 
@@ -1253,6 +1343,8 @@ mod tests {
             enable_spectrogram: false,
             entity_policy: EntityPolicy::Strict,
             sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
@@ -1308,6 +1400,8 @@ mod tests {
             episode_id: Some(episode.into()),
             declarative_density: None,
             description: None,
+            source_brain_id: None,
+            signature: None,
         }
     }
 

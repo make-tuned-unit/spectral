@@ -29,12 +29,12 @@
 //! - `Some(n)`: use exactly *n* bytes
 
 use crate::{
-    CompactionTier, ConsolidateOpts, ConsolidationEdge, ConsolidationResult, Episode, Fingerprint,
-    InvalidSourcePolicy, Memory, MemoryAnnotation, MemoryHit, MemoryStore, RelatedMemory,
-    RetrievalEvent, SkipReason, SpectrogramRow, WriteOutcome,
+    CompactionTier, ConsolidateOpts, ConsolidationEdge, ConsolidationResult, EntityField, Episode,
+    FieldSource, Fingerprint, ForgetReceipt, InvalidSourcePolicy, Memory, MemoryAnnotation,
+    MemoryHit, MemoryStore, RelatedMemory, RetrievalEvent, SkipReason, SpectrogramRow, WriteOutcome,
 };
 use lru::LruCache;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -44,6 +44,14 @@ use std::sync::{Arc, Mutex};
 use crate::TimeBucket;
 
 const WING_CACHE_CAPACITY: usize = 32;
+
+/// Default FTS5 tokenizer for the memories index. Porter stemming bridges
+/// plural/inflected queries to singular content deterministically and at
+/// zero runtime cost — the recall-path complement to Spectral's no-LLM,
+/// no-embedding retrieval commitment. Override via
+/// `SqliteStoreConfig::fts_tokenizer` or the `SPECTRAL_FTS_TOKENIZER` env
+/// var (set to `"unicode61"` or an empty string to disable stemming).
+pub const DEFAULT_FTS_TOKENIZER: &str = "porter unicode61";
 
 /// Parse a timestamp string (SQLite datetime or RFC3339) to epoch seconds.
 fn parse_ts(s: &str) -> Option<f64> {
@@ -68,10 +76,45 @@ pub struct SqliteStoreConfig {
     /// FTS5 tokenizer spec for the memories index (e.g. `"porter unicode61"`).
     ///
     /// - `None` (default) — fall back to the `SPECTRAL_FTS_TOKENIZER` env var,
-    ///   then to SQLite's default (unicode61, no stemming).
-    /// - Applies when the FTS table is (re)created. An existing database keeps
-    ///   the tokenizer it was built with.
+    ///   then to [`DEFAULT_FTS_TOKENIZER`] (`"porter unicode61"`). Porter
+    ///   stemming bridges plural/inflected queries to singular content
+    ///   ("doctors" → "doctor") at zero runtime cost; validated Tier-0/Tier-1
+    ///   (see docs/internal/ORACLE_TIER0.md, docs/internal/TIER1_RESULTS.md).
+    /// - `Some("unicode61")` — explicit no-stemming tokenizer (SQLite default
+    ///   behavior). An empty string also disables the tokenize clause.
+    /// - An existing database built with a different tokenizer is rebuilt
+    ///   once on open (drop + recreate + repopulate of the FTS index; the
+    ///   memories table itself is untouched). Not applied in read-only mode.
     pub fts_tokenizer: Option<String>,
+    /// Open the database read-only. Default false.
+    ///
+    /// In read-only mode the connection is opened with
+    /// `SQLITE_OPEN_READ_ONLY`, and **no** schema creation, migration, FTS
+    /// rebuild, or backfill runs — opening never mutates the database. Any
+    /// write attempted through the store fails at the driver level. This is
+    /// the mode for federated read-time fan-out over a brain you don't own.
+    /// Fails if the database file does not exist.
+    pub read_only: bool,
+    /// Enable stemmed + unstemmed **RRF fusion** for FTS recall. Default false.
+    ///
+    /// Porter stemming (the default tokenizer) is a recall device that trades
+    /// away precision: it bridges `doctors`→`doctor` but also conflates
+    /// `university`→`univers`←`universe`, so a short colliding distractor can
+    /// outrank the answer at a tight `k`. With fusion on, the store maintains a
+    /// second, content-only, **unstemmed** (`unicode61`) FTS index and, at
+    /// query time, fuses the porter-ranked and unstemmed-ranked lists by
+    /// Reciprocal Rank Fusion (Cormack 2009, k=60). Different *representations*
+    /// (the Beitzel precondition) — the fused list recovers both porter's
+    /// over-stemming precision losses and the unstemmed channel's inflection
+    /// misses; measured recall@1 0.57→1.00 on the fusion micro-bench. Rank-based,
+    /// so no score normalization across the two BM25 scales.
+    ///
+    /// Costs a second FTS index (content only, kept in sync by triggers, purged
+    /// on delete like the primary), so it is opt-in per the measure-before-
+    /// defaulting discipline. Falls back to `SPECTRAL_FTS_FUSION`. On a
+    /// read-only open the fused path is used only if the raw index already
+    /// exists in the file (it is never created read-only).
+    pub fts_fusion: bool,
 }
 
 /// SQLite-backed memory store with FTS5 search.
@@ -83,6 +126,10 @@ pub struct SqliteStore {
     /// LRU cache: wing name -> memories for that wing.
     /// Invalidated by `write()` when the written memory's wing matches a cached entry.
     wing_cache: Arc<Mutex<LruCache<String, Vec<MemoryHit>>>>,
+    /// Whether `fts_search` should RRF-fuse the porter index with the unstemmed
+    /// `memories_fts_raw` index. True only when fusion was requested AND the raw
+    /// index is present in the file.
+    fusion: bool,
 }
 
 impl std::fmt::Debug for SqliteStore {
@@ -114,6 +161,9 @@ impl SqliteStore {
 
     /// Open or create a memory database with explicit configuration.
     pub fn open_with_config(path: &Path, config: &SqliteStoreConfig) -> anyhow::Result<Self> {
+        if config.read_only {
+            return Self::open_read_only(path, config);
+        }
         let conn = Connection::open(path)?;
 
         let mmap_size = match config.mmap_size {
@@ -130,16 +180,65 @@ impl SqliteStore {
         let fts_tokenizer = Self::resolve_fts_tokenizer(config);
         Self::init_schema(&conn, fts_tokenizer.as_deref())?;
         Self::migrate_provenance_columns(&conn, fts_tokenizer.as_deref())?;
+        Self::migrate_fts_tokenizer(&conn, fts_tokenizer.as_deref())?;
         Self::migrate_fk_cascade(&conn)?;
         // Enable FK enforcement AFTER all migrations complete (migrate_fk_cascade
         // turns FK OFF for table rebuilds). This is per-connection in SQLite and
         // must be set on every connection before any DML runs.
         conn.execute_batch("PRAGMA foreign_keys = ON")?;
+        // Stemmed + unstemmed RRF fusion: build/refresh the content-only
+        // unstemmed index when requested (idempotent). Write-mode only.
+        let fusion = if Self::fusion_enabled(config) {
+            Self::ensure_fusion_index(&conn)?;
+            true
+        } else {
+            false
+        };
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             wing_cache: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(WING_CACHE_CAPACITY).unwrap(),
             ))),
+            fusion,
+        })
+    }
+
+    /// Open an existing memory database strictly read-only: the connection
+    /// carries `SQLITE_OPEN_READ_ONLY`, and no schema creation, migration,
+    /// FTS rebuild, or backfill runs. Opening never mutates the file; any
+    /// write attempted later fails at the driver level. Fails if the file
+    /// does not exist.
+    fn open_read_only(path: &Path, config: &SqliteStoreConfig) -> anyhow::Result<Self> {
+        use rusqlite::OpenFlags;
+        if !path.exists() {
+            anyhow::bail!(
+                "read-only open requires an existing database: {} not found",
+                path.display()
+            );
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let mmap_size = match config.mmap_size {
+            Some(explicit) => explicit,
+            None => Self::compute_mmap_size(path),
+        };
+        // Per-connection, non-persistent pragmas only.
+        conn.execute_batch(&format!(
+            "PRAGMA temp_store = MEMORY;
+             PRAGMA mmap_size  = {mmap_size};
+             PRAGMA query_only = ON;"
+        ))?;
+        // Read-only: never create the raw index; fuse only if it already exists
+        // in the file (a replica synced from a fusion-enabled brain).
+        let fusion = Self::fusion_enabled(config) && Self::fusion_index_present(&conn);
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            wing_cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(WING_CACHE_CAPACITY).unwrap(),
+            ))),
+            fusion,
         })
     }
 
@@ -149,6 +248,7 @@ impl SqliteStore {
         let fts_tokenizer = Self::resolve_fts_tokenizer(&SqliteStoreConfig::default());
         Self::init_schema(&conn, fts_tokenizer.as_deref())?;
         Self::migrate_provenance_columns(&conn, fts_tokenizer.as_deref())?;
+        Self::migrate_fts_tokenizer(&conn, fts_tokenizer.as_deref())?;
         Self::migrate_fk_cascade(&conn)?;
         conn.execute_batch("PRAGMA foreign_keys = ON")?;
         Ok(Self {
@@ -156,17 +256,72 @@ impl SqliteStore {
             wing_cache: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(WING_CACHE_CAPACITY).unwrap(),
             ))),
+            fusion: false,
         })
     }
 
-    /// Resolve the FTS tokenizer: explicit config, then env var, then None
-    /// (SQLite default). The spec is sanitized to bare words so it can be
-    /// embedded in a `tokenize = '…'` clause.
+    /// Whether stemmed+unstemmed fusion is requested: explicit config flag, or
+    /// the `SPECTRAL_FTS_FUSION` env var (`1`/`true`). Default false.
+    fn fusion_enabled(config: &SqliteStoreConfig) -> bool {
+        config.fts_fusion
+            || std::env::var("SPECTRAL_FTS_FUSION")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+    }
+
+    /// Whether the unstemmed fusion index exists in the database file.
+    fn fusion_index_present(conn: &Connection) -> bool {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_fts_raw'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
+    /// Idempotently create the content-only, **unstemmed** (`unicode61`) FTS
+    /// index used as the second fusion channel, its sync triggers, and populate
+    /// it from `memories`. The primary porter index is untouched. Cheap to
+    /// re-run: returns early once the table exists (triggers keep it in sync,
+    /// and the AFTER DELETE trigger purges it on `forget`, so no changes are
+    /// needed in the delete path).
+    fn ensure_fusion_index(conn: &Connection) -> anyhow::Result<()> {
+        if Self::fusion_index_present(conn) {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE memories_fts_raw USING fts5(
+                 content,
+                 content=memories, content_rowid=rowid, tokenize = 'unicode61'
+             );
+             CREATE TRIGGER IF NOT EXISTS memories_ai_raw AFTER INSERT ON memories BEGIN
+                 INSERT INTO memories_fts_raw(rowid, content) VALUES (new.rowid, new.content);
+             END;
+             CREATE TRIGGER IF NOT EXISTS memories_ad_raw AFTER DELETE ON memories BEGIN
+                 INSERT INTO memories_fts_raw(memories_fts_raw, rowid, content)
+                 VALUES ('delete', old.rowid, old.content);
+             END;
+             CREATE TRIGGER IF NOT EXISTS memories_au_raw AFTER UPDATE ON memories BEGIN
+                 INSERT INTO memories_fts_raw(memories_fts_raw, rowid, content)
+                 VALUES ('delete', old.rowid, old.content);
+                 INSERT INTO memories_fts_raw(rowid, content) VALUES (new.rowid, new.content);
+             END;
+             INSERT INTO memories_fts_raw(rowid, content) SELECT rowid, content FROM memories;",
+        )?;
+        Ok(())
+    }
+
+    /// Resolve the FTS tokenizer: explicit config, then env var, then
+    /// [`DEFAULT_FTS_TOKENIZER`] (porter stemming). The spec is sanitized to
+    /// bare words so it can be embedded in a `tokenize = '…'` clause. An
+    /// explicit empty value (config or env) resolves to `None` — no tokenize
+    /// clause, i.e. SQLite's unstemmed unicode61 default.
     fn resolve_fts_tokenizer(config: &SqliteStoreConfig) -> Option<String> {
         let raw = config
             .fts_tokenizer
             .clone()
-            .or_else(|| std::env::var("SPECTRAL_FTS_TOKENIZER").ok())?;
+            .or_else(|| std::env::var("SPECTRAL_FTS_TOKENIZER").ok())
+            .unwrap_or_else(|| DEFAULT_FTS_TOKENIZER.to_string());
         let safe: String = raw
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '_')
@@ -185,6 +340,89 @@ impl SqliteStore {
             Some(t) => format!(", tokenize = '{t}'"),
             None => String::new(),
         }
+    }
+
+    /// SQL batch that drops and recreates the memories FTS index (table,
+    /// triggers) with the given tokenizer, then repopulates it from the
+    /// memories table. Used by both the description-column migration and the
+    /// tokenizer-change migration. The memories table itself is untouched.
+    fn fts_rebuild_batch(fts_tokenizer: Option<&str>) -> String {
+        let fts_tok = Self::fts_tokenize_clause(fts_tokenizer);
+        format!(
+            "DROP TRIGGER IF EXISTS memories_ai;
+             DROP TRIGGER IF EXISTS memories_ad;
+             DROP TRIGGER IF EXISTS memories_au;
+             DROP TABLE IF EXISTS memories_fts;
+
+             CREATE VIRTUAL TABLE memories_fts USING fts5(
+                 key, content, description,
+                 content=memories, content_rowid=rowid{fts_tok}
+             );
+
+             CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+                 INSERT INTO memories_fts(rowid, key, content, description)
+                 VALUES (new.rowid, new.key, new.content, COALESCE(new.description, ''));
+             END;
+             CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+                 INSERT INTO memories_fts(memories_fts, rowid, key, content, description)
+                 VALUES ('delete', old.rowid, old.key, old.content, COALESCE(old.description, ''));
+             END;
+             CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+                 INSERT INTO memories_fts(memories_fts, rowid, key, content, description)
+                 VALUES ('delete', old.rowid, old.key, old.content, COALESCE(old.description, ''));
+                 INSERT INTO memories_fts(rowid, key, content, description)
+                 VALUES (new.rowid, new.key, new.content, COALESCE(new.description, ''));
+             END;
+
+             INSERT INTO memories_fts(rowid, key, content, description)
+             SELECT rowid, key, content, COALESCE(description, '') FROM memories;"
+        )
+    }
+
+    /// Extract the tokenizer spec from an FTS5 CREATE statement as recorded
+    /// in `sqlite_master`, e.g. `tokenize = 'porter unicode61'` →
+    /// `Some("porter unicode61")`. Returns `None` when no tokenize clause is
+    /// present (SQLite default tokenizer).
+    fn parse_fts_tokenize_spec(sql: &str) -> Option<String> {
+        let idx = sql.find("tokenize")?;
+        let rest = &sql[idx..];
+        let open = rest.find('\'')?;
+        let quoted = &rest[open + 1..];
+        let close = quoted.find('\'')?;
+        Some(quoted[..close].trim().to_string())
+    }
+
+    /// Idempotent migration: rebuild the FTS index when the tokenizer the
+    /// database was built with differs from the resolved tokenizer. FTS5 bakes
+    /// the tokenizer into the index at creation time, so a tokenizer change
+    /// (e.g. the porter-stemming default introduced after older databases were
+    /// created) requires a one-time drop + recreate + repopulate.
+    fn migrate_fts_tokenizer(
+        conn: &Connection,
+        fts_tokenizer: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let fts_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'memories_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        let Some(sql) = fts_sql else {
+            return Ok(()); // no FTS table yet; init_schema creates it correctly
+        };
+        let current = Self::parse_fts_tokenize_spec(&sql);
+        let desired = fts_tokenizer.map(|t| t.trim().to_string());
+        if current == desired {
+            return Ok(());
+        }
+        tracing::info!(
+            from = current.as_deref().unwrap_or("<default>"),
+            to = desired.as_deref().unwrap_or("<default>"),
+            "rebuilding memories_fts for tokenizer change"
+        );
+        conn.execute_batch(&Self::fts_rebuild_batch(fts_tokenizer))?;
+        Ok(())
     }
 
     fn init_schema(conn: &Connection, fts_tokenizer: Option<&str>) -> anyhow::Result<()> {
@@ -301,7 +539,22 @@ impl SqliteStore {
                 FOREIGN KEY (source_key) REFERENCES memories(key) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_consolidation_target
-                ON consolidation_edges(target_key);"
+                ON consolidation_edges(target_key);
+
+            CREATE TABLE IF NOT EXISTS entity_fields (
+                entity_id   TEXT NOT NULL,
+                field_name  TEXT NOT NULL,
+                value       TEXT NOT NULL,
+                source      TEXT NOT NULL,
+                source_url  TEXT,
+                updated_at  TEXT NOT NULL,
+                PRIMARY KEY (entity_id, field_name)
+            );
+            -- The composite PK already indexes the entity_id prefix (fast
+            -- per-entity load). This secondary index supports cross-entity
+            -- queries by field_name.
+            CREATE INDEX IF NOT EXISTS idx_entity_fields_name
+                ON entity_fields(field_name);"
         ))?;
         Ok(())
     }
@@ -486,6 +739,29 @@ impl SqliteStore {
             "CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash)",
         )?;
 
+        // Signed-provenance columns (PR #1): authenticated authoring brain and
+        // Ed25519 signature over the memory's signed payload. NULL on legacy /
+        // unsigned rows.
+        let (mut has_source_brain_id, mut has_signature) = (false, false);
+        let mut stmt_sig = conn.prepare("PRAGMA table_info(memories)")?;
+        let rows_sig = stmt_sig.query_map([], |row| row.get::<_, String>(1))?;
+        for name in rows_sig {
+            match name?.as_str() {
+                "source_brain_id" => has_source_brain_id = true,
+                "signature" => has_signature = true,
+                _ => {}
+            }
+        }
+        if !has_source_brain_id {
+            conn.execute_batch("ALTER TABLE memories ADD COLUMN source_brain_id BLOB DEFAULT NULL")?;
+        }
+        if !has_signature {
+            conn.execute_batch("ALTER TABLE memories ADD COLUMN signature BLOB DEFAULT NULL")?;
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_memories_source_brain_id ON memories(source_brain_id)",
+        )?;
+
         // FTS5 migration: add description column to FTS virtual table.
         // FTS5 does not support ALTER TABLE, so we detect and drop+recreate.
         let fts_has_description = {
@@ -501,36 +777,7 @@ impl SqliteStore {
                 .is_some_and(|sql| sql.contains("description"))
         };
         if !fts_has_description {
-            let fts_tok = Self::fts_tokenize_clause(fts_tokenizer);
-            conn.execute_batch(&format!(
-                "DROP TRIGGER IF EXISTS memories_ai;
-                 DROP TRIGGER IF EXISTS memories_ad;
-                 DROP TRIGGER IF EXISTS memories_au;
-                 DROP TABLE IF EXISTS memories_fts;
-
-                 CREATE VIRTUAL TABLE memories_fts USING fts5(
-                     key, content, description,
-                     content=memories, content_rowid=rowid{fts_tok}
-                 );
-
-                 CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
-                     INSERT INTO memories_fts(rowid, key, content, description)
-                     VALUES (new.rowid, new.key, new.content, COALESCE(new.description, ''));
-                 END;
-                 CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
-                     INSERT INTO memories_fts(memories_fts, rowid, key, content, description)
-                     VALUES ('delete', old.rowid, old.key, old.content, COALESCE(old.description, ''));
-                 END;
-                 CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
-                     INSERT INTO memories_fts(memories_fts, rowid, key, content, description)
-                     VALUES ('delete', old.rowid, old.key, old.content, COALESCE(old.description, ''));
-                     INSERT INTO memories_fts(rowid, key, content, description)
-                     VALUES (new.rowid, new.key, new.content, COALESCE(new.description, ''));
-                 END;
-
-                 INSERT INTO memories_fts(rowid, key, content, description)
-                 SELECT rowid, key, content, COALESCE(description, '') FROM memories;"
-            ))?;
+            conn.execute_batch(&Self::fts_rebuild_batch(fts_tokenizer))?;
         }
 
         // consolidation_edges table (for existing databases that don't have it)
@@ -802,7 +1049,19 @@ impl SqliteStore {
 }
 
 /// Standard column list for memory queries.
-const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier, declarative_density, description, description_generated_at, content_hash";
+const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier, declarative_density, description, description_generated_at, content_hash, source_brain_id, signature";
+
+/// Read an optional 32-byte id blob at `idx`, tolerating a missing column
+/// (queries with a narrower projection than [`MEMORY_COLUMNS`]).
+fn opt_id32(row: &rusqlite::Row, idx: usize) -> Option<[u8; 32]> {
+    let blob: Option<Vec<u8>> = row.get::<_, Option<Vec<u8>>>(idx).ok().flatten();
+    blob.and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+}
+
+/// Read an optional signature blob at `idx`, tolerating a missing column.
+fn opt_blob(row: &rusqlite::Row, idx: usize) -> Option<Vec<u8>> {
+    row.get::<_, Option<Vec<u8>>>(idx).ok().flatten()
+}
 
 /// Parse a Memory from a row with the standard column order.
 /// Columns: id(0), key(1), content(2), wing(3), hall(4), signal_score(5),
@@ -834,6 +1093,8 @@ fn memory_from_row(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         description: row.get(15).ok(),
         description_generated_at: row.get(16).ok(),
         content_hash: row.get(17).ok(),
+        source_brain_id: opt_id32(row, 18),
+        signature: opt_blob(row, 19),
     })
 }
 
@@ -857,6 +1118,8 @@ fn memory_hit_from_row(row: &rusqlite::Row, hits: usize) -> rusqlite::Result<Mem
         episode_id: row.get(12).ok(),
         declarative_density: row.get(14).ok(),
         description: row.get(15).ok(),
+        source_brain_id: opt_id32(row, 18),
+        signature: opt_blob(row, 19),
     })
 }
 
@@ -895,8 +1158,9 @@ impl MemoryStore for SqliteStore {
                     if memory.created_at.is_some() {
                         tx.execute(
                             "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
-                                                   source, device_id, confidence, created_at, content_hash)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                                   source, device_id, confidence, created_at, content_hash,
+                                                   source_brain_id, signature)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                             params![
                                 memory.id,
                                 memory.key,
@@ -910,13 +1174,16 @@ impl MemoryStore for SqliteStore {
                                 memory.confidence,
                                 memory.created_at,
                                 incoming_hash,
+                                memory.source_brain_id.as_ref().map(|b| b.as_slice()),
+                                memory.signature.as_deref(),
                             ],
                         )?;
                     } else {
                         tx.execute(
                             "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
-                                                   source, device_id, confidence, content_hash)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                                   source, device_id, confidence, content_hash,
+                                                   source_brain_id, signature)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                             params![
                                 memory.id,
                                 memory.key,
@@ -929,6 +1196,8 @@ impl MemoryStore for SqliteStore {
                                 memory.device_id.as_ref().map(|b| b.as_slice()),
                                 memory.confidence,
                                 incoming_hash,
+                                memory.source_brain_id.as_ref().map(|b| b.as_slice()),
+                                memory.signature.as_deref(),
                             ],
                         )?;
                     }
@@ -1193,38 +1462,65 @@ impl MemoryStore for SqliteStore {
     fn wing_search(
         &self,
         wing: &str,
-        _query_terms: &[String],
+        query_terms: &[String],
         max_results: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>> {
         let wing = wing.to_string();
+        let query_terms = query_terms.to_vec();
         let conn = self.conn.clone();
         let wing_cache = self.wing_cache.clone();
 
         Box::pin(async move {
-            // Check cache first
+            // Full wing set, signal-ordered — from cache or DB. The cache holds
+            // the untruncated, un-boosted set so different queries can reuse it.
+            let mut all_results: Option<Vec<MemoryHit>> = None;
             if let Ok(mut cache) = wing_cache.lock() {
                 if let Some(cached) = cache.get(&wing) {
-                    let results: Vec<MemoryHit> =
-                        cached.iter().take(max_results).cloned().collect();
-                    return Ok(results);
+                    all_results = Some(cached.clone());
                 }
             }
+            let mut all_results = match all_results {
+                Some(r) => r,
+                None => {
+                    let fetched = {
+                        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                        let sql = format!(
+                            "SELECT {MEMORY_COLUMNS} FROM memories WHERE wing = ?1
+                             ORDER BY signal_score DESC"
+                        );
+                        let mut stmt = conn.prepare(&sql)?;
+                        let rows =
+                            stmt.query_map(params![wing], |row| memory_hit_from_row(row, 0))?;
+                        let mut fetched = Vec::new();
+                        for row in rows {
+                            fetched.push(row?);
+                        }
+                        fetched
+                    };
+                    if let Ok(mut cache) = wing_cache.lock() {
+                        cache.put(wing, fetched.clone());
+                    }
+                    fetched
+                }
+            };
 
-            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let sql = format!(
-                "SELECT {MEMORY_COLUMNS} FROM memories WHERE wing = ?1
-                 ORDER BY signal_score DESC"
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![wing], |row| memory_hit_from_row(row, 0))?;
-            let mut all_results = Vec::new();
-            for row in rows {
-                all_results.push(row?);
-            }
-
-            // Cache the full result set (not truncated) so different max_results can reuse
-            if let Ok(mut cache) = wing_cache.lock() {
-                cache.put(wing, all_results.clone());
+            // Query-term boost: stable re-rank by how many distinct query
+            // terms each memory mentions. No memory is dropped (recall is
+            // unchanged); within equal match counts the signal_score order is
+            // preserved (stable sort). This makes Tier-2 wing retrieval
+            // query-aware instead of a signal-ordered wing dump.
+            let terms: Vec<String> = query_terms
+                .iter()
+                .filter(|t| t.len() > 1)
+                .map(|t| t.to_lowercase())
+                .collect();
+            if !terms.is_empty() {
+                all_results.sort_by_cached_key(|hit| {
+                    let haystack =
+                        format!("{} {}", hit.key.to_lowercase(), hit.content.to_lowercase());
+                    let matches = terms.iter().filter(|t| haystack.contains(t.as_str())).count();
+                    std::cmp::Reverse(matches)
+                });
             }
 
             all_results.truncate(max_results);
@@ -1243,30 +1539,128 @@ impl MemoryStore for SqliteStore {
             .map(|w| format!("\"{}\"", w.replace('"', "")))
             .collect::<Vec<_>>()
             .join(" OR ");
+        // Unstemmed-channel query with a CONSERVATIVE regular-plural singular
+        // added per term (`engineers` → `"engineers" OR "engineer"`). This makes
+        // the exact channel S-stemmer-like: it bridges regular plural↔singular
+        // (which pure-unstemmed misses) WITHOUT porter's aggressive over-stemming
+        // that floods on shared stems (`engineers`/`engineering` → `engin`). Only
+        // a single trailing `s` is stripped, and only for len>3 words not ending
+        // in `ss`/`us`/`is` — so `university`, `policy`, `class`, `status` are
+        // untouched and the collision fixes are preserved.
+        let raw_query = query_words
+            .iter()
+            .filter(|w| !w.is_empty())
+            .flat_map(|w| {
+                let cleaned = w.replace('"', "");
+                let mut forms = vec![format!("\"{cleaned}\"")];
+                let lower = cleaned.to_lowercase();
+                if lower.len() > 3
+                    && lower.ends_with('s')
+                    && !lower.ends_with("ss")
+                    && !lower.ends_with("us")
+                    && !lower.ends_with("is")
+                {
+                    forms.push(format!("\"{}\"", &cleaned[..cleaned.len() - 1]));
+                }
+                forms
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ");
         let conn = self.conn.clone();
+        let fusion = self.fusion;
 
         Box::pin(async move {
             if query.is_empty() {
                 return Ok(Vec::new());
             }
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+
+            if !fusion {
+                let sql = format!(
+                    "SELECT m.{cols}
+                     FROM memories_fts fts
+                     JOIN memories m ON m.rowid = fts.rowid
+                     WHERE memories_fts MATCH ?1
+                       AND m.key NOT IN (SELECT source_key FROM consolidation_edges)
+                     ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5) LIMIT ?2",
+                    cols = MEMORY_COLUMNS.replace(", ", ", m."),
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(params![query, max_results as i64], |row| {
+                    memory_hit_from_row(row, 0)
+                })?;
+                let mut results = Vec::new();
+                for row in rows {
+                    results.push(row?);
+                }
+                return Ok(results);
+            }
+
+            // ── Stemmed + unstemmed RRF fusion ──
+            // Pull a deeper list from each channel so fusion can promote a
+            // channel-specific winner that sits just past `max_results` in the
+            // other channel, then fuse by rank and take the top `max_results`.
+            let depth = (max_results.saturating_mul(2)).max(50) as i64;
+            let ranked_ids = |table: &str, weights: &str, mq: &str| -> anyhow::Result<Vec<String>> {
+                let sql = format!(
+                    "SELECT m.id
+                     FROM {table} f
+                     JOIN memories m ON m.rowid = f.rowid
+                     WHERE {table} MATCH ?1
+                       AND m.key NOT IN (SELECT source_key FROM consolidation_edges)
+                     ORDER BY bm25({table}{weights}) LIMIT ?2"
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let rows =
+                    stmt.query_map(params![mq, depth], |r| r.get::<_, String>(0))?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r?);
+                }
+                Ok(out)
+            };
+            let porter = ranked_ids("memories_fts", ", 1.0, 1.0, 0.5", &query)?;
+            let raw = ranked_ids("memories_fts_raw", "", &raw_query)?;
+
+            // RRF (Cormack 2009), k=60. Rank-based → no normalization across the
+            // two BM25 scales. Deterministic tie-break by id.
+            const RRF_K: f64 = 60.0;
+            let mut score: std::collections::HashMap<String, f64> =
+                std::collections::HashMap::new();
+            for list in [&porter, &raw] {
+                for (rank, id) in list.iter().enumerate() {
+                    *score.entry(id.clone()).or_insert(0.0) += 1.0 / (RRF_K + (rank + 1) as f64);
+                }
+            }
+            let mut fused: Vec<(String, f64)> = score.into_iter().collect();
+            fused.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0))
+            });
+            fused.truncate(max_results);
+            if fused.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Fetch the fused ids and re-emit in fused order.
+            let placeholders = fused.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
-                "SELECT m.{cols}
-                 FROM memories_fts fts
-                 JOIN memories m ON m.rowid = fts.rowid
-                 WHERE memories_fts MATCH ?1
-                   AND m.key NOT IN (SELECT source_key FROM consolidation_edges)
-                 ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5) LIMIT ?2",
+                "SELECT m.{cols} FROM memories m WHERE m.id IN ({placeholders})",
                 cols = MEMORY_COLUMNS.replace(", ", ", m."),
             );
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![query, max_results as i64], |row| {
-                memory_hit_from_row(row, 0)
-            })?;
-            let mut results = Vec::new();
-            for row in rows {
-                results.push(row?);
+            let params_vec: Vec<&dyn rusqlite::ToSql> =
+                fused.iter().map(|(id, _)| id as &dyn rusqlite::ToSql).collect();
+            let rows = stmt.query_map(params_vec.as_slice(), |row| memory_hit_from_row(row, 0))?;
+            let mut by_id: std::collections::HashMap<String, MemoryHit> =
+                std::collections::HashMap::new();
+            for r in rows {
+                let hit = r?;
+                by_id.insert(hit.id.clone(), hit);
             }
+            let results = fused
+                .into_iter()
+                .filter_map(|(id, _)| by_id.remove(&id))
+                .collect();
             Ok(results)
         })
     }
@@ -1564,6 +1958,99 @@ impl MemoryStore for SqliteStore {
                 params![wing, before],
             )?;
             Ok(deleted)
+        })
+    }
+
+    fn delete_memory_by_key(
+        &self,
+        key: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<ForgetReceipt>> + Send + '_>> {
+        let key = key.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            use rusqlite::OptionalExtension;
+            let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // Resolve the memory id (FK-CASCADE substrates key on id).
+            let id: Option<String> = conn
+                .query_row("SELECT id FROM memories WHERE key = ?1", params![key], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            let Some(id) = id else {
+                return Ok(ForgetReceipt::default());
+            };
+
+            let tx = conn.transaction()?;
+            let mut receipt = ForgetReceipt {
+                existed: true,
+                ..Default::default()
+            };
+
+            // Non-FK substrates: scrub explicitly BEFORE the row delete so we
+            // can count them and so nothing dangles.
+            receipt.fingerprints = tx.execute(
+                "DELETE FROM constellation_fingerprints \
+                 WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
+                params![id],
+            )?;
+            receipt.spectrograms = tx.execute(
+                "DELETE FROM memory_spectrogram WHERE memory_id = ?1",
+                params![id],
+            )?;
+            receipt.annotations = tx.execute(
+                "DELETE FROM memory_annotations WHERE memory_id = ?1",
+                params![id],
+            )?;
+            // Consolidation edges reference memories(key). FK cascades the
+            // source side; delete target-side edges (pointers INTO the
+            // deleted memory) explicitly so no edge dangles.
+            receipt.consolidation_edges = tx.execute(
+                "DELETE FROM consolidation_edges WHERE source_key = ?1 OR target_key = ?1",
+                params![key],
+            )?;
+            receipt.co_retrieval_pairs = tx.execute(
+                "DELETE FROM co_retrieval_pairs WHERE memory_id_a = ?1 OR memory_id_b = ?1",
+                params![id],
+            )?;
+            // retrieval_events store memory ids in a JSON array; scrub any
+            // event that referenced this memory (right-to-be-forgotten covers
+            // the access log too). The quoted-id match avoids substring
+            // collisions across the 16-hex-char ids.
+            let id_needle = format!("%\"{id}\"%");
+            receipt.retrieval_events = tx.execute(
+                "DELETE FROM retrieval_events WHERE memory_ids_json LIKE ?1",
+                params![id_needle],
+            )?;
+
+            // The row delete cascades any FK substrates created before the
+            // explicit scrubs above (idempotent — already emptied) and fires
+            // the FTS AFTER DELETE trigger.
+            receipt.memory_rows = tx.execute("DELETE FROM memories WHERE key = ?1", params![key])?;
+            tx.commit()?;
+
+            // FTS is a shadow of the memories row; the trigger removed it.
+            receipt.fts_rows = receipt.memory_rows;
+            Ok(receipt)
+        })
+    }
+
+    fn set_signature(
+        &self,
+        memory_id: &str,
+        source_brain_id: &[u8; 32],
+        signature: &[u8],
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let sbid = source_brain_id.to_vec();
+        let sig = signature.to_vec();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let n = conn.execute(
+                "UPDATE memories SET source_brain_id = ?1, signature = ?2 WHERE id = ?3",
+                params![sbid, sig, memory_id],
+            )?;
+            Ok(n)
         })
     }
 
@@ -2043,6 +2530,82 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    fn set_entity_field(
+        &self,
+        entity_id: &str,
+        field_name: &str,
+        value: &str,
+        source: FieldSource,
+        source_url: Option<&str>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + '_>> {
+        let entity_id = entity_id.to_string();
+        let field_name = field_name.to_string();
+        let value = value.to_string();
+        let source = source.as_str().to_string();
+        let source_url = source_url.map(|s| s.to_string());
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // Provenance guard: an enriched write must not clobber a manual
+            // field. Read the stored source under the held lock so the
+            // check-then-write is atomic against other writers.
+            if source == "enriched" {
+                let existing: Option<String> = conn
+                    .query_row(
+                        "SELECT source FROM entity_fields \
+                         WHERE entity_id = ?1 AND field_name = ?2",
+                        params![entity_id, field_name],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if existing.as_deref() == Some("manual") {
+                    return Ok(false);
+                }
+            }
+            conn.execute(
+                "INSERT INTO entity_fields \
+                     (entity_id, field_name, value, source, source_url, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) \
+                 ON CONFLICT(entity_id, field_name) DO UPDATE SET \
+                     value = excluded.value, \
+                     source = excluded.source, \
+                     source_url = excluded.source_url, \
+                     updated_at = excluded.updated_at",
+                params![entity_id, field_name, value, source, source_url],
+            )?;
+            Ok(true)
+        })
+    }
+
+    fn get_entity_fields(
+        &self,
+        entity_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<EntityField>>> + Send + '_>> {
+        let entity_id = entity_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT field_name, value, source, source_url, updated_at \
+                 FROM entity_fields WHERE entity_id = ?1 ORDER BY field_name",
+            )?;
+            let rows: Vec<EntityField> = stmt
+                .query_map(params![entity_id], |row| {
+                    let source: String = row.get(2)?;
+                    Ok(EntityField {
+                        field_name: row.get(0)?,
+                        value: row.get(1)?,
+                        source: FieldSource::from_db(&source),
+                        source_url: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+    }
+
     fn list_undescribed(
         &self,
         limit: usize,
@@ -2086,9 +2649,65 @@ impl MemoryStore for SqliteStore {
                     Ok(RelatedMemory {
                         memory_id: row.get(0)?,
                         co_count: row.get::<_, i64>(1)? as u64,
+                        lift: 0.0,
                         memory: None,
                     })
                 })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+    }
+
+    fn recommend_by_lift(
+        &self,
+        memory_id: &str,
+        limit: usize,
+        min_co_count: u64,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RelatedMemory>>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // lift(seed, B) = co(seed,B) * total / (occ(seed) * occ(B)), where
+            // occ(X) = sum of co_count over pairs containing X, and total = sum
+            // of all co_count. High occ(B) (a popular memory) drives lift DOWN,
+            // suppressing the popularity bias that raw co_count ranking has.
+            let mut stmt = conn.prepare(
+                "WITH occ AS (
+                    SELECT id, SUM(cc) AS occ FROM (
+                        SELECT memory_id_a AS id, co_count AS cc FROM co_retrieval_pairs
+                        UNION ALL
+                        SELECT memory_id_b AS id, co_count AS cc FROM co_retrieval_pairs
+                    ) GROUP BY id
+                 ),
+                 tot AS (SELECT SUM(co_count) AS total FROM co_retrieval_pairs),
+                 neighbors AS (
+                    SELECT memory_id_b AS rid, co_count FROM co_retrieval_pairs WHERE memory_id_a = ?1
+                    UNION ALL
+                    SELECT memory_id_a AS rid, co_count FROM co_retrieval_pairs WHERE memory_id_b = ?1
+                 )
+                 SELECT n.rid, n.co_count,
+                        (n.co_count * (SELECT total FROM tot) * 1.0) /
+                        (NULLIF((SELECT occ FROM occ WHERE id = ?1), 0) *
+                         NULLIF((SELECT occ FROM occ WHERE id = n.rid), 0)) AS lift
+                 FROM neighbors n
+                 WHERE n.co_count >= ?2
+                 ORDER BY lift DESC, n.co_count DESC
+                 LIMIT ?3",
+            )?;
+            let rows: Vec<RelatedMemory> = stmt
+                .query_map(
+                    params![memory_id, min_co_count as i64, limit as i64],
+                    |row| {
+                        Ok(RelatedMemory {
+                            memory_id: row.get(0)?,
+                            co_count: row.get::<_, i64>(1)? as u64,
+                            lift: row.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
+                            memory: None,
+                        })
+                    },
+                )?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -2478,6 +3097,141 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn delete_memory_by_key_purges_substrates() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "victim-id".into(),
+            key: "victim".into(),
+            content: "the doctor prescribed rest for the knee injury".into(),
+            wing: Some("general".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        // Give it a self-referential fingerprint so we can watch it purge.
+        let fp = Fingerprint {
+            id: "fp1".into(),
+            hash: "h1".into(),
+            anchor_memory_id: "victim-id".into(),
+            target_memory_id: "victim-id".into(),
+            wing: "general".into(),
+            anchor_hall: "fact".into(),
+            target_hall: "fact".into(),
+            time_delta_bucket: "same".into(),
+        };
+        store.write(&mem, std::slice::from_ref(&fp)).await.unwrap();
+
+        // Present in FTS and fingerprints before delete.
+        let hits = store.fts_search(&["doctor".into()], 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+
+        let receipt = store.delete_memory_by_key("victim").await.unwrap();
+        assert!(receipt.existed);
+        assert_eq!(receipt.memory_rows, 1);
+        assert_eq!(receipt.fts_rows, 1);
+        assert_eq!(receipt.fingerprints, 1, "self-referential fp counted once");
+
+        // Gone from FTS and the memories table.
+        let after = store.fts_search(&["doctor".into()], 10).await.unwrap();
+        assert!(after.is_empty(), "FTS shadow must be purged");
+        // Scope the connection guard: holding it across a later store call
+        // (which re-locks the same mutex) would deadlock.
+        {
+            let conn = store.conn();
+            let remaining: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM constellation_fingerprints WHERE anchor_memory_id = 'victim-id'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(remaining, 0, "fingerprints must be purged");
+        }
+
+        // Deleting a missing key reports not-existed.
+        let none = store.delete_memory_by_key("ghost").await.unwrap();
+        assert!(!none.existed);
+        assert_eq!(none.memory_rows, 0);
+    }
+
+    #[tokio::test]
+    async fn wing_search_boosts_query_term_matches() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let base = Memory {
+            id: String::new(),
+            key: String::new(),
+            content: String::new(),
+            wing: Some("apollo".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.5,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        let mems = [
+            ("m1", "k1", "high signal but off-topic content", 0.9),
+            ("m2", "k2", "medium signal about deployment plans", 0.5),
+            ("m3", "k3", "low signal note on kubernetes deployment", 0.1),
+        ];
+        for (id, key, content, signal) in mems {
+            let mut m = base.clone();
+            m.id = id.into();
+            m.key = key.into();
+            m.content = content.into();
+            m.signal_score = signal;
+            store.write(&m, &[]).await.unwrap();
+        }
+
+        // No terms: signal order preserved (wing dump).
+        let plain = store.wing_search("apollo", &[], 3).await.unwrap();
+        assert_eq!(plain[0].id, "m1", "no-term search stays signal-ordered");
+
+        // Terms: matches outrank higher-signal non-matches; two-term match
+        // outranks one-term match regardless of signal.
+        let terms = vec!["kubernetes".to_string(), "deployment".to_string()];
+        let boosted = store.wing_search("apollo", &terms, 3).await.unwrap();
+        assert_eq!(
+            boosted.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            vec!["m3", "m2", "m1"],
+            "term overlap should outrank signal, signal breaks ties"
+        );
+
+        // Second call hits the LRU cache — the boost must still apply.
+        let cached = store
+            .wing_search("apollo", &["off-topic".to_string()], 3)
+            .await
+            .unwrap();
+        assert_eq!(
+            cached[0].id, "m1",
+            "cache-path search must re-rank by the new query's terms"
+        );
+    }
+
+    #[tokio::test]
     async fn write_and_list() {
         let store = SqliteStore::open_in_memory().unwrap();
         let mem = Memory {
@@ -2499,6 +3253,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -2529,6 +3285,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         let outcome1 = store.write(&mem1, &[]).await.unwrap();
         assert_eq!(outcome1, WriteOutcome::Inserted);
@@ -2555,6 +3313,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         let outcome2 = store.write(&mem2, &[]).await.unwrap();
         assert_eq!(outcome2, WriteOutcome::ContentUpdated);
@@ -2592,6 +3352,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -2637,6 +3399,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -2644,14 +3408,142 @@ mod tests {
         let hits = store.fts_search(&["doctors".into()], 10).await.unwrap();
         assert_eq!(hits.len(), 1, "porter should bridge doctors→doctor");
 
-        // Control: the default tokenizer misses the same query.
-        let default_store = SqliteStore::open_in_memory().unwrap();
-        default_store.write(&mem, &[]).await.unwrap();
-        let hits = default_store
+        // Control: an explicit unstemmed tokenizer misses the same query.
+        let dir2 = tempfile::tempdir().unwrap();
+        let unstemmed_store = SqliteStore::open_with_config(
+            &dir2.path().join("unstemmed.db"),
+            &SqliteStoreConfig {
+                fts_tokenizer: Some("unicode61".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        unstemmed_store.write(&mem, &[]).await.unwrap();
+        let hits = unstemmed_store
             .fts_search(&["doctors".into()], 10)
             .await
             .unwrap();
-        assert!(hits.is_empty(), "default tokenizer has no stemming");
+        assert!(hits.is_empty(), "unicode61 tokenizer has no stemming");
+    }
+
+    #[tokio::test]
+    async fn default_config_uses_porter_stemming() {
+        // Porter is the library default: plural queries bridge to singular
+        // content with no explicit configuration.
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "session_1:turn:0:user".into(),
+            content: "I met with the doctor yesterday about my knee".into(),
+            wing: Some("general".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        store.write(&mem, &[]).await.unwrap();
+
+        let hits = store.fts_search(&["doctors".into()], 10).await.unwrap();
+        assert_eq!(hits.len(), 1, "default config should porter-stem");
+
+        // The recorded schema carries the porter tokenize clause.
+        let sql: String = store
+            .conn()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'memories_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("porter unicode61"),
+            "FTS schema should record the porter tokenizer, got: {sql}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tokenizer_migration_rebuilds_existing_fts() {
+        // A database built with an unstemmed tokenizer is rebuilt to the
+        // resolved (porter) default on reopen, and the index is repopulated —
+        // existing memories become stem-matchable without re-ingest.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("migrate.db");
+
+        let mem = Memory {
+            id: "m1".into(),
+            key: "session_1:turn:0:user".into(),
+            content: "I met with the doctor yesterday about my knee".into(),
+            wing: Some("general".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+
+        {
+            let old_store = SqliteStore::open_with_config(
+                &path,
+                &SqliteStoreConfig {
+                    fts_tokenizer: Some("unicode61".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            old_store.write(&mem, &[]).await.unwrap();
+            let hits = old_store.fts_search(&["doctors".into()], 10).await.unwrap();
+            assert!(hits.is_empty(), "pre-migration store has no stemming");
+        }
+
+        // Reopen with the default config → porter → one-time FTS rebuild.
+        let migrated = SqliteStore::open(&path).unwrap();
+        let hits = migrated.fts_search(&["doctors".into()], 10).await.unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "migrated index should porter-stem existing content"
+        );
+
+        // Idempotent: reopening again leaves the schema stable and data intact.
+        drop(migrated);
+        let reopened = SqliteStore::open(&path).unwrap();
+        let hits = reopened.fts_search(&["doctors".into()], 10).await.unwrap();
+        assert_eq!(hits.len(), 1, "second reopen should not disturb the index");
+        let sql: String = reopened
+            .conn()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'memories_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("porter unicode61"),
+            "migrated schema should record the porter tokenizer, got: {sql}"
+        );
     }
 
     #[tokio::test]
@@ -2676,6 +3568,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -2720,6 +3614,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -2751,6 +3647,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -2772,6 +3670,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -2818,6 +3718,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&m0, &[]).await.unwrap();
         let mem = Memory {
@@ -2839,6 +3741,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         let fp = Fingerprint {
             id: "fp1".into(),
@@ -2886,6 +3790,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         }
     }
 
@@ -3124,6 +4030,8 @@ mod tests {
                 description: None,
                 description_generated_at: None,
                 content_hash: None,
+                source_brain_id: None,
+                signature: None,
             };
             store.write(&mem, &[]).await.unwrap();
         }
@@ -3898,6 +4806,136 @@ mod tests {
         assert!(second.description_generated_at.is_some());
     }
 
+    // ── entity_fields ──
+
+    const E1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    #[tokio::test]
+    async fn entity_field_write_and_read_with_provenance() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        let applied = store
+            .set_entity_field(E1, "email", "j@x.com", FieldSource::Manual, None)
+            .await
+            .unwrap();
+        assert!(applied);
+        let applied = store
+            .set_entity_field(
+                E1,
+                "job_title",
+                "Eng Lead",
+                FieldSource::Enriched,
+                Some("https://linkedin.com/in/jane"),
+            )
+            .await
+            .unwrap();
+        assert!(applied);
+
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert_eq!(fields.len(), 2);
+        // Ordered by field_name: email, job_title.
+        let email = &fields[0];
+        assert_eq!(email.field_name, "email");
+        assert_eq!(email.value, "j@x.com");
+        assert_eq!(email.source, FieldSource::Manual);
+        assert_eq!(email.source_url, None);
+        assert!(email.updated_at.ends_with('Z'));
+
+        let job = &fields[1];
+        assert_eq!(job.field_name, "job_title");
+        assert_eq!(job.source, FieldSource::Enriched);
+        assert_eq!(
+            job.source_url.as_deref(),
+            Some("https://linkedin.com/in/jane")
+        );
+    }
+
+    #[tokio::test]
+    async fn enriched_write_does_not_clobber_manual_field() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        store
+            .set_entity_field(E1, "company", "Acme", FieldSource::Manual, None)
+            .await
+            .unwrap();
+
+        // Enriched write to the same field must be suppressed.
+        let applied = store
+            .set_entity_field(
+                E1,
+                "company",
+                "Globex",
+                FieldSource::Enriched,
+                Some("https://example.com"),
+            )
+            .await
+            .unwrap();
+        assert!(!applied, "enriched write should be suppressed");
+
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].value, "Acme");
+        assert_eq!(fields[0].source, FieldSource::Manual);
+        assert_eq!(fields[0].source_url, None);
+    }
+
+    #[tokio::test]
+    async fn manual_write_overwrites_any_source() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        store
+            .set_entity_field(E1, "company", "Globex", FieldSource::Enriched, None)
+            .await
+            .unwrap();
+        // Manual write always wins.
+        let applied = store
+            .set_entity_field(E1, "company", "Acme", FieldSource::Manual, None)
+            .await
+            .unwrap();
+        assert!(applied);
+
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert_eq!(fields[0].value, "Acme");
+        assert_eq!(fields[0].source, FieldSource::Manual);
+        // And a subsequent enriched write is now blocked.
+        let applied = store
+            .set_entity_field(E1, "company", "Initech", FieldSource::Enriched, None)
+            .await
+            .unwrap();
+        assert!(!applied);
+    }
+
+    #[tokio::test]
+    async fn enriched_write_updates_existing_enriched_field() {
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        store
+            .set_entity_field(E1, "job_title", "Engineer", FieldSource::Enriched, None)
+            .await
+            .unwrap();
+        let applied = store
+            .set_entity_field(
+                E1,
+                "job_title",
+                "Senior Engineer",
+                FieldSource::Enriched,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(applied);
+
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert_eq!(fields[0].value, "Senior Engineer");
+    }
+
+    #[tokio::test]
+    async fn get_entity_fields_empty_for_unknown_entity() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let fields = store.get_entity_fields(E1).await.unwrap();
+        assert!(fields.is_empty());
+    }
+
     #[tokio::test]
     async fn list_undescribed_returns_only_null_descriptions() {
         let store = SqliteStore::open_in_memory().unwrap();
@@ -4039,6 +5077,61 @@ mod tests {
         assert_eq!(related[0].co_count, 3);
         assert_eq!(related[1].memory_id, "m3");
         assert_eq!(related[1].co_count, 1);
+    }
+
+    #[tokio::test]
+    async fn lift_suppresses_popularity_bias_where_raw_cocount_fails() {
+        // The documented co-retrieval failure: a globally-popular memory
+        // co-occurs with everything, so raw co_count ranks it top for every
+        // seed (a generic blob crowds out specific associations).
+        //
+        // Scenario: "popular" appears in EVERY retrieval. Seed "A" is
+        // specifically associated with "B" (they co-occur across several
+        // A-specific retrievals) but B is otherwise rare. Distractors C..F
+        // pad popular's global frequency.
+        let store = SqliteStore::open_in_memory().unwrap();
+        // A-specific sessions: A, B, popular co-occur (B is A's real associate).
+        for _ in 0..4 {
+            insert_retrieval_event(&store, &["A", "B", "popular"]).await;
+        }
+        // Many other sessions where "popular" co-occurs with unrelated memories
+        // (this is what makes it globally popular but not A-specific).
+        for other in ["C", "D", "E", "F", "G", "H"] {
+            for _ in 0..4 {
+                insert_retrieval_event(&store, &[other, "popular"]).await;
+            }
+        }
+        store.rebuild_co_retrieval_index().await.unwrap();
+
+        // Raw co_count: "popular" co-occurs with A 4 times, "B" with A 4 times —
+        // a tie or popular-favored; popular is NOT suppressed.
+        let raw = store.related_memories("A", 5).await.unwrap();
+        let raw_top = &raw[0].memory_id;
+        // popular appears among A's raw neighbors at full weight.
+        assert!(
+            raw.iter().any(|r| r.memory_id == "popular"),
+            "popular should be a raw neighbor of A"
+        );
+
+        // Lift: B is specifically associated with A (low global occ), popular is
+        // globally popular (huge occ) -> B outranks popular under lift.
+        let rec = store.recommend_by_lift("A", 5, 1).await.unwrap();
+        assert_eq!(
+            rec[0].memory_id, "B",
+            "lift should rank the A-specific memory B first, got {:?}",
+            rec.iter().map(|r| (&r.memory_id, r.lift)).collect::<Vec<_>>()
+        );
+        let b_lift = rec.iter().find(|r| r.memory_id == "B").unwrap().lift;
+        let pop_lift = rec.iter().find(|r| r.memory_id == "popular").map(|r| r.lift).unwrap_or(0.0);
+        assert!(
+            b_lift > pop_lift,
+            "B's lift ({b_lift}) must exceed popular's ({pop_lift}) — popularity suppressed"
+        );
+        // The fix is real: raw put popular at/near the top; lift demotes it.
+        assert!(
+            raw_top == "popular" || raw_top == "B",
+            "sanity: raw top is popular or B (co_count tie), got {raw_top}"
+        );
     }
 
     #[tokio::test]
@@ -4233,6 +5326,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         let outcome = store.write(&mem, &[]).await.unwrap();
         assert_eq!(outcome, WriteOutcome::Inserted);
@@ -4272,6 +5367,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -4330,6 +5427,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -4382,6 +5481,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&mem1, &[]).await.unwrap();
 
@@ -4416,6 +5517,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         let outcome = store.write(&mem2, &[]).await.unwrap();
         assert_eq!(outcome, WriteOutcome::ContentUpdated);
@@ -4456,6 +5559,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         store.write(&mem, &[]).await.unwrap();
 
@@ -4482,6 +5587,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         let outcome = store.write(&mem2, &[]).await.unwrap();
         assert_eq!(outcome, WriteOutcome::ContentUpdated);
@@ -4548,6 +5655,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         let outcome = store.write(&mem, &[]).await.unwrap();
         assert_eq!(outcome, WriteOutcome::NoOp);
@@ -4601,6 +5710,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            source_brain_id: None,
+            signature: None,
         };
         let outcome = store.write(&mem, &[]).await.unwrap();
         assert_eq!(outcome, WriteOutcome::ContentUpdated);

@@ -163,6 +163,23 @@ impl BrainIdentity {
         self.signing_key.sign(msg)
     }
 
+    /// Sign a memory contribution: binds this brain's identity to the
+    /// memory's content, creation time, and visibility. The signature
+    /// authenticates *who* contributed the memory and that its content /
+    /// visibility have not been altered — the trust anchor for a shared,
+    /// multi-contributor project brain. The signed payload is produced by
+    /// [`memory_signing_payload`] with `source_brain_id = self.brain_id()`.
+    pub fn sign_memory(
+        &self,
+        content_hash: &str,
+        created_at: &str,
+        visibility: &str,
+    ) -> Signature {
+        let payload =
+            memory_signing_payload(&self.brain_id, content_hash, created_at, visibility);
+        self.sign(&payload)
+    }
+
     /// Returns the brain's unique identifier.
     pub fn brain_id(&self) -> &BrainId {
         &self.brain_id
@@ -185,4 +202,125 @@ pub fn verify(brain_id: &BrainId, public_key: &VerifyingKey, msg: &[u8], sig: &S
         return false;
     }
     public_key.verify(msg, sig).is_ok()
+}
+
+/// Domain-separated version tag for the memory-signing payload. Bumping this
+/// invalidates old signatures — change only on a deliberate scheme change.
+pub const MEMORY_SIG_DOMAIN: &[u8] = b"spectral-memory-sig-v1";
+
+/// Build the canonical byte payload signed for a memory contribution.
+///
+/// Layout (length-prefixed to prevent field-boundary ambiguity):
+/// `DOMAIN ‖ source_brain_id(32) ‖ len(content_hash)‖content_hash ‖
+///  len(created_at)‖created_at ‖ len(visibility)‖visibility`.
+/// Every field is recoverable from a stored/returned memory at verify time,
+/// so no signed field needs to be transmitted separately.
+pub fn memory_signing_payload(
+    source_brain_id: &BrainId,
+    content_hash: &str,
+    created_at: &str,
+    visibility: &str,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(
+        MEMORY_SIG_DOMAIN.len() + 32 + content_hash.len() + created_at.len() + visibility.len() + 12,
+    );
+    buf.extend_from_slice(MEMORY_SIG_DOMAIN);
+    buf.extend_from_slice(source_brain_id.as_bytes());
+    for field in [content_hash, created_at, visibility] {
+        buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        buf.extend_from_slice(field.as_bytes());
+    }
+    buf
+}
+
+/// Verify a memory contribution's signature.
+///
+/// Returns `true` only if `public_key` matches `source_brain_id` (so the
+/// claimed origin owns the key) **and** the signature is valid over the
+/// canonical payload for the given content hash, creation time, and
+/// visibility. Any tampering with the content (hash), timestamp, visibility,
+/// or origin fails verification.
+///
+/// The caller supplies `public_key` — resolve it from `source_brain_id` via
+/// the contributor grant set (a `BrainId` is `blake3(public_key)` and cannot
+/// be inverted, so the key must be known out of band).
+pub fn verify_memory_signature(
+    source_brain_id: &BrainId,
+    public_key: &VerifyingKey,
+    content_hash: &str,
+    created_at: &str,
+    visibility: &str,
+    sig: &Signature,
+) -> bool {
+    let payload = memory_signing_payload(source_brain_id, content_hash, created_at, visibility);
+    verify(source_brain_id, public_key, &payload, sig)
+}
+
+#[cfg(test)]
+mod memory_sig_tests {
+    use super::*;
+
+    #[test]
+    fn sign_and_verify_memory_roundtrip() {
+        let id = BrainIdentity::generate();
+        let sig = id.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
+        assert!(verify_memory_signature(
+            id.brain_id(),
+            id.verifying_key(),
+            "abc123",
+            "2026-07-10T12:00:00Z",
+            "team",
+            &sig,
+        ));
+    }
+
+    #[test]
+    fn tampering_any_signed_field_fails() {
+        let id = BrainIdentity::generate();
+        let sig = id.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
+        // Wrong content hash (content was altered).
+        assert!(!verify_memory_signature(
+            id.brain_id(), id.verifying_key(),
+            "TAMPERED", "2026-07-10T12:00:00Z", "team", &sig,
+        ));
+        // Wrong timestamp.
+        assert!(!verify_memory_signature(
+            id.brain_id(), id.verifying_key(),
+            "abc123", "2026-07-11T00:00:00Z", "team", &sig,
+        ));
+        // Visibility escalation (team -> public) must not verify.
+        assert!(!verify_memory_signature(
+            id.brain_id(), id.verifying_key(),
+            "abc123", "2026-07-10T12:00:00Z", "public", &sig,
+        ));
+    }
+
+    #[test]
+    fn foreign_key_cannot_impersonate_origin() {
+        let alice = BrainIdentity::generate();
+        let mallory = BrainIdentity::generate();
+        let sig = alice.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
+        // Mallory presents Alice's brain_id but her own key: pubkey doesn't
+        // match the claimed origin -> reject.
+        assert!(!verify_memory_signature(
+            alice.brain_id(), mallory.verifying_key(),
+            "abc123", "2026-07-10T12:00:00Z", "team", &sig,
+        ));
+        // Mallory re-signs under her own identity but claims Alice's id ->
+        // brain_id/pubkey mismatch -> reject.
+        let forged = mallory.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
+        assert!(!verify_memory_signature(
+            alice.brain_id(), mallory.verifying_key(),
+            "abc123", "2026-07-10T12:00:00Z", "team", &forged,
+        ));
+    }
+
+    #[test]
+    fn payload_is_unambiguous_across_field_boundaries() {
+        let id = BrainIdentity::generate();
+        // Length-prefixing means ("ab","c") and ("a","bc") sign differently.
+        let a = memory_signing_payload(id.brain_id(), "ab", "c", "team");
+        let b = memory_signing_payload(id.brain_id(), "a", "bc", "team");
+        assert_ne!(a, b, "field boundaries must be unambiguous");
+    }
 }
