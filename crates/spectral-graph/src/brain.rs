@@ -1549,6 +1549,7 @@ impl Brain {
             apply_entity_boost: config.apply_entity_resolution,
             entity_boost_weight: 0.05,
             apply_ambient_boost: false,
+            ambient_weights: crate::cascade_layers::AmbientBoostWeights::default(),
             apply_declarative_boost: config.apply_declarative_boost,
             declarative_weight: 0.10,
             // Disabled: co-retrieval degrades real-workload relevance.

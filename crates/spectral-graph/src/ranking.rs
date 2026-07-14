@@ -243,6 +243,8 @@ pub struct RerankingConfig {
     pub apply_entity_boost: bool,
     pub entity_boost_weight: f64,
     pub apply_ambient_boost: bool,
+    /// Weights for the ambient boost (identity defaults preserve prior behavior).
+    pub ambient_weights: crate::cascade_layers::AmbientBoostWeights,
     pub apply_declarative_boost: bool,
     pub declarative_weight: f64,
     pub co_retrieval_weight: f64,
@@ -261,6 +263,7 @@ impl Default for RerankingConfig {
             apply_entity_boost: false,
             entity_boost_weight: 0.05,
             apply_ambient_boost: false,
+            ambient_weights: crate::cascade_layers::AmbientBoostWeights::default(),
             apply_declarative_boost: false,
             declarative_weight: 0.10,
             // Disabled by default — degrades real-workload relevance.
@@ -331,7 +334,8 @@ pub fn apply_reranking_pipeline(
     // Ambient boost: multiplicative on composite score (identity when context empty)
     if config.apply_ambient_boost {
         for (i, hit) in candidates.iter().enumerate() {
-            let boost = crate::cascade_layers::ambient_boost_for_hit(hit, context);
+            let boost =
+                crate::cascade_layers::ambient_boost_with(hit, context, &config.ambient_weights);
             scores[i] *= boost;
         }
     }

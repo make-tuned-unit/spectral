@@ -2071,6 +2071,7 @@ fn co_retrieval_boost_lifts_co_retrieved_memories_in_cascade() {
         apply_entity_boost: false,
         entity_boost_weight: 0.05,
         apply_ambient_boost: false,
+        ambient_weights: spectral_graph::cascade_layers::AmbientBoostWeights::default(),
         apply_declarative_boost: true,
         declarative_weight: 0.10,
         co_retrieval_weight: 0.10,

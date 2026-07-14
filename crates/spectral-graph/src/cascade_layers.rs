@@ -12,9 +12,71 @@ use crate::brain::Brain;
 
 // ── Ambient boost ───────────────────────────────────────────────────
 
-/// Compute ambient boost for a memory hit based on wing alignment and recency.
-/// Returns a value in [0.5, 2.0]. Identity (1.0) when context is empty.
+/// Tunable weights for the ambient context boost. Defaults preserve the
+/// original hardcoded behavior (wing-match ×1.5, mismatch ×0.7, fresh-hour
+/// ×1.3, fresh-day ×1.1, clamp [0.5, 2.0]). Exposed so the disambiguation
+/// strength can be tuned per deployment: `ambient_weight_sweep` (bench-real)
+/// maps the tradeoff frontier between context disambiguation and wrongly
+/// overriding a strong relevance signal.
+#[derive(Debug, Clone, Copy)]
+pub struct AmbientBoostWeights {
+    /// Multiplier when the hit's wing matches focus/recent activity.
+    pub wing_match: f64,
+    /// Multiplier for non-matching hits under strong context (focus or activity present).
+    pub mismatch_penalty: f64,
+    /// Multiplier for hits created within the last hour.
+    pub fresh_hour: f64,
+    /// Multiplier for hits created within the last day (but not hour).
+    pub fresh_day: f64,
+    /// Final clamp bounds.
+    pub clamp_min: f64,
+    pub clamp_max: f64,
+}
+
+impl Default for AmbientBoostWeights {
+    /// **Penalty-only ambient** — the measured frontier point. The
+    /// `ambient_weight_sweep` bench maps disambiguation (A, 12 ambiguous
+    /// query/focus cases) against explicit-override respect (B, 6 cases where
+    /// the query unambiguously names an out-of-context memory):
+    ///
+    /// | weights | A | B |
+    /// |---|---|---|
+    /// | 1.0 / 0.7 (this default) | 11/12 | **6/6** |
+    /// | 1.5 / 0.7 (previous)     | 12/12 | 5/6 (hijacks an explicit query) |
+    ///
+    /// Boosting in-context hits (`wing_match > 1`) buys the last ambiguity case
+    /// by inflating context above content relevance — which then also overrides
+    /// queries that explicitly ask for something outside the current context,
+    /// the trust-breaking failure. Damping out-of-context hits instead
+    /// (`mismatch_penalty < 1`) disambiguates nearly as well and never hijacks:
+    /// an explicit query's strong relevance survives a 0.7 damp, ambient noise
+    /// does not. Consumers with real usage data can re-tune via
+    /// [`CascadePipelineConfig::ambient_weights`].
+    fn default() -> Self {
+        Self {
+            wing_match: 1.0,
+            mismatch_penalty: 0.7,
+            fresh_hour: 1.3,
+            fresh_day: 1.1,
+            clamp_min: 0.5,
+            clamp_max: 2.0,
+        }
+    }
+}
+
+/// Compute ambient boost for a memory hit based on wing alignment and recency,
+/// with default weights. Returns a value in `[clamp_min, clamp_max]`. Identity
+/// (1.0) when context is empty.
 pub fn ambient_boost_for_hit(hit: &MemoryHit, context: &RecognitionContext) -> f64 {
+    ambient_boost_with(hit, context, &AmbientBoostWeights::default())
+}
+
+/// [`ambient_boost_for_hit`] with explicit weights.
+pub fn ambient_boost_with(
+    hit: &MemoryHit,
+    context: &RecognitionContext,
+    w: &AmbientBoostWeights,
+) -> f64 {
     if context.is_empty() {
         return 1.0;
     }
@@ -34,24 +96,24 @@ pub fn ambient_boost_for_hit(hit: &MemoryHit, context: &RecognitionContext) -> f
             || hit_wing.is_some_and(|w| activity_wings.contains(w)));
 
     if wing_match {
-        boost *= 1.5;
+        boost *= w.wing_match;
     }
 
     if let Some(created_utc) = hit.created_at.as_deref().and_then(crate::ranking::parse_created_at) {
         let age_minutes = (context.now - created_utc).num_minutes();
         if (0..60).contains(&age_minutes) {
-            boost *= 1.3;
+            boost *= w.fresh_hour;
         } else if (60..1440).contains(&age_minutes) {
-            boost *= 1.1;
+            boost *= w.fresh_day;
         }
     }
 
     let has_strong_context = context.focus_wing.is_some() || !context.recent_activity.is_empty();
     if has_strong_context && !wing_match {
-        boost *= 0.7;
+        boost *= w.mismatch_penalty;
     }
 
-    boost.clamp(0.5, 2.0)
+    boost.clamp(w.clamp_min, w.clamp_max)
 }
 
 // ── Episode diversity re-ranking ────────────────────────────────────
@@ -102,6 +164,8 @@ pub struct CascadePipelineConfig {
     pub k: usize,
     /// Apply ambient boost from RecognitionContext. Default true.
     pub apply_ambient_boost: bool,
+    /// Weights for the ambient boost.
+    pub ambient_weights: AmbientBoostWeights,
     /// Apply signal_score re-ranking. Default true.
     pub apply_signal_reranking: bool,
     /// Apply recency decay. Default true.
@@ -127,6 +191,7 @@ impl Default for CascadePipelineConfig {
         Self {
             k: 40,
             apply_ambient_boost: true,
+            ambient_weights: AmbientBoostWeights::default(),
             apply_signal_reranking: true,
             apply_recency: true,
             recency_half_life_days: 365.0,
@@ -168,6 +233,7 @@ pub fn run_cascade_pipeline(
         apply_entity_boost: false,
         entity_boost_weight: 0.05,
         apply_ambient_boost: config.apply_ambient_boost,
+        ambient_weights: config.ambient_weights,
         apply_declarative_boost: true,
         declarative_weight: 0.10,
         co_retrieval_weight: config.co_retrieval_weight,
