@@ -6,13 +6,16 @@
 /// Compute signal_score for a memory. Returns 0.0–1.0.
 pub fn score_memory(content: &str, hall: &str) -> f64 {
     let hall_lower = hall.to_lowercase();
+    // Durable, prompt-worthy halls (fact/rule/preference) sit at/above the AAAK
+    // always-in-prompt bar (0.70); precision is enforced UPSTREAM by the
+    // first-person/state-anchored classifier patterns, not by content boosters
+    // (which over-matched — see classifier_precision_bench). Ephemeral content
+    // lands in "event" (0.50) and is correctly excluded.
     let base: f64 = match hall_lower.as_str() {
-        "fact" => 0.65,
-        // A standing rule/constraint is as durable and prompt-worthy as a fact;
-        // it was previously unlisted and fell through to 0.50.
+        "fact" => 0.70,
         "rule" => 0.70,
+        "preference" => 0.70,
         "discovery" => 0.62,
-        "preference" => 0.62,
         "advice" => 0.55,
         "event" => 0.50,
         _ => 0.50,
@@ -57,19 +60,16 @@ pub fn score_memory(content: &str, hall: &str) -> f64 {
         &content_lower,
         &["deadline", "urgent", "critical", "blocker", "priority"],
     );
-    // Durable personal facts the agent must always know. Safety-critical
-    // constraints boosted hardest so they clear the AAAK always-in-prompt bar.
+    // Safety-critical self-described constraints — first-person anchored so
+    // "the vegan cafe" / "allergy season" do NOT trip it — get extra margin
+    // above the bar to reflect their supreme importance.
     let constraint_density = count_matches(
         &content_lower,
-        &["allergic", "allergy", "vegetarian", "vegan", "diabetic", "gluten", "lactose"],
-    );
-    let preference_density = count_matches(
-        &content_lower,
-        &["prefer", "favorite", "favourite", "i like", "i love", "i enjoy"],
-    );
-    let identity_density = count_matches(
-        &content_lower,
-        &["my daughter", "my son", "my wife", "my husband", "my partner", "my mother", "my father", "i am a"],
+        &[
+            "i am allergic", "i'm allergic", "i am vegetarian", "i'm vegetarian",
+            "i am vegan", "i'm vegan", "i am diabetic", "i'm diabetic",
+            "i am a vegetarian", "i am a vegan",
+        ],
     );
 
     let score = base
@@ -78,9 +78,7 @@ pub fn score_memory(content: &str, hall: &str) -> f64 {
         + sigmoid_contribution(learning_density, 0.12)
         + sigmoid_contribution(rule_density, 0.08)
         + sigmoid_contribution(urgency_density, 0.08)
-        + sigmoid_contribution(constraint_density, 0.30)
-        + sigmoid_contribution(preference_density, 0.20)
-        + sigmoid_contribution(identity_density, 0.15);
+        + sigmoid_contribution(constraint_density, 0.30);
 
     score.clamp(0.0, 1.0)
 }
