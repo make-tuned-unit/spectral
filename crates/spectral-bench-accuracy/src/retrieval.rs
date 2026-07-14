@@ -565,7 +565,35 @@ pub fn retrieve_cascade(
 ) -> Result<(Vec<String>, Vec<MemoryHit>, CascadeTelemetry)> {
     // P1: Question-type routing
     let qtype = QuestionType::classify(question);
-    let pipeline_config = qtype.cascade_profile();
+    let mut pipeline_config = qtype.cascade_profile();
+    // Ablation overrides (multi-session answer-KEY completeness sweep). The
+    // Counting profile caps max_per_episode=3 to force session diversity; when
+    // answer keys cluster >3 per session that undercounts. These let a sweep
+    // find the key-recall/token frontier without re-ingesting brains.
+    if let Some(k) = std::env::var("SPECTRAL_CASCADE_K").ok().and_then(|v| v.parse::<usize>().ok()) {
+        pipeline_config.k = k;
+    }
+    if let Some(mpe) = std::env::var("SPECTRAL_CASCADE_MAX_PER_EPISODE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        pipeline_config.max_per_episode = mpe;
+    }
+    if let Some(fm) = std::env::var("SPECTRAL_CASCADE_FETCH_MULT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        pipeline_config.fetch_mult = fm;
+    }
+    if std::env::var("SPECTRAL_CASCADE_NO_SIGNAL").is_ok() {
+        pipeline_config.apply_signal_reranking = false;
+    }
+    if std::env::var("SPECTRAL_CASCADE_NO_DECLARATIVE").is_ok() {
+        pipeline_config.apply_declarative_boost = false;
+    }
+    if std::env::var("SPECTRAL_CASCADE_NO_RECENCY").is_ok() {
+        pipeline_config.apply_recency = false;
+    }
 
     let context = match question_date.and_then(parse_question_date) {
         Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),

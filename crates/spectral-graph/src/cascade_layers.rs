@@ -184,6 +184,19 @@ pub struct CascadePipelineConfig {
     /// dense generic co-access blob induces popularity bias. Kept as an opt-in
     /// knob for retuning. See docs/internal/tickets/coretrieval-regression.md.
     pub co_retrieval_weight: f64,
+    /// Candidate-pool widening: fetch `k × fetch_mult` FTS/TACT candidates,
+    /// rerank the wider pool, then truncate to `k`. Default **1** (no widening,
+    /// preserves prior behavior). The narrow `k`-only fetch means answer keys
+    /// beyond FTS rank `k` are structurally unreachable regardless of
+    /// reranking; widening lets signal/recency/declarative reranking PROMOTE
+    /// buried keys into the top-k at constant output size (tokens track `k`, not
+    /// the pool). Mirrors `RecallTopKConfig::fetch_mult` on the topk_fts path.
+    /// Highest leverage on Counting/multi-session answer-KEY completeness.
+    pub fetch_mult: usize,
+    /// Apply the declarative-density boost (rewards declarative/factual phrasing).
+    /// Default true. Counterproductive for Counting: it demotes the terse event
+    /// instances a count must enumerate. Exposed so profiles can disable it.
+    pub apply_declarative_boost: bool,
 }
 
 impl Default for CascadePipelineConfig {
@@ -199,7 +212,33 @@ impl Default for CascadePipelineConfig {
             max_per_episode: 5,
             apply_context_dedup: true,
             co_retrieval_weight: 0.0,
+            // Parity with the topk_fts path (RecallTopKConfig::fetch_mult=3):
+            // fetch 3×k candidates so reranking can promote answer keys buried
+            // below FTS rank k. Measured Pareto-safe on real LongMemEval — the
+            // output truncates to k so tokens are unchanged, and it recovers
+            // completely-missed answers where session-recall has headroom
+            // (single-session-preference 93.3%→96.7%), neutral where saturated
+            // (multi-session, knowledge-update ~98.7%). See
+            // docs/internal/cascade-fetch-mult-lever-2026-07-14.md.
+            fetch_mult: 3,
+            apply_declarative_boost: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn default_fetch_mult_widens_pool_for_reranking() {
+        // Parity with the topk_fts path (fetch_mult=3). A narrow k-only fetch
+        // leaves answer keys below FTS rank k structurally unreachable; the
+        // wider pool lets reranking promote them at constant output size.
+        // Measured Pareto-safe on real LongMemEval — see
+        // docs/internal/cascade-fetch-mult-lever-2026-07-14.md. Locked here so
+        // the incorporation cannot silently regress to 1.
+        assert_eq!(CascadePipelineConfig::default().fetch_mult, 3);
     }
 }
 
@@ -215,9 +254,13 @@ pub fn run_cascade_pipeline(
     config: &CascadePipelineConfig,
 ) -> Result<Vec<MemoryHit>, crate::Error> {
     // Step 1: TACT + FTS combined retrieval — TACT for classified queries,
-    // FTS supplement when TACT returns fewer than K results
+    // FTS supplement when TACT returns fewer than K results. Widen the
+    // candidate pool to k×fetch_mult so reranking can promote answer keys
+    // buried below FTS rank k; the output is truncated back to k below, so
+    // context size tracks k, not the pool.
+    let fetch_k = config.k.saturating_mul(config.fetch_mult.max(1));
     let candidates = brain
-        .cascade_retrieve(query, config.k)
+        .cascade_retrieve(query, fetch_k)
         .map_err(|e| crate::Error::Schema(e.to_string()))?;
 
     if candidates.is_empty() {
@@ -234,7 +277,7 @@ pub fn run_cascade_pipeline(
         entity_boost_weight: 0.05,
         apply_ambient_boost: config.apply_ambient_boost,
         ambient_weights: config.ambient_weights,
-        apply_declarative_boost: true,
+        apply_declarative_boost: config.apply_declarative_boost,
         declarative_weight: 0.10,
         co_retrieval_weight: config.co_retrieval_weight,
         apply_episode_diversity: config.apply_episode_diversity,
@@ -244,12 +287,15 @@ pub fn run_cascade_pipeline(
 
     let co_boosts = crate::ranking::compute_co_retrieval_boosts(brain, &candidates, 3);
 
-    let results = crate::ranking::apply_reranking_pipeline(
+    let mut results = crate::ranking::apply_reranking_pipeline(
         candidates,
         &reranking_config,
         context,
         &co_boosts,
     );
+    // Truncate the widened pool back to k after reranking: the pool exists only
+    // so reranking can surface buried keys; callers and context budget see k.
+    results.truncate(config.k);
 
     // ── Recall→Recognition feedback: auto-reinforce + event logging ──
     // Both are best-effort: failures never block retrieval. Both are
