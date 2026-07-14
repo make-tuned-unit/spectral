@@ -151,6 +151,9 @@ impl Judge for AnthropicJudge {
             // losing the closing brace -> parse failure -> false "incorrect".
             "model": self.model,
             "max_tokens": 2048,
+            // Deterministic grading: pin temperature so the same (answer, gold)
+            // pair grades identically across runs and A/B arms.
+            "temperature": 0,
             "messages": [{"role": "user", "content": prompt}]
         });
 

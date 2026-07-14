@@ -130,6 +130,10 @@ impl Actor for AnthropicActor {
         let body = serde_json::json!({
             "model": self.model,
             "max_tokens": 4096,
+            // Deterministic (greedy) decoding: an eval/A-B harness must pin
+            // temperature or sampling noise swamps the effect under test. An
+            // unpinned (=1.0) actor made a fetch_mult A/B inconclusive on n=30.
+            "temperature": 0,
             "messages": [{"role": "user", "content": prompt}]
         });
 

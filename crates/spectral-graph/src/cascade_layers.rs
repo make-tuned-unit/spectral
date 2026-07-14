@@ -212,15 +212,19 @@ impl Default for CascadePipelineConfig {
             max_per_episode: 5,
             apply_context_dedup: true,
             co_retrieval_weight: 0.0,
-            // Parity with the topk_fts path (RecallTopKConfig::fetch_mult=3):
-            // fetch 3×k candidates so reranking can promote answer keys buried
-            // below FTS rank k. Measured Pareto-safe on real LongMemEval — the
-            // output truncates to k so tokens are unchanged, and it recovers
-            // completely-missed answers where session-recall has headroom
-            // (single-session-preference 93.3%→96.7%), neutral where saturated
-            // (multi-session, knowledge-update ~98.7%). See
-            // docs/internal/cascade-fetch-mult-lever-2026-07-14.md.
-            fetch_mult: 3,
+            // CAPABILITY present, DEFAULT off (1). Widening to 3×k is measured
+            // Pareto-safe on RETRIEVAL (token-neutral; recovers buried answers
+            // where session-recall has headroom, e.g. single-session-preference
+            // 93.3%→96.7%), BUT the end-to-end actor A/B did not validate it: on
+            // single-session-preference (n=30, sonnet-4-6) fm=3 scored 14 fails
+            // vs fm=1's 11 — directionally worse, though the run was inconclusive
+            // (actor temperature was unpinned → sampling noise swamps a ~5/30
+            // retrieval delta). Per project discipline we do not ship a default
+            // behavior change on a retrieval proxy alone. Opt in via config or
+            // SPECTRAL_CASCADE_FETCH_MULT; re-default only after a deterministic
+            // (temp=0), adequately-powered actor validation shows a gain.
+            // See docs/internal/cascade-fetch-mult-lever-2026-07-14.md.
+            fetch_mult: 1,
             apply_declarative_boost: true,
         }
     }
@@ -231,14 +235,13 @@ mod config_tests {
     use super::*;
 
     #[test]
-    fn default_fetch_mult_widens_pool_for_reranking() {
-        // Parity with the topk_fts path (fetch_mult=3). A narrow k-only fetch
-        // leaves answer keys below FTS rank k structurally unreachable; the
-        // wider pool lets reranking promote them at constant output size.
-        // Measured Pareto-safe on real LongMemEval — see
-        // docs/internal/cascade-fetch-mult-lever-2026-07-14.md. Locked here so
-        // the incorporation cannot silently regress to 1.
-        assert_eq!(CascadePipelineConfig::default().fetch_mult, 3);
+    fn default_fetch_mult_is_off_pending_actor_validation() {
+        // The widening capability exists but defaults OFF (1): retrieval-Pareto-
+        // safe, but the end-to-end actor A/B was inconclusive/directionally
+        // negative (see the field comment + doc). Locked at 1 so it is not
+        // silently re-defaulted to 3 without a deterministic, powered actor
+        // validation. Flip to 3 only alongside that evidence.
+        assert_eq!(CascadePipelineConfig::default().fetch_mult, 1);
     }
 }
 

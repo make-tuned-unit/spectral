@@ -1,11 +1,43 @@
-# Lever incorporated: cascade candidate-pool widening (`fetch_mult`) — 2026-07-14
+# Cascade candidate-pool widening (`fetch_mult`) — capability added, default OFF — 2026-07-14
 
-**A real, Pareto-safe retrieval lever.** The cascade path fetched only `k`
-candidates before reranking, so any answer key ranked below FTS position `k` was
-structurally unreachable — reranking cannot promote a candidate it never saw.
-The topk_fts path already solved this (`RecallTopKConfig::fetch_mult = 3`: fetch
-`3k`, rerank, take `k`). The cascade path lacked the parity. Now added:
-`CascadePipelineConfig::fetch_mult` (default **3**).
+**Status: capability shipped, default = 1 (off). Retrieval-Pareto-safe but NOT
+end-to-end validated — do not re-default without a powered actor A/B.**
+
+The cascade path fetched only `k` candidates before reranking, so any answer key
+ranked below FTS position `k` was structurally unreachable — reranking cannot
+promote a candidate it never saw. The topk_fts path already solved this
+(`RecallTopKConfig::fetch_mult = 3`: fetch `3k`, rerank, take `k`). The cascade
+path lacked the parity. Added: `CascadePipelineConfig::fetch_mult`.
+
+## Why default OFF (the honest end-to-end result)
+
+The lever is Pareto-safe on the *retrieval* metric, but that is a proxy. The
+end-to-end actor A/B (single-session-preference, n=30, sonnet-4-6, cascade,
+no-expand) did **not** validate it:
+
+| arm | failures / 30 |
+|-----|:---:|
+| fetch_mult=1 | **11** |
+| fetch_mult=3 (candidate default) | **14** |
+
+fetch_mult=3 was *directionally worse* (+3 failures). Paired flips: 6 broke, 3
+fixed. **The run is inconclusive, not a clean refutation** — the actor
+temperature was unpinned (=1.0), so sampling noise swamps the ~5/30 questions
+whose retrieval membership actually changed; at least 4 of the 9 flips are pure
+noise. And the one question where retrieval *definitively* recovered its answer
+session (`06f04340`, session-recall 0→1) **still failed in both arms** — that
+retrieval win did not convert.
+
+Conclusion: a retrieval-proxy improvement did not produce an accuracy
+improvement, and the only end-to-end signal points the wrong way. Per project
+discipline (consolidation −9.2pp, fusion/number-words null — all kept off), we do
+not ship a default behavior change to production Brains on a proxy alone. The
+capability stays (field + mechanism + `SPECTRAL_CASCADE_FETCH_MULT` + ablation
+knobs); the default is 1.
+
+**Re-default gate:** a *deterministic* (temperature=0 — now pinned in the actor)
+and adequately-powered actor A/B (enough questions with genuine retrieval-
+membership deltas to clear noise) showing an accuracy gain. Until then, off.
 
 ## How it was found
 
@@ -54,15 +86,16 @@ session-recall has headroom; neutral where already at ceiling.
 - **Pool widening on multi-session:** ~neutral (relevance-saturated; the buried
   keys are redundant re-mentions, per the diagnostic above).
 
-## Incorporation
+## Capability (default off)
 
-`CascadePipelineConfig::fetch_mult` default **3** (parity with topk_fts). Flows
-to the bench's `cascade_profile()` routing (all shapes via `..default()`) and to
-federation / `recall_cascade` default callers. Federation note: each child now
-issues a `3k` FTS `LIMIT` instead of `k` — a bounded, cheap read-time change;
-output and token cost are unchanged. Ablation override retained:
-`SPECTRAL_CASCADE_FETCH_MULT`. Also added `apply_declarative_boost` to the config
-(was hardcoded) so profiles can disable it; default unchanged (true).
+`CascadePipelineConfig::fetch_mult` default **1** (off). When set >1 it flows to
+the bench's `cascade_profile()` routing (all shapes via `..default()`) and to
+federation / `recall_cascade` callers; each child then issues a `mult×k` FTS
+`LIMIT` (bounded, cheap; output/token cost unchanged as the pool truncates back
+to `k`). Opt-in override: `SPECTRAL_CASCADE_FETCH_MULT`. Also added
+`apply_declarative_boost` to the config (was hardcoded) so profiles can disable
+it; default unchanged (true). Harness fix landed alongside: the actor and judge
+now pin `temperature: 0` (an unpinned actor is what made this A/B inconclusive).
 
 Tests: the widening mechanism is unit-tested on the shared rerank pipeline
 (`retrieval::tests::wider_fetch_pool_recovers_buried_high_signal_memory`, topk
