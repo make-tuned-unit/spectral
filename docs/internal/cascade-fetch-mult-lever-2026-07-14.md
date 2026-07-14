@@ -9,35 +9,49 @@ promote a candidate it never saw. The topk_fts path already solved this
 (`RecallTopKConfig::fetch_mult = 3`: fetch `3k`, rerank, take `k`). The cascade
 path lacked the parity. Added: `CascadePipelineConfig::fetch_mult`.
 
-## Why default OFF (the honest end-to-end result)
+## Why default OFF — proven accuracy no-op ($0 effective-mover analysis)
 
-The lever is Pareto-safe on the *retrieval* metric, but that is a proxy. The
-end-to-end actor A/B (single-session-preference, n=30, sonnet-4-6, cascade,
-no-expand) did **not** validate it:
+The lever is Pareto-safe on the *retrieval* metric, but that is a proxy. A
+retrieval change can only alter an ANSWER on a question where fetch_mult=3 flips
+the gold answer-bearing memory from **absent→present** in context (an "effective
+mover"); everything else is a provable no-op. Counting effective movers is a $0
+oracle metric — no actor spend needed to bound the lever's ceiling.
 
-| arm | failures / 30 |
-|-----|:---:|
-| fetch_mult=1 | **11** |
-| fetch_mult=3 (candidate default) | **14** |
+Across **156 single-session questions** (the categories with retrieval headroom;
+multi-session/knowledge-update are ~98% saturated → ~0 movers by construction):
 
-fetch_mult=3 was *directionally worse* (+3 failures). Paired flips: 6 broke, 3
-fixed. **The run is inconclusive, not a clean refutation** — the actor
-temperature was unpinned (=1.0), so sampling noise swamps the ~5/30 questions
-whose retrieval membership actually changed; at least 4 of the 9 flips are pure
-noise. And the one question where retrieval *definitively* recovered its answer
-session (`06f04340`, session-recall 0→1) **still failed in both arms** — that
-retrieval win did not convert.
+| category | n | session-recall | effective movers (can-help / can-hurt) |
+|----------|:-:|:---:|:---:|
+| single-session-user       | 70 | 100.0% | 0 / 0 |
+| single-session-assistant  | 56 | 100.0% | 0 / 0 |
+| single-session-preference | 30 |  ~95%  | **1** / 0 |
+| **total** | **156** | | **1 / 0** |
 
-Conclusion: a retrieval-proxy improvement did not produce an accuracy
-improvement, and the only end-to-end signal points the wrong way. Per project
-discipline (consolidation −9.2pp, fusion/number-words null — all kept off), we do
-not ship a default behavior change to production Brains on a proxy alone. The
-capability stays (field + mechanism + `SPECTRAL_CASCADE_FETCH_MULT` + ablation
-knobs); the default is 1.
+fetch_mult can change the answer on **1 of 156** questions. That one
+(`06f04340`) was tested deterministically (temp=0, both arms): fm=1→44 keys,
+fm=3→47 keys, **actor answered "I don't know" in both → both wrong.** The one
+possible flip does not convert.
 
-**Re-default gate:** a *deterministic* (temperature=0 — now pinned in the actor)
-and adequately-powered actor A/B (enough questions with genuine retrieval-
-membership deltas to clear noise) showing an accuracy gain. Until then, off.
+Conclusion: **fetch_mult is an accuracy no-op** — not because the widening fails
+(it improves session-recall) but because retrieval is not the binding constraint
+where it has headroom. The single-session categories are already at/near 100%
+session-recall (the answer is in the one relevant session; retrieval finds it),
+and the residual failures are **synthesis** (actor gives generic / "I don't
+know" answers with the content present) or **lexical retrieval misses** (query
+"homegrown ingredients" vs doc "growing cherry tomatoes" — query *expansion*'s
+job, not pool width). Per project discipline (consolidation −9.2pp, fusion null),
+the capability stays (field + `SPECTRAL_CASCADE_FETCH_MULT` + ablation knobs) but
+the default is 1.
+
+**Cost of this verdict:** ~$0.16 (one 2-arm smoke test on the sole mover). The
+effective-mover method turned a would-be ~$5–40 actor sweep into a $0 count plus
+a spot check.
+
+**Earlier inconclusive run (superseded):** a first n=30 A/B on
+single-session-preference showed fm=3 at 14 fails vs fm=1's 11, but was invalid —
+unpinned actor temperature (=1.0 sampling noise), 4+2 transport failures counted
+as wrong, and 29/30 questions were provable no-ops for the lever anyway. It is
+what motivated the temp=0 harness pin and the effective-mover method.
 
 ## How it was found
 
