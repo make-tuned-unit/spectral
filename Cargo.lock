@@ -2876,6 +2876,7 @@ dependencies = [
  "spectral-graph",
  "spectral-ingest",
  "spectral-recognition",
+ "spectral-spectrogram",
  "tokio",
  "toml",
 ]

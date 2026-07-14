@@ -2312,11 +2312,34 @@ impl Brain {
     /// Flow: recall the best memory for the seed query, compute or load its spectrogram,
     /// load spectrograms from other wings, find resonant matches, and return seed + resonant
     /// memories with scores. Requires `enable_spectrogram = true` in BrainConfig.
+    /// Uses the default [`MatchTolerances`](spectral_spectrogram::matching::MatchTolerances);
+    /// call [`recall_cross_wing_with`](Self::recall_cross_wing_with) to tune the
+    /// precision/recall frontier.
     pub fn recall_cross_wing(
         &self,
         seed_query: &str,
         visibility: Visibility,
         max_results: usize,
+    ) -> Result<CrossWingRecallResult, Error> {
+        self.recall_cross_wing_with(
+            seed_query,
+            visibility,
+            max_results,
+            &spectral_spectrogram::matching::MatchTolerances::default(),
+        )
+    }
+
+    /// [`recall_cross_wing`](Self::recall_cross_wing) with explicit resonance
+    /// tolerances. Tighter tolerances / higher `min_matching_dimensions` raise
+    /// precision (only near-identical cognitive shapes resonate); looser ones
+    /// raise recall. See the `spectrogram_resonance_scale` bench for the swept
+    /// frontier.
+    pub fn recall_cross_wing_with(
+        &self,
+        seed_query: &str,
+        visibility: Visibility,
+        max_results: usize,
+        tolerances: &spectral_spectrogram::matching::MatchTolerances,
     ) -> Result<CrossWingRecallResult, Error> {
         // Recall the best match for seed_query
         let recall = self.recall(seed_query, visibility)?;
@@ -2390,12 +2413,11 @@ impl Brain {
             .collect();
 
         // Find resonant matches
-        let tolerances = spectral_spectrogram::matching::MatchTolerances::default();
         let resonant = spectral_spectrogram::matching::find_resonant(
             &seed_fp,
             &other_wing_fps,
             max_results,
-            &tolerances,
+            tolerances,
         );
 
         // Fetch full memories for resonant matches
