@@ -8,8 +8,11 @@ pub fn score_memory(content: &str, hall: &str) -> f64 {
     let hall_lower = hall.to_lowercase();
     let base: f64 = match hall_lower.as_str() {
         "fact" => 0.65,
+        // A standing rule/constraint is as durable and prompt-worthy as a fact;
+        // it was previously unlisted and fell through to 0.50.
+        "rule" => 0.70,
         "discovery" => 0.62,
-        "preference" => 0.58,
+        "preference" => 0.62,
         "advice" => 0.55,
         "event" => 0.50,
         _ => 0.50,
@@ -54,13 +57,30 @@ pub fn score_memory(content: &str, hall: &str) -> f64 {
         &content_lower,
         &["deadline", "urgent", "critical", "blocker", "priority"],
     );
+    // Durable personal facts the agent must always know. Safety-critical
+    // constraints boosted hardest so they clear the AAAK always-in-prompt bar.
+    let constraint_density = count_matches(
+        &content_lower,
+        &["allergic", "allergy", "vegetarian", "vegan", "diabetic", "gluten", "lactose"],
+    );
+    let preference_density = count_matches(
+        &content_lower,
+        &["prefer", "favorite", "favourite", "i like", "i love", "i enjoy"],
+    );
+    let identity_density = count_matches(
+        &content_lower,
+        &["my daughter", "my son", "my wife", "my husband", "my partner", "my mother", "my father", "i am a"],
+    );
 
     let score = base
         + sigmoid_contribution(decision_density, 0.18)
         + sigmoid_contribution(error_density, 0.12)
         + sigmoid_contribution(learning_density, 0.12)
         + sigmoid_contribution(rule_density, 0.08)
-        + sigmoid_contribution(urgency_density, 0.08);
+        + sigmoid_contribution(urgency_density, 0.08)
+        + sigmoid_contribution(constraint_density, 0.30)
+        + sigmoid_contribution(preference_density, 0.20)
+        + sigmoid_contribution(identity_density, 0.15);
 
     score.clamp(0.0, 1.0)
 }

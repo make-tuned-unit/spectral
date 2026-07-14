@@ -2866,6 +2866,7 @@ name = "spectral-bench-real"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "blake3",
  "chrono",
  "clap",
  "rusqlite",

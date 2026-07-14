@@ -94,6 +94,18 @@ fn default_hall_rule_pairs() -> Vec<(&'static str, &'static str)> {
             "discovery",
         ),
         (r"recommend|should|advice|suggest|try using", "advice"),
+        // Durable personal facts the classifier previously dropped to "event".
+        // Appended (first-match order preserved) so existing classifications are
+        // untouched; these only catch content that currently falls through.
+        // Health/identity constraints → fact (highest AAAK base, safety-critical).
+        (
+            r"allergic|allergy|vegetarian|vegan|diabetic|gluten|lactose|\bi am a \b|\bmy (wife|husband|daughter|son|partner|child|kid|mother|father)\b",
+            "fact",
+        ),
+        // Standing preferences → preference (base-form "prefer", first-person likes).
+        (r"\bi (prefer|like|love|enjoy|want|hate|avoid)\b|\bprefer\b", "preference"),
+        // Standing rules/constraints → rule (a hall AAAK filters for but nothing produced).
+        (r"\bnever\b|\balways\b|\bmust not\b|\bdo not ever\b|\bdon't ever\b", "rule"),
     ]
 }
 

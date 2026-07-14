@@ -44,6 +44,7 @@ chrono = { workspace = true }
 spectral-core = { path = "../spectral-core" }
 spectral-graph = { path = "../spectral-graph" }
 spectral-spectrogram = { path = "../spectral-spectrogram" }
+blake3 = { workspace = true }
 spectral-ingest = { path = "../spectral-ingest", features = ["sqlite"] }
 spectral-recognition = { path = "../spectral-recognition" }
 serde = { workspace = true }
