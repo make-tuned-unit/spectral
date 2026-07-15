@@ -192,10 +192,31 @@ Retrieval measurement (constant context):
 
 Rerank recovers **+14pp key-recall at *constant* (slightly lower) tokens** on
 knowledge-update — recovery without the token or distraction tax. It recovers
-less raw key-recall than expand (69.8% vs 79.5%) but should *convert* better
-because it never dilutes. Accuracy A/B (rerank B=8 vs FTS, knowledge-update)
-pending; the hypothesis is net ≥ 0 (keeps the fixes, avoids the distraction
-breaks that gave expand net +0/−1).
+less raw key-recall than expand (69.8% vs 79.5%) but never dilutes.
+
+**Accuracy A/B result (rerank B=8 vs FTS, knowledge-update): net +0** (fixed
+Starbucks by promoting the answer memory in; broke the to-watch count by
+*displacing* items it needed). So all three variants land net ≤ 0:
+
+| variant | accuracy | mechanism cost |
+|---|:-:|---|
+| expand S3/b3500 | net +0 | added context distracts (buried the 5K answer) |
+| lean-expand S1/b1500 | net −1 | too few mates: missed fixes, still one break |
+| rerank B=8 (constant ctx) | net +0 | displacing FTS results removes needed items |
+
+**Closing verdict.** The tension is fundamental at a fixed actor budget: expand
+*adds* context (distracts), rerank *swaps* context (displaces). Tellingly, on
+knowledge-update every flip — fix and break — is a **counting** question, exactly
+where completeness matters and swapping cannot win. Associative spreading is a
+real, efficient *retrieval* mechanism (+14–27pp key-recall, cost-smart and
+precision-preserving variants both built and measured) but it does **not** convert
+to accuracy on LongMemEval near-ceiling categories, because retrieval is not the
+bottleneck there. Its accuracy payoff, if any, needs a genuinely
+retrieval-*failure*-bound test bed — multi-session counting paired with a
+larger budget AND a counting-aware actor prompt (the +8pp intervention), or a
+weaker/cheaper actor that cannot compensate for a missing memory — plus a
+stable-network env for the A/B. That is the honest limit of what LongMemEval +
+a strong actor can show, reached by measurement, not assumption.
 
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%
