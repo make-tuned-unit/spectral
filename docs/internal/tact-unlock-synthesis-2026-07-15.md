@@ -296,6 +296,25 @@ recover more key-recall but grow context; RERANK trades a little recovery for
 precision. Use RERANK where the actor is strong/near-ceiling; expand where
 recall genuinely gates the answer.)
 
+### The constellation EDGES, measured — why episode replaces them
+
+Two things were wrong with the shipped constellation, not one. (1) The
+fingerprint HASH is metadata, not content (442 distinct hashes — covered above).
+(2) The EDGES themselves are unselective. Measured on a cached brain (508
+memories): **70,796 constellation edges = avg 278 neighbors per memory** (max
+369 of 508), because **73% of memories collapse to wing "general"** and the edges
+are all-pairs within a wing. Spreading from a seed through constellation edges
+would pull ~278 undifferentiated memories — no selectivity.
+
+The constellation's *idea* (a co-occurrence graph to spread over) is exactly
+right; its *grouping key* (wing) is what failed — the persona regexes collapse
+real data to "general", making the graph a clique. **`episode_id` is the working
+version of the same idea**: a natural, sparse session grouping (~10–40 neighbors,
+not ~278), content-independent, always populated. So ACR does not need a
+constellation-edge substrate — episode spreading IS the constellation vision with
+a grouping that works, and cross-session PRF adds the inter-session links the
+wing-clique could never select. No new substrate; the existing edges are subsumed.
+
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%
   context tokens. The "incredibly cheap" goal needs a cost-smart expansion (cap
