@@ -433,6 +433,31 @@ pub fn retrieve(brain: &Brain, question: &str, config: &RetrievalConfig) -> Resu
 ///
 /// When `question_date` is provided (format: "2023/05/30 (Tue) 23:40"),
 /// recency decay is anchored to that date instead of `Utc::now()`.
+/// Convert a stored `Memory` (from episode listing) into a `MemoryHit` so
+/// associatively-expanded memories flow through the same formatting/scoring path.
+fn memory_to_hit(m: &spectral_ingest::Memory) -> MemoryHit {
+    MemoryHit {
+        id: m.id.clone(),
+        key: m.key.clone(),
+        content: m.content.clone(),
+        wing: m.wing.clone(),
+        hall: m.hall.clone(),
+        signal_score: m.signal_score,
+        visibility: m.visibility.clone(),
+        hits: 0,
+        source: m.source.clone(),
+        device_id: m.device_id,
+        confidence: m.confidence,
+        created_at: m.created_at.clone(),
+        last_reinforced_at: m.last_reinforced_at.clone(),
+        episode_id: m.episode_id.clone(),
+        declarative_density: m.declarative_density,
+        description: m.description.clone(),
+        source_brain_id: m.source_brain_id,
+        signature: m.signature.clone(),
+    }
+}
+
 pub fn retrieve_topk_fts(
     brain: &Brain,
     question: &str,
@@ -466,11 +491,53 @@ pub fn retrieve_topk_fts(
         ..RecallTopKConfig::default()
     };
 
-    let hits: Vec<MemoryHit> = brain
+    let mut hits: Vec<MemoryHit> = brain
         .recall_topk_fts(question, &topk_config, Visibility::Private)?
         .into_iter()
         .take(output_size)
         .collect();
+
+    // Associative expansion (TACT's true vision): FTS finds the seeds by words;
+    // spread activation through EPISODE co-occurrence to recover answer memories
+    // that share no words with the query but sit in the same session as a seed —
+    // the vocabulary-gap misses FTS structurally cannot cross. SPECTRAL_ASSOC_
+    // EXPAND=M pulls the top-M high-signal memories from each of the top seeds'
+    // episodes (M unset/0 = off). Measured recovery ceiling on real LongMemEval:
+    // 100% of missed-answer-key questions still have their answer session
+    // retrieved, so this can pull the missed keys in — at a token cost tuned by M.
+    if let Some(m) = std::env::var("SPECTRAL_ASSOC_EXPAND")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|m| *m > 0)
+    {
+        const SEED_EPISODES: usize = 8;
+        let existing: std::collections::HashSet<String> =
+            hits.iter().map(|h| h.key.clone()).collect();
+        let seed_eps: Vec<String> = hits
+            .iter()
+            .take(SEED_EPISODES)
+            .filter_map(|h| h.episode_id.clone())
+            .collect();
+        let mut seen_eps = std::collections::HashSet::new();
+        let mut added_keys = std::collections::HashSet::new();
+        for ep in seed_eps {
+            if !seen_eps.insert(ep.clone()) {
+                continue;
+            }
+            if let Ok(mut mems) = brain.list_memories_by_episode(&ep) {
+                mems.sort_by(|a, b| {
+                    b.signal_score
+                        .partial_cmp(&a.signal_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                for mem in mems.into_iter().take(m) {
+                    if !existing.contains(&mem.key) && added_keys.insert(mem.key.clone()) {
+                        hits.push(memory_to_hit(&mem));
+                    }
+                }
+            }
+        }
+    }
 
     let cap = cap_for_shape(QuestionType::classify(question));
     let memories: Vec<String> = hits

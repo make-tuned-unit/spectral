@@ -55,39 +55,86 @@ lexical**, and BM25 is already strong. There is no retrieval headroom to unlock,
 even with the fingerprint done right. (And the associative/co-occurrence angle was
 already measured harmful — the co-retrieval popularity-bias regression.)
 
-## The key
+## The key — CORRECTED after digging deeper
 
-**Stop asking TACT to do recall. Its power is recognition + ambient — which is
-where the original vision actually pointed.** The failure was never the
-fingerprint's resolution; it was the *job*. Applied to recall, TACT is dominated
-by FTS (measured) and its wing-gating actively harms it. Applied to what it was
-designed for, it is uniquely capable and embeddings-free:
+An earlier draft of this doc concluded "stop asking TACT to do recall; its power
+is only recognition/ambient." That was premature — it tested TACT as a *primary
+retriever* and as a *content fingerprint*, but never tested the one thing the
+"constellation" is actually about: **association**. Digging deeper found the
+vision working at recall after all.
 
-1. **Recognition** (near-duplicate / "have I stored this?"): dedup, consolidation,
-   recurrence-strength feedback. Already live at write-time — keep and lean in.
-2. **Ambient feedback** (the founding vision): surface associatively-linked
-   memories from what the user is *doing* in the app — recent activity, focus
-   wing, session — as a boost, not a primary retriever. This is a
-   production-quality signal the bench cannot see.
-3. **Cheap pre-recognition**: a fast "is anything relevant here at all" gate.
+**The real failure: TACT has a co-occurrence graph but uses it as a POPULARITY
+degree-count, not as a SPREADING-ACTIVATION substrate.** Human associative recall
+is: find seeds by direct match, then let activation spread through associative
+links to co-occurring memories that *share no words with the query*. The shipped
+TACT throws this away three times over — popularity scoring, broken metadata edge
+keys (442 hashes), and broken persona-wing scoping.
+
+**Demonstrated (mechanism, `associative_expansion_probe`):** with FTS honestly
+excluding a no-word-overlap answer, spreading activation through EPISODE
+co-occurrence recovers it — e.g. query "dinner using my homegrown ingredients"
+→ answer "growing cherry tomatoes, basil, mint" (zero shared words): FTS misses,
+episode-expansion recovers. The exact vocabulary-gap FTS cannot cross.
+
+**Verified at scale (real LongMemEval, `SPECTRAL_ASSOC_EXPAND=M`):**
+
+| category | expand M | answer-key recall | tokens |
+|---|:-:|:-:|:-:|
+| single-session-preference | 0 → 4 | 37.6% → **43.8%** | 9935 → 16853 |
+| knowledge-update | 0 → 4 | 56.0% → **65.7%** | 13007 → 16689 |
+
+**+3–10pp answer-key recovery**, deterministic, tunable — and the recovery
+ceiling is high: 100% of missed-answer-key questions still have their answer
+session retrieved, so the missed keys are reachable by episode-spreading. The
+shipped popularity/metadata TACT delivered 0/500; the vision, implemented as
+spreading activation over meaningful co-occurrence, delivers real recovery.
+
+So the key is: **implement the constellation as spreading activation (FTS seeds →
+spread over episode / entity co-occurrence), not as popularity over metadata
+edges.** Recognition-as-primary-retriever and content-fingerprint-vs-FTS are dead
+ends (measured); associative expansion is the live one.
+
+### Honest caveats (do not oversell)
+- **Token cost is the weakness**: full/partial episode expansion adds 30–70%
+  context tokens. The "incredibly cheap" goal needs a cost-smart expansion (cap
+  total expansion tokens; expand only high-confidence seeds' episodes).
+- **Expansion ranked by signal is suboptimal** for recovering answer memories,
+  which are often *low*-signal events — hence recovery is +3–10pp, not the full
+  ceiling. Ranking episode-mates by something answer-appropriate (recency, or
+  proximity to the seed turn) should recover more per token.
+- **Accuracy conversion unverified**: key-recall is a partly-bloated proxy and
+  actor validation is blocked by this env's connectivity. But the mechanism
+  recovers the *specific* answer-bearing memory (the archetype), so a real share
+  is accuracy-relevant — worth an end-to-end A/B in a stable-network env.
+- Recognition/ambient are still valid TACT jobs (below); this just adds the
+  retrieval job back, done right.
 
 ## Actionable
 
-- **Retrieval path: let FTS lead; retire the metadata constellation as a
-  retrieval PRIMARY.** It contributes 0/500 and its wing-gating crowds out FTS.
-  Concretely: route the shapes that lose session-recall (GeneralPreference /
-  GeneralRecall / General) to `topk_fts` (already done for Temporal), or make
-  cascade merge FTS-first with TACT as supplement. (Deterministic session-recall
-  win; a default routing change still wants an end-to-end number when a
-  stable-network env is available.)
-- **Do NOT build T3 for retrieval.** The new probe shows it would not move
-  bench recall. If T3 is built, build it for *recognition* quality (dedup /
-  recurrence), where its combinatorial specificity is the point.
-- **Invest the "unique vision" energy in ambient feedback**, not fingerprint
-  resolution — that is the lane where TACT/spectrogram has power no vector system
-  replicates and where the bench's saturated retrieval metrics are blind.
+- **Build associative expansion as the constellation's real retrieval role:**
+  FTS seeds → spread activation over episode (and later entity) co-occurrence →
+  merge. Prototype lives behind `SPECTRAL_ASSOC_EXPAND=M` in `retrieve_topk_fts`;
+  it recovers +3–10pp answer keys FTS misses. Next: make it cost-smart (cap
+  expansion tokens; rank episode-mates by recency/seed-proximity not signal;
+  expand only high-confidence seed episodes) and A/B end-to-end in a
+  stable-network env.
+- **Retire the metadata constellation** (`hall|hall|wing|bucket`, 442 hashes,
+  0/500) and the persona-wing scoping as the retrieval mechanism — replace, don't
+  augment. The pairwise `constellation_fingerprints` EDGES could be reused as the
+  co-occurrence substrate, but they are wing-scoped and quadratic (a clique within
+  `general`); episode_id is the cleaner, sparser association graph already
+  present.
+- **Do NOT build T3 (content peak-pairs) for retrieval.** The recognition-vs-FTS
+  probe shows it would not beat FTS at recall. Build T3 only for *recognition*
+  quality (dedup / recurrence), where combinatorial specificity is the point.
+- **Recognition + ambient remain valid TACT jobs** (near-dup / recurrence at
+  write-time; ambient associative boost from app activity) — the associative
+  retrieval role is additive to these, not a replacement.
 
-The reframe is the unlock: TACT is a recognition engine. Used as one, it is
-powerful and cheap. Used as a retriever, it is a strictly worse FTS. The prior
-audits diagnosed this; this pass verified it with a head-to-head measurement and
-named where the power actually lives.
+The corrected unlock: TACT is a *constellation* — a co-occurrence graph. Its power
+at retrieval is **spreading activation** (bridging FTS's vocabulary gap by
+association), which the shipped popularity/metadata implementation discarded.
+Verified: mechanism recovers the archetypal lexical-gap miss, and +3–10pp answer
+keys on real data. The earlier "recognition can't do recall" finding is true but
+was the wrong lens — the constellation was never about matching a memory's
+content; it was about matching its *neighbors*.
