@@ -197,6 +197,11 @@ pub struct CascadePipelineConfig {
     /// Default true. Counterproductive for Counting: it demotes the terse event
     /// instances a count must enumerate. Exposed so profiles can disable it.
     pub apply_declarative_boost: bool,
+    /// Associative recall spreading applied to the final results. Default OFF
+    /// (`SpreadMode::Off`, a no-op). When enabled, follows co-occurrence links
+    /// (episode / cross-session) to recover memories that share no words with the
+    /// query — the vocabulary gap FTS cannot cross. See [`crate::spreading`].
+    pub spread: crate::spreading::AssocSpreadConfig,
 }
 
 impl Default for CascadePipelineConfig {
@@ -226,6 +231,7 @@ impl Default for CascadePipelineConfig {
             // See docs/internal/cascade-fetch-mult-lever-2026-07-14.md.
             fetch_mult: 1,
             apply_declarative_boost: true,
+            spread: crate::spreading::AssocSpreadConfig::default(),
         }
     }
 }
@@ -327,6 +333,11 @@ pub fn run_cascade_pipeline(
         };
         let _ = brain.log_retrieval_event(&event);
     }
+
+    // Associative recall spreading (opt-in via config.spread; OFF by default =
+    // no-op). Applied last so reinforce/logging act on the core recall set and
+    // the associatively-recovered mates only augment the returned context.
+    crate::spreading::associative_spread(brain, &mut results, &config.spread);
 
     Ok(results)
 }

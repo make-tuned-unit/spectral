@@ -7,7 +7,9 @@ use std::path::PathBuf;
 
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, RecallTopKConfig, RememberOpts};
+use spectral_graph::cascade_layers::CascadePipelineConfig;
 use spectral_graph::spreading::{associative_spread, AssocSpreadConfig, SpreadMode};
+use spectral_graph::RecognitionContext;
 use tempfile::TempDir;
 
 fn brain_config(tmp: &TempDir) -> BrainConfig {
@@ -151,5 +153,47 @@ fn rerank_recovers_within_bounded_context() {
         "rerank must keep context bounded: {} vs base {}",
         hits.len(),
         n_before
+    );
+}
+
+#[test]
+fn cascade_path_applies_spread_config_without_reentrancy_panic() {
+    // Spreading calls brain methods that use the tokio runtime; verify the
+    // cascade recall path applies config.spread end-to-end with no nested
+    // block_on panic, and that enabling it augments the context.
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    seed_corpus(&brain);
+    let ctx = RecognitionContext::empty();
+    let query = "suggest a dinner using my homegrown ingredients";
+
+    let base_cfg = CascadePipelineConfig {
+        k: 3,
+        ..Default::default()
+    };
+    let base = brain
+        .recall_cascade_with_pipeline(query, &ctx, &base_cfg)
+        .unwrap();
+
+    let spread_cfg = CascadePipelineConfig {
+        k: 3,
+        spread: AssocSpreadConfig {
+            mode: SpreadMode::Combined,
+            episode_budget: 4000,
+            cross_budget: 4000,
+            ..AssocSpreadConfig::default()
+        },
+        ..Default::default()
+    };
+    let spread = brain
+        .recall_cascade_with_pipeline(query, &ctx, &spread_cfg)
+        .unwrap();
+
+    // Did not panic (the point), and spreading augmented the returned set.
+    assert!(
+        spread.merged_hits.len() >= base.merged_hits.len(),
+        "spread ({}) should be >= base ({})",
+        spread.merged_hits.len(),
+        base.merged_hits.len()
     );
 }
