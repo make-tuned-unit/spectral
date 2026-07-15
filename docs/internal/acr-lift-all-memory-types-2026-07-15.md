@@ -32,11 +32,32 @@ knowledge-update net +0/−1). The real question is whether the recovery convert
 for an actor that *cannot* compensate. A **weaker cloud actor (haiku)** is exactly
 that test bed — no local model needed.
 
-Weak-actor A/B (haiku actor, sonnet-4-6 judge, temp=0, n=30, transport-clean):
+Weak-actor A/B (haiku actor, sonnet-4-6 judge, temp=0, transport+auth-clean):
 
-- knowledge-update — baseline vs ACR precision (RERANK): _[pending]_
-- multi-session — baseline vs ACR completeness (COMBINED): _[pending]_
+| memory type | mode | baseline | ACR | net |
+|---|---|:-:|:-:|:-:|
+| knowledge-update | precision (RERANK) | 11/14 (79%) | **12/14 (86%)** | **+1** (fixed 1, broke 0) |
+| multi-session | completeness (COMBINED) | — | — | BLOCKED (credits exhausted) |
 
-_(Results appended when the runs complete. A net-positive here — where sonnet was
-net ≤ 0 — is the proof that ACR's recovery is real lift for the actors that need
-it: the local/cheap models a data-control user actually runs on-device.)_
+**The signal points the right way.** On knowledge-update the weak actor gained
++1 with zero regressions — where the *strong* sonnet actor was net ≤ 0 on the
+same category. That is the flip the hypothesis predicts: the recovered memory is
+redundant for an actor that can compensate, but real accuracy lift for one that
+cannot. The fixed question ("Is my mom using the same grocery list method as
+me?") needed a specific memory RERANK promoted into the window.
+
+**Honest bounds.** This is one small-n (14) data point, not a proof. The
+strongest test — multi-session counting, where completeness genuinely gates the
+answer — could not run: the API key exhausted its credit balance mid-run (the
+400s are "credit balance too low," not model errors). So:
+
+- **Retrieval lift: proven, comprehensive, $0** — +18–40pp on all six types.
+- **Accuracy conversion for weak actors: one positive data point (+1, clean),
+  consistent with the hypothesis; full validation blocked on credits.**
+
+The at-scale accuracy answer belongs to Permagent's production A/B (dispatched,
+`DISPATCH-permagent-associative-recall-2026-07-15.md`) or a funded/local weak-
+actor run. What is not in doubt: the retrieval layer now recovers, on every
+memory type, the answer-bearing memories FTS ranks out — deterministically and
+locally — and that recovery starts converting to accuracy exactly where the
+theory says it should (actors that can't compensate).
