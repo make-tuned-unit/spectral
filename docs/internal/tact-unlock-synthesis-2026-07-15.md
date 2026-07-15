@@ -116,9 +116,24 @@ the ablation:
 Proximity beats signal by **+14–18pp at matched-or-lower token cost**; total
 recovery over FTS is **+20pp (preference)** and **+27pp (knowledge-update)**, the
 latter approaching its 98.7% session-recall ceiling. Answer memories are near the
-matched turn; signal-ranking was structurally blind to them. Even at budget=3500
-the recovery is large (preference 51.5%, knowledge-update 79.5%) — the token
-budget is a real dial on the recovery/cost frontier.
+matched turn; signal-ranking was structurally blind to them.
+
+**Efficiency frontier (knowledge-update, seeds × budget):**
+
+| config | answer-key recall | tokens (Δ vs FTS) |
+|---|:-:|:-:|
+| FTS baseline | 56.0% | 13007 |
+| SEEDS=1, budget=1500 | **70.3%** | 13999 (**+7.6%**) |
+| SEEDS=1, budget≥3500 (saturates) | 72.5% | 14400 |
+| SEEDS=3, budget=3500 | 79.5% | 15678 (+20%) |
+| SEEDS=3, budget=7000 | 83.4% | 16665 (+28%) |
+
+**SEEDS=1/budget=1500 buys +14pp for +7.6% tokens — nearly free**, which
+answers the "incredibly cheap" concern: one high-confidence seed's episode,
+proximity-ranked, tightly budgeted, recovers most of the gain. It saturates at
+~72.5% (a single episode has finite answer keys); unlocking the rest to 83.4%
+needs more seeds at higher budget. The dial spans cheap-and-large to
+expensive-and-maximal.
 
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%
