@@ -261,6 +261,23 @@ layer is realized: reach missed contributing sessions, then complete each. (The
 `assoc_cross_session` / `assoc_episode_budget` helpers compose cleanly; the
 individual modes are refactored onto them, numbers verified unchanged.)
 
+### Wired into the default (cascade) retrieval path
+
+The spreading cascade is extracted into `apply_associative_spreading(brain,
+&mut hits)` (all modes, env-gated OFF), called by BOTH `retrieve_topk_fts` and
+`retrieve_cascade` — so it now works on the **published default** path (cascade,
+used for every shape except Temporal), not just topk. Refactor verified no
+regression (topk COMBINED reproduces sess=96.8%/key=61.6% exactly). On the
+cascade path spreading recovers *more*, because the stronger cascade baseline
+compounds:
+
+| cascade path (n=40) | session-recall | key-recall |
+|---|:-:|:-:|
+| multi-session baseline | 98.8% | 48.8% |
+| multi-session + COMBINED | 98.8% | **70.0%** (+21pp) |
+| knowledge-update baseline | 100% | 57.1% |
+| knowledge-update + COMBINED | 100% | **86.7%** (+30pp) |
+
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%
   context tokens. The "incredibly cheap" goal needs a cost-smart expansion (cap
