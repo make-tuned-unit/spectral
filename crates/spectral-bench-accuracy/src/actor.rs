@@ -172,6 +172,91 @@ impl Actor for AnthropicActor {
     }
 }
 
+/// Actor that calls an OpenAI-compatible `/v1/chat/completions` endpoint — for
+/// driving a LOCAL model (ollama, llama.cpp server, LM Studio, vLLM) so the
+/// accuracy loop runs fully on-device, no cloud dependency. Point `base_url` at
+/// the local server (e.g. `http://localhost:11434` for ollama).
+pub struct OpenAiActor {
+    api_key: String,
+    model: String,
+    base_url: String,
+    client: reqwest::blocking::Client,
+}
+
+impl OpenAiActor {
+    pub fn new(api_key: String, model: String, base_url: String) -> Self {
+        Self {
+            api_key,
+            model,
+            base_url,
+            client: reqwest::blocking::Client::new(),
+        }
+    }
+}
+
+impl Actor for OpenAiActor {
+    fn answer(
+        &self,
+        question: &str,
+        question_date: &str,
+        memories: &[String],
+        shape: QuestionType,
+    ) -> Result<(String, Option<TokenUsage>)> {
+        let memories_text = memories.join("\n");
+        let prompt = shape
+            .prompt_content()
+            .replace("{question_date}", question_date)
+            .replace("{memories_text}", &memories_text)
+            .replace("{question}", question);
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 4096,
+            "temperature": 0,
+            "stream": false,
+        });
+
+        let resp = self
+            .client
+            .post(format!("{}/v1/chat/completions", self.base_url))
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let b = resp.text().unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "OpenAI-compat actor returned {}: {}",
+                status,
+                b.chars().take(500).collect::<String>()
+            ));
+        }
+
+        let json: serde_json::Value = resp.json()?;
+        let text = json["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "OpenAI-compat response missing choices[0].message.content: {}",
+                    serde_json::to_string(&json).unwrap_or_default()
+                )
+            })?
+            .to_string();
+        let usage = json.get("usage").map(|u| TokenUsage {
+            input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()),
+            output_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()),
+        });
+        Ok((text, usage))
+    }
+
+    fn name(&self) -> &str {
+        &self.model
+    }
+}
+
 /// Mock actor for testing. Returns a canned response.
 pub struct MockActor {
     response: String,

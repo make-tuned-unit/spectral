@@ -71,6 +71,12 @@ enum Command {
         #[arg(long, default_value = "https://api.anthropic.com")]
         base_url: String,
 
+        /// Actor/judge API format: "anthropic" (cloud) or "openai" (local
+        /// OpenAI-compatible server, e.g. ollama at http://localhost:11434 —
+        /// runs the accuracy loop fully on-device, no cloud dependency).
+        #[arg(long, default_value = "anthropic")]
+        actor_api: String,
+
         /// Maximum memories to pass to actor
         #[arg(long, default_value = "40")]
         max_results: usize,
@@ -329,6 +335,7 @@ fn main() -> Result<()> {
             actor_model,
             judge_model,
             base_url,
+            actor_api,
             max_results,
             descriptions,
             question_id,
@@ -404,12 +411,49 @@ fn main() -> Result<()> {
                 ..Default::default()
             };
 
-            let api_key = std::env::var("ANTHROPIC_API_KEY")
-                .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
-            let actor = AnthropicActor::new(api_key.clone(), actor_model, base_url.clone());
-            let judge = AnthropicJudge::new(api_key.clone(), judge_model, base_url.clone());
+            // Local (OpenAI-compatible) runs use OPENAI_API_KEY if set, else a
+            // dummy — ollama and most local servers ignore it. Cloud runs need
+            // ANTHROPIC_API_KEY.
+            let is_openai = actor_api == "openai";
+            let api_key = if is_openai {
+                std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| "local".into())
+            } else {
+                std::env::var("ANTHROPIC_API_KEY")
+                    .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?
+            };
+            let (actor, judge): (Box<dyn actor::Actor>, Box<dyn judge::Judge>) = if is_openai {
+                eprintln!(
+                    "Local OpenAI-compatible actor/judge at {base_url} \
+                     (fully on-device — no cloud dependency)"
+                );
+                (
+                    Box::new(actor::OpenAiActor::new(
+                        api_key.clone(),
+                        actor_model,
+                        base_url.clone(),
+                    )),
+                    Box::new(judge::OpenAiJudge::new(
+                        api_key.clone(),
+                        judge_model,
+                        base_url.clone(),
+                    )),
+                )
+            } else {
+                (
+                    Box::new(AnthropicActor::new(
+                        api_key.clone(),
+                        actor_model,
+                        base_url.clone(),
+                    )),
+                    Box::new(AnthropicJudge::new(
+                        api_key.clone(),
+                        judge_model,
+                        base_url.clone(),
+                    )),
+                )
+            };
 
-            let mut eval = AccuracyEval::new(config, Box::new(actor), Box::new(judge));
+            let mut eval = AccuracyEval::new(config, actor, judge);
             if let Some(ref desc_path) = descriptions {
                 let descs = spectral_bench_accuracy::describe::load_descriptions(desc_path)?;
                 eprintln!(
