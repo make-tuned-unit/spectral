@@ -218,6 +218,32 @@ weaker/cheaper actor that cannot compensate for a missing memory — plus a
 stable-network env for the A/B. That is the honest limit of what LongMemEval +
 a strong actor can show, reached by measurement, not assumption.
 
+### Cross-session substrate — the association episode can't reach
+
+Episode spreading cannot leave a session, so it recovers *keys within already-
+found sessions* but never a new session. `SPECTRAL_ASSOC_CROSS=N` adds the
+cross-session substrate via pseudo-relevance feedback: each top seed's own
+content is used as a query, so BM25's IDF weighting lets the seed's distinctive
+tokens (entities, specifics) reach ASSOCIATED memories in OTHER sessions.
+Deterministic, local, embedding-free — no entity graph needed.
+
+Multi-session (n=40) — the category where cross-session association matters:
+
+| config | session-recall | key-recall | tokens |
+|---|:-:|:-:|:-:|
+| FTS baseline | 95.5% | 40.9% | 14041 |
+| episode (within-session) | 95.5% | **59.9%** | 17255 |
+| cross-session N=5 | **97.3%** | 44.9% | 16057 |
+
+**They are complementary.** Episode lifts *key*-recall +19pp but 0 *session*-
+recall (it only completes found sessions). Cross-session lifts *session*-recall
+95.5→97.3% — it **finds answer sessions FTS missed**, which episode/FTS
+structurally cannot. Session-recall is the gating metric for multi-session
+completeness (you need every contributing session), so recovering a missed one is
+the more valuable — and harder — recovery. The full associative layer is the two
+composed: cross-session to reach new contributing sessions, then episode to
+complete each. (Combined mode is the natural next build.)
+
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%
   context tokens. The "incredibly cheap" goal needs a cost-smart expansion (cap

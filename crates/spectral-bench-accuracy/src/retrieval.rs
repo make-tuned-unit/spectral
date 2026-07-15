@@ -517,7 +517,49 @@ pub fn retrieve_topk_fts(
     // episodes (M unset/0 = off). Measured recovery ceiling on real LongMemEval:
     // 100% of missed-answer-key questions still have their answer session
     // retrieved, so this can pull the missed keys in — at a token cost tuned by M.
-    if let Some(replace_b) = std::env::var("SPECTRAL_ASSOC_RERANK")
+    if let Some(cross_n) = std::env::var("SPECTRAL_ASSOC_CROSS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        // CROSS-SESSION spreading (pseudo-relevance feedback): episode spreading
+        // cannot leave a session. This uses each top seed's own content as a
+        // query — BM25's IDF weighting makes the seed's distinctive/rare tokens
+        // (entities, specifics) dominate — to reach ASSOCIATED memories in OTHER
+        // sessions. The substrate multi-session questions need. Deterministic,
+        // local, embedding-free. SPECTRAL_ASSOC_CROSS=N mates per seed;
+        // SPECTRAL_ASSOC_BUDGET caps total expansion tokens (default 3500).
+        let seeds = std::env::var("SPECTRAL_ASSOC_SEEDS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3);
+        let budget = std::env::var("SPECTRAL_ASSOC_BUDGET")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3500);
+        let existing: std::collections::HashSet<String> =
+            hits.iter().map(|h| h.key.clone()).collect();
+        let seed_contents: Vec<String> =
+            hits.iter().take(seeds).map(|h| h.content.clone()).collect();
+        let mut added_keys = std::collections::HashSet::new();
+        let mut spent = 0usize;
+        let prf_cfg = RecallTopKConfig { k: cross_n + 4, ..RecallTopKConfig::default() };
+        'seeds: for content in seed_contents {
+            if let Ok(mates) = brain.recall_topk_fts(&content, &prf_cfg, Visibility::Private) {
+                for mate in mates.into_iter().take(cross_n) {
+                    if existing.contains(&mate.key) || !added_keys.insert(mate.key.clone()) {
+                        continue;
+                    }
+                    let cost = mate.content.len() / 4;
+                    if spent + cost > budget {
+                        break 'seeds;
+                    }
+                    spent += cost;
+                    hits.push(mate);
+                }
+            }
+        }
+    } else if let Some(replace_b) = std::env::var("SPECTRAL_ASSOC_RERANK")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|b| *b > 0)
