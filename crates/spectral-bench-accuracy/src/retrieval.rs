@@ -640,11 +640,35 @@ pub fn apply_associative_spreading(brain: &Brain, hits: &mut Vec<MemoryHit>) {
             }
         }
         candidates.sort_by_key(|(p, _)| *p);
-        let keep = hits.len().saturating_sub(replace_b);
-        hits.truncate(keep);
-        for (_, hit) in candidates.into_iter().take(replace_b) {
-            hits.push(hit);
+        let to_add: Vec<MemoryHit> =
+            candidates.into_iter().take(replace_b).map(|(_, h)| h).collect();
+        // SESSION-PRESERVING displacement: drop the weakest hits to make room,
+        // but never remove a memory that is the SOLE representative of its
+        // session — otherwise displacement can silently lose a contributing
+        // answer session (measured −3.9pp session-recall on multi-session).
+        let sess = |k: &str| k.split(':').next().unwrap_or("").to_string();
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for h in hits.iter() {
+            *counts.entry(sess(&h.key)).or_default() += 1;
         }
+        let mut remove: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for i in (0..hits.len()).rev() {
+            if remove.len() >= to_add.len() {
+                break;
+            }
+            let s = sess(&hits[i].key);
+            if counts.get(&s).copied().unwrap_or(0) > 1 {
+                remove.insert(i);
+                *counts.get_mut(&s).unwrap() -= 1;
+            }
+        }
+        let mut kept: Vec<MemoryHit> = std::mem::take(hits)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, h)| if remove.contains(&i) { None } else { Some(h) })
+            .collect();
+        kept.extend(to_add);
+        *hits = kept;
     } else if let Some(budget) = std::env::var("SPECTRAL_ASSOC_BUDGET")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())

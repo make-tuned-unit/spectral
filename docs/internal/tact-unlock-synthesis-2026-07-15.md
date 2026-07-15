@@ -278,6 +278,24 @@ compounds:
 | knowledge-update baseline | 100% | 57.1% |
 | knowledge-update + COMBINED | 100% | **86.7%** (+30pp) |
 
+**Session-preserving RERANK is the accuracy-safest mode.** RERANK (constant
+context, no distraction) on cascade recovers big key-recall, but naive
+displacement dropped multi-session session-recall −3.9pp (it could evict a
+contributing session's only memory). Fixed: displacement now never removes the
+*sole* representative of a session. Result — RERANK B=15, session-preserving:
+
+| cascade (n=40) | session-recall | key-recall |
+|---|:-:|:-:|
+| knowledge-update | 100% | 80.4% (+23.3pp) |
+| multi-session | 98.8% (held) | 64.7% (+15.9pp) |
+
+So RERANK now recovers +16–23pp key-recall at ~constant context with **no
+distraction tax and no lost sessions** — the mode most likely to convert to
+accuracy, and the one to test first in the local-actor A/B. (COMBINED/expand
+recover more key-recall but grow context; RERANK trades a little recovery for
+precision. Use RERANK where the actor is strong/near-ceiling; expand where
+recall genuinely gates the answer.)
+
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%
   context tokens. The "incredibly cheap" goal needs a cost-smart expansion (cap
