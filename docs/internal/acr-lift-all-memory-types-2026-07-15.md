@@ -32,32 +32,47 @@ knowledge-update net +0/−1). The real question is whether the recovery convert
 for an actor that *cannot* compensate. A **weaker cloud actor (haiku)** is exactly
 that test bed — no local model needed.
 
-Weak-actor A/B (haiku actor, sonnet-4-6 judge, temp=0, transport+auth-clean):
+Weak-actor A/B (haiku actor, sonnet-4-6 judge, temp=0, transport+auth-clean).
+An earlier n=14 knowledge-update run looked +1, so we ran it comprehensively:
 
 | memory type | mode | baseline | ACR | net |
 |---|---|:-:|:-:|:-:|
-| knowledge-update | precision (RERANK) | 11/14 (79%) | **12/14 (86%)** | **+1** (fixed 1, broke 0) |
-| multi-session | completeness (COMBINED) | — | — | BLOCKED (credits exhausted) |
+| multi-session | completeness | 19/30 (63%) | 17/30 (57%) | **−2** (fixed 2, broke 4) |
+| single-session-user | precision | 27/30 (90%) | 26/30 (87%) | **−1** (fixed 1, broke 2) |
+| knowledge-update | precision | 11/14 (79%) | 12/14 (86%) | +1 (n=14, noise) |
+| **POOLED (n=74)** | | **57/74 (77%)** | **55/74 (74%)** | **net −2** |
 
-**The signal points the right way.** On knowledge-update the weak actor gained
-+1 with zero regressions — where the *strong* sonnet actor was net ≤ 0 on the
-same category. That is the flip the hypothesis predicts: the recovered memory is
-redundant for an actor that can compensate, but real accuracy lift for one that
-cannot. The fixed question ("Is my mom using the same grocery list method as
-me?") needed a specific memory RERANK promoted into the window.
+**Honest verdict: the retrieval recovery does NOT convert to accuracy — even for
+a weak actor.** The n=14 +1 was noise; the larger runs are net-negative. ACR
+*fixes* the questions where a missing memory was decisive (2 counting questions on
+multi-session — food-delivery types, citrus fruits) but *breaks* more via
+distraction: on "how many hours of jogging/yoga last week?" (gold 0.5h) the
+baseline's 40 memories answered correctly; ACR's 57 (add +17 mates) made haiku
+miscount. Superlatives ("which store did I spend the most") and arithmetic
+("average age") break the same way — the extra context is noise the weak actor
+can't filter.
 
-**Honest bounds.** This is one small-n (14) data point, not a proof. The
-strongest test — multi-session counting, where completeness genuinely gates the
-answer — could not run: the API key exhausted its credit balance mid-run (the
-400s are "credit balance too low," not model errors). So:
+**Why (the whole-arc truth).** On LongMemEval, session-recall is near-ceiling —
+the answer session is almost always already retrieved. ACR's +18–40pp is mostly
+*additional/redundant* evidence, and adding it distracts the actor (strong actors
+already had what they need; weak actors get confused by the extra). Even
+constant-context RERANK breaks questions by *displacing* something the actor used.
+So the retrieval lift is a proxy that does not translate to end-to-end accuracy on
+this benchmark, for any actor tier or config tested. This is consistent with the
+entire arc (fetch_mult null, TACT-tiers harmful, novelty null): **on LongMemEval,
+retrieval is not the accuracy bottleneck, and adding retrieval hurts via
+distraction.**
 
-- **Retrieval lift: proven, comprehensive, $0** — +18–40pp on all six types.
-- **Accuracy conversion for weak actors: one positive data point (+1, clean),
-  consistent with the hypothesis; full validation blocked on credits.**
+## Bottom line
 
-The at-scale accuracy answer belongs to Permagent's production A/B (dispatched,
-`DISPATCH-permagent-associative-recall-2026-07-15.md`) or a funded/local weak-
-actor run. What is not in doubt: the retrieval layer now recovers, on every
-memory type, the answer-bearing memories FTS ranks out — deterministically and
-locally — and that recovery starts converting to accuracy exactly where the
-theory says it should (actors that can't compensate).
+- **Retrieval lift: real, large, comprehensive** (+18–40pp key-recall, all six
+  types), and shipped as a clean, integrated, deterministic library feature.
+- **Accuracy on LongMemEval: does NOT lift** (pooled −2 even for a weak actor) —
+  the benchmark's retrieval is saturated and added context distracts. ACR is kept
+  OFF by default; the honest recommendation is to NOT enable it for a
+  LongMemEval-like workload with a capable actor.
+- **Where it could still be real:** a genuinely retrieval-*starved* workload
+  (paraphrase-heavy recall where the answer session is often *missed*, not just
+  its keys) with an actor that both needs the memory and isn't distracted by
+  extra context. LongMemEval is not that workload. Permagent's production is the
+  place to find out; the dispatch stands, but with this honest caveat attached.
