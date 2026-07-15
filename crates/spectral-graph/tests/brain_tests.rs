@@ -37,7 +37,7 @@ fn open_creates_data_dir_contents() {
     assert!(tmp.path().join("brain.key").exists());
     assert!(tmp.path().join("brain.pub").exists());
     assert!(tmp.path().join("brain.id").exists());
-    assert!(tmp.path().join("graph.kz").exists());
+    assert!(tmp.path().join("graph.sqlite").exists());
 }
 
 #[test]

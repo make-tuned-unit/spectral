@@ -22,7 +22,7 @@ use spectral_spectrogram::{AnalysisContext, SpectrogramAnalyzer};
 
 use crate::canonicalize::{Canonicalizer, MatchedMention};
 use crate::extract::{ExtractedTriple, ExtractionPrompt};
-use crate::kuzu_store::{Entity, KuzuStore, Neighborhood, Triple};
+use crate::graph_store::{Entity, GraphStore, Neighborhood, Triple};
 use crate::ontology::Ontology;
 use crate::Error;
 
@@ -522,7 +522,7 @@ pub struct Brain {
     /// Entities created at runtime via AutoCreate policy. Checked alongside the ontology.
     runtime_entities: Mutex<Vec<crate::ontology::OntologyEntity>>,
     ontology_path: PathBuf,
-    store: KuzuStore,
+    store: GraphStore,
     memory_store: Box<dyn MemoryStore>,
     llm_client: Option<Box<dyn LlmClient>>,
     entity_policy: EntityPolicy,
@@ -625,11 +625,11 @@ impl Brain {
         let identity = BrainIdentity::load_or_create(&config.data_dir).map_err(Error::Core)?;
         let ontology_path = config.ontology_path.clone();
         let ontology = Ontology::load(&config.ontology_path)?;
-        let graph_path = config.data_dir.join("graph.kz");
+        let graph_path = config.data_dir.join("graph.sqlite");
         let store = if config.read_only {
-            KuzuStore::open_read_only(&graph_path)?
+            GraphStore::open_read_only(&graph_path)?
         } else {
-            KuzuStore::open(&graph_path)?
+            GraphStore::open(&graph_path)?
         };
 
         let memory_db_path = config
@@ -1811,7 +1811,7 @@ impl Brain {
     }
 
     /// Direct access to the underlying graph store.
-    pub fn store(&self) -> &KuzuStore {
+    pub fn store(&self) -> &GraphStore {
         &self.store
     }
 

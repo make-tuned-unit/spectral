@@ -337,7 +337,7 @@ impl FieldSource {
 /// A single typed field on a graph entity, carrying provenance.
 ///
 /// `entity_id` is the entity's 64-hex content-addressed id (stored by value;
-/// there is no DB-level foreign key — graph entities live in the Kuzu store).
+/// there is no DB-level foreign key — graph entities live in the SQLite graph store).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntityField {
     pub field_name: String,

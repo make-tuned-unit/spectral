@@ -4,7 +4,7 @@ use tempfile::TempDir;
 use spectral_core::entity_id::entity_id;
 use spectral_core::identity::BrainIdentity;
 use spectral_core::visibility::Visibility;
-use spectral_graph::kuzu_store::{Entity, KuzuStore, Triple};
+use spectral_graph::graph_store::{Entity, GraphStore, Triple};
 
 fn make_entity(id_type: &str, name: &str) -> Entity {
     let now = Utc::now();
@@ -23,12 +23,12 @@ fn make_entity(id_type: &str, name: &str) -> Entity {
 #[test]
 fn open_fresh_db_on_disk() {
     let tmp = TempDir::new().unwrap();
-    let _store = KuzuStore::open(&tmp.path().join("test.db")).unwrap();
+    let _store = GraphStore::open(&tmp.path().join("test.db")).unwrap();
 }
 
 #[test]
 fn upsert_and_get_entity() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let entity = make_entity("person", "alice");
     let id = entity.id;
 
@@ -42,7 +42,7 @@ fn upsert_and_get_entity() {
 
 #[test]
 fn upsert_is_idempotent() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let entity = make_entity("person", "alice");
     let id = entity.id;
 
@@ -55,14 +55,14 @@ fn upsert_is_idempotent() {
 
 #[test]
 fn get_missing_entity_returns_none() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let id = entity_id("person", "nobody");
     assert!(store.get_entity(&id).unwrap().is_none());
 }
 
 #[test]
 fn insert_and_find_triples() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let a = make_entity("person", "alice");
     let b = make_entity("project", "spectral");
     let brain = BrainIdentity::generate();
@@ -94,7 +94,7 @@ fn insert_and_find_triples() {
 
 #[test]
 fn find_triples_by_predicate() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let a = make_entity("person", "alice");
     let b = make_entity("person", "bob");
     let c = make_entity("project", "spectral");
@@ -142,7 +142,7 @@ fn find_triples_by_predicate() {
 
 #[test]
 fn neighborhood_2_hop_traversal() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let a = make_entity("person", "alice");
     let b = make_entity("person", "bob");
     let c = make_entity("project", "spectral");
@@ -194,7 +194,7 @@ fn neighborhood_2_hop_traversal() {
 
 #[test]
 fn insert_mention_is_idempotent() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let entity = make_entity("person", "alice");
     store.upsert_entity(&entity).unwrap();
 
@@ -214,7 +214,7 @@ fn insert_mention_is_idempotent() {
 
 #[test]
 fn insert_mention_distinct_entities_both_kept() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let alice = make_entity("person", "alice");
     let bob = make_entity("person", "bob");
     store.upsert_entity(&alice).unwrap();
@@ -237,7 +237,7 @@ fn insert_mention_distinct_entities_both_kept() {
 
 #[test]
 fn neighborhood_surfaces_mentioning_documents() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let alice = make_entity("person", "alice");
     store.upsert_entity(&alice).unwrap();
 
@@ -256,7 +256,7 @@ fn neighborhood_surfaces_mentioning_documents() {
 
 #[test]
 fn neighborhood_documents_are_terminal() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
 
     let alice = make_entity("person", "alice");
     let bob = make_entity("person", "bob");
@@ -285,7 +285,7 @@ fn neighborhood_documents_are_terminal() {
 
 #[test]
 fn neighborhood_combined_triples_and_documents() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let brain = BrainIdentity::generate();
     let now = Utc::now();
 
@@ -327,7 +327,7 @@ fn neighborhood_combined_triples_and_documents() {
 
 #[test]
 fn set_entity_description_write_then_read() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let alice = make_entity("person", "alice");
     store.upsert_entity(&alice).unwrap();
 
@@ -344,7 +344,7 @@ fn set_entity_description_write_then_read() {
 
 #[test]
 fn set_entity_description_idempotent() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let alice = make_entity("person", "alice");
     store.upsert_entity(&alice).unwrap();
 
@@ -364,7 +364,7 @@ fn set_entity_description_idempotent() {
 
 #[test]
 fn entity_with_null_description() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let alice = make_entity("person", "alice");
     store.upsert_entity(&alice).unwrap();
 
@@ -374,7 +374,7 @@ fn entity_with_null_description() {
 
 #[test]
 fn set_entity_description_overwrites() {
-    let store = KuzuStore::in_memory().unwrap();
+    let store = GraphStore::in_memory().unwrap();
     let alice = make_entity("person", "alice");
     store.upsert_entity(&alice).unwrap();
 
