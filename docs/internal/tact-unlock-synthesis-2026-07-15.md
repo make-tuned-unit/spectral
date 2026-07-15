@@ -135,6 +135,54 @@ proximity-ranked, tightly budgeted, recovers most of the gain. It saturates at
 needs more seeds at higher budget. The dial spans cheap-and-large to
 expensive-and-maximal.
 
+### Accuracy verification (the decisive test)
+
+Key-recall is a proxy; the real question is whether recovery converts to correct
+answers. Temp=0 actor A/B on knowledge-update (n=29 transport-clean, sonnet-4-6,
+FTS vs FTS+spreading S3/budget=3500):
+
+| arm | accuracy |
+|---|:-:|
+| FTS baseline | 27/29 (93%) |
+| FTS + spreading | 27/29 (93%) — **net +0** (fixed 1, broke 1) |
+
+**Ceiling effect + a distraction cost.** The actor was already at 93%, so there
+was almost no headroom. The two flips are the mechanism working *both* ways:
+- **FIXED** (Starbucks gold, gold=120): spreading added 4 episode-mates including
+  the answer memory FTS missed → correct. Recovery converted.
+- **BROKE** (5K PB time, gold=25:50): spreading added **10** mates; the answer
+  FTS had cleanly got *buried by distraction* → actor said "I don't have that."
+
+Lesson: recovering answer keys helps only when it adds the *needed* memory
+without burying others. **The lean config did not rescue it** — a second A/B
+(SEEDS=1/budget=1500, ~2–3 mates) scored **27/30 vs FTS 28/30, net −1** (fixed 0,
+broke 1). Fewer mates avoided some distraction but also missed the fixes.
+
+**Decisive verdict: on knowledge-update, associative spreading is accuracy-
+neutral-to-negative** (aggressive net +0, lean net −1). The +20–27pp key-recall
+recovery does not convert, for two compounding reasons: the actor is near-ceiling
+(93%) so there is almost no retrieval-failure-driven error to fix, and adding
+context to a strong actor has a distraction cost that offsets the occasional real
+fix. This is the recurring finding of the whole arc — on LongMemEval with a
+strong actor, retrieval is near-ceiling and is not the accuracy bottleneck
+(fetch_mult null, novelty null, TACT tiers harmful, and now spreading null-to-
+negative). key-recall is a partly-bloated proxy; session-recall is the metric
+that gates answerability and it is already ~98–100%.
+
+**Where spreading's accuracy value could still be real** (untested here): a
+retrieval-*failure*-bound workload — multi-session counting (needs every
+instance), a weaker/cheaper actor that cannot compensate for a missing memory, or
+production recall where paraphrase gaps are common. These need a different test
+bed (and a stable-network env for the actor A/B).
+
+**Next iteration — rerank, don't expand (precision-preserving).** The distraction
+cost comes from *growing* the context. The fix: use proximity-spreading to
+*promote* the associated answer memory INTO the top-k (displacing the weakest FTS
+result), keeping context size — and thus distraction — constant. Score =
+FTS_score + associative_boost(proximity, seed_strength), then take top-k. This
+targets the exact failure mode (added context dilutes) and is the logical way to
+turn the real retrieval recovery into accuracy without the distraction tax.
+
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%
   context tokens. The "incredibly cheap" goal needs a cost-smart expansion (cap

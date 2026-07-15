@@ -36,3 +36,11 @@ async fn main() -> anyhow::Result<()> {
 2. **Wing-only** — high-signal memories in detected wing
 3. **FTS fallback** — SQLite FTS5 keyword search
 4. **Hybrid merge** — fingerprint + FTS results deduplicated
+
+> **Note on the assembled `Brain`:** the production recall path is deterministic
+> FTS5 + BM25 with signal/recency/episode re-ranking. On general (non-persona)
+> corpora the fingerprint/wing tiers above are measured to underperform plain FTS
+> (the wing rules are persona-shaped and the metadata fingerprint is low-entropy);
+> associative co-occurrence *spreading* — FTS seeds expanded through episode
+> proximity — is the more promising direction and is under active measurement.
+> See `docs/internal/tact-unlock-synthesis-2026-07-15.md`.

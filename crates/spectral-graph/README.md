@@ -1,8 +1,8 @@
 # spectral-graph
 
 Knowledge graph layer for Spectral. Stores entities, triples, and provenance
-in an embedded [Kuzu](https://kuzudb.com/) graph database. Canonicalizes
-free-text mentions through a TOML ontology.
+in an embedded SQLite graph store (the same engine as the memory/FTS store).
+Canonicalizes free-text mentions through a TOML ontology.
 
 ## Quick start
 
@@ -42,6 +42,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **`brain.rs`** — High-level API: `assert`, `recall`, `ingest_document`
 - **`canonicalize.rs`** — Resolves text mentions to EntityIds (exact + fuzzy)
 - **`ontology.rs`** — TOML ontology loader with domain/range validation
-- **`kuzu_store.rs`** — Typed Kuzu wrapper with parameterized Cypher queries
-- **`schema.rs`** — Graph schema (Entity, Document, Triple, Mentions tables)
+- **`graph_store.rs`** — SQLite-backed entity/triple/mention store + 2-hop
+  neighborhood BFS (entity, triple, document, mention tables)
 - **`provenance.rs`** — Per-edge provenance metadata types
