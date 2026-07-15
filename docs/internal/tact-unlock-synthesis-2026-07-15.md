@@ -94,6 +94,32 @@ spread over episode / entity co-occurrence), not as popularity over metadata
 edges.** Recognition-as-primary-retriever and content-fingerprint-vs-FTS are dead
 ends (measured); associative expansion is the live one.
 
+### Cost-smart spreading — proximity is the efficiency unlock
+
+The naive expansion ranked episode-mates by *signal* and recovered only +3–10pp,
+because answer memories are often *low-signal events*. Cost-smart mode
+(`SPECTRAL_ASSOC_BUDGET=E`, `SPECTRAL_ASSOC_SEEDS=S`) instead ranks episode-mates
+by **turn-proximity to the seed** (the answer sits near the matched turn — the
+key `session:turn:N:role` carries N) and fills only up to a token budget from the
+top-S high-confidence seeds. Same mechanism, ranking swapped — the difference is
+the ablation:
+
+| category | config | answer-key recall | tokens |
+|---|---|:-:|:-:|
+| single-session-preference | FTS baseline | 37.6% | 9935 |
+| single-session-preference | naive signal (M=4) | 43.8% | 16853 |
+| single-session-preference | **cost-smart (budget=7000)** | **57.7%** | 15972 |
+| knowledge-update | FTS baseline | 56.0% | 13007 |
+| knowledge-update | naive signal (M=4) | 65.7% | 16689 |
+| knowledge-update | **cost-smart (budget=7000)** | **83.4%** | 16665 |
+
+Proximity beats signal by **+14–18pp at matched-or-lower token cost**; total
+recovery over FTS is **+20pp (preference)** and **+27pp (knowledge-update)**, the
+latter approaching its 98.7% session-recall ceiling. Answer memories are near the
+matched turn; signal-ranking was structurally blind to them. Even at budget=3500
+the recovery is large (preference 51.5%, knowledge-update 79.5%) — the token
+budget is a real dial on the recovery/cost frontier.
+
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%
   context tokens. The "incredibly cheap" goal needs a cost-smart expansion (cap

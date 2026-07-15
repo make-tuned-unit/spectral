@@ -433,6 +433,18 @@ pub fn retrieve(brain: &Brain, question: &str, config: &RetrievalConfig) -> Resu
 ///
 /// When `question_date` is provided (format: "2023/05/30 (Tue) 23:40"),
 /// recency decay is anchored to that date instead of `Utc::now()`.
+/// Parse the turn index from a LongMemEval-style key `session:turn:N:role`.
+/// Returns `None` if the key doesn't carry a `turn:N` segment.
+fn turn_index(key: &str) -> Option<u64> {
+    let mut parts = key.split(':');
+    while let Some(p) = parts.next() {
+        if p == "turn" {
+            return parts.next().and_then(|n| n.parse::<u64>().ok());
+        }
+    }
+    None
+}
+
 /// Convert a stored `Memory` (from episode listing) into a `MemoryHit` so
 /// associatively-expanded memories flow through the same formatting/scoring path.
 fn memory_to_hit(m: &spectral_ingest::Memory) -> MemoryHit {
@@ -505,11 +517,65 @@ pub fn retrieve_topk_fts(
     // episodes (M unset/0 = off). Measured recovery ceiling on real LongMemEval:
     // 100% of missed-answer-key questions still have their answer session
     // retrieved, so this can pull the missed keys in — at a token cost tuned by M.
-    if let Some(m) = std::env::var("SPECTRAL_ASSOC_EXPAND")
+    if let Some(budget) = std::env::var("SPECTRAL_ASSOC_BUDGET")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|b| *b > 0)
+    {
+        // COST-SMART spreading: expand only the top-S high-confidence seeds'
+        // episodes, rank episode-mates by TURN-PROXIMITY to their seed (answer
+        // memories are low-signal events near the matched turn — signal-ranking
+        // misses them), and fill only up to a token BUDGET. Recovers more per
+        // token than the naive signal-ranked expansion.
+        let seeds = std::env::var("SPECTRAL_ASSOC_SEEDS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3);
+        let existing: std::collections::HashSet<String> =
+            hits.iter().map(|h| h.key.clone()).collect();
+        // Gather candidate episode-mates with their proximity to the seed turn.
+        let mut candidates: Vec<(u64, MemoryHit)> = Vec::new();
+        let mut seen_eps = std::collections::HashSet::new();
+        let mut cand_keys = std::collections::HashSet::new();
+        for seed in hits.iter().take(seeds) {
+            let ep = match seed.episode_id.clone() {
+                Some(e) => e,
+                None => continue,
+            };
+            if !seen_eps.insert(ep.clone()) {
+                continue;
+            }
+            let seed_turn = turn_index(&seed.key);
+            if let Ok(mems) = brain.list_memories_by_episode(&ep) {
+                for mem in mems {
+                    if existing.contains(&mem.key) || !cand_keys.insert(mem.key.clone()) {
+                        continue;
+                    }
+                    let prox = match (seed_turn, turn_index(&mem.key)) {
+                        (Some(s), Some(t)) => (s as i64 - t as i64).unsigned_abs(),
+                        _ => u64::MAX, // unparseable turn → lowest priority
+                    };
+                    candidates.push((prox, memory_to_hit(&mem)));
+                }
+            }
+        }
+        // Nearest-turn first; fill until the token budget is exhausted.
+        candidates.sort_by_key(|(p, _)| *p);
+        let mut spent = 0usize;
+        for (_, hit) in candidates {
+            let cost = hit.content.len() / 4;
+            if spent + cost > budget {
+                continue; // skip over-budget; keep packing smaller near mates
+            }
+            spent += cost;
+            hits.push(hit);
+        }
+    } else if let Some(m) = std::env::var("SPECTRAL_ASSOC_EXPAND")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|m| *m > 0)
     {
+        // Naive baseline: top-M by signal from the top-8 seeds' episodes.
         const SEED_EPISODES: usize = 8;
         let existing: std::collections::HashSet<String> =
             hits.iter().map(|h| h.key.clone()).collect();
