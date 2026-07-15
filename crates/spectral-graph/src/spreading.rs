@@ -69,6 +69,36 @@ impl Default for AssocSpreadConfig {
     }
 }
 
+impl AssocSpreadConfig {
+    /// Precision-preserving preset (`Rerank`, session-safe): recovers answer
+    /// keys by displacing the weakest results with proximity mates, keeping
+    /// context size ~constant. Measured +16–23pp answer-key recall at ~constant
+    /// tokens with no distraction tax. Best where the actor is strong / recall is
+    /// near-ceiling — the safest default to try first.
+    pub fn precision() -> Self {
+        Self {
+            mode: SpreadMode::Rerank,
+            rerank_b: 15,
+            ..Self::default()
+        }
+    }
+
+    /// Recall-completeness preset (`Combined`): cross-session spreading finds
+    /// missed contributing sessions, then episode spreading completes each.
+    /// Measured +21–30pp answer-key recall (grows context ~20–30%). Best where
+    /// recall genuinely gates the answer — multi-session counting, weaker/cheaper
+    /// actors that cannot compensate for a missing memory.
+    pub fn completeness() -> Self {
+        Self {
+            mode: SpreadMode::Combined,
+            cross_n: 3,
+            cross_budget: 2500,
+            episode_budget: 3000,
+            ..Self::default()
+        }
+    }
+}
+
 /// Apply associative spreading to a retrieved hit list, in place.
 pub fn associative_spread(brain: &Brain, hits: &mut Vec<MemoryHit>, cfg: &AssocSpreadConfig) {
     match cfg.mode {
@@ -284,6 +314,12 @@ mod tests {
     #[test]
     fn default_is_off() {
         assert_eq!(AssocSpreadConfig::default().mode, SpreadMode::Off);
+    }
+
+    #[test]
+    fn presets_pick_the_recommended_modes() {
+        assert_eq!(AssocSpreadConfig::precision().mode, SpreadMode::Rerank);
+        assert_eq!(AssocSpreadConfig::completeness().mode, SpreadMode::Combined);
     }
 
     #[test]

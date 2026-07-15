@@ -29,20 +29,20 @@ associated memories. Two substrates:
 and it's wired into the cascade recall path via `CascadePipelineConfig.spread`:
 
 ```rust
-use spectral_graph::spreading::{AssocSpreadConfig, SpreadMode};
+use spectral_graph::spreading::AssocSpreadConfig;
 
 let pipeline = CascadePipelineConfig {
     // ...your existing config...
-    spread: AssocSpreadConfig {
-        mode: SpreadMode::Rerank,   // start here (see below)
-        seeds: 3,
-        rerank_b: 15,
-        ..AssocSpreadConfig::default()
-    },
+    spread: AssocSpreadConfig::precision(),   // start here (see below)
     ..Default::default()
 };
 // then brain.recall_cascade_with_pipeline(query, &ctx, &pipeline)
 ```
+
+Two presets encode our measured recommendations:
+`AssocSpreadConfig::precision()` (session-safe Rerank, ~constant context) and
+`AssocSpreadConfig::completeness()` (Combined — finds missed sessions + completes
+them). Or build a custom `AssocSpreadConfig` with an explicit `SpreadMode`.
 
 Default is `SpreadMode::Off` — a pure no-op, zero behavior change until you opt in.
 You can also call `associative_spread(brain, &mut hits, &cfg)` directly on any hit
