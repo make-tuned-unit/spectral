@@ -240,9 +240,26 @@ recall (it only completes found sessions). Cross-session lifts *session*-recall
 95.5→97.3% — it **finds answer sessions FTS missed**, which episode/FTS
 structurally cannot. Session-recall is the gating metric for multi-session
 completeness (you need every contributing session), so recovering a missed one is
-the more valuable — and harder — recovery. The full associative layer is the two
-composed: cross-session to reach new contributing sessions, then episode to
-complete each. (Combined mode is the natural next build.)
+the more valuable — and harder — recovery.
+
+**Combined mode (`SPECTRAL_ASSOC_COMBINED=1`) — the full associative layer.**
+Cross-session spreading finds the missed answer sessions (PRF), then episode
+spreading completes *every* session — the FTS seeds' AND the newly-found
+cross-session ones — by turn-proximity. It dominates both single substrates:
+
+| config | session-recall | key-recall | tokens |
+|---|:-:|:-:|:-:|
+| FTS baseline | 95.5% | 40.9% | 14041 |
+| episode only | 95.5% | 59.9% | 17255 |
+| cross-session only | 97.3% | 44.9% | 16057 |
+| **COMBINED** | **96.8%** | **61.6%** | 17826 |
+
+COMBINED gets both gains at once — **the highest key-recall of any config
+(61.6% > episode-alone's 59.9%, because it now completes the cross-found sessions
+too) plus a session-recall lift** — at comparable token cost. The associative
+layer is realized: reach missed contributing sessions, then complete each. (The
+`assoc_cross_session` / `assoc_episode_budget` helpers compose cleanly; the
+individual modes are refactored onto them, numbers verified unchanged.)
 
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%

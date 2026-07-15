@@ -445,6 +445,94 @@ fn turn_index(key: &str) -> Option<u64> {
     None
 }
 
+/// Cross-session associative spreading (pseudo-relevance feedback): each of the
+/// top `seeds` hits' own content is used as a query, so BM25 IDF surfaces the
+/// seed's distinctive tokens and reaches ASSOCIATED memories in OTHER sessions.
+/// Appends up to `n` new mates per seed within `budget` tokens. Returns the
+/// (episode_id, key) of every memory it added, so a caller can then complete the
+/// newly-found sessions with episode spreading.
+fn assoc_cross_session(
+    brain: &Brain,
+    hits: &mut Vec<MemoryHit>,
+    seeds: usize,
+    n: usize,
+    budget: usize,
+) -> Vec<(Option<String>, String)> {
+    let existing: std::collections::HashSet<String> =
+        hits.iter().map(|h| h.key.clone()).collect();
+    let seed_contents: Vec<String> = hits.iter().take(seeds).map(|h| h.content.clone()).collect();
+    let mut added_keys = std::collections::HashSet::new();
+    let mut added = Vec::new();
+    let mut spent = 0usize;
+    let prf_cfg = RecallTopKConfig { k: n + 4, ..RecallTopKConfig::default() };
+    'seeds: for content in seed_contents {
+        if let Ok(mates) = brain.recall_topk_fts(&content, &prf_cfg, Visibility::Private) {
+            for mate in mates.into_iter().take(n) {
+                if existing.contains(&mate.key) || !added_keys.insert(mate.key.clone()) {
+                    continue;
+                }
+                let cost = mate.content.len() / 4;
+                if spent + cost > budget {
+                    break 'seeds;
+                }
+                spent += cost;
+                added.push((mate.episode_id.clone(), mate.key.clone()));
+                hits.push(mate);
+            }
+        }
+    }
+    added
+}
+
+/// Episode (within-session) associative spreading: for each seed in `seed_refs`
+/// (episode_id, key), pull that episode's memories ranked by TURN-PROXIMITY to
+/// the seed turn (answer memories are low-signal events near the matched turn),
+/// filling up to `budget` tokens. Appends to `hits`.
+fn assoc_episode_budget(
+    brain: &Brain,
+    hits: &mut Vec<MemoryHit>,
+    seed_refs: &[(Option<String>, String)],
+    budget: usize,
+) {
+    let existing: std::collections::HashSet<String> =
+        hits.iter().map(|h| h.key.clone()).collect();
+    let mut candidates: Vec<(u64, MemoryHit)> = Vec::new();
+    let mut seen_eps = std::collections::HashSet::new();
+    let mut cand_keys = std::collections::HashSet::new();
+    for (ep_opt, seed_key) in seed_refs {
+        let ep = match ep_opt {
+            Some(e) => e.clone(),
+            None => continue,
+        };
+        if !seen_eps.insert(ep.clone()) {
+            continue;
+        }
+        let seed_turn = turn_index(seed_key);
+        if let Ok(mems) = brain.list_memories_by_episode(&ep) {
+            for mem in mems {
+                if existing.contains(&mem.key) || !cand_keys.insert(mem.key.clone()) {
+                    continue;
+                }
+                let prox = match (seed_turn, turn_index(&mem.key)) {
+                    (Some(s), Some(t)) => (s as i64 - t as i64).unsigned_abs(),
+                    _ => u64::MAX,
+                };
+                candidates.push((prox, memory_to_hit(&mem)));
+            }
+        }
+    }
+    candidates.sort_by_key(|(p, _)| *p);
+    let mut spent = 0usize;
+    for (_, hit) in candidates {
+        let cost = hit.content.len() / 4;
+        if spent + cost > budget {
+            continue;
+        }
+        spent += cost;
+        hits.push(hit);
+    }
+}
+
 /// Convert a stored `Memory` (from episode listing) into a `MemoryHit` so
 /// associatively-expanded memories flow through the same formatting/scoring path.
 fn memory_to_hit(m: &spectral_ingest::Memory) -> MemoryHit {
@@ -517,48 +605,48 @@ pub fn retrieve_topk_fts(
     // episodes (M unset/0 = off). Measured recovery ceiling on real LongMemEval:
     // 100% of missed-answer-key questions still have their answer session
     // retrieved, so this can pull the missed keys in — at a token cost tuned by M.
-    if let Some(cross_n) = std::env::var("SPECTRAL_ASSOC_CROSS")
+    let assoc_seeds = std::env::var("SPECTRAL_ASSOC_SEEDS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(3);
+    if std::env::var("SPECTRAL_ASSOC_COMBINED").is_ok() {
+        // FULL associative layer: cross-session spreading finds missed answer
+        // SESSIONS (PRF), then episode spreading completes each session — both the
+        // FTS seeds' sessions AND the newly-found cross-session ones — by
+        // turn-proximity. The two substrates composed.
+        let cross_n = std::env::var("SPECTRAL_ASSOC_CROSS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(2);
+        let cross_budget = std::env::var("SPECTRAL_ASSOC_CROSS_BUDGET")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(2500);
+        let ep_budget = std::env::var("SPECTRAL_ASSOC_BUDGET")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3000);
+        let mut seed_refs: Vec<(Option<String>, String)> = hits
+            .iter()
+            .take(assoc_seeds)
+            .map(|h| (h.episode_id.clone(), h.key.clone()))
+            .collect();
+        let cross_added = assoc_cross_session(brain, &mut hits, assoc_seeds, cross_n, cross_budget);
+        seed_refs.extend(cross_added); // also complete the new cross-session sessions
+        assoc_episode_budget(brain, &mut hits, &seed_refs, ep_budget);
+    } else if let Some(cross_n) = std::env::var("SPECTRAL_ASSOC_CROSS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|n| *n > 0)
     {
-        // CROSS-SESSION spreading (pseudo-relevance feedback): episode spreading
-        // cannot leave a session. This uses each top seed's own content as a
-        // query — BM25's IDF weighting makes the seed's distinctive/rare tokens
-        // (entities, specifics) dominate — to reach ASSOCIATED memories in OTHER
-        // sessions. The substrate multi-session questions need. Deterministic,
-        // local, embedding-free. SPECTRAL_ASSOC_CROSS=N mates per seed;
-        // SPECTRAL_ASSOC_BUDGET caps total expansion tokens (default 3500).
-        let seeds = std::env::var("SPECTRAL_ASSOC_SEEDS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(3);
+        // CROSS-SESSION spreading (PRF): reach associated memories in OTHER
+        // sessions via each seed's distinctive tokens. SPECTRAL_ASSOC_CROSS=N
+        // mates/seed; SPECTRAL_ASSOC_BUDGET caps expansion tokens (default 3500).
         let budget = std::env::var("SPECTRAL_ASSOC_BUDGET")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(3500);
-        let existing: std::collections::HashSet<String> =
-            hits.iter().map(|h| h.key.clone()).collect();
-        let seed_contents: Vec<String> =
-            hits.iter().take(seeds).map(|h| h.content.clone()).collect();
-        let mut added_keys = std::collections::HashSet::new();
-        let mut spent = 0usize;
-        let prf_cfg = RecallTopKConfig { k: cross_n + 4, ..RecallTopKConfig::default() };
-        'seeds: for content in seed_contents {
-            if let Ok(mates) = brain.recall_topk_fts(&content, &prf_cfg, Visibility::Private) {
-                for mate in mates.into_iter().take(cross_n) {
-                    if existing.contains(&mate.key) || !added_keys.insert(mate.key.clone()) {
-                        continue;
-                    }
-                    let cost = mate.content.len() / 4;
-                    if spent + cost > budget {
-                        break 'seeds;
-                    }
-                    spent += cost;
-                    hits.push(mate);
-                }
-            }
-        }
+        assoc_cross_session(brain, &mut hits, assoc_seeds, cross_n, budget);
     } else if let Some(replace_b) = std::env::var("SPECTRAL_ASSOC_RERANK")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -611,54 +699,14 @@ pub fn retrieve_topk_fts(
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|b| *b > 0)
     {
-        // COST-SMART spreading: expand only the top-S high-confidence seeds'
-        // episodes, rank episode-mates by TURN-PROXIMITY to their seed (answer
-        // memories are low-signal events near the matched turn — signal-ranking
-        // misses them), and fill only up to a token BUDGET. Recovers more per
-        // token than the naive signal-ranked expansion.
-        let seeds = std::env::var("SPECTRAL_ASSOC_SEEDS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(3);
-        let existing: std::collections::HashSet<String> =
-            hits.iter().map(|h| h.key.clone()).collect();
-        // Gather candidate episode-mates with their proximity to the seed turn.
-        let mut candidates: Vec<(u64, MemoryHit)> = Vec::new();
-        let mut seen_eps = std::collections::HashSet::new();
-        let mut cand_keys = std::collections::HashSet::new();
-        for seed in hits.iter().take(seeds) {
-            let ep = match seed.episode_id.clone() {
-                Some(e) => e,
-                None => continue,
-            };
-            if !seen_eps.insert(ep.clone()) {
-                continue;
-            }
-            let seed_turn = turn_index(&seed.key);
-            if let Ok(mems) = brain.list_memories_by_episode(&ep) {
-                for mem in mems {
-                    if existing.contains(&mem.key) || !cand_keys.insert(mem.key.clone()) {
-                        continue;
-                    }
-                    let prox = match (seed_turn, turn_index(&mem.key)) {
-                        (Some(s), Some(t)) => (s as i64 - t as i64).unsigned_abs(),
-                        _ => u64::MAX, // unparseable turn → lowest priority
-                    };
-                    candidates.push((prox, memory_to_hit(&mem)));
-                }
-            }
-        }
-        // Nearest-turn first; fill until the token budget is exhausted.
-        candidates.sort_by_key(|(p, _)| *p);
-        let mut spent = 0usize;
-        for (_, hit) in candidates {
-            let cost = hit.content.len() / 4;
-            if spent + cost > budget {
-                continue; // skip over-budget; keep packing smaller near mates
-            }
-            spent += cost;
-            hits.push(hit);
-        }
+        // COST-SMART episode spreading: turn-proximity ranked, token-budgeted,
+        // from the top-S high-confidence seeds' episodes.
+        let seed_refs: Vec<(Option<String>, String)> = hits
+            .iter()
+            .take(assoc_seeds)
+            .map(|h| (h.episode_id.clone(), h.key.clone()))
+            .collect();
+        assoc_episode_budget(brain, &mut hits, &seed_refs, budget);
     } else if let Some(m) = std::env::var("SPECTRAL_ASSOC_EXPAND")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
