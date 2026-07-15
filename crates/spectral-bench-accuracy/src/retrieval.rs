@@ -517,7 +517,54 @@ pub fn retrieve_topk_fts(
     // episodes (M unset/0 = off). Measured recovery ceiling on real LongMemEval:
     // 100% of missed-answer-key questions still have their answer session
     // retrieved, so this can pull the missed keys in — at a token cost tuned by M.
-    if let Some(budget) = std::env::var("SPECTRAL_ASSOC_BUDGET")
+    if let Some(replace_b) = std::env::var("SPECTRAL_ASSOC_RERANK")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|b| *b > 0)
+    {
+        // RERANK-not-expand (precision-preserving): promote the top-B
+        // proximity-ranked episode-mates INTO the window by DISPLACING the
+        // weakest B FTS results — context size stays constant, so no distraction
+        // tax. Targets the failure mode the accuracy A/B exposed (added context
+        // dilutes a strong actor).
+        let seeds = std::env::var("SPECTRAL_ASSOC_SEEDS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3);
+        let existing: std::collections::HashSet<String> =
+            hits.iter().map(|h| h.key.clone()).collect();
+        let mut candidates: Vec<(u64, MemoryHit)> = Vec::new();
+        let mut seen_eps = std::collections::HashSet::new();
+        let mut cand_keys = std::collections::HashSet::new();
+        for seed in hits.iter().take(seeds) {
+            let ep = match seed.episode_id.clone() {
+                Some(e) => e,
+                None => continue,
+            };
+            if !seen_eps.insert(ep.clone()) {
+                continue;
+            }
+            let seed_turn = turn_index(&seed.key);
+            if let Ok(mems) = brain.list_memories_by_episode(&ep) {
+                for mem in mems {
+                    if existing.contains(&mem.key) || !cand_keys.insert(mem.key.clone()) {
+                        continue;
+                    }
+                    let prox = match (seed_turn, turn_index(&mem.key)) {
+                        (Some(s), Some(t)) => (s as i64 - t as i64).unsigned_abs(),
+                        _ => u64::MAX,
+                    };
+                    candidates.push((prox, memory_to_hit(&mem)));
+                }
+            }
+        }
+        candidates.sort_by_key(|(p, _)| *p);
+        let keep = hits.len().saturating_sub(replace_b);
+        hits.truncate(keep); // drop the weakest B FTS results
+        for (_, hit) in candidates.into_iter().take(replace_b) {
+            hits.push(hit);
+        }
+    } else if let Some(budget) = std::env::var("SPECTRAL_ASSOC_BUDGET")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|b| *b > 0)

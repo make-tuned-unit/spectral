@@ -175,13 +175,27 @@ instance), a weaker/cheaper actor that cannot compensate for a missing memory, o
 production recall where paraphrase gaps are common. These need a different test
 bed (and a stable-network env for the actor A/B).
 
-**Next iteration — rerank, don't expand (precision-preserving).** The distraction
-cost comes from *growing* the context. The fix: use proximity-spreading to
-*promote* the associated answer memory INTO the top-k (displacing the weakest FTS
-result), keeping context size — and thus distraction — constant. Score =
-FTS_score + associative_boost(proximity, seed_strength), then take top-k. This
-targets the exact failure mode (added context dilutes) and is the logical way to
-turn the real retrieval recovery into accuracy without the distraction tax.
+**Iteration — rerank, don't expand (precision-preserving).** The distraction cost
+comes from *growing* the context. `SPECTRAL_ASSOC_RERANK=B` instead promotes the
+top-B proximity-ranked episode-mates INTO the window by *displacing the weakest B
+FTS results* — context size stays constant, no distraction tax.
+
+Retrieval measurement (constant context):
+
+| category | config | key-recall | tokens |
+|---|---|:-:|:-:|
+| knowledge-update | FTS baseline | 56.0% | 13007 |
+| knowledge-update | rerank B=8 | **69.8%** | **12537** (−4%) |
+| knowledge-update | expand S3/b3500 | 79.5% | 15678 (+20%) |
+| single-session-preference | FTS baseline | 37.6% | 9935 |
+| single-session-preference | rerank B=8 | 41.3% | 10616 |
+
+Rerank recovers **+14pp key-recall at *constant* (slightly lower) tokens** on
+knowledge-update — recovery without the token or distraction tax. It recovers
+less raw key-recall than expand (69.8% vs 79.5%) but should *convert* better
+because it never dilutes. Accuracy A/B (rerank B=8 vs FTS, knowledge-update)
+pending; the hypothesis is net ≥ 0 (keeps the fixes, avoids the distraction
+breaks that gave expand net +0/−1).
 
 ### Honest caveats (do not oversell)
 - **Token cost is the weakness**: full/partial episode expansion adds 30–70%
