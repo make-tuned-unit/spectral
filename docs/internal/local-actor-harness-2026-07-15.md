@@ -48,13 +48,18 @@ $BIN run --dataset "$DS" --work-dir "$WORK" --output ku-fts-local.json \
   --actor-api openai --base-url http://localhost:11434 \
   --actor-model "$M" --judge-model "$M"
 
-# Arm B: FTS + cross-session + episode spreading (cost-smart)
-SPECTRAL_ASSOC_CROSS=3 SPECTRAL_ASSOC_BUDGET=3500 SPECTRAL_ASSOC_SEEDS=3 \
+# Arm B: FTS + session-preserving RERANK spreading (accuracy-safest config —
+# +16-23pp key-recall at ~constant context, no distraction, no lost sessions).
+SPECTRAL_ASSOC_RERANK=15 SPECTRAL_ASSOC_SEEDS=3 \
 $BIN run --dataset "$DS" --work-dir "$WORK" --output ku-spread-local.json \
   --categories knowledge-update --max-questions 30 \
   --retrieval-path topk_fts --no-expand-queries \
   --actor-api openai --base-url http://localhost:11434 \
   --actor-model "$M" --judge-model "$M"
+
+# (recall-max alternative, but grows context ~+20%):
+#   SPECTRAL_ASSOC_COMBINED=1 SPECTRAL_ASSOC_CROSS=3 \
+#   SPECTRAL_ASSOC_CROSS_BUDGET=2500 SPECTRAL_ASSOC_BUDGET=3000 SPECTRAL_ASSOC_SEEDS=3
 ```
 
 Then the same paired analysis used for the cloud A/Bs (exclude any transport
