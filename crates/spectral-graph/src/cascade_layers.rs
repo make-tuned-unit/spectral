@@ -264,17 +264,39 @@ mod config_tests {
     }
 }
 
-/// Run the integrated cascade pipeline.
-///
-/// TACT retrieval at K=40 → ambient boost → signal/recency re-ranking
-/// → context dedup → episode diversity. TACT provides the full tiered search
-/// (fingerprint → wing → FTS) as the entry point. (Dedup precedes diversity so
-/// dedup's score re-sort does not clobber the diversity interleave.)
+/// Run the integrated cascade pipeline (no visibility boundary — returns every
+/// hit, equivalent to a `Private` context). Thin wrapper over
+/// [`run_cascade_pipeline_scoped`]; kept for callers that query their own brain.
 pub fn run_cascade_pipeline(
     brain: &Brain,
     query: &str,
     context: &RecognitionContext,
     config: &CascadePipelineConfig,
+) -> Result<Vec<MemoryHit>, crate::Error> {
+    run_cascade_pipeline_scoped(
+        brain,
+        query,
+        context,
+        config,
+        spectral_core::visibility::Visibility::Private,
+    )
+}
+
+/// Run the integrated cascade pipeline with a visibility boundary.
+///
+/// TACT retrieval at K=40 → ambient boost → signal/recency re-ranking
+/// → context dedup → episode diversity. TACT provides the full tiered search
+/// (fingerprint → wing → FTS) as the entry point. (Dedup precedes diversity so
+/// dedup's score re-sort does not clobber the diversity interleave.)
+///
+/// `visibility` filters candidates to those whose own label admits this context
+/// (`content >= context`), applied before reranking/truncation.
+pub fn run_cascade_pipeline_scoped(
+    brain: &Brain,
+    query: &str,
+    context: &RecognitionContext,
+    config: &CascadePipelineConfig,
+    visibility: spectral_core::visibility::Visibility,
 ) -> Result<Vec<MemoryHit>, crate::Error> {
     // Step 1: TACT + FTS combined retrieval — TACT for classified queries,
     // FTS supplement when TACT returns fewer than K results. Widen the
@@ -282,9 +304,16 @@ pub fn run_cascade_pipeline(
     // buried below FTS rank k; the output is truncated back to k below, so
     // context size tracks k, not the pool.
     let fetch_k = config.k.saturating_mul(config.fetch_mult.max(1));
-    let candidates = brain
+    let mut candidates = brain
         .cascade_retrieve(query, fetch_k)
         .map_err(|e| crate::Error::Schema(e.to_string()))?;
+
+    // Visibility boundary: keep only hits whose own label admits this context
+    // (`content >= context`). Applied here — before reranking/truncation, as
+    // recall_topk_fts does — so the visible top-k is filled from the full pool
+    // rather than diluted by filtered-out private hits. A Private context
+    // admits everything, so the unscoped entry point is unaffected.
+    candidates.retain(|h| crate::brain::str_to_vis(&h.visibility).allows(visibility));
 
     if candidates.is_empty() {
         return Ok(Vec::new());
