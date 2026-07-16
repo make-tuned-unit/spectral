@@ -831,6 +831,57 @@ mod tests {
         );
     }
 
+    /// Single-brain boundary: `recall_cascade_scoped` must enforce the same
+    /// visibility filter the fan-out coordinator applies — a Team context over
+    /// one's own brain never surfaces Private content, while the unscoped
+    /// `recall_cascade_with_pipeline` (Private context) still returns everything.
+    #[test]
+    fn recall_cascade_scoped_filters_private_at_the_brain() {
+        let tmp = TempDir::new().unwrap();
+        let (a, _dir) = open_child(&tmp, "a");
+
+        a.remember(
+            "priv",
+            "shared topic private secret memory",
+            Visibility::Private,
+        )
+        .unwrap();
+        a.remember("pub", "shared topic public note memory", Visibility::Public)
+            .unwrap();
+
+        let ctx = RecognitionContext::empty();
+        let cfg = CascadePipelineConfig::default();
+
+        // Team-scoped: Private content must NOT appear.
+        let team = a
+            .recall_cascade_scoped("shared topic memory", &ctx, &cfg, Visibility::Team)
+            .unwrap();
+        assert!(
+            !team
+                .merged_hits
+                .iter()
+                .any(|h| h.content.contains("private secret")),
+            "Private memory leaked into a Team-scoped single-brain recall"
+        );
+        assert!(
+            team.merged_hits
+                .iter()
+                .any(|h| h.content.contains("public note")),
+            "Public memory should survive a Team-scoped recall"
+        );
+
+        // Unscoped (Private context) still returns everything — no regression.
+        let all = a
+            .recall_cascade_with_pipeline("shared topic memory", &ctx, &cfg)
+            .unwrap();
+        assert!(
+            all.merged_hits
+                .iter()
+                .any(|h| h.content.contains("private secret")),
+            "Unscoped recall over one's own brain should still see private memories"
+        );
+    }
+
     /// A child opened read-only participates in fan-out without being
     /// mutated: no signal-score inflation, no retrieval events written, and
     /// write APIs on the handle are rejected.

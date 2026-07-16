@@ -1671,14 +1671,47 @@ impl Brain {
     ///
     /// The bench harness uses this to pass question-type-tuned profiles
     /// (varying K, episode diversity, recency half-life per question shape).
+    ///
+    /// **Visibility:** this entry point applies no visibility boundary — it
+    /// returns every hit in the brain (equivalently, a `Private` context, which
+    /// admits all labels). Correct for querying your own brain; when serving a
+    /// Team/Org/Public context from a brain that also holds more private
+    /// memories, use [`recall_cascade_scoped`](Self::recall_cascade_scoped) so
+    /// the boundary is enforced (as [`recall_topk_fts`](Self::recall_topk_fts)
+    /// already does).
     pub fn recall_cascade_with_pipeline(
         &self,
         query: &str,
         context: &spectral_cascade::RecognitionContext,
         pipeline_config: &crate::cascade_layers::CascadePipelineConfig,
     ) -> Result<spectral_cascade::result::CascadeResult, Error> {
-        let hits =
-            crate::cascade_layers::run_cascade_pipeline(self, query, context, pipeline_config)?;
+        self.recall_cascade_scoped(query, context, pipeline_config, Visibility::Private)
+    }
+
+    /// [`recall_cascade_with_pipeline`](Self::recall_cascade_with_pipeline) with
+    /// an explicit visibility boundary.
+    ///
+    /// Filters the pipeline to hits whose own visibility label admits
+    /// `visibility` (`content >= context`), mirroring the scoping
+    /// [`recall_topk_fts`](Self::recall_topk_fts) applies. The filter runs
+    /// inside the pipeline before reranking/truncation, so the returned top-k is
+    /// filled from the full pool of *admissible* hits rather than diluted by
+    /// out-of-context ones. A `Private` context admits every label (returns
+    /// everything); use `Team`/`Org`/`Public` to enforce a stricter boundary.
+    pub fn recall_cascade_scoped(
+        &self,
+        query: &str,
+        context: &spectral_cascade::RecognitionContext,
+        pipeline_config: &crate::cascade_layers::CascadePipelineConfig,
+        visibility: Visibility,
+    ) -> Result<spectral_cascade::result::CascadeResult, Error> {
+        let hits = crate::cascade_layers::run_cascade_pipeline_scoped(
+            self,
+            query,
+            context,
+            pipeline_config,
+            visibility,
+        )?;
 
         let tokens_used = hits.iter().map(|h| h.content.len() / 4 + 5).sum();
         let max_confidence = hits
