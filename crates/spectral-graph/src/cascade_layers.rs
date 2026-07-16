@@ -213,7 +213,15 @@ impl Default for CascadePipelineConfig {
             apply_signal_reranking: true,
             apply_recency: true,
             recency_half_life_days: 365.0,
-            apply_episode_diversity: true,
+            // DEFAULT off. This flag was `true` but de-facto inert: context dedup
+            // (below) re-sorts by score and, running last, exactly restored the
+            // pre-diversity order — so diversity never affected output. The dedup
+            // ordering bug is fixed (ranking.rs runs dedup before diversity), which
+            // means enabling this now *would* reorder the top-k on multi-session
+            // shapes. That reorder is set-neutral (no session/key-recall change) so
+            // the oracle cannot gate it; leaving it off preserves the validated
+            // runtime behavior. Enable only behind an end-to-end actor A/B.
+            apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: true,
             co_retrieval_weight: 0.0,
@@ -254,8 +262,9 @@ mod config_tests {
 /// Run the integrated cascade pipeline.
 ///
 /// TACT retrieval at K=40 → ambient boost → signal/recency re-ranking
-/// → episode diversity → context dedup. TACT provides the full tiered search
-/// (fingerprint → wing → FTS) as the entry point.
+/// → context dedup → episode diversity. TACT provides the full tiered search
+/// (fingerprint → wing → FTS) as the entry point. (Dedup precedes diversity so
+/// dedup's score re-sort does not clobber the diversity interleave.)
 pub fn run_cascade_pipeline(
     brain: &Brain,
     query: &str,
