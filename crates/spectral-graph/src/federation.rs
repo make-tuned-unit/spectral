@@ -207,6 +207,13 @@ pub struct FanoutResult {
     /// `Brain::recall_*` makes an LLM call — so consumers can assert the
     /// federation path adds no LLM cost.
     pub recognition_token_cost: usize,
+    /// Children whose recall failed, as `(brain_id, error)`. The fan-out
+    /// **degrades gracefully**: a failing child (locked/corrupt/unavailable DB)
+    /// is skipped and recorded here rather than aborting the whole query, so a
+    /// single unhealthy member cannot deny service to the federation. Consumers
+    /// that require a complete result must check this is empty; the common case
+    /// (all children healthy) leaves it empty.
+    pub failed: Vec<(BrainId, String)>,
 }
 
 /// One child brain held by the coordinator: the live handle plus the
@@ -303,6 +310,12 @@ impl FederationCoordinator {
     /// `&self`, this is trivially parallelizable (one thread per child) if the
     /// measured latency warrants it.
     ///
+    /// **Resilience:** a child whose recall errors (locked/corrupt/unavailable
+    /// DB) is skipped, not fatal — the fan-out returns the healthy children's
+    /// results and records the failed ones in [`FanoutResult::failed`]. A single
+    /// unhealthy member cannot deny service to the whole federation; consumers
+    /// needing a complete result assert `failed` is empty.
+    ///
     /// Merging uses the default [`MergePolicy`] (Reciprocal Rank Fusion). Use
     /// [`fan_out_recall_with_policy`](Self::fan_out_recall_with_policy) to
     /// override.
@@ -329,10 +342,21 @@ impl FederationCoordinator {
         let mut contributions: Vec<(BrainId, f64, Vec<MemoryHit>)> =
             Vec::with_capacity(self.children.len());
         let mut recognition_token_cost = 0usize;
+        let mut failed: Vec<(BrainId, String)> = Vec::new();
 
         for child in &self.children {
             let origin = *child.brain.brain_id();
-            let result = child.brain.recall_cascade(query, context, config)?;
+            // Degrade gracefully: a child whose recall errors (locked/corrupt/
+            // unavailable DB) is skipped and recorded, not propagated — one
+            // unhealthy member must not deny service to the whole federation.
+            // The failure is surfaced in FanoutResult.failed, never silent.
+            let result = match child.brain.recall_cascade(query, context, config) {
+                Ok(result) => result,
+                Err(e) => {
+                    failed.push((origin, e.to_string()));
+                    continue;
+                }
+            };
             recognition_token_cost += result.total_recognition_token_cost;
             let visible = result
                 .merged_hits
@@ -347,6 +371,7 @@ impl FederationCoordinator {
             ranked,
             per_brain,
             recognition_token_cost,
+            failed,
         })
     }
 }
@@ -829,6 +854,87 @@ mod tests {
                 .any(|h| h.hit.content.contains("private secret")),
             "Private-context fan-out over one's own brains should see private memories"
         );
+    }
+
+    /// Resilience: one child's recall failing (locked/corrupt DB) must not
+    /// abort the whole fan-out. Healthy children still contribute, and the
+    /// failure is surfaced in `FanoutResult.failed` rather than propagated or
+    /// silently dropped. Fault is injected by dropping the bad child's FTS
+    /// table out from under its live connection via a second connection — a
+    /// real store error, not a mock.
+    #[test]
+    fn fan_out_degrades_gracefully_when_a_child_fails() {
+        let tmp = TempDir::new().unwrap();
+        let (good, good_dir) = open_child(&tmp, "good");
+        good.remember("g", "shared topic healthy memory", Visibility::Public)
+            .unwrap();
+
+        let (bad, bad_dir) = open_child(&tmp, "bad");
+        bad.remember("b", "shared topic doomed memory", Visibility::Public)
+            .unwrap();
+        let bad_id = *bad.brain_id();
+
+        // Break the bad child: drop the FTS table its recall path queries.
+        // SQLite makes the DDL visible to the child's connection, so its next
+        // fts_search errors ("no such table").
+        {
+            let conn = rusqlite::Connection::open(bad_dir.join("memory.db")).unwrap();
+            conn.execute_batch("DROP TABLE memories_fts;").unwrap();
+        }
+        // Confirm the fault is live: the bad child alone now errors.
+        assert!(
+            bad.recall_cascade(
+                "shared topic memory",
+                &RecognitionContext::empty(),
+                &CascadePipelineConfig::default(),
+            )
+            .is_err(),
+            "fault injection failed — bad child still recalls"
+        );
+
+        let mut coord = FederationCoordinator::new();
+        coord.add_brain(good, good_dir);
+        coord.add_brain(bad, bad_dir);
+
+        // Fan-out must SUCCEED (not Err) despite the broken child.
+        let result = coord
+            .fan_out_recall(
+                "shared topic memory",
+                &RecognitionContext::empty(),
+                &CascadePipelineConfig::default(),
+                Visibility::Team,
+            )
+            .expect("fan-out must not abort when one child fails");
+
+        // Healthy child's memory survived.
+        assert!(
+            result
+                .ranked
+                .iter()
+                .any(|h| h.hit.content.contains("healthy")),
+            "healthy child's result should survive a sibling's failure"
+        );
+        // The failure is reported, not silent.
+        assert!(
+            result.failed.iter().any(|(id, _)| *id == bad_id),
+            "the failed child must be recorded in FanoutResult.failed"
+        );
+        // All-healthy sanity: a fan-out over just the good child reports no failures.
+        let mut ok_coord = FederationCoordinator::new();
+        let (good2, good2_dir) = open_child(&tmp, "good2");
+        good2
+            .remember("g2", "shared topic another healthy memory", Visibility::Public)
+            .unwrap();
+        ok_coord.add_brain(good2, good2_dir);
+        let ok = ok_coord
+            .fan_out_recall(
+                "shared topic memory",
+                &RecognitionContext::empty(),
+                &CascadePipelineConfig::default(),
+                Visibility::Team,
+            )
+            .unwrap();
+        assert!(ok.failed.is_empty(), "healthy fan-out should report no failures");
     }
 
     /// Single-brain boundary: `recall_cascade_scoped` must enforce the same
