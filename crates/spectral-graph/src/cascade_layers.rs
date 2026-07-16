@@ -1,7 +1,9 @@
 //! Cascade integrated retrieval pipeline for spectral-graph.
 //!
 //! Single-pipeline design: FTS K=40 → ambient boost → signal/recency re-ranking
-//! → episode diversity → dedup. All subsystems contribute to one result set.
+//! → dedup → episode diversity. All subsystems contribute to one result set.
+//! (Dedup precedes diversity so dedup's score re-sort cannot clobber the
+//! diversity interleave.)
 
 use std::collections::{HashMap, HashSet};
 
@@ -172,7 +174,10 @@ pub struct CascadePipelineConfig {
     pub apply_recency: bool,
     /// Recency half-life in days. Default 365.
     pub recency_half_life_days: f64,
-    /// Apply episode diversity (cap per episode). Default true.
+    /// Apply episode diversity (cap per episode). Default **false**: the
+    /// interleave is set-neutral (no session/key-recall change) and its
+    /// actor-accuracy impact is unvalidated, so it stays off pending an
+    /// end-to-end A/B. See the `Default` impl for the full rationale.
     pub apply_episode_diversity: bool,
     /// Max memories per episode in top results. Default 5.
     pub max_per_episode: usize,
@@ -303,7 +308,15 @@ pub fn run_cascade_pipeline(
         apply_context_dedup: config.apply_context_dedup,
     };
 
-    let co_boosts = crate::ranking::compute_co_retrieval_boosts(brain, &candidates, 3);
+    // Only compute co-retrieval affinity when it will actually be applied.
+    // Each computation issues one related_memories DB query per anchor (×3);
+    // with co_retrieval_weight at its default 0.0 the boosts multiply to zero
+    // and are discarded, so skip the queries entirely on the hot path.
+    let co_boosts = if reranking_config.co_retrieval_weight > 0.0 {
+        crate::ranking::compute_co_retrieval_boosts(brain, &candidates, 3)
+    } else {
+        std::collections::HashMap::new()
+    };
 
     let mut results = crate::ranking::apply_reranking_pipeline(
         candidates,

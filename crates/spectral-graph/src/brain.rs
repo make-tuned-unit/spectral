@@ -1563,7 +1563,13 @@ impl Brain {
             Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
             None => spectral_cascade::RecognitionContext::empty(),
         };
-        let co_boosts = crate::ranking::compute_co_retrieval_boosts(self, &candidates, 3);
+        // Skip the co-retrieval DB queries (one per anchor) unless the boost is
+        // actually weighted; at weight 0.0 the result is discarded downstream.
+        let co_boosts = if reranking_config.co_retrieval_weight > 0.0 {
+            crate::ranking::compute_co_retrieval_boosts(self, &candidates, 3)
+        } else {
+            std::collections::HashMap::new()
+        };
         let mut results = crate::ranking::apply_reranking_pipeline(
             candidates,
             &reranking_config,
