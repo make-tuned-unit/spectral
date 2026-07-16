@@ -416,6 +416,45 @@ pub fn retrieve(brain: &Brain, question: &str, config: &RetrievalConfig) -> Resu
     Ok(memories)
 }
 
+/// Apply env-gated associative spreading to a retrieved hit list, in place.
+/// Shared by the topk_fts and cascade paths. Reads `SPECTRAL_ASSOC_*` env vars
+/// and delegates to the library implementation `spectral_graph::spreading`.
+/// All modes OFF by default (no env var set = no-op).
+pub fn apply_associative_spreading(brain: &Brain, hits: &mut Vec<MemoryHit>) {
+    use spectral_graph::spreading::{associative_spread, AssocSpreadConfig, SpreadMode};
+    let ev = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    let seeds = ev("SPECTRAL_ASSOC_SEEDS").unwrap_or(3);
+    let cross = ev("SPECTRAL_ASSOC_CROSS").filter(|n| *n > 0);
+    let rerank = ev("SPECTRAL_ASSOC_RERANK").filter(|b| *b > 0);
+    let budget = ev("SPECTRAL_ASSOC_BUDGET").filter(|b| *b > 0);
+    let cfg = if std::env::var("SPECTRAL_ASSOC_COMBINED").is_ok() {
+        AssocSpreadConfig {
+            mode: SpreadMode::Combined,
+            seeds,
+            cross_n: cross.unwrap_or(2),
+            cross_budget: ev("SPECTRAL_ASSOC_CROSS_BUDGET").unwrap_or(2500),
+            episode_budget: budget.unwrap_or(3000),
+            ..AssocSpreadConfig::default()
+        }
+    } else if let Some(n) = cross {
+        AssocSpreadConfig {
+            mode: SpreadMode::CrossSession,
+            seeds,
+            cross_n: n,
+            cross_budget: budget.unwrap_or(3500),
+            ..AssocSpreadConfig::default()
+        }
+    } else if let Some(b) = rerank {
+        AssocSpreadConfig { mode: SpreadMode::Rerank, seeds, rerank_b: b, ..AssocSpreadConfig::default() }
+    } else if let Some(b) = budget {
+        AssocSpreadConfig { mode: SpreadMode::Episode, seeds, episode_budget: b, ..AssocSpreadConfig::default() }
+    } else {
+        return;
+    };
+    associative_spread(brain, hits, &cfg);
+}
+
+
 /// Retrieve via top-K FTS with additive re-ranking. No LLM cost.
 ///
 /// Configurable via env vars for ablation:
@@ -466,11 +505,21 @@ pub fn retrieve_topk_fts(
         ..RecallTopKConfig::default()
     };
 
-    let hits: Vec<MemoryHit> = brain
+    let mut hits: Vec<MemoryHit> = brain
         .recall_topk_fts(question, &topk_config, Visibility::Private)?
         .into_iter()
         .take(output_size)
         .collect();
+
+    // Associative expansion (TACT's true vision): FTS finds the seeds by words;
+    // spread activation through EPISODE co-occurrence to recover answer memories
+    // that share no words with the query but sit in the same session as a seed —
+    // the vocabulary-gap misses FTS structurally cannot cross. SPECTRAL_ASSOC_
+    // EXPAND=M pulls the top-M high-signal memories from each of the top seeds'
+    // episodes (M unset/0 = off). Measured recovery ceiling on real LongMemEval:
+    // 100% of missed-answer-key questions still have their answer session
+    // retrieved, so this can pull the missed keys in — at a token cost tuned by M.
+    apply_associative_spreading(brain, &mut hits);
 
     let cap = cap_for_shape(QuestionType::classify(question));
     let memories: Vec<String> = hits
@@ -565,7 +614,35 @@ pub fn retrieve_cascade(
 ) -> Result<(Vec<String>, Vec<MemoryHit>, CascadeTelemetry)> {
     // P1: Question-type routing
     let qtype = QuestionType::classify(question);
-    let pipeline_config = qtype.cascade_profile();
+    let mut pipeline_config = qtype.cascade_profile();
+    // Ablation overrides (multi-session answer-KEY completeness sweep). The
+    // Counting profile caps max_per_episode=3 to force session diversity; when
+    // answer keys cluster >3 per session that undercounts. These let a sweep
+    // find the key-recall/token frontier without re-ingesting brains.
+    if let Some(k) = std::env::var("SPECTRAL_CASCADE_K").ok().and_then(|v| v.parse::<usize>().ok()) {
+        pipeline_config.k = k;
+    }
+    if let Some(mpe) = std::env::var("SPECTRAL_CASCADE_MAX_PER_EPISODE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        pipeline_config.max_per_episode = mpe;
+    }
+    if let Some(fm) = std::env::var("SPECTRAL_CASCADE_FETCH_MULT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        pipeline_config.fetch_mult = fm;
+    }
+    if std::env::var("SPECTRAL_CASCADE_NO_SIGNAL").is_ok() {
+        pipeline_config.apply_signal_reranking = false;
+    }
+    if std::env::var("SPECTRAL_CASCADE_NO_DECLARATIVE").is_ok() {
+        pipeline_config.apply_declarative_boost = false;
+    }
+    if std::env::var("SPECTRAL_CASCADE_NO_RECENCY").is_ok() {
+        pipeline_config.apply_recency = false;
+    }
 
     let context = match question_date.and_then(parse_question_date) {
         Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
@@ -585,11 +662,13 @@ pub fn retrieve_cascade(
     // Use the profile's K as the limit — the question-type routing already
     // determined the right K (60 for counting, 30 for factual, etc).
     // CLI --max-results only applies to non-cascade paths.
-    let hits: Vec<MemoryHit> = result
+    let mut hits: Vec<MemoryHit> = result
         .merged_hits
         .into_iter()
         .take(pipeline_config.k)
         .collect();
+    // Associative spreading on the DEFAULT (cascade) retrieval path, env-gated.
+    apply_associative_spreading(brain, &mut hits);
     let formatted = format_hits_grouped_capped(&hits, cap_for_shape(qtype));
 
     Ok((formatted, hits, telemetry))

@@ -24,13 +24,19 @@ They struggle with the second. Retrieving a fact by embedding similarity does
 not give you the two-hop chain of relationships that led to that fact.
 
 Spectral gives your agent two complementary memory systems behind a single
-`Brain` handle: a typed knowledge graph (Kuzu) for entity relationships with
-ontology validation and multi-hop traversal, and a fingerprint store (SQLite +
-FTS5) for fast topical retrieval using deterministic SHA-256 fingerprints.
-The fingerprint approach is inspired by Shazam's audio matching. No embedding
-model required. Full-text recall porter-stems by default, so plural and
-inflected queries match singular content ("doctors" → "doctor") — still
-deterministic, still zero tokens.
+`Brain` handle, unified on one embedded **SQLite** database: a typed knowledge
+graph for entity relationships with ontology validation and 2-hop traversal, and
+a deterministic full-text recall path (SQLite FTS5 + BM25) with signal-score and
+recency ranking. No embedding model, no vector database, no LLM in the recall
+path. Recall porter-stems by default, so plural and inflected queries match
+singular content ("doctors" → "doctor") — deterministic, zero tokens.
+
+On top of these sits an experimental, embedding-free **recognition layer**
+(Shazam-inspired content fingerprinting and cognitive-shape matching) used for
+deduplication, recurrence feedback, and — in development — associative recall
+that spreads from full-text seeds through co-occurrence to bridge vocabulary
+gaps. See [docs/internal](docs/internal) for the recognition/spectrogram design
+and measurements.
 
 The numbers: 6.8x faster than neural vector search (BGE-small-en-v1.5) on
 cold queries where the query must be encoded. Sub-millisecond recall on 1,000
@@ -97,7 +103,7 @@ complete runnable example.
   ┌─────▼──────┐   ┌──────▼──────┐   ┌──────▼──────┐
   │ spectral-  │   │ spectral-   │   │ spectral-   │
   │   graph    │   │   ingest    │   │    tact     │
-  │ (Kuzu +    │   │ (classify + │   │ (retrieval) │
+  │ (SQLite +  │   │ (classify + │   │ (retrieval) │
   │  ontology) │   │ fingerprint)│   │             │
   └─────┬──────┘   └──────┬──────┘   └──────┬──────┘
         │                  │                  │
@@ -111,23 +117,28 @@ complete runnable example.
 **spectral** is the umbrella crate. It re-exports `Brain`, `BrainBuilder`, and
 all result types. Most users only need this crate.
 
-**spectral-graph** owns the Kuzu graph database, TOML ontology loader,
-canonicalization (fuzzy entity resolution), and the `Brain` implementation.
+**spectral-graph** owns the SQLite-backed entity graph store (entities, triples,
+2-hop neighborhood), the TOML ontology loader, canonicalization (fuzzy entity
+resolution), and the `Brain` implementation. (The graph layer was formerly a
+separate embedded Kuzu database; it now runs on the same SQLite engine as memory
+and FTS — one embedded dependency, no second graph engine.)
 
 **spectral-ingest** classifies incoming text into wings (topic areas) and halls
-(memory types), computes signal scores, generates SHA-256 constellation
-fingerprints, and writes to SQLite.
+(memory types), computes signal scores, generates constellation fingerprints, and
+writes to SQLite (memories, FTS index, episodes, fingerprints).
 
-**spectral-tact** (Topic-Aware Context Triage) handles retrieval. It routes
-queries through fingerprint search, wing-scoped search, and FTS fallback,
-then merges and deduplicates results.
+**spectral-tact** (Topic-Aware Context Triage) handles retrieval. The
+production recall path is deterministic FTS5 + BM25 with signal-score, recency,
+and episode-diversity re-ranking; TACT's fingerprint/wing tiers and associative
+co-occurrence spreading are complementary layers under active measurement.
 
 **spectral-core** provides content-addressed entity IDs, Ed25519 brain
 identity, device IDs, and the four-level visibility system.
 
 **spectral-spectrogram** classifies memories along seven cognitive dimensions
-(entity density, action type, emotional valence, etc.) and finds resonant
-memories across wings. Opt-in via `BrainConfig::enable_spectrogram`.
+(entity density, action type, emotional valence, etc.). Opt-in and experimental
+via `BrainConfig::enable_spectrogram`; the cross-wing resonance reader is not on
+the default recall path.
 
 ## Federation primitives
 
@@ -181,7 +192,7 @@ cargo bench --bench vector_comparison -p spectral  # downloads ~330 MB model on 
 
 | System | Embedding model | Multi-hop graph | Federation primitives | Deployment |
 |---|---|---|---|---|
-| **Spectral** | Not required | Yes (Kuzu, 2-hop BFS) | Yes (identity, visibility, provenance) | Embedded, single binary |
+| **Spectral** | Not required | Yes (SQLite, 2-hop BFS) | Yes (identity, visibility, provenance) | Embedded, single binary |
 | Vector DBs (Pinecone, Qdrant, Weaviate) | Required | No | No | Hosted service or self-hosted server |
 | Cognee | Required | Yes (Cognify) | No | Python, external services |
 | sqlite-vss / fastembed | Required | No | No | Embedded library |

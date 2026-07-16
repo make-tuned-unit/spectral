@@ -9,9 +9,9 @@ pub enum Error {
     #[error(transparent)]
     Core(#[from] spectral_core::Error),
 
-    /// Kuzu database error.
-    #[error("kuzu: {0}")]
-    Kuzu(#[from] kuzu::Error),
+    /// SQLite database error (graph store).
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
 
     /// I/O error.
     #[error(transparent)]

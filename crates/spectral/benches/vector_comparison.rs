@@ -705,7 +705,7 @@ fn bench_operational(c: &mut Criterion) {
         let vector_raw = 384 * 4 * 1000; // 384 dims * f32 * 1000 docs
 
         println!(
-            "  Spectral (SQLite + Kuzu + fingerprints): {}",
+            "  Spectral (SQLite graph + fingerprints): {}",
             human_bytes(spectral_size)
         );
         println!(

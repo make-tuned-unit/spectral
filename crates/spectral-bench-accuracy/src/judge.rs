@@ -151,6 +151,9 @@ impl Judge for AnthropicJudge {
             // losing the closing brace -> parse failure -> false "incorrect".
             "model": self.model,
             "max_tokens": 2048,
+            // Deterministic grading: pin temperature so the same (answer, gold)
+            // pair grades identically across runs and A/B arms.
+            "temperature": 0,
             "messages": [{"role": "user", "content": prompt}]
         });
 
@@ -202,6 +205,87 @@ impl Judge for AnthropicJudge {
             }
         };
 
+        Ok((grade, usage))
+    }
+
+    fn name(&self) -> &str {
+        &self.model
+    }
+}
+
+/// Judge that calls an OpenAI-compatible `/v1/chat/completions` endpoint (local
+/// model). Mirrors `AnthropicJudge` grading, for the fully-local accuracy loop.
+pub struct OpenAiJudge {
+    api_key: String,
+    model: String,
+    base_url: String,
+    client: reqwest::blocking::Client,
+}
+
+impl OpenAiJudge {
+    pub fn new(api_key: String, model: String, base_url: String) -> Self {
+        Self {
+            api_key,
+            model,
+            base_url,
+            client: reqwest::blocking::Client::new(),
+        }
+    }
+}
+
+impl Judge for OpenAiJudge {
+    fn grade(
+        &self,
+        question: &str,
+        predicted: &str,
+        ground_truth: &str,
+        category: Category,
+    ) -> Result<(GradeResult, Option<TokenUsage>)> {
+        let prompt = judge_prompt(question, predicted, ground_truth, category);
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 2048,
+            "temperature": 0,
+            "stream": false,
+        });
+        let resp = self
+            .client
+            .post(format!("{}/v1/chat/completions", self.base_url))
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()?;
+        let status = resp.status();
+        if !status.is_success() {
+            let b = resp.text().unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "OpenAI-compat judge returned {}: {}",
+                status,
+                b.chars().take(500).collect::<String>()
+            ));
+        }
+        let json: serde_json::Value = resp.json()?;
+        let usage = json.get("usage").map(|u| TokenUsage {
+            input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()),
+            output_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()),
+        });
+        let text = json["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("OpenAI-compat judge missing content"))?
+            .to_string();
+        let grade = match (text.find('{'), text.rfind('}')) {
+            (Some(s), Some(e)) if e > s => {
+                serde_json::from_str(&text[s..=e]).unwrap_or(GradeResult {
+                    correct: false,
+                    reasoning: Some(format!("Failed to parse judge response: {text}")),
+                })
+            }
+            _ => GradeResult {
+                correct: false,
+                reasoning: Some(format!("No JSON in judge response: {text}")),
+            },
+        };
         Ok((grade, usage))
     }
 

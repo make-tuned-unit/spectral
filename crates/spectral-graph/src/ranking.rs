@@ -243,6 +243,8 @@ pub struct RerankingConfig {
     pub apply_entity_boost: bool,
     pub entity_boost_weight: f64,
     pub apply_ambient_boost: bool,
+    /// Weights for the ambient boost (identity defaults preserve prior behavior).
+    pub ambient_weights: crate::cascade_layers::AmbientBoostWeights,
     pub apply_declarative_boost: bool,
     pub declarative_weight: f64,
     pub co_retrieval_weight: f64,
@@ -261,6 +263,7 @@ impl Default for RerankingConfig {
             apply_entity_boost: false,
             entity_boost_weight: 0.05,
             apply_ambient_boost: false,
+            ambient_weights: crate::cascade_layers::AmbientBoostWeights::default(),
             apply_declarative_boost: false,
             declarative_weight: 0.10,
             // Disabled by default — degrades real-workload relevance.
@@ -331,7 +334,8 @@ pub fn apply_reranking_pipeline(
     // Ambient boost: multiplicative on composite score (identity when context empty)
     if config.apply_ambient_boost {
         for (i, hit) in candidates.iter().enumerate() {
-            let boost = crate::cascade_layers::ambient_boost_for_hit(hit, context);
+            let boost =
+                crate::cascade_layers::ambient_boost_with(hit, context, &config.ambient_weights);
             scores[i] *= boost;
         }
     }
@@ -417,14 +421,22 @@ pub fn apply_reranking_pipeline(
         })
         .collect();
 
-    // Post-rank: episode diversity (reorder, don't discard)
-    if config.apply_episode_diversity {
-        crate::cascade_layers::apply_episode_diversity(&mut sorted, config.max_per_episode);
-    }
+    // Post-rank order matters: dedup MUST precede diversity. dedup_context_chains
+    // re-sorts by signal_score descending, so running it *after* diversity would
+    // clobber the diversity interleave (pulling deprioritized overflow back up by
+    // score, exactly restoring the pre-diversity order). Run dedup first — here the
+    // list is still score-sorted, so its re-sort is a no-op and it only filters
+    // duplicate reference chains — then let episode diversity produce the final
+    // ordering, which now survives to the caller.
 
-    // Post-rank: context chain dedup
+    // Post-rank: context chain dedup (filters dup [Memory context] refs)
     if config.apply_context_dedup {
         sorted = dedup_context_chains(sorted);
+    }
+
+    // Post-rank: episode diversity (final reorder, don't discard)
+    if config.apply_episode_diversity {
+        crate::cascade_layers::apply_episode_diversity(&mut sorted, config.max_per_episode);
     }
 
     sorted
@@ -602,6 +614,56 @@ mod tests {
     }
 
     // ── Unified pipeline tests ──────────────────────────────────────
+
+    #[test]
+    fn dedup_precedes_diversity_so_diversity_ordering_survives() {
+        // Regression: dedup_context_chains re-sorts by signal_score descending.
+        // If it runs AFTER episode diversity, its re-sort clobbers the diversity
+        // interleave — pulling an episode-overflow memory back up by score. The
+        // pipeline must run dedup FIRST, then diversity, so diversity's tail
+        // placement survives to the caller.
+        //
+        // Setup: episode "epA" has 3 members (positions 0,1,2 — highest scores),
+        // "epB" has 2. With max_per_episode=2, diversity pushes epA's 3rd member
+        // (still a high composite score) to the tail. Under the correct order it
+        // stays last; under the old (buggy) order the dedup re-sort yanks it to
+        // index 2.
+        let candidates = vec![
+            make_hit("epA:1", 0.0, None, None),
+            make_hit("epA:2", 0.0, None, None),
+            make_hit("epA:3", 0.0, None, None),
+            make_hit("epB:1", 0.0, None, None),
+            make_hit("epB:2", 0.0, None, None),
+        ];
+
+        // Signals off → composite score == FTS position, so input order is score
+        // order and the only reordering is episode diversity.
+        let config = RerankingConfig {
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_ambient_boost: false,
+            apply_declarative_boost: false,
+            apply_episode_diversity: true,
+            max_per_episode: 2,
+            apply_context_dedup: true,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let result = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
+
+        // epA's overflow member must be LAST — diversity ran after dedup and its
+        // deprioritization was not undone by a score re-sort.
+        assert_eq!(
+            result.last().unwrap().id,
+            "epA:3",
+            "episode-overflow memory should remain at the tail; got order {:?}",
+            result.iter().map(|h| h.id.as_str()).collect::<Vec<_>>()
+        );
+        // And it is the ONLY member past the per-episode cap, so exactly one
+        // memory sits in the overflow tail region.
+        assert_eq!(result.len(), 5);
+    }
 
     #[test]
     fn unified_pipeline_preserves_fts_order_when_signals_equal() {

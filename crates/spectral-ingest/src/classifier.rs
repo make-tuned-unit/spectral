@@ -94,6 +94,30 @@ fn default_hall_rule_pairs() -> Vec<(&'static str, &'static str)> {
             "discovery",
         ),
         (r"recommend|should|advice|suggest|try using", "advice"),
+        // Durable personal facts the classifier previously dropped to "event".
+        // Appended (first-match order preserved) so existing classifications are
+        // untouched. FIRST-PERSON / STATE-ANCHORED to avoid matching transient
+        // mentions of the same words ("the vegan cafe", "I never got the email",
+        // "I like how it turned out") — precision measured in
+        // classifier_precision_bench.
+        // Health/dietary/medical constraints — the user describing THEMSELVES.
+        (
+            r"\bi'?m (\w+ly )?(allergic|vegetarian|vegan|diabetic|coeliac|celiac)\b|\bi am (\w+ly )?(allergic|vegetarian|vegan|diabetic|a vegetarian|a vegan|a diabetic|gluten[- ]?free)\b|\bi have (a |an )?[a-z]+ (allergy|intolerance)\b|\bmy (allergy|allergies|dietary)\b",
+            "fact",
+        ),
+        // Family/identity — a durable STATE (relation, optional name, state verb),
+        // not an event ("my son forgot his lunch").
+        (
+            r"\bmy (wife|husband|daughter|son|partner|mother|father)( \w+)? (is|are|works|lives|studies|goes to)\b",
+            "fact",
+        ),
+        // Standing preferences — strong markers only (not bare "like/love").
+        (r"\bi (\w+ly )?prefer\b|\bi'?d rather\b|\bmy favou?rite\b", "preference"),
+        // Standing rules — directive framing after never/always, or explicit rule.
+        (
+            r"\b(never|always) (schedule|book|call|contact|email|send|use|run|deploy|share|give|forget|skip|miss)\b|\bmy rule is\b|\bas a rule\b|\bdo not ever\b|\bdon'?t ever\b",
+            "rule",
+        ),
     ]
 }
 

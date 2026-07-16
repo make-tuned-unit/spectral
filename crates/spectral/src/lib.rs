@@ -404,7 +404,7 @@ impl Brain {
     }
 
     /// Direct access to the underlying graph store.
-    pub fn store(&self) -> &spectral_graph::kuzu_store::KuzuStore {
+    pub fn store(&self) -> &spectral_graph::graph_store::GraphStore {
         self.inner.store()
     }
 
