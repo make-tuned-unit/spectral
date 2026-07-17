@@ -420,6 +420,27 @@ pub trait MemoryStore: Send + Sync {
         strength: f64,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>>;
 
+    /// Reinforce many keys in a single transaction (batched auto-reinforce).
+    /// Applies the same `MIN(signal_score + strength, 1.0)` nudge as
+    /// [`reinforce_memory`](Self::reinforce_memory) to every key and
+    /// invalidates the affected wing caches. Returns the number of rows updated.
+    /// Default loops `reinforce_memory`; stores override for one round-trip.
+    fn reinforce_batch<'a>(
+        &'a self,
+        keys: &'a [String],
+        strength: f64,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut updated = 0usize;
+            for key in keys {
+                if self.reinforce_memory(key, strength).await?.is_some() {
+                    updated += 1;
+                }
+            }
+            Ok(updated)
+        })
+    }
+
     // ── Spectrogram ──
 
     /// Write a spectrogram record for a memory.
