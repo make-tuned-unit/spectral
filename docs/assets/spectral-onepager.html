@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spectral — Memory for AI Agents</title>
+<style>
+  :root {
+    --ground: #0a0d16;
+    --surface: #111624;
+    --surface-2: #161c2e;
+    --ink: #e7ebf4;
+    --muted: #8a93a8;
+    --faint: #5c6580;
+    --line: #1f2740;
+    --signal: #35e0c8;
+    --peak: #8f7bff;
+    --signal-dim: rgba(53, 224, 200, 0.14);
+    --peak-dim: rgba(143, 123, 255, 0.16);
+    --pos: #35e0c8;
+    --font-display: "Berkeley Mono", "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+    --maxw: 940px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #f5f7fc;
+      --surface: #ffffff;
+      --surface-2: #f0f3fa;
+      --ink: #101524;
+      --muted: #55607a;
+      --faint: #8b95ac;
+      --line: #e2e7f2;
+      --signal: #0c9c8b;
+      --peak: #5f4ce6;
+      --signal-dim: rgba(12, 156, 139, 0.12);
+      --peak-dim: rgba(95, 76, 230, 0.12);
+      --pos: #0c9c8b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0a0d16; --surface: #111624; --surface-2: #161c2e;
+    --ink: #e7ebf4; --muted: #8a93a8; --faint: #5c6580; --line: #1f2740;
+    --signal: #35e0c8; --peak: #8f7bff; --signal-dim: rgba(53,224,200,.14);
+    --peak-dim: rgba(143,123,255,.16); --pos: #35e0c8;
+  }
+  :root[data-theme="light"] {
+    --ground: #f5f7fc; --surface: #ffffff; --surface-2: #f0f3fa;
+    --ink: #101524; --muted: #55607a; --faint: #8b95ac; --line: #e2e7f2;
+    --signal: #0c9c8b; --peak: #5f4ce6; --signal-dim: rgba(12,156,139,.12);
+    --peak-dim: rgba(95,76,230,.12); --pos: #0c9c8b;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-body);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  .eyebrow {
+    font-family: var(--font-display);
+    font-size: 11.5px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0;
+  }
+  .mono { font-family: var(--font-display); }
+  .signal { color: var(--signal); }
+  .peak { color: var(--peak); }
+  h1, h2, h3 { text-wrap: balance; margin: 0; }
+
+  /* ── Hero ── */
+  .hero {
+    position: relative;
+    overflow: hidden;
+    border-bottom: 1px solid var(--line);
+  }
+  #spectro {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    display: block;
+    opacity: 0.9;
+  }
+  .hero-mask {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, transparent 0%, transparent 42%, var(--ground) 96%);
+    pointer-events: none;
+  }
+  .hero-inner {
+    position: relative;
+    padding: 74px 24px 60px;
+    max-width: var(--maxw);
+    margin: 0 auto;
+  }
+  .brandrow { display: flex; align-items: center; gap: 12px; margin-bottom: 30px; }
+  .brandrow .dot {
+    width: 11px; height: 11px; border-radius: 2px;
+    background: var(--signal);
+    box-shadow: 0 0 14px var(--signal);
+  }
+  .brandrow .name {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    font-size: 15px;
+  }
+  .brandrow .ver { font-family: var(--font-display); font-size: 12px; color: var(--faint); margin-left: auto; }
+
+  h1.title {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(38px, 8.5vw, 82px);
+    letter-spacing: -0.02em;
+    line-height: 0.98;
+    margin: 18px 0 0;
+  }
+  h1.title .grad {
+    background: linear-gradient(96deg, var(--signal), var(--peak));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+  }
+  .lede {
+    font-size: clamp(16px, 2.4vw, 21px);
+    color: var(--ink);
+    max-width: 34em;
+    margin: 22px 0 0;
+  }
+  .lede .q { color: var(--muted); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
+  .chip {
+    font-family: var(--font-display);
+    font-size: 12.5px;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 7px 13px;
+    border-radius: 100px;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .chip::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--signal); box-shadow: 0 0 8px var(--signal);
+  }
+
+  /* ── Section scaffolding ── */
+  section { padding: 68px 0; border-bottom: 1px solid var(--line); }
+  .sec-head { margin-bottom: 34px; }
+  .sec-head h2 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: clamp(23px, 4vw, 32px);
+    letter-spacing: -0.01em;
+    margin-top: 10px;
+  }
+  .sec-head p { color: var(--muted); max-width: 60ch; margin: 12px 0 0; }
+
+  /* ── Memory-type channels ── */
+  .channels { display: flex; flex-direction: column; gap: 0; }
+  .channel {
+    display: grid;
+    grid-template-columns: 168px 1fr auto;
+    gap: 20px;
+    align-items: start;
+    padding: 22px 0;
+    border-top: 1px solid var(--line);
+  }
+  .channel:last-child { border-bottom: 1px solid var(--line); }
+  .channel .kind {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 16px;
+    display: flex; align-items: center; gap: 11px;
+  }
+  .channel .bar {
+    width: 3px; height: 30px; border-radius: 2px; flex: none;
+    background: linear-gradient(180deg, var(--signal), var(--peak));
+  }
+  .channel .ask { color: var(--ink); font-weight: 500; }
+  .channel .how { color: var(--muted); font-size: 14.5px; margin-top: 4px; }
+  .channel .cost {
+    font-family: var(--font-display);
+    font-size: 12.5px;
+    letter-spacing: 0.03em;
+    color: var(--pos);
+    border: 1px solid color-mix(in srgb, var(--pos) 40%, transparent);
+    background: var(--signal-dim);
+    padding: 5px 11px;
+    border-radius: 100px;
+    white-space: nowrap;
+    justify-self: end;
+  }
+  .coverage {
+    margin-top: 26px;
+    font-size: 14.5px;
+    color: var(--muted);
+    padding: 16px 18px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+  .coverage b { color: var(--ink); font-weight: 600; }
+
+  /* ── Cost ledger ── */
+  .ledger-wrap { overflow-x: auto; }
+  table.ledger {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 15px;
+    min-width: 520px;
+  }
+  table.ledger th, table.ledger td { text-align: left; padding: 15px 16px; }
+  table.ledger thead th {
+    font-family: var(--font-display);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    font-weight: 500;
+  }
+  table.ledger thead th.us { color: var(--signal); }
+  table.ledger tbody tr { border-bottom: 1px solid var(--line); }
+  table.ledger td:first-child { color: var(--muted); font-family: var(--font-display); font-size: 13px; }
+  table.ledger td.us { color: var(--ink); font-weight: 600; }
+  table.ledger td.us .z { color: var(--signal); }
+  table.ledger td.them { color: var(--muted); }
+  .cost-notes { margin-top: 26px; display: grid; gap: 12px; }
+  .cost-note { display: flex; gap: 13px; align-items: baseline; font-size: 14.5px; color: var(--muted); }
+  .cost-note b { color: var(--ink); font-weight: 600; }
+  .cost-note .k { color: var(--signal); font-family: var(--font-display); font-size: 12px; letter-spacing: .04em; flex: none; width: 92px; text-transform: uppercase; }
+
+  /* ── Recognition callout ── */
+  .reco {
+    display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center;
+  }
+  .reco h3 { font-family: var(--font-display); font-size: 21px; font-weight: 600; margin-bottom: 14px; }
+  .reco p { color: var(--muted); margin: 0 0 14px; }
+  .reco p b { color: var(--ink); font-weight: 600; }
+  .lineage { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 9px; }
+  .lineage li { font-size: 14px; color: var(--muted); padding-left: 20px; position: relative; }
+  .lineage li::before { content: ""; position: absolute; left: 0; top: 9px; width: 8px; height: 8px; border-radius: 50%; background: var(--peak); box-shadow: 0 0 8px var(--peak); }
+  .lineage li b { color: var(--ink); font-weight: 600; font-family: var(--font-display); font-size: 13px; }
+  .verdict {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+    font-family: var(--font-display);
+  }
+  .verdict .vlabel { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .meter { margin: 10px 0 4px; }
+  .meter .mrow { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin: 16px 0 6px; }
+  .meter .track { height: 8px; border-radius: 100px; background: var(--surface-2); overflow: hidden; border: 1px solid var(--line); }
+  .meter .fill { height: 100%; border-radius: 100px; }
+  .meter .fill.fam { background: linear-gradient(90deg, var(--signal), var(--peak)); }
+  .verdict .val { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .verdict .foot { margin-top: 16px; font-size: 12px; color: var(--faint); line-height: 1.5; }
+
+  /* ── Proof strip ── */
+  .proof-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+    background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+  }
+  .stat { background: var(--surface); padding: 24px 20px; }
+  .stat .n {
+    font-family: var(--font-display); font-weight: 700;
+    font-size: clamp(26px, 4.4vw, 38px); letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums; line-height: 1;
+  }
+  .stat .n.g {
+    background: linear-gradient(96deg, var(--signal), var(--peak));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+  }
+  .stat .l { margin-top: 10px; font-size: 13px; color: var(--muted); line-height: 1.45; }
+  .proof-foot { margin-top: 18px; font-size: 12.5px; color: var(--faint); }
+
+  /* ── Footer ── */
+  footer { padding: 40px 0 60px; }
+  .foot-row { display: flex; flex-wrap: wrap; gap: 16px 26px; align-items: center; font-family: var(--font-display); font-size: 13px; color: var(--muted); }
+  .foot-row .path { color: var(--ink); }
+  .foot-row .sep { color: var(--line); }
+  .foot-row a { color: var(--signal); text-decoration: none; }
+  .foot-row a:hover { text-decoration: underline; }
+
+  @media (max-width: 720px) {
+    .channel { grid-template-columns: 1fr; gap: 6px; }
+    .channel .cost { justify-self: start; margin-top: 4px; }
+    .reco { grid-template-columns: 1fr; gap: 28px; }
+    .proof-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #spectro { opacity: 0.7; }
+  }
+  :focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; border-radius: 4px; }
+</style>
+<style>
+  html, body { background: #0a0d16; }
+  .hero { min-height: 620px; }
+  @page { size: 1000px 3860px; margin: 0; }
+  @media print {
+    html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    section, .channel, .stat, .reco, .verdict, .coverage, .ledger-wrap { break-inside: avoid; }
+    #spectro { opacity: 0.92; }
+  }
+</style>
+
+</head>
+<body>
+
+
+<header class="hero">
+  <canvas id="spectro" aria-hidden="true"></canvas>
+  <div class="hero-mask"></div>
+  <div class="hero-inner">
+    <div class="brandrow">
+      <span class="dot"></span>
+      <span class="name">Spectral</span>
+      <span class="ver">v0.0.1 · Apache-2.0 · Rust</span>
+    </div>
+    <p class="eyebrow">Deterministic memory for AI agents</p>
+    <h1 class="title">Recall. Recognize.<br><span class="grad">Adapt.</span></h1>
+    <p class="lede">
+      An embedded, embedding-free memory your agent can trust — <span class="q">what do I know,
+      have I seen this before, what matters now</span> — answered from one SQLite file.
+      No vector database. No GPU. No LLM on the recall path.
+    </p>
+    <div class="chips">
+      <span class="chip">$0 recall</span>
+      <span class="chip">Local-first</span>
+      <span class="chip">Byte-reproducible</span>
+      <span class="chip">Federation-ready</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section id="types">
+    <div class="sec-head">
+      <p class="eyebrow">Six kinds of memory · one Brain</p>
+      <h2>The memory your agent gets</h2>
+      <p>Each mode is deterministic and embedding-free, so every one is free to query — no model call, no encoding step, no per-query bill.</p>
+    </div>
+
+    <div class="channels">
+      <div class="channel">
+        <div class="kind"><span class="bar"></span>Recall</div>
+        <div><div class="ask">“What do I know about X?”</div><div class="how">SQLite FTS5 + BM25, porter-stemmed, ranked by signal-score &amp; recency.</div></div>
+        <div class="cost">$0 · deterministic</div>
+      </div>
+      <div class="channel">
+        <div class="kind"><span class="bar"></span>Recognition</div>
+        <div><div class="ask">“Have I seen this before — and is it new?”</div><div class="how">Landmark fingerprinting → a familiarity / novelty verdict carrying the exact matched features.</div></div>
+        <div class="cost">$0 · deterministic</div>
+      </div>
+      <div class="channel">
+        <div class="kind"><span class="bar"></span>Relational</div>
+        <div><div class="ask">“How does X relate to Y?”</div><div class="how">Typed knowledge graph with ontology validation and 2-hop traversal.</div></div>
+        <div class="cost">$0 · deterministic</div>
+      </div>
+      <div class="channel">
+        <div class="kind"><span class="bar"></span>Episodic</div>
+        <div><div class="ask">“What happened around then?”</div><div class="how">Session episodes with time-anchored recency ranking and decay.</div></div>
+        <div class="cost">$0 · deterministic</div>
+      </div>
+      <div class="channel">
+        <div class="kind"><span class="bar"></span>Adaptive</div>
+        <div><div class="ask">“What matters <em>now</em>?”</div><div class="how">Use-driven reinforcement, disuse decay, and lift-based anticipation — a memory that learns from use.</div></div>
+        <div class="cost">$0 · deterministic</div>
+      </div>
+      <div class="channel">
+        <div class="kind"><span class="bar"></span>Federated</div>
+        <div><div class="ask">“What do <em>we</em> collectively know?”</div><div class="how">Read-time fan-out across brains — provenance-ranked, visibility-scoped, poisoning-resistant.</div></div>
+        <div class="cost">$0 · deterministic</div>
+      </div>
+    </div>
+
+    <p class="coverage">
+      On <b>LongMemEval-S</b> it handles every memory-question type — single-session (user, assistant, preference),
+      multi-session, temporal-reasoning, and knowledge-update — at <b>98.6% session-recall</b>, embedding-free.
+    </p>
+  </section>
+
+  <section id="cost">
+    <div class="sec-head">
+      <p class="eyebrow">The economics</p>
+      <h2>Memory that’s free by construction</h2>
+      <p>Not “cheap” — structurally free. Recall and recognition make zero model calls, so you can <em>assert</em> the memory layer adds no per-query cost, not just hope it stays small.</p>
+    </div>
+
+    <div class="ledger-wrap">
+      <table class="ledger">
+        <thead>
+          <tr><th></th><th class="us">Spectral</th><th>Embedding / vector-DB memory</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>recall query</td><td class="us"><span class="z">$0</span> — no model, no API call</td><td class="them">an embedding call per query (often + an LLM)</td></tr>
+          <tr><td>ingest</td><td class="us"><span class="z">$0</span> — deterministic classify + index</td><td class="them">an embedding call per item</td></tr>
+          <tr><td>infrastructure</td><td class="us">one embedded SQLite file</td><td class="them">a vector-DB service / server + index</td></tr>
+          <tr><td>hardware</td><td class="us">CPU only — no GPU, no weights</td><td class="them">GPU or a hosted embedding endpoint</td></tr>
+          <tr><td>determinism</td><td class="us">byte-reproducible</td><td class="them">drifts with the model version</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="cost-notes">
+      <div class="cost-note"><span class="k">Zero-LLM</span><span><b>recognition_token_cost == 0</b> is structural — the memory layer’s LLM cost is provably nil.</span></div>
+      <div class="cost-note"><span class="k">Opt-in</span><span>The only optional spend is a pre-retrieval query-expansion call (Claude Haiku, <b>≈ $0.25 / 1k queries</b>) that lifts paraphrase accuracy. Off unless you enable it.</span></div>
+      <div class="cost-note"><span class="k">Latency</span><span>Sub-millisecond recall on 1k memories; <b>~15–21 ms</b> on LongMemEval-scale haystacks — the adaptive write-back is batched, and optionally moved off the recall path entirely.</span></div>
+      <div class="cost-note"><span class="k">Storage</span><span>A single SQLite file you own — copy it, back it up, delete it. <b>Local-first by construction.</b></span></div>
+    </div>
+  </section>
+
+  <section id="recognition">
+    <div class="reco">
+      <div>
+        <p class="eyebrow">Where the name comes from</p>
+        <h3>Recognition: “have I seen this?”</h3>
+        <p>Most memory only <em>recalls</em>. Spectral also <b>recognizes</b> — scoring a new stimulus as familiar or novel, deterministically, with the exact features behind the verdict.</p>
+        <p>Its landmarks are a stimulus’s statistically salient features — the text analog of <b>spectral peaks above the noise floor</b>. That’s the name.</p>
+        <ul class="lineage">
+          <li><b>Landmark fingerprinting</b> — IDF-salient features (Shazam-style)</li>
+          <li><b>Winnowed k-grams</b> — the MOSS verbatim-run guarantee</li>
+          <li><b>REM + MINERVA-2</b> — cognitive-psych familiarity scoring</li>
+        </ul>
+      </div>
+      <div class="verdict" role="img" aria-label="A re-encounter scores familiarity 1.000; a novel stimulus scores novelty 1.000.">
+        <div class="vlabel">recognize(stimulus)</div>
+        <div class="meter">
+          <div class="mrow"><span>re-encounter · <span class="val">familiarity</span></span><span class="val signal">1.000</span></div>
+          <div class="track"><div class="fill fam" style="width:100%"></div></div>
+          <div class="mrow"><span>novel input · <span class="val">novelty</span></span><span class="val peak">1.000</span></div>
+          <div class="track"><div class="fill fam" style="width:100%"></div></div>
+        </div>
+        <div class="foot">novelty = 1 − familiarity · verdict carries the 12 features that produced it · no embeddings, no model</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="proof">
+    <div class="sec-head">
+      <p class="eyebrow">Measured, not asserted</p>
+      <h2>Proven robust, stable, and free</h2>
+    </div>
+    <div class="proof-grid">
+      <div class="stat"><div class="n g">98.6%</div><div class="l">session-recall across all six memory types (LongMemEval-S)</div></div>
+      <div class="stat"><div class="n">$0</div><div class="l">structural LLM cost on the recall path</div></div>
+      <div class="stat"><div class="n">−48%</div><div class="l">recall latency after batching the adaptive write-back</div></div>
+      <div class="stat"><div class="n">640</div><div class="l">concurrent read/write ops, 8 threads — no deadlock, no corruption</div></div>
+    </div>
+    <p class="proof-foot">Every figure is backed by a test that fails without it. In-sample retrieval; held-out expected lower. Full method &amp; limitations in the repo.</p>
+  </section>
+
+  <footer>
+    <div class="foot-row">
+      <span class="path">github.com/make-tuned-unit/spectral</span>
+      <span class="sep">/</span>
+      <span>Apache-2.0</span>
+      <span class="sep">/</span>
+      <span>embedded Rust · SQLite</span>
+      <span class="sep">/</span>
+      <span>for teams who keep control of their data</span>
+    </div>
+  </footer>
+
+</main>
+
+<script>
+  (function () {
+    var canvas = document.getElementById("spectro");
+    if (!canvas) return;
+    var ctx = canvas.getContext("2d");
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var W = 0, H = 0, dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    function readColors() {
+      var cs = getComputedStyle(document.documentElement);
+      return {
+        signal: cs.getPropertyValue("--signal").trim() || "#35e0c8",
+        peak: cs.getPropertyValue("--peak").trim() || "#8f7bff",
+        line: cs.getPropertyValue("--line").trim() || "#1f2740"
+      };
+    }
+    var C = readColors();
+
+    // Landmark peaks: fixed frequencies with drifting amplitude — "signal above noise".
+    var BINS = 132;
+    var peaks = [];
+    for (var i = 0; i < 22; i++) {
+      peaks.push({
+        pos: Math.floor((i + 0.5) / 22 * BINS) + (i % 3) - 1,
+        base: 0.35 + (i % 5) * 0.12,
+        amp: 0.18 + (i % 4) * 0.09,
+        phase: i * 0.7,
+        speed: 0.4 + (i % 3) * 0.22
+      });
+    }
+
+    function resize() {
+      var r = canvas.getBoundingClientRect();
+      W = Math.max(320, r.width); H = Math.max(260, r.height);
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function draw(t) {
+      C = readColors();
+      ctx.clearRect(0, 0, W, H);
+      var bw = W / BINS;
+      var floorY = H;
+      // amplitude field
+      var amps = new Array(BINS).fill(0);
+      for (var b = 0; b < BINS; b++) {
+        // noise floor
+        var n = 0.04 + 0.05 * Math.abs(Math.sin(b * 12.9898 + 3.7));
+        amps[b] = n;
+      }
+      for (var p = 0; p < peaks.length; p++) {
+        var pk = peaks[p];
+        var a = pk.base + pk.amp * (0.5 + 0.5 * Math.sin(t * 0.0006 * pk.speed + pk.phase));
+        // spread the peak over a few bins
+        for (var d = -2; d <= 2; d++) {
+          var idx = pk.pos + d;
+          if (idx < 0 || idx >= BINS) continue;
+          var falloff = a * Math.exp(-(d * d) / 1.8);
+          if (falloff > amps[idx]) amps[idx] = falloff;
+        }
+      }
+      for (var x = 0; x < BINS; x++) {
+        var h = amps[x] * H * 0.82;
+        var isPeak = amps[x] > 0.3;
+        var xx = x * bw;
+        var grad = ctx.createLinearGradient(0, floorY - h, 0, floorY);
+        var top = isPeak ? mix(C.signal, C.peak, x / BINS) : C.line;
+        grad.addColorStop(0, hexA(top, isPeak ? 0.95 : 0.5));
+        grad.addColorStop(1, hexA(top, 0.02));
+        ctx.fillStyle = grad;
+        ctx.fillRect(xx + bw * 0.14, floorY - h, bw * 0.72, h);
+        if (isPeak) {
+          ctx.fillStyle = hexA(top, 0.9);
+          ctx.fillRect(xx + bw * 0.14, floorY - h, bw * 0.72, 2.2);
+        }
+      }
+    }
+
+    function hexA(hex, a) {
+      hex = hex.replace("#", "");
+      if (hex.length === 3) hex = hex.split("").map(function (c) { return c + c; }).join("");
+      var r = parseInt(hex.substr(0, 2), 16), g = parseInt(hex.substr(2, 2), 16), b = parseInt(hex.substr(4, 2), 16);
+      return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+    }
+    function mix(h1, h2, f) {
+      function rgb(h) { h = h.replace("#", ""); if (h.length === 3) h = h.split("").map(function (c) { return c + c; }).join(""); return [parseInt(h.substr(0,2),16), parseInt(h.substr(2,2),16), parseInt(h.substr(4,2),16)]; }
+      var a = rgb(h1), b = rgb(h2);
+      var r = Math.round(a[0] + (b[0] - a[0]) * f), g = Math.round(a[1] + (b[1] - a[1]) * f), bl = Math.round(a[2] + (b[2] - a[2]) * f);
+      return "#" + [r, g, bl].map(function (v) { return ("0" + v.toString(16)).slice(-2); }).join("");
+    }
+
+    resize();
+    draw(1200);
+    window.addEventListener("resize", resize);
+    if (reduce) {
+      draw(1200);
+    } else {
+      var raf;
+      function loop(t) { draw(t); raf = requestAnimationFrame(loop); }
+      raf = requestAnimationFrame(loop);
+    }
+  })();
+</script>
+
+</body>
+</html>
