@@ -1533,6 +1533,12 @@ impl MemoryStore for SqliteStore {
         query_words: &[String],
         max_results: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>> {
+        // FTS5 MATCH is superlinear in term count and runs under the connection
+        // lock, so an unbounded term list stalls the whole store. Cap here — the
+        // single chokepoint every recall path funnels through — so it holds even
+        // for callers (e.g. the TACT extractor) that don't pre-cap their words.
+        const MAX_FTS_TERMS: usize = 64;
+        let query_words = &query_words[..query_words.len().min(MAX_FTS_TERMS)];
         let query = query_words
             .iter()
             .filter(|w| !w.is_empty())

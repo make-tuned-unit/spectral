@@ -157,6 +157,54 @@ fn brain_works_inside_async_runtime() {
     println!("[async] Brain open+remember+recall+drop inside a runtime: no panic ✓");
 }
 
+/// CLAIM (robustness): recall never panics or errors on adversarial query
+/// strings — FTS metacharacters, injection attempts, unicode, null bytes, and
+/// pathologically huge queries all return cleanly on every recall path.
+#[test]
+fn recall_survives_adversarial_query_strings() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(config(&tmp)).unwrap();
+    brain
+        .remember("m", "a normal memory about the project roadmap and the launch date", Visibility::Private)
+        .unwrap();
+
+    let big_words = "word ".repeat(5000); // 5k terms — exercises the term cap
+    let big_token = "a".repeat(100_000); // one megatoken
+    let nasty: Vec<&str> = vec![
+        "",
+        "   ",
+        "\"",
+        "foo NEAR/ bar",
+        "a AND b OR (c",
+        "*:*",
+        "'; DROP TABLE memories; --",
+        "project*",
+        "launch\"\"\" OR OR",
+        "🧠💾 émojis ünïcode ☃",
+        "\0\0\0 null bytes",
+        &big_words,
+        &big_token,
+    ];
+    for q in &nasty {
+        let short: String = q.chars().take(24).collect();
+        // Hybrid/TACT path and cascade path must both survive.
+        assert!(
+            brain.recall_local(q).is_ok(),
+            "recall_local errored on adversarial query {short:?}"
+        );
+        assert!(
+            brain
+                .recall_cascade(q, &RecognitionContext::empty(), &CascadePipelineConfig::default())
+                .is_ok(),
+            "recall_cascade errored on adversarial query {short:?}"
+        );
+    }
+    println!(
+        "[fuzz] {} adversarial queries survived recall_local + recall_cascade (Ok, no panic) ✓",
+        nasty.len()
+    );
+}
+
 /// CLAIM (robustness/stability): a shared Brain survives concurrent
 /// reads+writes from many threads with no deadlock, no Mutex poisoning, and a
 /// consistent store afterward — the interleaved recall write-back (auto-reinforce)
