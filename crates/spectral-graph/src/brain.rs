@@ -515,6 +515,19 @@ pub struct AuditReport {
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
+///
+/// # Do not call `Brain` methods from inside an async runtime
+///
+/// `Brain` owns its own Tokio runtime and every method is synchronous, driving
+/// it with `block_on`. Tokio's `block_on` **panics if invoked from within an
+/// existing runtime** (`Cannot start a runtime from within a runtime`), and a
+/// `Brain` **dropped** inside an async context panics for the same reason. So a
+/// `Brain` must not be used directly from an async task (an axum/tonic handler,
+/// a `#[tokio::main]` body, any `tokio::spawn`). From async code, run `Brain`
+/// calls on a blocking thread: `tokio::task::spawn_blocking(move || brain.recall(..))`
+/// (holding the `Brain` on that thread), or place the `Brain` behind a
+/// dedicated synchronous worker thread. This is a known ergonomic sharp edge; a
+/// natively-async surface is future work.
 pub struct Brain {
     identity: BrainIdentity,
     device_id: DeviceId,
@@ -2645,21 +2658,11 @@ impl Brain {
         Ok(())
     }
 
-    /// Reinforce many keys in one batched transaction. Used by the recall
-    /// write-back so the auto-reinforce of a full result set is one round-trip
-    /// instead of N. Best-effort; same nudge semantics as `reinforce_by_id`.
-    pub(crate) fn reinforce_batch_by_id(&self, keys: &[String], strength: f64) -> Result<(), Error> {
-        let _ = self
-            .rt
-            .block_on(self.memory_store.reinforce_batch(keys, strength))
-            .map_err(|e| Error::Schema(e.to_string()))?;
-        Ok(())
-    }
-
     /// Enable/disable asynchronous recall write-back. When on, the auto-reinforce
-    /// + retrieval-event log are spawned on the runtime instead of blocked on, so
-    /// `recall_cascade` returns at its retrieval floor without waiting on ambient
-    /// bookkeeping. Best-effort (see the `async_writeback` field docs); default off.
+    /// and retrieval-event log are spawned on the runtime instead of blocked on,
+    /// so `recall_cascade` returns at its retrieval floor without waiting on the
+    /// ambient bookkeeping. Best-effort (see the `async_writeback` field docs);
+    /// default off.
     pub fn set_async_writeback(&mut self, on: bool) {
         self.async_writeback = on;
     }
@@ -3496,7 +3499,12 @@ fn expand_number_words(raw_query: &str, words: &mut Vec<String>) {
 /// "is" is unrelated to the query). Guard: if that would empty the query, the
 /// unfiltered words are kept so an all-function-word query still recalls.
 pub(crate) fn fts_query_words_opts(query: &str, drop_stopwords: bool) -> Vec<String> {
-    let words: Vec<String> = query
+    // FTS5 MATCH is superlinear in term count and runs while holding the store's
+    // connection lock, so an unbounded query would stall the whole brain (a
+    // ~100k-word query hangs it for a minute+). Real recall queries are short;
+    // cap the term count defensively before building the MATCH.
+    const MAX_QUERY_WORDS: usize = 64;
+    let mut words: Vec<String> = query
         .split(|c: char| {
             !(c.is_alphanumeric() || c == '_' || c == '-' || c == '\'' || c == '\u{2019}')
         })
@@ -3512,6 +3520,7 @@ pub(crate) fn fts_query_words_opts(query: &str, drop_stopwords: bool) -> Vec<Str
         })
         .filter(|w| w.len() > 1)
         .collect();
+    words.truncate(MAX_QUERY_WORDS);
 
     if !drop_stopwords {
         return words;

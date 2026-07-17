@@ -386,7 +386,7 @@ pub fn run_cascade_pipeline_scoped(
     // Associative recall spreading (opt-in via config.spread; OFF by default =
     // no-op). Applied last so reinforce/logging act on the core recall set and
     // the associatively-recovered mates only augment the returned context.
-    crate::spreading::associative_spread(brain, &mut results, &config.spread);
+    crate::spreading::associative_spread(brain, &mut results, &config.spread, visibility);
 
     Ok(results)
 }

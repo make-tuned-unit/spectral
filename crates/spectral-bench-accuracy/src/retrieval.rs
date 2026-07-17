@@ -451,7 +451,8 @@ pub fn apply_associative_spreading(brain: &Brain, hits: &mut Vec<MemoryHit>) {
     } else {
         return;
     };
-    associative_spread(brain, hits, &cfg);
+    // Bench runs against one's own brain — Private context admits everything.
+    associative_spread(brain, hits, &cfg, Visibility::Private);
 }
 
 

@@ -86,6 +86,24 @@ pub enum FusionMethod {
 /// and rewards cross-member agreement; the `per_child_cap` bounds flooding
 /// volume. None of this stops a *signed* insider — that is what signed
 /// provenance ([`Brain::verify_hit`](crate::brain::Brain::verify_hit)) is for.
+///
+/// # Residual attacks (know these before federating untrusted members)
+///
+/// RRF neutralizes the *score-inflation* flood, but a determined malicious
+/// member can still degrade the merge:
+/// - **Distinct-content flooding.** RRF's per-origin dedup only collapses
+///   identical content, so a member returning many *distinct* high-ranked items
+///   still occupies many merged slots. Each member is bounded by the query's
+///   `k`, but set [`per_child_cap`](Self::per_child_cap) to a small N to bound a
+///   member's merge footprint further. **It is `None` (uncapped) by default** —
+///   set it for untrusted federations.
+/// - **Sybil-forged corroboration.** Cross-member agreement is the signal that
+///   lifts honest content, but [`add_brain`](FederationCoordinator::add_brain)
+///   authenticates no identity, so K colluding brains manufacture corroboration.
+///   Only federate members whose brains you trust to be distinct principals.
+/// - **Tiebreak grinding.** At the common `1/(k+0)` score tie the order is
+///   decided by `BrainId` then member-supplied `hit.id`; a member can grind a
+///   low-sorting `BrainId` to win ties. Impact is limited to tie ordering.
 #[derive(Debug, Clone)]
 pub struct MergePolicy {
     /// Rank-fusion method across children. Default [`FusionMethod::Rrf`].
@@ -93,7 +111,8 @@ pub struct MergePolicy {
     /// Cap on the number of hits contributed per child (its top-N by own
     /// order), applied before fusion. Flooding-volume defense: one member
     /// cannot crowd out the others regardless of how many hits it returns.
-    /// `None` = uncapped. Default `None`.
+    /// `None` = uncapped. **Default `None`** — set a small N for untrusted
+    /// federations (see the type-level "Residual attacks" note).
     pub per_child_cap: Option<usize>,
 }
 
@@ -404,11 +423,20 @@ fn merge_and_rank(
     match &policy.fusion {
         FusionMethod::RawScore => {
             // Legacy / undefended: rank on the member's self-asserted score.
+            // signal_score is member-controlled and unbounded — sanitize it so a
+            // NaN/Inf can't pin poison to the top (NaN sorts above +Inf under
+            // total_cmp). Clamp to signal_score's documented [0,1] range.
             for (origin, weight, hits) in capped {
+                let w = if weight.is_finite() { weight } else { 0.0 };
                 for hit in hits {
+                    let s = if hit.signal_score.is_finite() {
+                        hit.signal_score.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
                     ranked.push(LabeledHit {
                         origin,
-                        effective_score: hit.signal_score * weight,
+                        effective_score: s * w,
                         hit,
                     });
                 }
@@ -440,7 +468,14 @@ fn merge_and_rank(
             let mut fused: HashMap<[u8; 32], f64> = HashMap::new();
             for ((obytes, fp), rank) in &best_rank {
                 let w = weight_of.get(obytes).copied().unwrap_or(1.0);
-                *fused.entry(*fp).or_insert(0.0) += w / (k + *rank as f64);
+                let denom = k + *rank as f64;
+                // Guard a misconfigured k (<=0, NaN) that would make the
+                // contribution +inf/NaN and hijack the sort. Well-formed RRF has
+                // k > 0, so denom > 0 always; skip the contribution otherwise.
+                if !w.is_finite() || !denom.is_finite() || denom <= 0.0 {
+                    continue;
+                }
+                *fused.entry(*fp).or_insert(0.0) += w / denom;
             }
             for (origin, _weight, hits) in capped {
                 for hit in hits {
@@ -1188,6 +1223,59 @@ mod tests {
             attacker_above_honest(&safe)
         );
         assert_eq!(honest_rank(&safe), 0, "honest answer should be at the top under RRF");
+    }
+
+    /// RawScore ranks on the member's self-asserted, unbounded signal_score.
+    /// A malicious member setting NaN/Inf/huge must not pin poison to the top
+    /// (NaN sorts above +Inf under total_cmp). The merge sanitizes non-finite
+    /// scores to 0 and clamps to [0,1], so an honest 0.5 stays above the poison.
+    #[test]
+    fn raw_score_merge_sanitizes_non_finite_poison() {
+        fn hit(id: &str, signal: f64) -> MemoryHit {
+            MemoryHit {
+                id: id.into(),
+                key: id.into(),
+                content: format!("content {id}"),
+                wing: None,
+                hall: None,
+                signal_score: signal,
+                visibility: "public".into(),
+                hits: 1,
+                source: None,
+                device_id: None,
+                confidence: 1.0,
+                created_at: None,
+                last_reinforced_at: None,
+                episode_id: None,
+                declarative_density: None,
+                description: None,
+                source_brain_id: None,
+                signature: None,
+            }
+        }
+        let honest = BrainId::from_bytes([1u8; 32]);
+        let attacker = BrainId::from_bytes([2u8; 32]);
+        // Honest asserts a legitimate max (1.0). Attacker asserts NaN/Inf, which
+        // under total_cmp would otherwise sort ABOVE any finite score. (A huge
+        // finite value clamps to a legitimate 1.0 — that's the documented
+        // undefended RawScore behavior, not the F5 bug.)
+        let contributions = vec![
+            (honest, 1.0, vec![hit("honest", 1.0)]),
+            (
+                attacker,
+                1.0,
+                vec![hit("nan", f64::NAN), hit("inf", f64::INFINITY)],
+            ),
+        ];
+        let (ranked, _) = merge_and_rank(contributions, &MergePolicy::raw_scores());
+        assert_eq!(
+            ranked[0].origin, honest,
+            "honest legit-max must outrank NaN/Inf poison after sanitization; got {:?}",
+            ranked.iter().map(|h| h.hit.id.as_str()).collect::<Vec<_>>()
+        );
+        // No poison sits above the honest answer.
+        let hr = ranked.iter().position(|h| h.origin == honest).unwrap();
+        assert_eq!(ranked[..hr].iter().filter(|h| h.origin == attacker).count(), 0);
     }
 
     /// RRF self-corroboration defense (regression for the bug the poisoning

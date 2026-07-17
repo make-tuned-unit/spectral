@@ -1745,10 +1745,7 @@ impl MemoryStore for SqliteStore {
                 return Ok(0);
             }
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let placeholders = std::iter::repeat("?")
-                .take(keys.len())
-                .collect::<Vec<_>>()
-                .join(",");
+            let placeholders = vec!["?"; keys.len()].join(",");
 
             // Collect affected wings once (for cache invalidation) — replaces
             // the per-key SELECT the single-key path issues.
