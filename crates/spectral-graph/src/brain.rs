@@ -741,15 +741,23 @@ impl Brain {
             },
         };
 
+        // Compile consumer-supplied routing patterns into an Error rather than
+        // panicking on a bad regex (these come from BrainConfig).
+        let compile_rules = |rules: &[(String, String)],
+                             kind: &str|
+         -> Result<Vec<(regex::Regex, String)>, Error> {
+            rules
+                .iter()
+                .map(|(p, label)| {
+                    regex::Regex::new(p)
+                        .map(|re| (re, label.clone()))
+                        .map_err(|e| Error::Schema(format!("invalid {kind} regex {p:?}: {e}")))
+                })
+                .collect()
+        };
         let ingest_config = spectral_ingest::ingest::IngestConfig {
-            wing_rules: wing_rules
-                .iter()
-                .map(|(p, w)| (regex::Regex::new(p).expect("invalid wing regex"), w.clone()))
-                .collect(),
-            hall_rules: hall_rules
-                .iter()
-                .map(|(p, h)| (regex::Regex::new(p).expect("invalid hall regex"), h.clone()))
-                .collect(),
+            wing_rules: compile_rules(&wing_rules, "wing")?,
+            hall_rules: compile_rules(&hall_rules, "hall")?,
             ..spectral_ingest::ingest::IngestConfig::default()
         };
 

@@ -157,6 +157,69 @@ fn brain_works_inside_async_runtime() {
     println!("[async] Brain open+remember+recall+drop inside a runtime: no panic ✓");
 }
 
+/// CLAIM (robustness/stability): a shared Brain survives concurrent
+/// reads+writes from many threads with no deadlock, no Mutex poisoning, and a
+/// consistent store afterward — the interleaved recall write-back (auto-reinforce)
+/// stresses the exact lock paths a naive design would deadlock on.
+#[test]
+fn concurrent_access_is_deadlock_free_and_consistent() {
+    use std::sync::Arc;
+    let tmp = TempDir::new().unwrap();
+    let brain = Arc::new(Brain::open(config(&tmp)).unwrap());
+    for i in 0..20 {
+        brain
+            .remember(
+                &format!("seed{i}"),
+                &format!("seed memory {i} about the project alpha migration plan"),
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+
+    let threads = 8usize;
+    let ops = 40usize;
+    let mut handles = Vec::new();
+    for t in 0..threads {
+        let b = Arc::clone(&brain);
+        handles.push(std::thread::spawn(move || {
+            for i in 0..ops {
+                // Concurrent write...
+                b.remember(
+                    &format!("t{t}-m{i}"),
+                    &format!("thread {t} note {i} about project alpha beta gamma"),
+                    Visibility::Private,
+                )
+                .unwrap();
+                // ...and a cascade recall, which triggers the batched reinforce
+                // write-back — read + write on the same shared store, concurrently.
+                let r = b
+                    .recall_cascade(
+                        "project alpha",
+                        &RecognitionContext::empty(),
+                        &CascadePipelineConfig::default(),
+                    )
+                    .unwrap();
+                assert!(!r.merged_hits.is_empty(), "recall under contention returned nothing");
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("a worker panicked — deadlock, poisoned lock, or corruption");
+    }
+
+    // Store is still healthy and queryable after 8x40 interleaved read/write ops.
+    let after = brain.recall_local("project alpha migration").unwrap();
+    println!(
+        "[concurrency] {} threads x {} mixed ops ({} writes + {} cascade recalls): store healthy, final recall {} hits ✓",
+        threads,
+        ops,
+        threads * ops,
+        threads * ops,
+        after.memory_hits.len()
+    );
+    assert!(!after.memory_hits.is_empty(), "brain unqueryable after the storm");
+}
+
 /// CLAIM: federation fans out across brains with provenance, and the coordinator
 /// enforces the visibility boundary (a member's Private memory never crosses).
 #[test]

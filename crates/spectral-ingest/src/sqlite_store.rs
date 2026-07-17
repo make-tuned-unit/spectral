@@ -1745,45 +1745,52 @@ impl MemoryStore for SqliteStore {
                 return Ok(0);
             }
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let placeholders = vec!["?"; keys.len()].join(",");
 
-            // Collect affected wings once (for cache invalidation) — replaces
-            // the per-key SELECT the single-key path issues.
-            let wings: Vec<String> = {
+            // SQLite caps bound parameters per statement (999 on older builds).
+            // Chunk so an arbitrarily large key set can never exceed it; the
+            // common recall write-back (<= k keys) is a single chunk, unchanged.
+            const CHUNK: usize = 900;
+            let mut total_updated = 0usize;
+            let mut all_wings: Vec<String> = Vec::new();
+
+            for chunk in keys.chunks(CHUNK) {
+                let placeholders = vec!["?"; chunk.len()].join(",");
+
+                // Collect affected wings (for cache invalidation) — replaces the
+                // per-key SELECT the single-key path issues.
                 let sql = format!(
                     "SELECT DISTINCT wing FROM memories
                      WHERE key IN ({placeholders}) AND wing IS NOT NULL"
                 );
                 let mut stmt = conn.prepare(&sql)?;
-                let rows = stmt.query_map(rusqlite::params_from_iter(keys.iter()), |row| {
+                let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
                     row.get::<_, String>(0)
                 })?;
-                rows.filter_map(Result::ok).collect()
-            };
+                all_wings.extend(rows.filter_map(Result::ok));
 
-            // One UPDATE for all keys, one commit — replaces N auto-committed
-            // single-row updates. Same MIN(+strength, 1.0) semantics.
-            let sql = format!(
-                "UPDATE memories SET
-                    signal_score = MIN(signal_score + ?, 1.0),
-                    last_reinforced_at = datetime('now'),
-                    updated_at = datetime('now')
-                 WHERE key IN ({placeholders})"
-            );
-            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(keys.len() + 1);
-            params.push(&strength);
-            for k in &keys {
-                params.push(k);
+                // One UPDATE per chunk. Same MIN(+strength, 1.0) semantics.
+                let sql = format!(
+                    "UPDATE memories SET
+                        signal_score = MIN(signal_score + ?, 1.0),
+                        last_reinforced_at = datetime('now'),
+                        updated_at = datetime('now')
+                     WHERE key IN ({placeholders})"
+                );
+                let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
+                params.push(&strength);
+                for k in chunk {
+                    params.push(k);
+                }
+                total_updated += conn.execute(&sql, params.as_slice())?;
             }
-            let updated = conn.execute(&sql, params.as_slice())?;
 
             if let Ok(mut cache) = wing_cache.lock() {
-                for w in &wings {
+                for w in &all_wings {
                     cache.pop(w);
                 }
             }
 
-            Ok(updated)
+            Ok(total_updated)
         })
     }
 
@@ -5899,6 +5906,22 @@ mod tests {
 
         // Empty batch is a no-op, not an error.
         assert_eq!(store.reinforce_batch(&[], 0.01).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn reinforce_batch_chunks_past_the_param_ceiling() {
+        // 2000 keys > SQLite's 999 bound-parameter limit on older builds — a
+        // single IN-clause would error ("too many SQL variables"). Chunking must
+        // apply the nudge to every existing key without error.
+        let store = SqliteStore::open_in_memory().unwrap();
+        for i in 0..2000 {
+            insert_memory_with_key(&store, &format!("k{i}"), 0.20);
+        }
+        let keys: Vec<String> = (0..2000).map(|i| format!("k{i}")).collect();
+        let updated = store.reinforce_batch(&keys, 0.01).await.unwrap();
+        assert_eq!(updated, 2000, "every key reinforced across chunks");
+        assert!((score_of(&store, "k0") - 0.21).abs() < 1e-9);
+        assert!((score_of(&store, "k1999") - 0.21).abs() < 1e-9);
     }
 
     #[tokio::test]
