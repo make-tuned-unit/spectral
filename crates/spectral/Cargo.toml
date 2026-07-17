@@ -5,8 +5,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Spectral: a frequency-domain memory system for AI agents, designed for federation."
+description = "Deterministic, embedding-free memory for AI agents: recall, recognition, and adaptive feedback. Local-first and federation-ready, on one SQLite file — no vector DB, no LLM on the recall path."
 readme = "../../README.md"
+keywords = ["memory", "ai-agents", "llm", "retrieval", "recognition"]
+categories = ["data-structures", "database", "text-processing"]
 
 [dependencies]
 spectral-core = { path = "../spectral-core" }
