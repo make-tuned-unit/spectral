@@ -9,10 +9,10 @@
 //! working), does focus_wing flip the top result to the contextually-correct
 //! memory, deterministically? Run: `cargo run -p spectral-bench-real --bin ambient_context_bench`
 
-use spectral_graph::RecognitionContext;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RememberOpts};
 use spectral_graph::cascade_layers::CascadePipelineConfig;
+use spectral_graph::RecognitionContext;
 use std::path::Path;
 
 fn open(dir: &Path) -> Brain {
@@ -58,13 +58,31 @@ fn main() {
 
     // Ambiguous vocabulary across three life contexts: each wing has a memory a
     // bare "review the notes" query could mean.
-    remember_in_wing(&brain, "work:notes", "The sprint review notes cover the deploy checklist and open bugs", "work");
-    remember_in_wing(&brain, "cooking:notes", "The recipe review notes say to double the garlic and halve the salt", "cooking");
-    remember_in_wing(&brain, "music:notes", "The rehearsal review notes mark the tricky notes in the second verse", "music");
+    remember_in_wing(
+        &brain,
+        "work:notes",
+        "The sprint review notes cover the deploy checklist and open bugs",
+        "work",
+    );
+    remember_in_wing(
+        &brain,
+        "cooking:notes",
+        "The recipe review notes say to double the garlic and halve the salt",
+        "cooking",
+    );
+    remember_in_wing(
+        &brain,
+        "music:notes",
+        "The rehearsal review notes mark the tricky notes in the second verse",
+        "music",
+    );
     // Filler so ranking isn't trivial.
     for (i, (w, c)) in [
         ("work", "Standup moved to ten thirty on Thursdays"),
-        ("cooking", "The cast iron pan needs reseasoning after the tomato sauce"),
+        (
+            "cooking",
+            "The cast iron pan needs reseasoning after the tomato sauce",
+        ),
         ("music", "New strings arrive Tuesday for the acoustic"),
     ]
     .iter()
@@ -79,7 +97,10 @@ fn main() {
         let mut ctx = RecognitionContext::empty();
         ctx.focus_wing = focus.map(|s| s.to_string());
         let res = brain.recall_cascade(query, &ctx, &cfg).unwrap();
-        res.merged_hits.first().map(|h| h.key.clone()).unwrap_or_default()
+        res.merged_hits
+            .first()
+            .map(|h| h.key.clone())
+            .unwrap_or_default()
     };
 
     println!("=== Ambient context boost (dormant signal, first measurement) ===\n");
@@ -87,11 +108,18 @@ fn main() {
     let none = top_with(None);
     println!("  no context (empty)      -> top: {none}");
     let mut correct = 0usize;
-    for (wing, expect) in [("work", "work:notes"), ("cooking", "cooking:notes"), ("music", "music:notes")] {
+    for (wing, expect) in [
+        ("work", "work:notes"),
+        ("cooking", "cooking:notes"),
+        ("music", "music:notes"),
+    ] {
         let got = top_with(Some(wing));
         let ok = got == expect;
         correct += ok as usize;
-        println!("  focus_wing={wing:<8} -> top: {got:<14} (want {expect}) {}", if ok { "✓" } else { "✗" });
+        println!(
+            "  focus_wing={wing:<8} -> top: {got:<14} (want {expect}) {}",
+            if ok { "✓" } else { "✗" }
+        );
     }
     // Diagnostic: full ranking for the cooking focus (the failing case).
     let mut ctx = RecognitionContext::empty();
@@ -99,12 +127,20 @@ fn main() {
     let res = brain.recall_cascade(query, &ctx, &cfg).unwrap();
     println!("\n  diagnostic (focus=cooking) full ranking:");
     for h in res.merged_hits.iter().take(6) {
-        println!("    {:<14} wing={:?} composite={:.3}", h.key, h.wing, h.signal_score);
+        println!(
+            "    {:<14} wing={:?} composite={:.3}",
+            h.key, h.wing, h.signal_score
+        );
     }
 
     println!("\nverdict: ambient focus context disambiguated {correct}/3 contexts");
-    println!("  -> the 'what the user is doing right now' loop {}",
-        if correct == 3 { "WORKS deterministically: same query, three contexts, three correct answers" }
-        else { "is partial — inspect boost weights vs FTS score gaps" });
+    println!(
+        "  -> the 'what the user is doing right now' loop {}",
+        if correct == 3 {
+            "WORKS deterministically: same query, three contexts, three correct answers"
+        } else {
+            "is partial — inspect boost weights vs FTS score gaps"
+        }
+    );
     println!("\nDeterministic, $0, no LLM. The consumer just sets focus_wing / recent_activity.");
 }

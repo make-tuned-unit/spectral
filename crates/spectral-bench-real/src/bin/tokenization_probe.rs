@@ -48,28 +48,112 @@ struct Case {
 }
 
 const CASES: &[Case] = &[
-    Case { label: "possessive (regression)", content: "Marcus got promoted to Director of Engineering", queries: &["Marcus's title", "Marcus title"] },
-    Case { label: "hyphenated compound", content: "We shipped the blue-green deploy last night", queries: &["blue-green", "blue green", "bluegreen"] },
-    Case { label: "number vs word", content: "The webhook retries five times before failing", queries: &["5 retries", "five retries"] },
-    Case { label: "acronym/dotted", content: "The embassy in the U.S. was closed on Monday", queries: &["US embassy", "U.S. embassy"] },
-    Case { label: "contraction", content: "The service doesn't restart automatically after a crash", queries: &["doesn't restart", "doesnt restart", "does not restart"] },
-    Case { label: "slash pair", content: "The and/or clause caused a parsing ambiguity", queries: &["and/or clause", "and or clause"] },
-    Case { label: "compound split", content: "The checkout flow timed out under load", queries: &["checkout flow", "check out flow"] },
-    Case { label: "camelCase ident", content: "The taskRunner service crashed at midnight", queries: &["taskRunner", "task runner", "task-runner"] },
-    Case { label: "unit-number", content: "Latency spiked to 4200ms during the incident", queries: &["4200ms latency", "4200 ms latency"] },
-    Case { label: "dotted hostname", content: "The cert for api.acme.dev expired overnight", queries: &["api.acme.dev cert", "api acme dev cert"] },
-    Case { label: "version token", content: "We upgraded to Postgres 16.2 in production", queries: &["Postgres 16.2", "Postgres 16", "postgres v16"] },
-    Case { label: "percent/currency", content: "Revenue grew 12% to $4.2M in the quarter", queries: &["12% growth", "12 percent growth", "$4.2M revenue"] },
-    Case { label: "email address", content: "Alice at alice@acme.io filed the ticket", queries: &["alice@acme.io", "alice acme.io"] },
-    Case { label: "plural (porter baseline)", content: "The database stores customer records", queries: &["databases", "customer record"] },
+    Case {
+        label: "possessive (regression)",
+        content: "Marcus got promoted to Director of Engineering",
+        queries: &["Marcus's title", "Marcus title"],
+    },
+    Case {
+        label: "hyphenated compound",
+        content: "We shipped the blue-green deploy last night",
+        queries: &["blue-green", "blue green", "bluegreen"],
+    },
+    Case {
+        label: "number vs word",
+        content: "The webhook retries five times before failing",
+        queries: &["5 retries", "five retries"],
+    },
+    Case {
+        label: "acronym/dotted",
+        content: "The embassy in the U.S. was closed on Monday",
+        queries: &["US embassy", "U.S. embassy"],
+    },
+    Case {
+        label: "contraction",
+        content: "The service doesn't restart automatically after a crash",
+        queries: &["doesn't restart", "doesnt restart", "does not restart"],
+    },
+    Case {
+        label: "slash pair",
+        content: "The and/or clause caused a parsing ambiguity",
+        queries: &["and/or clause", "and or clause"],
+    },
+    Case {
+        label: "compound split",
+        content: "The checkout flow timed out under load",
+        queries: &["checkout flow", "check out flow"],
+    },
+    Case {
+        label: "camelCase ident",
+        content: "The taskRunner service crashed at midnight",
+        queries: &["taskRunner", "task runner", "task-runner"],
+    },
+    Case {
+        label: "unit-number",
+        content: "Latency spiked to 4200ms during the incident",
+        queries: &["4200ms latency", "4200 ms latency"],
+    },
+    Case {
+        label: "dotted hostname",
+        content: "The cert for api.acme.dev expired overnight",
+        queries: &["api.acme.dev cert", "api acme dev cert"],
+    },
+    Case {
+        label: "version token",
+        content: "We upgraded to Postgres 16.2 in production",
+        queries: &["Postgres 16.2", "Postgres 16", "postgres v16"],
+    },
+    Case {
+        label: "percent/currency",
+        content: "Revenue grew 12% to $4.2M in the quarter",
+        queries: &["12% growth", "12 percent growth", "$4.2M revenue"],
+    },
+    Case {
+        label: "email address",
+        content: "Alice at alice@acme.io filed the ticket",
+        queries: &["alice@acme.io", "alice acme.io"],
+    },
+    Case {
+        label: "plural (porter baseline)",
+        content: "The database stores customer records",
+        queries: &["databases", "customer record"],
+    },
     // ── chat-relevant classes (accents, numbers, ordinals) ──
-    Case { label: "accented name", content: "José reviewed the café renovation plans", queries: &["Jose review", "José review"] },
-    Case { label: "diacritic word", content: "Her naïve estimate was off by half", queries: &["naive estimate", "naïve estimate"] },
-    Case { label: "umlaut name", content: "Zoë joined the on-call rotation this week", queries: &["Zoe on-call", "Zoë on-call"] },
-    Case { label: "number-word count", content: "They adopted three rescue dogs last spring", queries: &["3 dogs", "three dogs"] },
-    Case { label: "ordinal", content: "She finished in second place at the regional", queries: &["2nd place", "second place"] },
-    Case { label: "hyphenated name", content: "Mary-Jane led the offsite planning", queries: &["Mary-Jane offsite", "Mary Jane offsite"] },
-    Case { label: "spelled acronym", content: "The CEO approved the budget increase", queries: &["chief executive", "CEO budget"] },
+    Case {
+        label: "accented name",
+        content: "José reviewed the café renovation plans",
+        queries: &["Jose review", "José review"],
+    },
+    Case {
+        label: "diacritic word",
+        content: "Her naïve estimate was off by half",
+        queries: &["naive estimate", "naïve estimate"],
+    },
+    Case {
+        label: "umlaut name",
+        content: "Zoë joined the on-call rotation this week",
+        queries: &["Zoe on-call", "Zoë on-call"],
+    },
+    Case {
+        label: "number-word count",
+        content: "They adopted three rescue dogs last spring",
+        queries: &["3 dogs", "three dogs"],
+    },
+    Case {
+        label: "ordinal",
+        content: "She finished in second place at the regional",
+        queries: &["2nd place", "second place"],
+    },
+    Case {
+        label: "hyphenated name",
+        content: "Mary-Jane led the offsite planning",
+        queries: &["Mary-Jane offsite", "Mary Jane offsite"],
+    },
+    Case {
+        label: "spelled acronym",
+        content: "The CEO approved the budget increase",
+        queries: &["chief executive", "CEO budget"],
+    },
 ];
 
 fn main() {
@@ -81,17 +165,31 @@ fn main() {
         "Coffee supplies in the kitchen need restocking",
         "The parking garage closes at ten each night",
         "A new hire starts in the design team on Monday",
-    ].iter().enumerate() {
-        brain.remember(&format!("distractor-{i}"), d, Visibility::Private).unwrap();
+    ]
+    .iter()
+    .enumerate()
+    {
+        brain
+            .remember(&format!("distractor-{i}"), d, Visibility::Private)
+            .unwrap();
     }
     // One answer memory per case, opaque key so the key column can't leak terms.
     for (i, c) in CASES.iter().enumerate() {
-        brain.remember(&format!("ans-{i}"), c.content, Visibility::Private).unwrap();
+        brain
+            .remember(&format!("ans-{i}"), c.content, Visibility::Private)
+            .unwrap();
     }
 
     let retrieves = |query: &str, answer_key: &str| -> bool {
         brain
-            .recall_topk_fts(query, &RecallTopKConfig { k: 40, ..Default::default() }, Visibility::Private)
+            .recall_topk_fts(
+                query,
+                &RecallTopKConfig {
+                    k: 40,
+                    ..Default::default()
+                },
+                Visibility::Private,
+            )
             .unwrap()
             .iter()
             .any(|h| h.key == answer_key)
@@ -120,15 +218,27 @@ fn main() {
     // "three", query says "3". Without bridging the answer is absent from the
     // pool; with it, present. Uses a distinct-vocabulary answer so nothing else
     // matches.
-    brain.remember("numbridge", "The household adopted three golden retrievers", Visibility::Private).unwrap();
+    brain
+        .remember(
+            "numbridge",
+            "The household adopted three golden retrievers",
+            Visibility::Private,
+        )
+        .unwrap();
     // Query noun ("puppies") is NOT in the content, so the ONLY possible bridge
     // to the answer is 3 -> three.
     let bridge_hit = |q: &str| retrieves(q, "numbridge");
     println!("\n--- number-word bridging (query '3 puppies' vs content 'three ...retrievers') ---");
     std::env::remove_var("SPECTRAL_NUMBER_NORMALIZE");
-    println!("  OFF: '3 puppies' retrieves answer = {}", bridge_hit("3 puppies"));
+    println!(
+        "  OFF: '3 puppies' retrieves answer = {}",
+        bridge_hit("3 puppies")
+    );
     std::env::set_var("SPECTRAL_NUMBER_NORMALIZE", "1");
-    println!("  ON:  '3 puppies' retrieves answer = {}", bridge_hit("3 puppies"));
+    println!(
+        "  ON:  '3 puppies' retrieves answer = {}",
+        bridge_hit("3 puppies")
+    );
     std::env::remove_var("SPECTRAL_NUMBER_NORMALIZE");
 
     println!("\n--- MISSES (answer absent from pool) ---");
@@ -138,7 +248,10 @@ fn main() {
         for (label, q) in &misses {
             println!("  [{label}] query {q:?} -> answer NOT retrieved");
         }
-        println!("\n{} miss(es). Each is a candidate deterministic normalization fix", misses.len());
+        println!(
+            "\n{} miss(es). Each is a candidate deterministic normalization fix",
+            misses.len()
+        );
         println!("that would EXPAND recall@K (move an answer from absent → present).");
     }
 }

@@ -20,7 +20,10 @@ use spectral_recognition::{
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 16
     }
     fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
@@ -28,16 +31,52 @@ impl Lcg {
     }
 }
 
-const SERVICES: &[&str] = &["task-runner", "web-frontend", "billing-api", "orders-worker", "edge-proxy", "auth-svc", "search-idx", "cache-node", "etl-runner", "api-gateway", "payment-svc", "notif-worker"];
-const EVENTS: &[&str] = &["OOMKilled at 512Mi", "CrashLooped repeatedly", "timed out after 30s", "returned 502 errors", "certificate expired", "dropped connections", "consumer lag spiked", "rejected oversized requests", "rolled back the deploy", "hit a schema drift"];
-const CONTEXTS: &[&str] = &["during the nightly reindex job", "on the us-east-1 cluster", "after the protobuf schema bump", "in the friday flash sale window", "under maxmemory pressure", "while draining the node pool", "during the blue-green rollout", "after the dns cache flush"];
+const SERVICES: &[&str] = &[
+    "task-runner",
+    "web-frontend",
+    "billing-api",
+    "orders-worker",
+    "edge-proxy",
+    "auth-svc",
+    "search-idx",
+    "cache-node",
+    "etl-runner",
+    "api-gateway",
+    "payment-svc",
+    "notif-worker",
+];
+const EVENTS: &[&str] = &[
+    "OOMKilled at 512Mi",
+    "CrashLooped repeatedly",
+    "timed out after 30s",
+    "returned 502 errors",
+    "certificate expired",
+    "dropped connections",
+    "consumer lag spiked",
+    "rejected oversized requests",
+    "rolled back the deploy",
+    "hit a schema drift",
+];
+const CONTEXTS: &[&str] = &[
+    "during the nightly reindex job",
+    "on the us-east-1 cluster",
+    "after the protobuf schema bump",
+    "in the friday flash sale window",
+    "under maxmemory pressure",
+    "while draining the node pool",
+    "during the blue-green rollout",
+    "after the dns cache flush",
+];
 
 /// One templated incident. `salt` varies the numeric specifics so items are
 /// distinct even when they share a template.
 fn incident(rng: &mut Lcg, salt: usize) -> String {
     format!(
         "Incident {salt}: {}-{} {} {}",
-        rng.pick(SERVICES), 1000 + salt, rng.pick(EVENTS), rng.pick(CONTEXTS)
+        rng.pick(SERVICES),
+        1000 + salt,
+        rng.pick(EVENTS),
+        rng.pick(CONTEXTS)
     )
 }
 
@@ -59,7 +98,10 @@ fn degrade(content: &str, seed: u64, drop_pct: u64) -> String {
     toks.iter()
         .enumerate()
         .filter(|(i, _)| {
-            let h = seed.wrapping_mul(1099511628211).wrapping_add(*i as u64).wrapping_mul(1099511628211);
+            let h = seed
+                .wrapping_mul(1099511628211)
+                .wrapping_add(*i as u64)
+                .wrapping_mul(1099511628211);
             (h % 100) >= drop_pct
         })
         .map(|(_, t)| *t)
@@ -69,14 +111,22 @@ fn degrade(content: &str, seed: u64, drop_pct: u64) -> String {
 
 fn roc_auc(scored: &[(f64, bool)]) -> f64 {
     let pos: Vec<f64> = scored.iter().filter(|(_, l)| *l).map(|(s, _)| *s).collect();
-    let neg: Vec<f64> = scored.iter().filter(|(_, l)| !*l).map(|(s, _)| *s).collect();
+    let neg: Vec<f64> = scored
+        .iter()
+        .filter(|(_, l)| !*l)
+        .map(|(s, _)| *s)
+        .collect();
     if pos.is_empty() || neg.is_empty() {
         return f64::NAN;
     }
     let mut wins = 0.0;
     for &p in &pos {
         for &n in &neg {
-            if p > n { wins += 1.0; } else if (p - n).abs() < 1e-12 { wins += 0.5; }
+            if p > n {
+                wins += 1.0;
+            } else if (p - n).abs() < 1e-12 {
+                wins += 0.5;
+            }
         }
     }
     wins / (pos.len() * neg.len()) as f64
@@ -111,12 +161,23 @@ fn build_corpus() -> Corpus {
     let near_miss: Vec<String> = (0..60)
         .map(|_| rng2.pick(nm_templates).replace("{s}", rng2.pick(SERVICES)))
         .collect();
-    Corpus { enrolled, near_miss }
+    Corpus {
+        enrolled,
+        near_miss,
+    }
 }
 
-fn build_engine(corpus: &Corpus, shingle: usize, min_similarity: f64) -> RecognitionEngine<InMemoryRecognitionStore> {
+fn build_engine(
+    corpus: &Corpus,
+    shingle: usize,
+    min_similarity: f64,
+) -> RecognitionEngine<InMemoryRecognitionStore> {
     let cfg = RecognitionConfig {
-        minhash: MinHashConfig { shingle, min_similarity, ..MinHashConfig::default() },
+        minhash: MinHashConfig {
+            shingle,
+            min_similarity,
+            ..MinHashConfig::default()
+        },
         ..RecognitionConfig::default()
     };
     let mut e = RecognitionEngine::new(InMemoryRecognitionStore::default(), cfg);
@@ -137,26 +198,34 @@ fn evaluate(corpus: &Corpus, shingle: usize, min_similarity: f64) -> (f64, f64, 
     for c in &sample {
         let r = e.recognize(c).unwrap();
         scored.push((r.familiarity, true));
-        if matches!(r.verdict, Verdict::Recognized { .. }) { exact_reco += 1; }
+        if matches!(r.verdict, Verdict::Recognized { .. }) {
+            exact_reco += 1;
+        }
     }
     let mut deg_fam = 0usize;
     for (i, c) in sample.iter().enumerate() {
         let r = e.recognize(&degrade(c, i as u64 + 1, 72)).unwrap();
         scored.push((r.familiarity, true));
-        if !matches!(r.verdict, Verdict::Novel) { deg_fam += 1; }
+        if !matches!(r.verdict, Verdict::Novel) {
+            deg_fam += 1;
+        }
     }
     // Negatives: near-miss (hard) + unrelated (easy). FP = not flagged Novel.
     let mut nm_novel = 0usize;
     for c in &corpus.near_miss {
         let r = e.recognize(c).unwrap();
         scored.push((r.familiarity, false));
-        if matches!(r.verdict, Verdict::Novel) { nm_novel += 1; }
+        if matches!(r.verdict, Verdict::Novel) {
+            nm_novel += 1;
+        }
     }
     let mut un_novel = 0usize;
     for c in UNRELATED {
         let r = e.recognize(c).unwrap();
         scored.push((r.familiarity, false));
-        if matches!(r.verdict, Verdict::Novel) { un_novel += 1; }
+        if matches!(r.verdict, Verdict::Novel) {
+            un_novel += 1;
+        }
     }
     (
         roc_auc(&scored),
@@ -170,9 +239,14 @@ fn evaluate(corpus: &Corpus, shingle: usize, min_similarity: f64) -> (f64, f64, 
 fn main() {
     let corpus = build_corpus();
     println!("=== Recognition at scale (300 enrolled, overlapping domain vocab) ===");
-    println!("probes: 60 exact + 60 degraded@72% positives; 60 near-miss + 10 unrelated negatives\n");
+    println!(
+        "probes: 60 exact + 60 degraded@72% positives; 60 near-miss + 10 unrelated negatives\n"
+    );
 
-    println!("{:<24}{:>7}{:>10}{:>10}{:>11}{:>11}", "config", "AUC", "exact", "deg@72", "nm-novel", "un-novel");
+    println!(
+        "{:<24}{:>7}{:>10}{:>10}{:>11}{:>11}",
+        "config", "AUC", "exact", "deg@72", "nm-novel", "un-novel"
+    );
     let configs = [
         ("shingle=2 sim=0.15 (def)", 2usize, 0.15f64),
         ("shingle=2 sim=0.25", 2, 0.25),

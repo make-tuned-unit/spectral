@@ -66,9 +66,16 @@ pub fn score_memory(content: &str, hall: &str) -> f64 {
     let constraint_density = count_matches(
         &content_lower,
         &[
-            "i am allergic", "i'm allergic", "i am vegetarian", "i'm vegetarian",
-            "i am vegan", "i'm vegan", "i am diabetic", "i'm diabetic",
-            "i am a vegetarian", "i am a vegan",
+            "i am allergic",
+            "i'm allergic",
+            "i am vegetarian",
+            "i'm vegetarian",
+            "i am vegan",
+            "i'm vegan",
+            "i am diabetic",
+            "i'm diabetic",
+            "i am a vegetarian",
+            "i am a vegan",
         ],
     );
 

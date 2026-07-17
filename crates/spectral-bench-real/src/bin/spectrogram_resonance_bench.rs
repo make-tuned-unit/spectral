@@ -70,10 +70,26 @@ fn main() {
     // Same-wing NON-decisions (discoveries/problems) — resonance must NOT drag
     // these in despite domain overlap with the decisions above.
     let non_decisions = [
-        ("disc:health", "health", "Noticed the knee pain flares up whenever the running shoes wear down"),
-        ("prob:home", "home", "The attic vent fan started rattling loudly during the last heat wave"),
-        ("disc:finance", "finance", "Realized the brokerage statement includes a hidden management fee"),
-        ("prob:travel", "travel", "The hotel booking site charged the card twice for the same night"),
+        (
+            "disc:health",
+            "health",
+            "Noticed the knee pain flares up whenever the running shoes wear down",
+        ),
+        (
+            "prob:home",
+            "home",
+            "The attic vent fan started rattling loudly during the last heat wave",
+        ),
+        (
+            "disc:finance",
+            "finance",
+            "Realized the brokerage statement includes a hidden management fee",
+        ),
+        (
+            "prob:travel",
+            "travel",
+            "The hotel booking site charged the card twice for the same night",
+        ),
     ];
     for (k, w, c) in decisions.iter().chain(non_decisions.iter()) {
         remember_in_wing(&brain, k, c, w);
@@ -97,15 +113,30 @@ fn main() {
         )
         .unwrap();
     let fts_keys: Vec<&str> = fts.iter().map(|h| h.key.as_str()).collect();
-    let fts_cross_domain = decisions.iter().filter(|(k, _, _)| fts_keys.contains(k)).count();
-    println!("FTS recall (seed keywords) returned {} hits: {:?}", fts.len(), fts_keys);
+    let fts_cross_domain = decisions
+        .iter()
+        .filter(|(k, _, _)| fts_keys.contains(k))
+        .count();
+    println!(
+        "FTS recall (seed keywords) returned {} hits: {:?}",
+        fts.len(),
+        fts_keys
+    );
     println!("  cross-domain decisions found by FTS: {fts_cross_domain}/4\n");
 
     // Arm 2: spectrogram resonance from the same seed.
     let res = brain
-        .recall_cross_wing("decided migrate billing postgres cluster", Visibility::Private, 10)
+        .recall_cross_wing(
+            "decided migrate billing postgres cluster",
+            Visibility::Private,
+            10,
+        )
         .unwrap();
-    let seed_key = res.seed_memory.as_ref().map(|m| m.key.clone()).unwrap_or_default();
+    let seed_key = res
+        .seed_memory
+        .as_ref()
+        .map(|m| m.key.clone())
+        .unwrap_or_default();
     println!("recall_cross_wing seed resolved to: {seed_key:?}");
     let mut found_decisions = 0usize;
     let mut false_positives = 0usize;
@@ -130,6 +161,15 @@ fn main() {
     println!("  FTS ceiling on zero-keyword-overlap decisions: {fts_cross_domain}/4 (structural)");
     println!("  resonance lift: {found_decisions}/4 with {false_positives} action-type errors");
     println!("  -> the 'you've decided like this before' recognition-aware feedback channel");
-    println!("     is {}", if found_decisions >= 2 && false_positives == 0 { "REAL and precise" } else if found_decisions >= 2 { "real but imprecise" } else { "NOT delivering (investigate dimensions/tolerances)" });
+    println!(
+        "     is {}",
+        if found_decisions >= 2 && false_positives == 0 {
+            "REAL and precise"
+        } else if found_decisions >= 2 {
+            "real but imprecise"
+        } else {
+            "NOT delivering (investigate dimensions/tolerances)"
+        }
+    );
     println!("\nDeterministic, $0, no LLM — 7 cognitive dimensions, no embeddings.");
 }

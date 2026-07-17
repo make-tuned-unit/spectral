@@ -118,12 +118,25 @@ pub fn associative_spread(
             episode_fill(brain, hits, &seed_refs, cfg.episode_budget, visibility);
         }
         SpreadMode::CrossSession => {
-            cross_session(brain, hits, cfg.seeds, cfg.cross_n, cfg.cross_budget, visibility);
+            cross_session(
+                brain,
+                hits,
+                cfg.seeds,
+                cfg.cross_n,
+                cfg.cross_budget,
+                visibility,
+            );
         }
         SpreadMode::Combined => {
             let mut seed_refs = top_seed_refs(hits, cfg.seeds);
-            let added =
-                cross_session(brain, hits, cfg.seeds, cfg.cross_n, cfg.cross_budget, visibility);
+            let added = cross_session(
+                brain,
+                hits,
+                cfg.seeds,
+                cfg.cross_n,
+                cfg.cross_budget,
+                visibility,
+            );
             seed_refs.extend(added); // also complete the newly-found sessions
             episode_fill(brain, hits, &seed_refs, cfg.episode_budget, visibility);
         }
@@ -138,7 +151,12 @@ type SeedRef = (Option<String>, Option<i64>);
 fn top_seed_refs(hits: &[MemoryHit], seeds: usize) -> Vec<SeedRef> {
     hits.iter()
         .take(seeds)
-        .map(|h| (h.episode_id.clone(), h.created_at.as_deref().and_then(parse_ts)))
+        .map(|h| {
+            (
+                h.episode_id.clone(),
+                h.created_at.as_deref().and_then(parse_ts),
+            )
+        })
         .collect()
 }
 
@@ -276,7 +294,11 @@ fn rerank_displace(
         }
     }
     candidates.sort_by_key(|(p, _)| *p);
-    let to_add: Vec<MemoryHit> = candidates.into_iter().take(replace_b).map(|(_, h)| h).collect();
+    let to_add: Vec<MemoryHit> = candidates
+        .into_iter()
+        .take(replace_b)
+        .map(|(_, h)| h)
+        .collect();
 
     // Session-preserving removal: drop the weakest hits to make room, but never
     // remove a memory that is the SOLE representative of its session (episode) —

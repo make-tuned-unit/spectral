@@ -41,7 +41,14 @@ fn open(dir: &Path) -> Brain {
 }
 
 fn id_of(k: &str) -> String {
-    format!("{:016x}", u64::from_be_bytes(blake3::hash(k.as_bytes()).as_bytes()[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_be_bytes(
+            blake3::hash(k.as_bytes()).as_bytes()[..8]
+                .try_into()
+                .unwrap()
+        )
+    )
 }
 
 fn main() {
@@ -54,7 +61,10 @@ fn main() {
         ("I am severely allergic to shellfish and peanuts", true),
         ("Never schedule anything for me before 9am", true),
         ("My daughter Mia is five years old", true),
-        ("I prefer concise written summaries over long meetings", true),
+        (
+            "I prefer concise written summaries over long meetings",
+            true,
+        ),
         ("I'm diabetic and monitor my blood sugar closely", true),
         ("My wife is a cardiologist at the county hospital", true),
         ("I always run my tests before every deploy", true),
@@ -76,7 +86,9 @@ fn main() {
     ];
 
     for (i, (c, _)) in cases.iter().enumerate() {
-        brain.remember(&format!("c{i}"), c, Visibility::Private).unwrap();
+        brain
+            .remember(&format!("c{i}"), c, Visibility::Private)
+            .unwrap();
     }
 
     let durable_halls = ["fact", "preference", "rule", "decision"];
@@ -95,8 +107,14 @@ fn main() {
         let (bar, hall, sig) = reaches_bar(&format!("c{i}"));
         match (*durable, bar) {
             (true, true) => tp += 1,
-            (true, false) => { fn_ += 1; false_neg.push((c, hall, sig)); }
-            (false, true) => { fp += 1; false_pos.push((c, hall, sig)); }
+            (true, false) => {
+                fn_ += 1;
+                false_neg.push((c, hall, sig));
+            }
+            (false, true) => {
+                fp += 1;
+                false_pos.push((c, hall, sig));
+            }
             (false, false) => tn += 1,
         }
     }

@@ -40,13 +40,25 @@ fn recall_is_deterministic_and_finds_the_answer() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(config(&tmp)).unwrap();
     brain
-        .remember("auth", "We decided to use Clerk for authentication", Visibility::Private)
+        .remember(
+            "auth",
+            "We decided to use Clerk for authentication",
+            Visibility::Private,
+        )
         .unwrap();
     brain
-        .remember("db", "The database is Postgres on Supabase", Visibility::Private)
+        .remember(
+            "db",
+            "The database is Postgres on Supabase",
+            Visibility::Private,
+        )
         .unwrap();
     brain
-        .remember("host", "Hosting runs on Fly.io in the syd region", Visibility::Private)
+        .remember(
+            "host",
+            "Hosting runs on Fly.io in the syd region",
+            Visibility::Private,
+        )
         .unwrap();
 
     let q = "what did we choose for authentication";
@@ -55,9 +67,15 @@ fn recall_is_deterministic_and_finds_the_answer() {
     let second = brain.recall_local(q).unwrap();
     let top2 = &second.memory_hits[0];
 
-    println!("[recall] query={q:?} -> top hit key={:?} content={:?}", top1.key, top1.content);
+    println!(
+        "[recall] query={q:?} -> top hit key={:?} content={:?}",
+        top1.key, top1.content
+    );
     assert_eq!(top1.key, "auth", "recall should surface the auth decision");
-    assert_eq!(top1.key, top2.key, "recall is deterministic: same top hit twice");
+    assert_eq!(
+        top1.key, top2.key,
+        "recall is deterministic: same top hit twice"
+    );
     println!("[recall] deterministic: top hit stable across two calls ✓");
 }
 
@@ -68,12 +86,17 @@ fn recall_is_deterministic_and_finds_the_answer() {
 fn recognition_separates_seen_from_novel() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(config(&tmp)).unwrap();
-    let enrolled = "The quarterly board meeting approved the 2027 hiring plan for the platform team";
-    brain.remember("board", enrolled, Visibility::Private).unwrap();
+    let enrolled =
+        "The quarterly board meeting approved the 2027 hiring plan for the platform team";
+    brain
+        .remember("board", enrolled, Visibility::Private)
+        .unwrap();
 
     // Near-verbatim re-encounter → should look familiar.
     let seen = brain
-        .recognize("The quarterly board meeting approved the 2027 hiring plan for the platform team")
+        .recognize(
+            "The quarterly board meeting approved the 2027 hiring plan for the platform team",
+        )
         .unwrap();
     // Unrelated new stimulus → should look novel.
     let novel = brain
@@ -98,7 +121,10 @@ fn recognition_separates_seen_from_novel() {
         seen.familiarity,
         novel.familiarity
     );
-    assert!((seen.novelty - (1.0 - seen.familiarity)).abs() < 1e-9, "novelty = 1 - familiarity");
+    assert!(
+        (seen.novelty - (1.0 - seen.familiarity)).abs() < 1e-9,
+        "novelty = 1 - familiarity"
+    );
     println!("[recognition] seen > novel, novelty = 1-familiarity, verdict carries features ✓");
 }
 
@@ -111,10 +137,18 @@ fn visibility_boundary_holds_under_spreading() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(config(&tmp)).unwrap();
     brain
-        .remember("pub", "The launch date for the public API is March 3rd", Visibility::Public)
+        .remember(
+            "pub",
+            "The launch date for the public API is March 3rd",
+            Visibility::Public,
+        )
         .unwrap();
     brain
-        .remember("secret", "Internal note: the launch is slipping to April, keep quiet", Visibility::Private)
+        .remember(
+            "secret",
+            "Internal note: the launch is slipping to April, keep quiet",
+            Visibility::Private,
+        )
         .unwrap();
 
     let ctx = RecognitionContext::empty();
@@ -124,19 +158,35 @@ fn visibility_boundary_holds_under_spreading() {
         ..CascadePipelineConfig::default()
     };
 
-    let team = brain.recall_cascade_scoped("when is the launch", &ctx, &cfg, Visibility::Team).unwrap();
-    let team_leaks = team.merged_hits.iter().any(|h| h.content.contains("keep quiet"));
+    let team = brain
+        .recall_cascade_scoped("when is the launch", &ctx, &cfg, Visibility::Team)
+        .unwrap();
+    let team_leaks = team
+        .merged_hits
+        .iter()
+        .any(|h| h.content.contains("keep quiet"));
     println!(
         "[visibility] Team-scoped recall returned {} hits; private leak present: {}",
         team.merged_hits.len(),
         team_leaks
     );
-    assert!(!team_leaks, "Private content must not cross into a Team context, even with spreading");
+    assert!(
+        !team_leaks,
+        "Private content must not cross into a Team context, even with spreading"
+    );
 
-    let own = brain.recall_cascade_scoped("when is the launch", &ctx, &cfg, Visibility::Private).unwrap();
-    let own_sees = own.merged_hits.iter().any(|h| h.content.contains("keep quiet"));
+    let own = brain
+        .recall_cascade_scoped("when is the launch", &ctx, &cfg, Visibility::Private)
+        .unwrap();
+    let own_sees = own
+        .merged_hits
+        .iter()
+        .any(|h| h.content.contains("keep quiet"));
     println!("[visibility] Private (own-brain) recall sees the private note: {own_sees}");
-    assert!(own_sees, "own-brain recall should still see its private memory");
+    assert!(
+        own_sees,
+        "own-brain recall should still see its private memory"
+    );
     println!("[visibility] Team boundary holds; Private sees all ✓");
 }
 
@@ -148,9 +198,18 @@ fn brain_works_inside_async_runtime() {
     rt.block_on(async {
         let tmp = TempDir::new().unwrap();
         let brain = Brain::open(config(&tmp)).unwrap();
-        brain.remember("k", "async server handler stored this note", Visibility::Private).unwrap();
+        brain
+            .remember(
+                "k",
+                "async server handler stored this note",
+                Visibility::Private,
+            )
+            .unwrap();
         let r = brain.recall_local("what did the handler store").unwrap();
-        println!("[async] recall from inside a Tokio runtime returned {} hits, no panic", r.memory_hits.len());
+        println!(
+            "[async] recall from inside a Tokio runtime returned {} hits, no panic",
+            r.memory_hits.len()
+        );
         assert!(!r.memory_hits.is_empty());
         // brain drops here, inside the runtime — must not panic either.
     });
@@ -165,7 +224,11 @@ fn recall_survives_adversarial_query_strings() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(config(&tmp)).unwrap();
     brain
-        .remember("m", "a normal memory about the project roadmap and the launch date", Visibility::Private)
+        .remember(
+            "m",
+            "a normal memory about the project roadmap and the launch date",
+            Visibility::Private,
+        )
         .unwrap();
 
     let big_words = "word ".repeat(5000); // 5k terms — exercises the term cap
@@ -194,7 +257,11 @@ fn recall_survives_adversarial_query_strings() {
         );
         assert!(
             brain
-                .recall_cascade(q, &RecognitionContext::empty(), &CascadePipelineConfig::default())
+                .recall_cascade(
+                    q,
+                    &RecognitionContext::empty(),
+                    &CascadePipelineConfig::default()
+                )
                 .is_ok(),
             "recall_cascade errored on adversarial query {short:?}"
         );
@@ -247,12 +314,16 @@ fn concurrent_access_is_deadlock_free_and_consistent() {
                         &CascadePipelineConfig::default(),
                     )
                     .unwrap();
-                assert!(!r.merged_hits.is_empty(), "recall under contention returned nothing");
+                assert!(
+                    !r.merged_hits.is_empty(),
+                    "recall under contention returned nothing"
+                );
             }
         }));
     }
     for h in handles {
-        h.join().expect("a worker panicked — deadlock, poisoned lock, or corruption");
+        h.join()
+            .expect("a worker panicked — deadlock, poisoned lock, or corruption");
     }
 
     // Store is still healthy and queryable after 8x40 interleaved read/write ops.
@@ -265,7 +336,10 @@ fn concurrent_access_is_deadlock_free_and_consistent() {
         threads * ops,
         after.memory_hits.len()
     );
-    assert!(!after.memory_hits.is_empty(), "brain unqueryable after the storm");
+    assert!(
+        !after.memory_hits.is_empty(),
+        "brain unqueryable after the storm"
+    );
 }
 
 /// CLAIM: federation fans out across brains with provenance, and the coordinator
@@ -274,11 +348,26 @@ fn concurrent_access_is_deadlock_free_and_consistent() {
 fn federation_fans_out_and_enforces_the_boundary() {
     let tmp = TempDir::new().unwrap();
     let a = Brain::open(config(&TempDir::new_in(tmp.path()).unwrap())).unwrap();
-    a.remember("a-pub", "Team wiki: the deploy runbook lives in Notion", Visibility::Public).unwrap();
-    a.remember("a-priv", "My private todo: rotate the prod credentials", Visibility::Private).unwrap();
+    a.remember(
+        "a-pub",
+        "Team wiki: the deploy runbook lives in Notion",
+        Visibility::Public,
+    )
+    .unwrap();
+    a.remember(
+        "a-priv",
+        "My private todo: rotate the prod credentials",
+        Visibility::Private,
+    )
+    .unwrap();
 
     let b = Brain::open(config(&TempDir::new_in(tmp.path()).unwrap())).unwrap();
-    b.remember("b-pub", "Team wiki: deploy approvals go through the release channel", Visibility::Public).unwrap();
+    b.remember(
+        "b-pub",
+        "Team wiki: deploy approvals go through the release channel",
+        Visibility::Public,
+    )
+    .unwrap();
 
     let mut coord = FederationCoordinator::new();
     let a_id = *a.brain_id();
@@ -297,7 +386,10 @@ fn federation_fans_out_and_enforces_the_boundary() {
         .unwrap();
 
     let origins: std::collections::HashSet<_> = res.ranked.iter().map(|h| h.origin).collect();
-    let leaked = res.ranked.iter().any(|h| h.hit.content.contains("rotate the prod credentials"));
+    let leaked = res
+        .ranked
+        .iter()
+        .any(|h| h.hit.content.contains("rotate the prod credentials"));
     println!(
         "[federation] fan-out over 2 brains: {} merged hits from {} origins; failed children: {}",
         res.ranked.len(),
@@ -305,10 +397,20 @@ fn federation_fans_out_and_enforces_the_boundary() {
         res.failed.len()
     );
     for h in &res.ranked {
-        println!("[federation]   [{:?}] {}", &h.origin.to_string()[..8], h.hit.content);
+        println!(
+            "[federation]   [{:?}] {}",
+            &h.origin.to_string()[..8],
+            h.hit.content
+        );
     }
-    assert!(origins.contains(&a_id) && origins.contains(&b_id), "both brains contribute");
-    assert!(!leaked, "a member's Private memory must not cross the Team boundary");
+    assert!(
+        origins.contains(&a_id) && origins.contains(&b_id),
+        "both brains contribute"
+    );
+    assert!(
+        !leaked,
+        "a member's Private memory must not cross the Team boundary"
+    );
     assert!(res.failed.is_empty(), "healthy fan-out reports no failures");
     println!("[federation] both brains contribute, provenance labeled, Private stays home ✓");
 }

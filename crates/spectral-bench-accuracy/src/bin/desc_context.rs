@@ -15,9 +15,9 @@
 //! Run: `cargo run -p spectral-bench-accuracy --bin desc_context`
 
 use anyhow::{Context, Result};
-use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RememberOpts};
-use spectral_core::visibility::Visibility;
 use spectral_bench_accuracy::retrieval::{self, RetrievalConfig};
+use spectral_core::visibility::Visibility;
+use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RememberOpts};
 
 /// (memory key, turn content, Librarian description)
 const TURNS: &[(&str, &str, &str)] = &[
@@ -84,13 +84,20 @@ fn main() -> Result<()> {
         let r = brain.remember_with(
             key,
             content,
-            RememberOpts { visibility: Visibility::Private, ..Default::default() },
+            RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
         )?;
         brain.set_description(&r.memory_id, desc)?;
     }
 
     println!("=== Descriptions-in-actor-context: local mechanism + cost ===");
-    println!("session: {} turns, all Librarian-described; {} queries\n", TURNS.len(), QUERIES.len());
+    println!(
+        "session: {} turns, all Librarian-described; {} queries\n",
+        TURNS.len(),
+        QUERIES.len()
+    );
 
     let (mut tot_off, mut tot_on, mut appeared) = (0usize, 0usize, 0usize);
     for q in QUERIES {
@@ -115,11 +122,18 @@ fn main() -> Result<()> {
     }
 
     println!("\n--- summary ---");
-    println!("librarian note surfaced in {appeared}/{} queries (mechanism works)", QUERIES.len());
+    println!(
+        "librarian note surfaced in {appeared}/{} queries (mechanism works)",
+        QUERIES.len()
+    );
     println!(
         "context token cost: {tot_off} -> {tot_on} (+{} tok, +{:.0}%) across all queries",
         tot_on - tot_off,
-        if tot_off > 0 { 100.0 * (tot_on - tot_off) as f64 / tot_off as f64 } else { 0.0 },
+        if tot_off > 0 {
+            100.0 * (tot_on - tot_off) as f64 / tot_off as f64
+        } else {
+            0.0
+        },
     );
     println!(
         "\nACCURACY delta needs the paid LongMemEval run (LLM actor+judge). Ablation:\n\

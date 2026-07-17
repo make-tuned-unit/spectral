@@ -523,8 +523,13 @@ impl AccuracyEval {
         // one sparse haiku call dedups cross-session mentions into an entity-keyed
         // atom list, prepended to the context (the raw sessions remain below for
         // grounding). Falls back silently to the flat context on any error.
-        if std::env::var("SPECTRAL_CONSOLIDATE_CONTEXT").map(|v| v == "1").unwrap_or(false) {
-            if let Some(atoms) = crate::consolidate::consolidate_context(&question.question, &memories) {
+        if std::env::var("SPECTRAL_CONSOLIDATE_CONTEXT")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            if let Some(atoms) =
+                crate::consolidate::consolidate_context(&question.question, &memories)
+            {
                 memories.insert(
                     0,
                     format!(

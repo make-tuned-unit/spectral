@@ -228,7 +228,7 @@ pub async fn ingest_with(
         declarative_density: None, // Computed by Brain after ingest
         description: None,
         description_generated_at: None,
-        content_hash: None, // Computed by store.write()
+        content_hash: None,    // Computed by store.write()
         source_brain_id: None, // Stamped by Brain after write (signing)
         signature: None,
     };

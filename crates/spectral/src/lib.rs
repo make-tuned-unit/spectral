@@ -508,7 +508,8 @@ impl Brain {
         min_co_count: u64,
         scan_limit: usize,
     ) -> Result<Vec<spectral_graph::brain::ConsolidationCandidate>, Error> {
-        self.inner.consolidation_candidates(min_co_count, scan_limit)
+        self.inner
+            .consolidation_candidates(min_co_count, scan_limit)
     }
 
     /// Consolidate sources into a higher-tier abstraction whose content comes

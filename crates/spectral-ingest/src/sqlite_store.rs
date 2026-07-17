@@ -31,7 +31,8 @@
 use crate::{
     CompactionTier, ConsolidateOpts, ConsolidationEdge, ConsolidationResult, EntityField, Episode,
     FieldSource, Fingerprint, ForgetReceipt, InvalidSourcePolicy, Memory, MemoryAnnotation,
-    MemoryHit, MemoryStore, RelatedMemory, RetrievalEvent, SkipReason, SpectrogramRow, WriteOutcome,
+    MemoryHit, MemoryStore, RelatedMemory, RetrievalEvent, SkipReason, SpectrogramRow,
+    WriteOutcome,
 };
 use lru::LruCache;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -397,10 +398,7 @@ impl SqliteStore {
     /// the tokenizer into the index at creation time, so a tokenizer change
     /// (e.g. the porter-stemming default introduced after older databases were
     /// created) requires a one-time drop + recreate + repopulate.
-    fn migrate_fts_tokenizer(
-        conn: &Connection,
-        fts_tokenizer: Option<&str>,
-    ) -> anyhow::Result<()> {
+    fn migrate_fts_tokenizer(conn: &Connection, fts_tokenizer: Option<&str>) -> anyhow::Result<()> {
         let fts_sql: Option<String> = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE name = 'memories_fts'",
@@ -753,7 +751,9 @@ impl SqliteStore {
             }
         }
         if !has_source_brain_id {
-            conn.execute_batch("ALTER TABLE memories ADD COLUMN source_brain_id BLOB DEFAULT NULL")?;
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN source_brain_id BLOB DEFAULT NULL",
+            )?;
         }
         if !has_signature {
             conn.execute_batch("ALTER TABLE memories ADD COLUMN signature BLOB DEFAULT NULL")?;
@@ -1518,7 +1518,10 @@ impl MemoryStore for SqliteStore {
                 all_results.sort_by_cached_key(|hit| {
                     let haystack =
                         format!("{} {}", hit.key.to_lowercase(), hit.content.to_lowercase());
-                    let matches = terms.iter().filter(|t| haystack.contains(t.as_str())).count();
+                    let matches = terms
+                        .iter()
+                        .filter(|t| haystack.contains(t.as_str()))
+                        .count();
                     std::cmp::Reverse(matches)
                 });
             }
@@ -1607,24 +1610,24 @@ impl MemoryStore for SqliteStore {
             // channel-specific winner that sits just past `max_results` in the
             // other channel, then fuse by rank and take the top `max_results`.
             let depth = (max_results.saturating_mul(2)).max(50) as i64;
-            let ranked_ids = |table: &str, weights: &str, mq: &str| -> anyhow::Result<Vec<String>> {
-                let sql = format!(
-                    "SELECT m.id
+            let ranked_ids =
+                |table: &str, weights: &str, mq: &str| -> anyhow::Result<Vec<String>> {
+                    let sql = format!(
+                        "SELECT m.id
                      FROM {table} f
                      JOIN memories m ON m.rowid = f.rowid
                      WHERE {table} MATCH ?1
                        AND m.key NOT IN (SELECT source_key FROM consolidation_edges)
                      ORDER BY bm25({table}{weights}) LIMIT ?2"
-                );
-                let mut stmt = conn.prepare(&sql)?;
-                let rows =
-                    stmt.query_map(params![mq, depth], |r| r.get::<_, String>(0))?;
-                let mut out = Vec::new();
-                for r in rows {
-                    out.push(r?);
-                }
-                Ok(out)
-            };
+                    );
+                    let mut stmt = conn.prepare(&sql)?;
+                    let rows = stmt.query_map(params![mq, depth], |r| r.get::<_, String>(0))?;
+                    let mut out = Vec::new();
+                    for r in rows {
+                        out.push(r?);
+                    }
+                    Ok(out)
+                };
             let porter = ranked_ids("memories_fts", ", 1.0, 1.0, 0.5", &query)?;
             let raw = ranked_ids("memories_fts_raw", "", &raw_query)?;
 
@@ -1640,7 +1643,9 @@ impl MemoryStore for SqliteStore {
             }
             let mut fused: Vec<(String, f64)> = score.into_iter().collect();
             fused.sort_by(|a, b| {
-                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0))
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.0.cmp(&b.0))
             });
             fused.truncate(max_results);
             if fused.is_empty() {
@@ -1654,8 +1659,10 @@ impl MemoryStore for SqliteStore {
                 cols = MEMORY_COLUMNS.replace(", ", ", m."),
             );
             let mut stmt = conn.prepare(&sql)?;
-            let params_vec: Vec<&dyn rusqlite::ToSql> =
-                fused.iter().map(|(id, _)| id as &dyn rusqlite::ToSql).collect();
+            let params_vec: Vec<&dyn rusqlite::ToSql> = fused
+                .iter()
+                .map(|(id, _)| id as &dyn rusqlite::ToSql)
+                .collect();
             let rows = stmt.query_map(params_vec.as_slice(), |row| memory_hit_from_row(row, 0))?;
             let mut by_id: std::collections::HashMap<String, MemoryHit> =
                 std::collections::HashMap::new();
@@ -2041,9 +2048,11 @@ impl MemoryStore for SqliteStore {
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             // Resolve the memory id (FK-CASCADE substrates key on id).
             let id: Option<String> = conn
-                .query_row("SELECT id FROM memories WHERE key = ?1", params![key], |r| {
-                    r.get(0)
-                })
+                .query_row(
+                    "SELECT id FROM memories WHERE key = ?1",
+                    params![key],
+                    |r| r.get(0),
+                )
                 .optional()?;
             let Some(id) = id else {
                 return Ok(ForgetReceipt::default());
@@ -2094,7 +2103,8 @@ impl MemoryStore for SqliteStore {
             // The row delete cascades any FK substrates created before the
             // explicit scrubs above (idempotent — already emptied) and fires
             // the FTS AFTER DELETE trigger.
-            receipt.memory_rows = tx.execute("DELETE FROM memories WHERE key = ?1", params![key])?;
+            receipt.memory_rows =
+                tx.execute("DELETE FROM memories WHERE key = ?1", params![key])?;
             tx.commit()?;
 
             // FTS is a shadow of the memories row; the trigger removed it.
@@ -5186,12 +5196,19 @@ mod tests {
         // globally popular (huge occ) -> B outranks popular under lift.
         let rec = store.recommend_by_lift("A", 5, 1).await.unwrap();
         assert_eq!(
-            rec[0].memory_id, "B",
+            rec[0].memory_id,
+            "B",
             "lift should rank the A-specific memory B first, got {:?}",
-            rec.iter().map(|r| (&r.memory_id, r.lift)).collect::<Vec<_>>()
+            rec.iter()
+                .map(|r| (&r.memory_id, r.lift))
+                .collect::<Vec<_>>()
         );
         let b_lift = rec.iter().find(|r| r.memory_id == "B").unwrap().lift;
-        let pop_lift = rec.iter().find(|r| r.memory_id == "popular").map(|r| r.lift).unwrap_or(0.0);
+        let pop_lift = rec
+            .iter()
+            .find(|r| r.memory_id == "popular")
+            .map(|r| r.lift)
+            .unwrap_or(0.0);
         assert!(
             b_lift > pop_lift,
             "B's lift ({b_lift}) must exceed popular's ({pop_lift}) — popularity suppressed"
@@ -5897,7 +5914,10 @@ mod tests {
         assert_eq!(n, 3, "only existing keys count toward the update total");
         assert!((score_of(&store, "a") - 0.31).abs() < 1e-9);
         assert!((score_of(&store, "b") - 0.51).abs() < 1e-9);
-        assert!((score_of(&store, "hot") - 1.0).abs() < 1e-9, "must clamp at 1.0");
+        assert!(
+            (score_of(&store, "hot") - 1.0).abs() < 1e-9,
+            "must clamp at 1.0"
+        );
 
         // last_reinforced_at was stamped (decay clock reset) for a reinforced key.
         let stamped: Option<String> = store
@@ -5908,7 +5928,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(stamped.is_some(), "batch reinforce must set last_reinforced_at");
+        assert!(
+            stamped.is_some(),
+            "batch reinforce must set last_reinforced_at"
+        );
 
         // Empty batch is a no-op, not an error.
         assert_eq!(store.reinforce_batch(&[], 0.01).await.unwrap(), 0);

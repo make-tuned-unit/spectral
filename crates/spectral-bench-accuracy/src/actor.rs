@@ -96,8 +96,8 @@ impl AnthropicActor {
 
         let json: serde_json::Value = resp.json()?;
         let usage = extract_usage(&json);
-        let text = extract_text(&json)
-            .ok_or_else(|| anyhow::anyhow!("Response missing a text block"))?;
+        let text =
+            extract_text(&json).ok_or_else(|| anyhow::anyhow!("Response missing a text block"))?;
         Ok((text, usage))
     }
 

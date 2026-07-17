@@ -54,13 +54,41 @@ struct Case {
 }
 
 const CASES: &[Case] = &[
-    Case { query: "doctors", answer: "m01", note: "inflection (porter wins)" },
-    Case { query: "apartments", answer: "m02", note: "inflection (porter wins)" },
-    Case { query: "engineers", answer: "m03", note: "inflection (porter wins)" },
-    Case { query: "university", answer: "m04", note: "over-stem vs 'universe'" },
-    Case { query: "organization", answer: "m06", note: "over-stem vs 'organ'" },
-    Case { query: "policy", answer: "m09", note: "over-stem vs 'police'" },
-    Case { query: "relativity", answer: "m15", note: "over-stem vs 'relative'" },
+    Case {
+        query: "doctors",
+        answer: "m01",
+        note: "inflection (porter wins)",
+    },
+    Case {
+        query: "apartments",
+        answer: "m02",
+        note: "inflection (porter wins)",
+    },
+    Case {
+        query: "engineers",
+        answer: "m03",
+        note: "inflection (porter wins)",
+    },
+    Case {
+        query: "university",
+        answer: "m04",
+        note: "over-stem vs 'universe'",
+    },
+    Case {
+        query: "organization",
+        answer: "m06",
+        note: "over-stem vs 'organ'",
+    },
+    Case {
+        query: "policy",
+        answer: "m09",
+        note: "over-stem vs 'police'",
+    },
+    Case {
+        query: "relativity",
+        answer: "m15",
+        note: "over-stem vs 'relative'",
+    },
 ];
 
 fn build_fts(conn: &Connection, name: &str, tokenizer: &str) {
@@ -87,9 +115,8 @@ fn match_query(query: &str) -> String {
 
 /// Ranked list of keys for a query against one FTS table (best first).
 fn ranked(conn: &Connection, table: &str, query: &str, limit: usize) -> Vec<String> {
-    let sql = format!(
-        "SELECT key FROM {table} WHERE {table} MATCH ?1 ORDER BY bm25({table}) LIMIT ?2"
-    );
+    let sql =
+        format!("SELECT key FROM {table} WHERE {table} MATCH ?1 ORDER BY bm25({table}) LIMIT ?2");
     let mut stmt = conn.prepare(&sql).unwrap();
     stmt.query_map(rusqlite::params![match_query(query), limit as i64], |r| {
         r.get::<_, String>(0)
@@ -122,7 +149,11 @@ fn main() {
     build_fts(&conn, "fts_plain", "unicode61");
 
     println!("=== Stemmed + unstemmed RRF fusion (ceiling measurement) ===");
-    println!("corpus: {} memories; {} queries\n", CORPUS.len(), CASES.len());
+    println!(
+        "corpus: {} memories; {} queries\n",
+        CORPUS.len(),
+        CASES.len()
+    );
 
     let pools = [1usize, 3, 5];
     let channels = ["porter", "unstemmed", "RRF-fused"];
@@ -157,17 +188,27 @@ fn main() {
 
     // Per-query answer rank in each channel — shows exactly where each wins.
     println!("\n--- answer rank per channel (lower = better; MISS = absent) ---");
-    println!("{:<22}{:<28}{:>8}{:>10}{:>10}", "query", "case", "porter", "unstem", "fused");
+    println!(
+        "{:<22}{:<28}{:>8}{:>10}{:>10}",
+        "query", "case", "porter", "unstem", "fused"
+    );
     for case in CASES {
         let p = ranked(&conn, "fts_porter", case.query, wide);
         let u = ranked(&conn, "fts_plain", case.query, wide);
         let f = rrf_fuse(&[p.clone(), u.clone()], 60.0);
         let rank = |l: &[String]| -> String {
-            l.iter().position(|k| k == case.answer).map(|i| (i + 1).to_string()).unwrap_or_else(|| "MISS".into())
+            l.iter()
+                .position(|k| k == case.answer)
+                .map(|i| (i + 1).to_string())
+                .unwrap_or_else(|| "MISS".into())
         };
         println!(
             "{:<22}{:<28}{:>8}{:>10}{:>10}",
-            case.query, case.note, rank(&p), rank(&u), rank(&f)
+            case.query,
+            case.note,
+            rank(&p),
+            rank(&u),
+            rank(&f)
         );
     }
 

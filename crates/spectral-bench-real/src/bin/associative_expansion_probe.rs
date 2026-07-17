@@ -58,7 +58,10 @@ fn remember_ep(brain: &Brain, key: &str, content: &str, ep: &str) {
 }
 
 fn rank_of(keys: &[String], want: &str) -> usize {
-    keys.iter().position(|k| k == want).map(|p| p + 1).unwrap_or(0)
+    keys.iter()
+        .position(|k| k == want)
+        .map(|p| p + 1)
+        .unwrap_or(0)
 }
 
 fn main() {
@@ -69,27 +72,87 @@ fn main() {
     // (episode, key, content)
     let mems = [
         // e1: dinner/garden — the archetype
-        ("e1", "e1_bridge", "What should I cook for the dinner party this weekend?"),
-        ("e1", "e1_answer", "I have been growing cherry tomatoes, basil, and mint in my backyard"),
+        (
+            "e1",
+            "e1_bridge",
+            "What should I cook for the dinner party this weekend?",
+        ),
+        (
+            "e1",
+            "e1_answer",
+            "I have been growing cherry tomatoes, basil, and mint in my backyard",
+        ),
         // e2: pet
-        ("e2", "e2_bridge", "Any advice for my upcoming vet appointment?"),
-        ("e2", "e2_answer", "Biscuit is a rescue beagle who gets anxious around strangers"),
+        (
+            "e2",
+            "e2_bridge",
+            "Any advice for my upcoming vet appointment?",
+        ),
+        (
+            "e2",
+            "e2_answer",
+            "Biscuit is a rescue beagle who gets anxious around strangers",
+        ),
         // e3: commute
-        ("e3", "e3_bridge", "Suggest something for my morning commute"),
-        ("e3", "e3_answer", "I subscribed to three history podcasts and a language app"),
+        (
+            "e3",
+            "e3_bridge",
+            "Suggest something for my morning commute",
+        ),
+        (
+            "e3",
+            "e3_answer",
+            "I subscribed to three history podcasts and a language app",
+        ),
         // e4: travel
         ("e4", "e4_bridge", "Help me plan activities for the trip"),
-        ("e4", "e4_answer", "We are flying to Lisbon and staying two nights in Sintra"),
+        (
+            "e4",
+            "e4_answer",
+            "We are flying to Lisbon and staying two nights in Sintra",
+        ),
         // e5: fitness
-        ("e5", "e5_bridge", "What should I do for exercise this week?"),
-        ("e5", "e5_answer", "My physical therapist cleared me to jog after the knee surgery"),
+        (
+            "e5",
+            "e5_bridge",
+            "What should I do for exercise this week?",
+        ),
+        (
+            "e5",
+            "e5_answer",
+            "My physical therapist cleared me to jog after the knee surgery",
+        ),
         // noise episodes (unrelated, add distractors so FTS/expansion isn't trivial)
-        ("n1", "n1_a", "The quarterly budget spreadsheet needs review before Friday"),
-        ("n1", "n1_b", "I switched banks to get a better savings interest rate"),
-        ("n2", "n2_a", "The staging server crashed on a null pointer exception"),
-        ("n2", "n2_b", "We migrated the database to a new managed instance"),
-        ("n3", "n3_a", "My favorite coffee is a light Ethiopian pour-over"),
-        ("n3", "n3_b", "The anniversary dinner reservation is at the rooftop place"),
+        (
+            "n1",
+            "n1_a",
+            "The quarterly budget spreadsheet needs review before Friday",
+        ),
+        (
+            "n1",
+            "n1_b",
+            "I switched banks to get a better savings interest rate",
+        ),
+        (
+            "n2",
+            "n2_a",
+            "The staging server crashed on a null pointer exception",
+        ),
+        (
+            "n2",
+            "n2_b",
+            "We migrated the database to a new managed instance",
+        ),
+        (
+            "n3",
+            "n3_a",
+            "My favorite coffee is a light Ethiopian pour-over",
+        ),
+        (
+            "n3",
+            "n3_b",
+            "The anniversary dinner reservation is at the rooftop place",
+        ),
     ];
     for (ep, key, content) in &mems {
         remember_ep(&brain, key, content, ep);
@@ -98,9 +161,15 @@ fn main() {
     // (query, gold answer key) — the query is lexically DISJOINT from the answer,
     // but shares words with the answer's episode bridge memory.
     let cases: &[(&str, &str)] = &[
-        ("suggest a dinner using my homegrown ingredients", "e1_answer"),
+        (
+            "suggest a dinner using my homegrown ingredients",
+            "e1_answer",
+        ),
         ("what pet care tips do you have for me", "e2_answer"),
-        ("recommend audio to listen to on my drive to work", "e3_answer"),
+        (
+            "recommend audio to listen to on my drive to work",
+            "e3_answer",
+        ),
         ("what are some good vacation ideas for me", "e4_answer"),
         ("give me a workout plan", "e5_answer"),
     ];
@@ -108,18 +177,26 @@ fn main() {
     // k=5 over a 16-memory corpus: FTS returns only its top-5 by relevance, so a
     // lexically-disjoint answer (zero query-term match) falls OUTSIDE the window.
     // The test: does episode-expansion from the in-window bridge recover it?
-    let cfg = RecallTopKConfig { k: 5, ..RecallTopKConfig::default() };
+    let cfg = RecallTopKConfig {
+        k: 5,
+        ..RecallTopKConfig::default()
+    };
     const SEED_EPISODES: usize = 5; // expand episodes of the top-N FTS seeds
 
     println!("=== Associative recall via episode co-occurrence (the TACT vision) ===\n");
     println!("Gold answer shares NO distinctive words with the query. Rank in each (0=missed):\n");
-    println!("{:<48} {:>10} {:>14}   recovered?", "query", "FTS-only", "FTS+assoc");
+    println!(
+        "{:<48} {:>10} {:>14}   recovered?",
+        "query", "FTS-only", "FTS+assoc"
+    );
     println!("{}", "-".repeat(84));
 
     let (mut fts_found, mut assoc_found) = (0, 0);
     for (query, gold) in cases {
         // FTS baseline
-        let fts_hits = brain.recall_topk_fts(query, &cfg, Visibility::Private).unwrap();
+        let fts_hits = brain
+            .recall_topk_fts(query, &cfg, Visibility::Private)
+            .unwrap();
         let fts_keys: Vec<String> = fts_hits.iter().map(|h| h.key.clone()).collect();
         let fts_rank = rank_of(&fts_keys, gold);
 
@@ -157,7 +234,13 @@ fn main() {
         } else {
             "❌ still missed"
         };
-        let fmt = |r: usize| if r == 0 { "—".to_string() } else { r.to_string() };
+        let fmt = |r: usize| {
+            if r == 0 {
+                "—".to_string()
+            } else {
+                r.to_string()
+            }
+        };
         println!(
             "{:<48} {:>10} {:>14}   {}",
             query,

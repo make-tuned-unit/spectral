@@ -83,12 +83,32 @@ fn seed_corpus(brain: &Brain) {
     // Query-word-matching distractors (dinner/suggest/using/ingredients) so the
     // 0-match answer is outranked. Two share episode n0 (a removable duplicate).
     let d = [
-        ("d0", "the dinner reservation is confirmed for eight people", "n0"),
-        ("d1", "dinner leftovers from the party went bad overnight", "n0"),
+        (
+            "d0",
+            "the dinner reservation is confirmed for eight people",
+            "n0",
+        ),
+        (
+            "d1",
+            "dinner leftovers from the party went bad overnight",
+            "n0",
+        ),
         ("d2", "I suggest we reschedule the morning standup", "n1"),
-        ("d3", "using the new template for the quarterly report", "n2"),
-        ("d4", "the ingredients for the cake are on the shopping list", "n3"),
-        ("d5", "suggest booking dinner reservations early on weekends", "n4"),
+        (
+            "d3",
+            "using the new template for the quarterly report",
+            "n2",
+        ),
+        (
+            "d4",
+            "the ingredients for the cake are on the shopping list",
+            "n3",
+        ),
+        (
+            "d5",
+            "suggest booking dinner reservations early on weekends",
+            "n4",
+        ),
     ];
     for (k, c, ep) in d {
         remember_ep(brain, k, c, ep);
@@ -118,7 +138,10 @@ fn spreading_respects_visibility_boundary() {
         Visibility::Private,
     );
 
-    let cfg = RecallTopKConfig { k: 5, ..RecallTopKConfig::default() };
+    let cfg = RecallTopKConfig {
+        k: 5,
+        ..RecallTopKConfig::default()
+    };
     let ep_cfg = AssocSpreadConfig {
         mode: SpreadMode::Episode,
         episode_budget: 4000,
@@ -139,7 +162,11 @@ fn spreading_respects_visibility_boundary() {
     // Private (own-brain) context: spreading DOES recover it — filter is scoped,
     // not a blanket block.
     let mut own = brain
-        .recall_topk_fts("suggest a dinner using ingredients", &cfg, Visibility::Private)
+        .recall_topk_fts(
+            "suggest a dinner using ingredients",
+            &cfg,
+            Visibility::Private,
+        )
         .unwrap();
     associative_spread(&brain, &mut own, &ep_cfg, Visibility::Private);
     assert!(
@@ -156,10 +183,15 @@ fn episode_spreading_recovers_lexically_disjoint_answer() {
     seed_corpus(&brain);
 
     let query = "suggest a dinner using my homegrown ingredients";
-    let cfg = RecallTopKConfig { k: 3, ..RecallTopKConfig::default() };
+    let cfg = RecallTopKConfig {
+        k: 3,
+        ..RecallTopKConfig::default()
+    };
 
     // Baseline: small-k FTS finds the bridge (word match) but not the answer.
-    let base = brain.recall_topk_fts(query, &cfg, Visibility::Private).unwrap();
+    let base = brain
+        .recall_topk_fts(query, &cfg, Visibility::Private)
+        .unwrap();
     let base_keys = keys(&base);
     assert!(
         base_keys.contains(&"e1-bridge".to_string()),
@@ -206,8 +238,13 @@ fn rerank_recovers_within_bounded_context() {
     seed_corpus(&brain);
 
     let query = "suggest a dinner using my homegrown ingredients";
-    let cfg = RecallTopKConfig { k: 5, ..RecallTopKConfig::default() };
-    let base = brain.recall_topk_fts(query, &cfg, Visibility::Private).unwrap();
+    let cfg = RecallTopKConfig {
+        k: 5,
+        ..RecallTopKConfig::default()
+    };
+    let base = brain
+        .recall_topk_fts(query, &cfg, Visibility::Private)
+        .unwrap();
     let n_before = base.len();
 
     let mut hits = base.clone();

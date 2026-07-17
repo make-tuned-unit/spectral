@@ -1086,16 +1086,24 @@ fn forget_hard_deletes_across_substrates_and_verifies() {
     .unwrap();
 
     let content = "Pod task-runner-7f9 OOMKilled at 512Mi during the nightly batch reindex";
-    brain.remember("incident", content, Visibility::Private).unwrap();
+    brain
+        .remember("incident", content, Visibility::Private)
+        .unwrap();
 
     // Present before: recall finds it, recognition recognizes it.
     let before = brain
         .recall_topk_fts(content, &RecallTopKConfig::default(), Visibility::Private)
         .unwrap();
-    assert!(before.iter().any(|h| h.key == "incident"), "should recall before forget");
+    assert!(
+        before.iter().any(|h| h.key == "incident"),
+        "should recall before forget"
+    );
     let rec_before = brain.recognize(content).unwrap();
     assert!(
-        matches!(rec_before.verdict, spectral_recognition::Verdict::Recognized { .. }),
+        matches!(
+            rec_before.verdict,
+            spectral_recognition::Verdict::Recognized { .. }
+        ),
         "should recognize before forget"
     );
 
@@ -1106,23 +1114,47 @@ fn forget_hard_deletes_across_substrates_and_verifies() {
     assert_eq!(report.store.fts_rows, 1, "should purge the FTS shadow");
     // (A lone memory has no constellation fingerprints — those link pairs;
     // fingerprint purging is covered by the ingest-level substrate test.)
-    assert_eq!(report.store.spectrograms, 1, "should purge the spectrogram row");
-    assert!(report.recognition_removed, "should unenroll from recognition index");
-    assert!(report.recall_clear, "recall probe should be clear post-forget");
-    assert!(report.recognize_clear, "recognize probe should be clear post-forget");
-    assert!(report.fully_forgotten(), "all substrates + probes should confirm gone");
+    assert_eq!(
+        report.store.spectrograms, 1,
+        "should purge the spectrogram row"
+    );
+    assert!(
+        report.recognition_removed,
+        "should unenroll from recognition index"
+    );
+    assert!(
+        report.recall_clear,
+        "recall probe should be clear post-forget"
+    );
+    assert!(
+        report.recognize_clear,
+        "recognize probe should be clear post-forget"
+    );
+    assert!(
+        report.fully_forgotten(),
+        "all substrates + probes should confirm gone"
+    );
 
     // Verify independently: gone from recall and recognition.
     let after = brain
         .recall_topk_fts(content, &RecallTopKConfig::default(), Visibility::Private)
         .unwrap();
-    assert!(!after.iter().any(|h| h.key == "incident"), "must not recall after forget");
+    assert!(
+        !after.iter().any(|h| h.key == "incident"),
+        "must not recall after forget"
+    );
     let rec_after = brain.recognize(content).unwrap();
     assert!(
-        !matches!(rec_after.verdict, spectral_recognition::Verdict::Recognized { .. }),
+        !matches!(
+            rec_after.verdict,
+            spectral_recognition::Verdict::Recognized { .. }
+        ),
         "must not recognize after forget"
     );
-    assert!(brain.get_memory(&brain_memory_id("incident")).unwrap().is_none());
+    assert!(brain
+        .get_memory(&brain_memory_id("incident"))
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -1145,7 +1177,10 @@ fn remembered_memories_are_signed_and_verifiable() {
             Visibility::Private,
         )
         .unwrap();
-    let hit = hits.iter().find(|h| h.key == "decision").expect("hit present");
+    let hit = hits
+        .iter()
+        .find(|h| h.key == "decision")
+        .expect("hit present");
 
     // The hit carries authenticated provenance.
     assert_eq!(
@@ -1192,18 +1227,37 @@ fn forget_missing_key_reports_not_existed() {
     let report = brain.forget("nonexistent").unwrap();
     assert!(!report.store.existed);
     assert_eq!(report.store.memory_rows, 0);
-    assert!(!report.fully_forgotten(), "a missing memory is not 'forgotten'");
+    assert!(
+        !report.fully_forgotten(),
+        "a missing memory is not 'forgotten'"
+    );
 }
+
+/// Serializes the `SPECTRAL_FTS_FUSION` env window against porter-brain opens.
+/// The store captures the flag from this process-global env at `Brain::open`, so
+/// under parallel tests a porter (fusion-off) brain could open while a fusion
+/// test has the var set and silently become a fusion brain. Every open whose
+/// fusion state must be deterministic holds this lock across `Brain::open`.
+static FTS_FUSION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Open a brain with stemmed+unstemmed fusion active. The store reads
 /// `SPECTRAL_FTS_FUSION` at open and captures the flag, so the env var only
 /// needs to be set across `Brain::open` — recall reads the captured flag, not
-/// the env — which keeps the global-env window minimal.
+/// the env. The lock keeps that global-env window from leaking into a concurrent
+/// porter open (see [`open_porter_brain`]).
 fn open_fusion_brain(tmp: &TempDir) -> Brain {
+    let _guard = FTS_FUSION_ENV_LOCK.lock().unwrap();
     std::env::set_var("SPECTRAL_FTS_FUSION", "1");
     let brain = Brain::open(brain_config(tmp)).unwrap();
     std::env::remove_var("SPECTRAL_FTS_FUSION");
     brain
+}
+
+/// Open a default (porter-only, fusion-off) brain, guarded against a concurrent
+/// fusion test's env window so its fusion state is deterministic.
+fn open_porter_brain(tmp: &TempDir) -> Brain {
+    let _guard = FTS_FUSION_ENV_LOCK.lock().unwrap();
+    Brain::open(brain_config(tmp)).unwrap()
 }
 
 #[test]
@@ -1213,9 +1267,23 @@ fn fts_fusion_recovers_overstem_and_inflection_end_to_end() {
     // ("university"→"univers"←"universe": a short distractor outranks the
     // answer). RRF fusion with an unstemmed channel recovers BOTH.
     let seed = |brain: &Brain| {
-        brain.remember("doc", "She finally consulted a doctor about the persistent cough", Visibility::Private).unwrap();
-        brain.remember("univ", "Our state university announced it raised its national research ranking again", Visibility::Private).unwrap();
-        brain.remember("universe", "The universe is vast", Visibility::Private).unwrap();
+        brain
+            .remember(
+                "doc",
+                "She finally consulted a doctor about the persistent cough",
+                Visibility::Private,
+            )
+            .unwrap();
+        brain
+            .remember(
+                "univ",
+                "Our state university announced it raised its national research ranking again",
+                Visibility::Private,
+            )
+            .unwrap();
+        brain
+            .remember("universe", "The universe is vast", Visibility::Private)
+            .unwrap();
     };
     let top = |brain: &Brain, q: &str| -> Option<String> {
         brain
@@ -1234,14 +1302,17 @@ fn fts_fusion_recovers_overstem_and_inflection_end_to_end() {
 
     // Porter-only (default): the short distractor wins the over-stem query.
     let tmp_p = TempDir::new().unwrap();
-    let porter = Brain::open(brain_config(&tmp_p)).unwrap();
+    let porter = open_porter_brain(&tmp_p);
     seed(&porter);
     assert_eq!(
         top(&porter, "university").as_deref(),
         Some("universe"),
         "porter-only: over-stemming lets the short 'universe' distractor outrank the answer"
     );
-    assert!(recalls(&porter, "doctors", "doc"), "porter matches the inflection");
+    assert!(
+        recalls(&porter, "doctors", "doc"),
+        "porter matches the inflection"
+    );
 
     // Fusion: the answer is recovered at rank 1, inflection still works.
     let tmp_f = TempDir::new().unwrap();
@@ -1252,7 +1323,10 @@ fn fts_fusion_recovers_overstem_and_inflection_end_to_end() {
         Some("univ"),
         "fusion: the unstemmed channel ranks the exact 'university' answer first, RRF promotes it"
     );
-    assert!(recalls(&fusion, "doctors", "doc"), "fusion keeps porter's inflection match");
+    assert!(
+        recalls(&fusion, "doctors", "doc"),
+        "fusion keeps porter's inflection match"
+    );
 }
 
 #[test]
@@ -1264,21 +1338,44 @@ fn fts_fusion_plural_strip_recovers_overstem_flood() {
     // fusion lifts the answer back to the top. Regression guard for the S-stemmer-
     // like second channel.
     let seed = |brain: &Brain| {
-        brain.remember("answer", "The startup finally hired one more senior backend engineer", Visibility::Private).unwrap();
+        // The answer is deliberately LONGER than the flood docs so BM25 length
+        // normalization reliably ranks the short flood docs above it on the single
+        // low-IDF `engin` term under porter-only — the negative control below is
+        // then deterministic across architectures (an answer/flood length tie
+        // leaves FTS5's tie-break order arch-dependent). Fusion still recovers it:
+        // the unstemmed channel's plural-strip matches `engineer` exactly (only in
+        // the answer), which RRF lifts to the top regardless of its porter rank.
+        brain
+            .remember(
+                "answer",
+                "After a long multi-week interview process the startup finally hired exactly one more experienced senior backend engineer to lead the platform reliability effort next quarter",
+                Visibility::Private,
+            )
+            .unwrap();
         for i in 0..12 {
-            brain.remember(&format!("flood{i}"), &format!("Engineering shipped the milestone number {i} on schedule"), Visibility::Private).unwrap();
+            brain
+                .remember(
+                    &format!("flood{i}"),
+                    &format!("Engineering shipped milestone {i}"),
+                    Visibility::Private,
+                )
+                .unwrap();
         }
     };
     let top = |brain: &Brain| -> Option<String> {
         brain
-            .recall_topk_fts("engineers", &RecallTopKConfig::default(), Visibility::Private)
+            .recall_topk_fts(
+                "engineers",
+                &RecallTopKConfig::default(),
+                Visibility::Private,
+            )
             .unwrap()
             .first()
             .map(|h| h.key.clone())
     };
 
     let tmp_p = TempDir::new().unwrap();
-    let porter = Brain::open(brain_config(&tmp_p)).unwrap();
+    let porter = open_porter_brain(&tmp_p);
     seed(&porter);
     assert_ne!(
         top(&porter).as_deref(),
@@ -1304,23 +1401,46 @@ fn forget_purges_fusion_raw_index_no_resurrection() {
     // fire during the hard delete.
     let tmp = TempDir::new().unwrap();
     let brain = open_fusion_brain(&tmp);
-    brain.remember("secret", "The launch codes are stored in vault seven", Visibility::Private).unwrap();
+    brain
+        .remember(
+            "secret",
+            "The launch codes are stored in vault seven",
+            Visibility::Private,
+        )
+        .unwrap();
 
     // Present via fused recall before forget (exact, unstemmed-friendly query).
     let before = brain
-        .recall_topk_fts("vault seven launch codes", &RecallTopKConfig::default(), Visibility::Private)
+        .recall_topk_fts(
+            "vault seven launch codes",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
         .unwrap();
-    assert!(before.iter().any(|h| h.key == "secret"), "present before forget");
+    assert!(
+        before.iter().any(|h| h.key == "secret"),
+        "present before forget"
+    );
 
     let report = brain.forget("secret").unwrap();
     assert!(report.fully_forgotten(), "forget reports fully gone");
-    assert!(report.recall_clear, "recall probe (which now fuses) is clear");
+    assert!(
+        report.recall_clear,
+        "recall probe (which now fuses) is clear"
+    );
 
     // Must not resurface through the unstemmed channel.
     let after = brain
-        .recall_topk_fts("vault seven launch codes", &RecallTopKConfig::default(), Visibility::Private)
+        .recall_topk_fts(
+            "vault seven launch codes",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
         .unwrap();
-    assert!(!after.iter().any(|h| h.key == "secret"), "must not resurrect via the raw fusion index");
+    assert!(
+        !after.iter().any(|h| h.key == "secret"),
+        "must not resurrect via the raw fusion index"
+    );
 }
 
 #[test]
@@ -1339,42 +1459,103 @@ fn forget_supersedes_prior_version_reader_reingest_scenario() {
     // different content-hash → a different key). Both coexist until forget.
     let v1_key = "doc:q2-report@hashA";
     let v2_key = "doc:q2-report@hashB";
-    brain.remember(v1_key, "Q2 revenue was 4.2 million dollars", Visibility::Private).unwrap();
-    brain.remember(v2_key, "Q2 revenue was 5.1 million dollars, corrected figure", Visibility::Private).unwrap();
+    brain
+        .remember(
+            v1_key,
+            "Q2 revenue was 4.2 million dollars",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            v2_key,
+            "Q2 revenue was 5.1 million dollars, corrected figure",
+            Visibility::Private,
+        )
+        .unwrap();
 
     // Before forget: both versions are recall-able — this is exactly the stale
     // read Permagent flagged (a federated peer could surface the 4.2M version).
     let before = brain
-        .recall_topk_fts("Q2 revenue", &RecallTopKConfig::default(), Visibility::Private)
+        .recall_topk_fts(
+            "Q2 revenue",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
         .unwrap();
-    assert!(before.iter().any(|h| h.key == v1_key), "v1 present before forget");
-    assert!(before.iter().any(|h| h.key == v2_key), "v2 present before forget");
+    assert!(
+        before.iter().any(|h| h.key == v1_key),
+        "v1 present before forget"
+    );
+    assert!(
+        before.iter().any(|h| h.key == v2_key),
+        "v2 present before forget"
+    );
 
     // Reader drops the superseded content-hash on re-ingest.
     let report = brain.forget(v1_key).unwrap();
     assert!(report.store.existed, "the superseded memory existed");
-    assert_eq!(report.store.fts_rows, 1, "the superseded FTS shadow is purged (gone from recall, not filtered)");
-    assert!(report.recall_clear, "forget's own recall probe confirms the stale version is gone");
-    assert!(report.fully_forgotten(), "superseded version fully forgotten across substrates");
+    assert_eq!(
+        report.store.fts_rows, 1,
+        "the superseded FTS shadow is purged (gone from recall, not filtered)"
+    );
+    assert!(
+        report.recall_clear,
+        "forget's own recall probe confirms the stale version is gone"
+    );
+    assert!(
+        report.fully_forgotten(),
+        "superseded version fully forgotten across substrates"
+    );
 
     // After forget (local): the replacement SURVIVES, the stale version is gone.
     let after = brain
-        .recall_topk_fts("Q2 revenue", &RecallTopKConfig::default(), Visibility::Private)
+        .recall_topk_fts(
+            "Q2 revenue",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
         .unwrap();
-    assert!(after.iter().any(|h| h.key == v2_key), "v2 (replacement) must survive forget");
-    assert!(!after.iter().any(|h| h.key == v1_key), "v1 (superseded) must be gone from recall");
-    assert!(brain.get_memory(&brain_memory_id(v1_key)).unwrap().is_none(), "v1 row hard-deleted");
+    assert!(
+        after.iter().any(|h| h.key == v2_key),
+        "v2 (replacement) must survive forget"
+    );
+    assert!(
+        !after.iter().any(|h| h.key == v1_key),
+        "v1 (superseded) must be gone from recall"
+    );
+    assert!(
+        brain
+            .get_memory(&brain_memory_id(v1_key))
+            .unwrap()
+            .is_none(),
+        "v1 row hard-deleted"
+    );
 
     // The federation risk, closed: a read-only replica of the same brain (the
     // fan-out path a "federated Henry" reads through) cannot surface the stale
     // version, because forget purged the underlying FTS row, not a soft flag.
     drop(brain);
-    let replica = Brain::open(BrainConfig { read_only: true, ..brain_config(&tmp) }).unwrap();
+    let replica = Brain::open(BrainConfig {
+        read_only: true,
+        ..brain_config(&tmp)
+    })
+    .unwrap();
     let via_replica = replica
-        .recall_topk_fts("Q2 revenue", &RecallTopKConfig::default(), Visibility::Private)
+        .recall_topk_fts(
+            "Q2 revenue",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
         .unwrap();
-    assert!(via_replica.iter().any(|h| h.key == v2_key), "replica still serves the current version");
-    assert!(!via_replica.iter().any(|h| h.key == v1_key), "replica must not surface the stale version");
+    assert!(
+        via_replica.iter().any(|h| h.key == v2_key),
+        "replica still serves the current version"
+    );
+    assert!(
+        !via_replica.iter().any(|h| h.key == v1_key),
+        "replica must not surface the stale version"
+    );
 }
 
 fn brain_memory_id(key: &str) -> String {
@@ -1406,7 +1587,11 @@ fn recall_topk_fts_matches_possessive_entity_query() {
         .unwrap();
     // Distractor that shares a stopword but not the entity.
     brain
-        .remember("filler", "It is a busy quarter with a lot of change", Visibility::Private)
+        .remember(
+            "filler",
+            "It is a busy quarter with a lot of change",
+            Visibility::Private,
+        )
         .unwrap();
 
     let hits = brain
@@ -1440,11 +1625,7 @@ fn recall_topk_fts_porter_stems_by_default() {
 
     // Plural query bridges to singular content under the porter default.
     let result = brain
-        .recall_topk_fts(
-            "doctors",
-            &RecallTopKConfig::default(),
-            Visibility::Private,
-        )
+        .recall_topk_fts("doctors", &RecallTopKConfig::default(), Visibility::Private)
         .unwrap();
 
     assert!(
@@ -1474,11 +1655,7 @@ fn brain_config_fts_tokenizer_overrides_default() {
 
     // Explicit unstemmed tokenizer: the plural query no longer matches.
     let result = brain
-        .recall_topk_fts(
-            "doctors",
-            &RecallTopKConfig::default(),
-            Visibility::Private,
-        )
+        .recall_topk_fts("doctors", &RecallTopKConfig::default(), Visibility::Private)
         .unwrap();
 
     assert!(
@@ -1753,14 +1930,44 @@ fn layered_consolidation_loop_deterministic_end_to_end() {
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
     let sources = ["w1", "w2", "w3"];
-    brain.remember("w1", "Attended the wedding of Rachel and Mike at the lakeside venue", Visibility::Private).unwrap();
-    brain.remember("w2", "Rachel and Mike's wedding was lovely, great toast from the best man", Visibility::Private).unwrap();
-    brain.remember("w3", "The wedding for Rachel and Mike had a live band and dancing", Visibility::Private).unwrap();
-    brain.remember("distract", "Booked a dentist appointment for next Tuesday morning", Visibility::Private).unwrap();
+    brain
+        .remember(
+            "w1",
+            "Attended the wedding of Rachel and Mike at the lakeside venue",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "w2",
+            "Rachel and Mike's wedding was lovely, great toast from the best man",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "w3",
+            "The wedding for Rachel and Mike had a live band and dancing",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "distract",
+            "Booked a dentist appointment for next Tuesday morning",
+            Visibility::Private,
+        )
+        .unwrap();
 
     // Ambient signal: usage repeatedly co-retrieves the three wedding mentions.
     for _ in 0..4 {
-        let _ = brain.recall_topk_fts("Rachel Mike wedding", &RecallTopKConfig::default(), Visibility::Private).unwrap();
+        let _ = brain
+            .recall_topk_fts(
+                "Rachel Mike wedding",
+                &RecallTopKConfig::default(),
+                Visibility::Private,
+            )
+            .unwrap();
     }
     let pairs = brain.rebuild_co_retrieval_index().unwrap();
     assert!(pairs > 0, "co-retrieval history should exist");
@@ -1769,28 +1976,68 @@ fn layered_consolidation_loop_deterministic_end_to_end() {
     let candidates = brain.consolidation_candidates(1, 100).unwrap();
     let cluster = candidates
         .iter()
-        .find(|c| c.member_keys.iter().filter(|k| sources.contains(&k.as_str())).count() >= 2)
+        .find(|c| {
+            c.member_keys
+                .iter()
+                .filter(|k| sources.contains(&k.as_str()))
+                .count()
+                >= 2
+        })
         .expect("wedding cluster should be a consolidation candidate");
-    assert!(cluster.cohesion > 0.0, "cluster has an ambient cohesion score");
+    assert!(
+        cluster.cohesion > 0.0,
+        "cluster has an ambient cohesion score"
+    );
 
     // Consolidate the cluster deterministically (extractive, $0). Use exactly the
     // three wedding sources.
     let members: Vec<String> = sources.iter().map(|s| s.to_string()).collect();
-    brain.consolidate_extractive(&members, "wedding:rachel-mike", CompactionTier::DailyRollup).unwrap();
+    brain
+        .consolidate_extractive(&members, "wedding:rachel-mike", CompactionTier::DailyRollup)
+        .unwrap();
 
     // Ordinary recall now surfaces the abstract memory, NOT the raw sources.
-    let plain = brain.recall_topk_fts("Rachel Mike wedding", &RecallTopKConfig::default(), Visibility::Private).unwrap();
-    assert!(plain.iter().any(|h| h.key == "wedding:rachel-mike"), "abstract memory is recalled");
+    let plain = brain
+        .recall_topk_fts(
+            "Rachel Mike wedding",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(
+        plain.iter().any(|h| h.key == "wedding:rachel-mike"),
+        "abstract memory is recalled"
+    );
     for s in &sources {
-        assert!(!plain.iter().any(|h| &h.key == s), "raw source {s} is hidden from ordinary recall after consolidation");
+        assert!(
+            !plain.iter().any(|h| &h.key == s),
+            "raw source {s} is hidden from ordinary recall after consolidation"
+        );
     }
 
     // Layered recall drills down: the abstract hit carries its source memories.
-    let layered = brain.recall_with_provenance("Rachel Mike wedding", &RecallTopKConfig::default(), Visibility::Private, 10).unwrap();
-    let abstract_hit = layered.iter().find(|l| l.hit.key == "wedding:rachel-mike").expect("abstract hit present");
-    let source_keys: std::collections::HashSet<&str> = abstract_hit.sources.iter().map(|h| h.key.as_str()).collect();
+    let layered = brain
+        .recall_with_provenance(
+            "Rachel Mike wedding",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+            10,
+        )
+        .unwrap();
+    let abstract_hit = layered
+        .iter()
+        .find(|l| l.hit.key == "wedding:rachel-mike")
+        .expect("abstract hit present");
+    let source_keys: std::collections::HashSet<&str> = abstract_hit
+        .sources
+        .iter()
+        .map(|h| h.key.as_str())
+        .collect();
     for s in &sources {
-        assert!(source_keys.contains(s), "provenance drill-down includes source {s}");
+        assert!(
+            source_keys.contains(s),
+            "provenance drill-down includes source {s}"
+        );
     }
 }
 
@@ -1801,18 +2048,40 @@ fn consolidate_with_accepts_a_custom_summarizer() {
     use spectral_ingest::CompactionTier;
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
-    brain.remember("a", "The Q2 revenue was 4.2 million dollars", Visibility::Private).unwrap();
-    brain.remember("b", "Q2 revenue came in at 4.2M, up from Q1", Visibility::Private).unwrap();
+    brain
+        .remember(
+            "a",
+            "The Q2 revenue was 4.2 million dollars",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "b",
+            "Q2 revenue came in at 4.2M, up from Q1",
+            Visibility::Private,
+        )
+        .unwrap();
 
     let members = vec!["a".to_string(), "b".to_string()];
     brain
-        .consolidate_with(&members, "q2:summary", CompactionTier::DailyRollup, |contents| {
-            format!("SUMMARY of {} sources: Q2 revenue = $4.2M", contents.len())
-        })
+        .consolidate_with(
+            &members,
+            "q2:summary",
+            CompactionTier::DailyRollup,
+            |contents| format!("SUMMARY of {} sources: Q2 revenue = $4.2M", contents.len()),
+        )
         .unwrap();
 
-    let m = brain.get_memory(&brain_memory_id("q2:summary")).unwrap().unwrap();
-    assert!(m.content.starts_with("SUMMARY of 2 sources"), "summarizer output stored: {}", m.content);
+    let m = brain
+        .get_memory(&brain_memory_id("q2:summary"))
+        .unwrap()
+        .unwrap();
+    assert!(
+        m.content.starts_with("SUMMARY of 2 sources"),
+        "summarizer output stored: {}",
+        m.content
+    );
     assert_eq!(m.compaction_tier, Some(CompactionTier::DailyRollup));
 }
 

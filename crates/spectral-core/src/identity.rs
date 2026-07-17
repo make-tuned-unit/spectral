@@ -169,14 +169,8 @@ impl BrainIdentity {
     /// visibility have not been altered — the trust anchor for a shared,
     /// multi-contributor project brain. The signed payload is produced by
     /// [`memory_signing_payload`] with `source_brain_id = self.brain_id()`.
-    pub fn sign_memory(
-        &self,
-        content_hash: &str,
-        created_at: &str,
-        visibility: &str,
-    ) -> Signature {
-        let payload =
-            memory_signing_payload(&self.brain_id, content_hash, created_at, visibility);
+    pub fn sign_memory(&self, content_hash: &str, created_at: &str, visibility: &str) -> Signature {
+        let payload = memory_signing_payload(&self.brain_id, content_hash, created_at, visibility);
         self.sign(&payload)
     }
 
@@ -222,7 +216,12 @@ pub fn memory_signing_payload(
     visibility: &str,
 ) -> Vec<u8> {
     let mut buf = Vec::with_capacity(
-        MEMORY_SIG_DOMAIN.len() + 32 + content_hash.len() + created_at.len() + visibility.len() + 12,
+        MEMORY_SIG_DOMAIN.len()
+            + 32
+            + content_hash.len()
+            + created_at.len()
+            + visibility.len()
+            + 12,
     );
     buf.extend_from_slice(MEMORY_SIG_DOMAIN);
     buf.extend_from_slice(source_brain_id.as_bytes());
@@ -280,18 +279,30 @@ mod memory_sig_tests {
         let sig = id.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
         // Wrong content hash (content was altered).
         assert!(!verify_memory_signature(
-            id.brain_id(), id.verifying_key(),
-            "TAMPERED", "2026-07-10T12:00:00Z", "team", &sig,
+            id.brain_id(),
+            id.verifying_key(),
+            "TAMPERED",
+            "2026-07-10T12:00:00Z",
+            "team",
+            &sig,
         ));
         // Wrong timestamp.
         assert!(!verify_memory_signature(
-            id.brain_id(), id.verifying_key(),
-            "abc123", "2026-07-11T00:00:00Z", "team", &sig,
+            id.brain_id(),
+            id.verifying_key(),
+            "abc123",
+            "2026-07-11T00:00:00Z",
+            "team",
+            &sig,
         ));
         // Visibility escalation (team -> public) must not verify.
         assert!(!verify_memory_signature(
-            id.brain_id(), id.verifying_key(),
-            "abc123", "2026-07-10T12:00:00Z", "public", &sig,
+            id.brain_id(),
+            id.verifying_key(),
+            "abc123",
+            "2026-07-10T12:00:00Z",
+            "public",
+            &sig,
         ));
     }
 
@@ -303,15 +314,23 @@ mod memory_sig_tests {
         // Mallory presents Alice's brain_id but her own key: pubkey doesn't
         // match the claimed origin -> reject.
         assert!(!verify_memory_signature(
-            alice.brain_id(), mallory.verifying_key(),
-            "abc123", "2026-07-10T12:00:00Z", "team", &sig,
+            alice.brain_id(),
+            mallory.verifying_key(),
+            "abc123",
+            "2026-07-10T12:00:00Z",
+            "team",
+            &sig,
         ));
         // Mallory re-signs under her own identity but claims Alice's id ->
         // brain_id/pubkey mismatch -> reject.
         let forged = mallory.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
         assert!(!verify_memory_signature(
-            alice.brain_id(), mallory.verifying_key(),
-            "abc123", "2026-07-10T12:00:00Z", "team", &forged,
+            alice.brain_id(),
+            mallory.verifying_key(),
+            "abc123",
+            "2026-07-10T12:00:00Z",
+            "team",
+            &forged,
         ));
     }
 

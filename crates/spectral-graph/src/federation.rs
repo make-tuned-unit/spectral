@@ -954,7 +954,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (mut brain, _dir) = open_child(&tmp, "async");
         let remembered = brain
-            .remember("m", "asyncwriteback probe distinctive memory", Visibility::Private)
+            .remember(
+                "m",
+                "asyncwriteback probe distinctive memory",
+                Visibility::Private,
+            )
             .unwrap();
         let id = remembered.memory_id;
         let before = brain.get_memory(&id).unwrap().unwrap().signal_score;
@@ -1055,7 +1059,11 @@ mod tests {
         let mut ok_coord = FederationCoordinator::new();
         let (good2, good2_dir) = open_child(&tmp, "good2");
         good2
-            .remember("g2", "shared topic another healthy memory", Visibility::Public)
+            .remember(
+                "g2",
+                "shared topic another healthy memory",
+                Visibility::Public,
+            )
             .unwrap();
         ok_coord.add_brain(good2, good2_dir);
         let ok = ok_coord
@@ -1066,7 +1074,10 @@ mod tests {
                 Visibility::Team,
             )
             .unwrap();
-        assert!(ok.failed.is_empty(), "healthy fan-out should report no failures");
+        assert!(
+            ok.failed.is_empty(),
+            "healthy fan-out should report no failures"
+        );
     }
 
     /// Single-brain boundary: `recall_cascade_scoped` must enforce the same
@@ -1236,7 +1247,11 @@ mod tests {
         // Attacker: five poisons all self-asserted to the maximum signal 1.0.
         let contributions = || {
             vec![
-                (honest, 1.0, vec![hit("h1", "the authoritative answer", 0.5)]),
+                (
+                    honest,
+                    1.0,
+                    vec![hit("h1", "the authoritative answer", 0.5)],
+                ),
                 (
                     attacker,
                     1.0,
@@ -1276,7 +1291,11 @@ mod tests {
             "RRF must lift the honest answer above the whole flood, {} still above",
             attacker_above_honest(&safe)
         );
-        assert_eq!(honest_rank(&safe), 0, "honest answer should be at the top under RRF");
+        assert_eq!(
+            honest_rank(&safe),
+            0,
+            "honest answer should be at the top under RRF"
+        );
     }
 
     /// RawScore ranks on the member's self-asserted, unbounded signal_score.
@@ -1323,13 +1342,17 @@ mod tests {
         ];
         let (ranked, _) = merge_and_rank(contributions, &MergePolicy::raw_scores());
         assert_eq!(
-            ranked[0].origin, honest,
+            ranked[0].origin,
+            honest,
             "honest legit-max must outrank NaN/Inf poison after sanitization; got {:?}",
             ranked.iter().map(|h| h.hit.id.as_str()).collect::<Vec<_>>()
         );
         // No poison sits above the honest answer.
         let hr = ranked.iter().position(|h| h.origin == honest).unwrap();
-        assert_eq!(ranked[..hr].iter().filter(|h| h.origin == attacker).count(), 0);
+        assert_eq!(
+            ranked[..hr].iter().filter(|h| h.origin == attacker).count(),
+            0
+        );
     }
 
     /// RRF self-corroboration defense (regression for the bug the poisoning
@@ -1367,12 +1390,22 @@ mod tests {
         // Two honest members independently return the SAME genuine answer;
         // the attacker returns SIX identical copies of a poison.
         let contributions = vec![
-            (honest_a, 1.0, vec![hit("ha", "the genuine corroborated answer")]),
-            (honest_b, 1.0, vec![hit("hb", "the genuine corroborated answer")]),
+            (
+                honest_a,
+                1.0,
+                vec![hit("ha", "the genuine corroborated answer")],
+            ),
+            (
+                honest_b,
+                1.0,
+                vec![hit("hb", "the genuine corroborated answer")],
+            ),
             (
                 attacker,
                 1.0,
-                (0..6).map(|i| hit(&format!("p{i}"), "the attacker poison")).collect(),
+                (0..6)
+                    .map(|i| hit(&format!("p{i}"), "the attacker poison"))
+                    .collect(),
             ),
         ];
 
@@ -1385,7 +1418,10 @@ mod tests {
         // The poison must not appear until after the corroborated answer.
         let poison_rank = ranked.iter().position(|h| h.origin == attacker).unwrap();
         let honest_rank = ranked.iter().position(|h| h.origin != attacker).unwrap();
-        assert!(honest_rank < poison_rank, "honest content must rank above the flood");
+        assert!(
+            honest_rank < poison_rank,
+            "honest content must rank above the flood"
+        );
     }
 
     /// Corroboration boost: content independently contributed by two members
@@ -1435,7 +1471,11 @@ mod tests {
             .filter(|h| h.hit.content.contains("corroborated fact"))
             .map(|h| h.origin)
             .collect();
-        assert_eq!(agreed_origins.len(), 2, "both contributors should be visible");
+        assert_eq!(
+            agreed_origins.len(),
+            2,
+            "both contributors should be visible"
+        );
     }
 
     /// Per-child cap bounds one member's contribution regardless of how many

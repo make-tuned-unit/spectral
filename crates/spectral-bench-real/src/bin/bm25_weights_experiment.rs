@@ -46,8 +46,13 @@ fn match_query(query: &str) -> String {
     query
         .split_whitespace()
         .map(|w| {
-            let base = w.strip_suffix("'s").or_else(|| w.strip_suffix('\u{2019}')).unwrap_or(w);
-            base.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect::<String>()
+            let base = w
+                .strip_suffix("'s")
+                .or_else(|| w.strip_suffix('\u{2019}'))
+                .unwrap_or(w);
+            base.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect::<String>()
         })
         .filter(|w| w.len() > 1)
         .map(|w| format!("\"{}\"", w))
@@ -73,29 +78,83 @@ fn main() {
     // truncation matters.
     let turns: &[(&str, &str)] = &[
         // Session 1 — the answer-bearing turns we will query for.
-        ("s1:turn:0:user", "I finally moved apartments this weekend, the new place is in Oakland."),
-        ("s1:turn:1:assistant", "Congratulations on the move. How is the new neighborhood?"),
-        ("s1:turn:2:user", "My sister Priya just started her residency in pediatric cardiology."),
-        ("s1:turn:3:assistant", "That is a demanding specialty. She must have worked hard for it."),
+        (
+            "s1:turn:0:user",
+            "I finally moved apartments this weekend, the new place is in Oakland.",
+        ),
+        (
+            "s1:turn:1:assistant",
+            "Congratulations on the move. How is the new neighborhood?",
+        ),
+        (
+            "s1:turn:2:user",
+            "My sister Priya just started her residency in pediatric cardiology.",
+        ),
+        (
+            "s1:turn:3:assistant",
+            "That is a demanding specialty. She must have worked hard for it.",
+        ),
         // Session 2 — work reorg, an answer turn, plus role-token noise.
-        ("s2:turn:0:user", "The Q2 roadmap got reshuffled and nobody told the team until the last minute."),
-        ("s2:turn:1:assistant", "That kind of last-minute change is demoralizing. Was a reason given?"),
-        ("s2:turn:2:user", "Reorg. Marcus got bumped up to Director of Engineering, which he earned."),
-        ("s2:turn:3:assistant", "Congrats to Marcus, but a leaderless squad mid-roadmap is tough."),
+        (
+            "s2:turn:0:user",
+            "The Q2 roadmap got reshuffled and nobody told the team until the last minute.",
+        ),
+        (
+            "s2:turn:1:assistant",
+            "That kind of last-minute change is demoralizing. Was a reason given?",
+        ),
+        (
+            "s2:turn:2:user",
+            "Reorg. Marcus got bumped up to Director of Engineering, which he earned.",
+        ),
+        (
+            "s2:turn:3:assistant",
+            "Congrats to Marcus, but a leaderless squad mid-roadmap is tough.",
+        ),
         // Session 3 — a food thread, all distractors, dense role tokens.
-        ("s3:turn:0:user", "Tried a new ramen place downtown, the tonkotsu broth was incredible."),
-        ("s3:turn:1:assistant", "Tonkotsu done well is a labor of love. Did you get an egg?"),
-        ("s3:turn:2:user", "Yes, a perfect ajitama. The user next to me ordered three bowls."),
-        ("s3:turn:3:assistant", "Three bowls is serious dedication from that user at the ramen bar."),
+        (
+            "s3:turn:0:user",
+            "Tried a new ramen place downtown, the tonkotsu broth was incredible.",
+        ),
+        (
+            "s3:turn:1:assistant",
+            "Tonkotsu done well is a labor of love. Did you get an egg?",
+        ),
+        (
+            "s3:turn:2:user",
+            "Yes, a perfect ajitama. The user next to me ordered three bowls.",
+        ),
+        (
+            "s3:turn:3:assistant",
+            "Three bowls is serious dedication from that user at the ramen bar.",
+        ),
         // Session 4 — travel, distractors that mention 'engineering' and 'residency'
         // in passing to stress-test high-IDF collisions.
-        ("s4:turn:0:user", "Booked a trip to Tokyo, want to see the engineering behind the bullet trains."),
-        ("s4:turn:1:assistant", "The Shinkansen is an engineering marvel. Any residency of interest there?"),
-        ("s4:turn:2:user", "Might stay in a residency-style long-term hotel in Shibuya."),
+        (
+            "s4:turn:0:user",
+            "Booked a trip to Tokyo, want to see the engineering behind the bullet trains.",
+        ),
+        (
+            "s4:turn:1:assistant",
+            "The Shinkansen is an engineering marvel. Any residency of interest there?",
+        ),
+        (
+            "s4:turn:2:user",
+            "Might stay in a residency-style long-term hotel in Shibuya.",
+        ),
         // Semantic-key memories (Permagent style): rare, content-like key tokens.
-        ("project:alpha:decision", "We decided to ship the search rewrite in Q4 after the review."),
-        ("project:alpha:owner", "Sofia owns the alpha project and reports status every Friday."),
-        ("person:marcus:role", "Marcus is the new Director of Engineering as of the Q2 reorg."),
+        (
+            "project:alpha:decision",
+            "We decided to ship the search rewrite in Q4 after the review.",
+        ),
+        (
+            "project:alpha:owner",
+            "Sofia owns the alpha project and reports status every Friday.",
+        ),
+        (
+            "person:marcus:role",
+            "Marcus is the new Director of Engineering as of the Q2 reorg.",
+        ),
     ];
     for (k, c) in turns {
         brain.remember(k, c, Visibility::Private).unwrap();
@@ -106,12 +165,30 @@ fn main() {
     // queries deliberately contain role words ("user") or high-IDF terms that
     // also appear in irrelevant KEYS, to expose key-column noise/over-promotion.
     let cases = &[
-        Case { query: "What is Marcus's new job title?", answer_key: "s2:turn:2:user" },
-        Case { query: "What did the user say about their sister's medical career?", answer_key: "s1:turn:2:user" },
-        Case { query: "Where did the user move to?", answer_key: "s1:turn:0:user" },
-        Case { query: "When will the search rewrite ship?", answer_key: "project:alpha:decision" },
-        Case { query: "Who owns the alpha project?", answer_key: "project:alpha:owner" },
-        Case { query: "What food did the user try downtown?", answer_key: "s3:turn:0:user" },
+        Case {
+            query: "What is Marcus's new job title?",
+            answer_key: "s2:turn:2:user",
+        },
+        Case {
+            query: "What did the user say about their sister's medical career?",
+            answer_key: "s1:turn:2:user",
+        },
+        Case {
+            query: "Where did the user move to?",
+            answer_key: "s1:turn:0:user",
+        },
+        Case {
+            query: "When will the search rewrite ship?",
+            answer_key: "project:alpha:decision",
+        },
+        Case {
+            query: "Who owns the alpha project?",
+            answer_key: "project:alpha:owner",
+        },
+        Case {
+            query: "What food did the user try downtown?",
+            answer_key: "s3:turn:0:user",
+        },
     ];
 
     // ── Weight schemes (key, content, description) ──
@@ -140,8 +217,15 @@ fn main() {
     let pools = [3usize, 5, 10];
 
     println!("=== BM25F column-weight experiment ===");
-    println!("corpus: {} memories ({} structural-key turns + semantic keys)\n", turns.len(), 16);
-    println!("answer-in-pool recall across {} queries (higher = better):\n", cases.len());
+    println!(
+        "corpus: {} memories ({} structural-key turns + semantic keys)\n",
+        turns.len(),
+        16
+    );
+    println!(
+        "answer-in-pool recall across {} queries (higher = better):\n",
+        cases.len()
+    );
     print!("{:<24}", "scheme");
     for p in &pools {
         print!("  recall@{p:<3}");
@@ -161,7 +245,9 @@ fn main() {
                 );
                 let mut stmt = conn.prepare(&sql).unwrap();
                 let keys: Vec<String> = stmt
-                    .query_map(rusqlite::params![mq, pool as i64], |r| r.get::<_, String>(0))
+                    .query_map(rusqlite::params![mq, pool as i64], |r| {
+                        r.get::<_, String>(0)
+                    })
                     .unwrap()
                     .filter_map(|r| r.ok())
                     .collect();
@@ -181,7 +267,10 @@ fn main() {
     // ── Per-query breakdown at the tight pool (k=3) for the current scheme vs
     //    the best key<1 scheme, to see exactly which queries move. ──
     println!("\n--- per-query rank of the answer (pool ordered by bm25), pool=10 ---");
-    println!("{:<40}{:>14}{:>14}", "query", "key=1.0 rank", "key=0.0 rank");
+    println!(
+        "{:<40}{:>14}{:>14}",
+        "query", "key=1.0 rank", "key=0.0 rank"
+    );
     for case in cases {
         let mq = match_query(case.query);
         let rank_of = |wk: f64| -> String {
@@ -191,7 +280,7 @@ fn main() {
             );
             let mut stmt = conn.prepare(&sql).unwrap();
             let keys: Vec<String> = stmt
-                .query_map(rusqlite::params![mq, ], |r| r.get::<_, String>(0))
+                .query_map(rusqlite::params![mq,], |r| r.get::<_, String>(0))
                 .unwrap()
                 .filter_map(|r| r.ok())
                 .collect();
@@ -200,7 +289,11 @@ fn main() {
                 None => "MISS".to_string(),
             }
         };
-        let q = if case.query.len() > 38 { &case.query[..38] } else { case.query };
+        let q = if case.query.len() > 38 {
+            &case.query[..38]
+        } else {
+            case.query
+        };
         println!("{:<40}{:>14}{:>14}", q, rank_of(1.0), rank_of(0.0));
     }
 

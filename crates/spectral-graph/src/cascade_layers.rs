@@ -101,7 +101,11 @@ pub fn ambient_boost_with(
         boost *= w.wing_match;
     }
 
-    if let Some(created_utc) = hit.created_at.as_deref().and_then(crate::ranking::parse_created_at) {
+    if let Some(created_utc) = hit
+        .created_at
+        .as_deref()
+        .and_then(crate::ranking::parse_created_at)
+    {
         let age_minutes = (context.now - created_utc).num_minutes();
         if (0..60).contains(&age_minutes) {
             boost *= w.fresh_hour;
@@ -249,6 +253,8 @@ impl Default for CascadePipelineConfig {
     }
 }
 
+// Colocated with the config it exercises; pipeline items follow intentionally.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod config_tests {
     use super::*;
