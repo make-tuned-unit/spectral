@@ -363,13 +363,14 @@ pub fn run_cascade_pipeline_scoped(
     // must not mutate a member's ranking state (score inflation, decay
     // clock resets) or write the caller's query metadata into its store.
     if !brain.is_read_only() {
-        // Auto-reinforce returned memories with a small strength nudge.
-        // Repeated retrievals accumulate; this makes the Archivist's
-        // decay/boost loop functional without caller-explicit reinforcement.
+        // Auto-reinforce returned memories with a small strength nudge, batched
+        // into one transaction. Repeated retrievals accumulate; this makes the
+        // Archivist's decay/boost loop functional without caller-explicit
+        // reinforcement. Batching turns N single-row auto-commit updates (the
+        // dominant recall-latency cost) into one round-trip.
         const AUTO_REINFORCE_STRENGTH: f64 = 0.01;
-        for hit in &results {
-            let _ = brain.reinforce_by_id(&hit.key, AUTO_REINFORCE_STRENGTH);
-        }
+        let keys: Vec<String> = results.iter().map(|h| h.key.clone()).collect();
+        let _ = brain.reinforce_batch_by_id(&keys, AUTO_REINFORCE_STRENGTH);
 
         // Log retrieval event for future co-access mining / pattern detection.
         let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();

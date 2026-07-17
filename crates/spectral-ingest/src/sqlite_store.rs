@@ -1731,6 +1731,65 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    fn reinforce_batch<'a>(
+        &'a self,
+        keys: &'a [String],
+        strength: f64,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + 'a>> {
+        let keys: Vec<String> = keys.to_vec();
+        let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
+
+        Box::pin(async move {
+            if keys.is_empty() {
+                return Ok(0);
+            }
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let placeholders = std::iter::repeat("?")
+                .take(keys.len())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            // Collect affected wings once (for cache invalidation) — replaces
+            // the per-key SELECT the single-key path issues.
+            let wings: Vec<String> = {
+                let sql = format!(
+                    "SELECT DISTINCT wing FROM memories
+                     WHERE key IN ({placeholders}) AND wing IS NOT NULL"
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(rusqlite::params_from_iter(keys.iter()), |row| {
+                    row.get::<_, String>(0)
+                })?;
+                rows.filter_map(Result::ok).collect()
+            };
+
+            // One UPDATE for all keys, one commit — replaces N auto-committed
+            // single-row updates. Same MIN(+strength, 1.0) semantics.
+            let sql = format!(
+                "UPDATE memories SET
+                    signal_score = MIN(signal_score + ?, 1.0),
+                    last_reinforced_at = datetime('now'),
+                    updated_at = datetime('now')
+                 WHERE key IN ({placeholders})"
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(keys.len() + 1);
+            params.push(&strength);
+            for k in &keys {
+                params.push(k);
+            }
+            let updated = conn.execute(&sql, params.as_slice())?;
+
+            if let Ok(mut cache) = wing_cache.lock() {
+                for w in &wings {
+                    cache.pop(w);
+                }
+            }
+
+            Ok(updated)
+        })
+    }
+
     fn write_spectrogram(
         &self,
         memory_id: &str,
@@ -5795,6 +5854,54 @@ mod tests {
             params![format!("id_{key}"), key, format!("content of {key}"), score],
         )
         .unwrap();
+    }
+
+    fn score_of(store: &SqliteStore, key: &str) -> f64 {
+        store
+            .conn()
+            .query_row(
+                "SELECT signal_score FROM memories WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn reinforce_batch_matches_per_key_and_clamps() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_memory_with_key(&store, "a", 0.30);
+        insert_memory_with_key(&store, "b", 0.50);
+        insert_memory_with_key(&store, "hot", 0.995); // near the 1.0 ceiling
+
+        let n = store
+            .reinforce_batch(
+                &["a".into(), "b".into(), "hot".into(), "missing".into()],
+                0.01,
+            )
+            .await
+            .unwrap();
+
+        // Only the three existing keys updated; the batch applies the SAME
+        // MIN(score + 0.01, 1.0) nudge as the single-key path, clamping "hot".
+        assert_eq!(n, 3, "only existing keys count toward the update total");
+        assert!((score_of(&store, "a") - 0.31).abs() < 1e-9);
+        assert!((score_of(&store, "b") - 0.51).abs() < 1e-9);
+        assert!((score_of(&store, "hot") - 1.0).abs() < 1e-9, "must clamp at 1.0");
+
+        // last_reinforced_at was stamped (decay clock reset) for a reinforced key.
+        let stamped: Option<String> = store
+            .conn()
+            .query_row(
+                "SELECT last_reinforced_at FROM memories WHERE key = 'a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(stamped.is_some(), "batch reinforce must set last_reinforced_at");
+
+        // Empty batch is a no-op, not an error.
+        assert_eq!(store.reinforce_batch(&[], 0.01).await.unwrap(), 0);
     }
 
     #[tokio::test]

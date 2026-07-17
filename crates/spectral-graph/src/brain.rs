@@ -2634,6 +2634,17 @@ impl Brain {
         Ok(())
     }
 
+    /// Reinforce many keys in one batched transaction. Used by the recall
+    /// write-back so the auto-reinforce of a full result set is one round-trip
+    /// instead of N. Best-effort; same nudge semantics as `reinforce_by_id`.
+    pub(crate) fn reinforce_batch_by_id(&self, keys: &[String], strength: f64) -> Result<(), Error> {
+        let _ = self
+            .rt
+            .block_on(self.memory_store.reinforce_batch(keys, strength))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        Ok(())
+    }
+
     /// Log a retrieval event (best-effort). Failures are silently ignored.
     pub(crate) fn log_retrieval_event(
         &self,
