@@ -856,6 +856,49 @@ mod tests {
         );
     }
 
+    /// Async write-back: with it enabled, `recall_cascade` still applies the
+    /// auto-reinforce nudge — just off the critical path. We poll the reinforced
+    /// memory's signal_score until the spawned write lands (bounded), proving the
+    /// ambient bookkeeping is deferred, not dropped.
+    #[test]
+    fn async_writeback_still_reinforces_eventually() {
+        let tmp = TempDir::new().unwrap();
+        let (mut brain, _dir) = open_child(&tmp, "async");
+        let remembered = brain
+            .remember("m", "asyncwriteback probe distinctive memory", Visibility::Private)
+            .unwrap();
+        let id = remembered.memory_id;
+        let before = brain.get_memory(&id).unwrap().unwrap().signal_score;
+
+        brain.set_async_writeback(true);
+        let hits = brain
+            .recall_cascade(
+                "asyncwriteback probe",
+                &RecognitionContext::empty(),
+                &CascadePipelineConfig::default(),
+            )
+            .unwrap();
+        assert!(
+            hits.merged_hits.iter().any(|h| h.id == id),
+            "probe memory must be retrieved so it is a reinforce target"
+        );
+
+        // The spawned write lands shortly after recall returns. Poll (bounded).
+        let mut reinforced = false;
+        for _ in 0..200 {
+            let now = brain.get_memory(&id).unwrap().unwrap().signal_score;
+            if now > before {
+                reinforced = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            reinforced,
+            "async write-back never applied the reinforce nudge (deferred write dropped)"
+        );
+    }
+
     /// Resilience: one child's recall failing (locked/corrupt DB) must not
     /// abort the whole fan-out. Healthy children still contribute, and the
     /// failure is surfaced in `FanoutResult.failed` rather than propagated or

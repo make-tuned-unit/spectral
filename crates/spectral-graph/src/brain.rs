@@ -523,7 +523,7 @@ pub struct Brain {
     runtime_entities: Mutex<Vec<crate::ontology::OntologyEntity>>,
     ontology_path: PathBuf,
     store: GraphStore,
-    memory_store: Box<dyn MemoryStore>,
+    memory_store: Arc<dyn MemoryStore>,
     llm_client: Option<Box<dyn LlmClient>>,
     entity_policy: EntityPolicy,
     enable_spectrogram: bool,
@@ -541,6 +541,15 @@ pub struct Brain {
     /// and recall paths skip their ambient writes (auto-reinforce,
     /// retrieval-event logging).
     read_only: bool,
+    /// When true, the recall write-back (auto-reinforce + event log) is spawned
+    /// on the runtime instead of blocked on, so recall returns at its retrieval
+    /// floor (~15ms vs ~21ms) without waiting on the ambient bookkeeping.
+    /// Opt-in via [`set_async_writeback`](Self::set_async_writeback); default
+    /// off. Trade-off: the write is best-effort and may not complete if the
+    /// process exits immediately after a recall — fine for the +0.01 reinforce
+    /// nudge, which is already best-effort, but callers needing the strengthen/
+    /// log durably committed before the next action should leave it off.
+    async_writeback: bool,
     /// Ambient recurrence feedback: when new content re-encounters an existing
     /// memory (recognition), reinforce that prior memory. Enabled via
     /// `SPECTRAL_RECURRENCE_FEEDBACK=1`. Off by default (measure before
@@ -644,7 +653,7 @@ impl Brain {
             // like the stopword/anticipatory levers.
             fts_fusion: false,
         };
-        let memory_store: Box<dyn MemoryStore> = Box::new(
+        let memory_store: Arc<dyn MemoryStore> = Arc::new(
             SqliteStore::open_with_config(&memory_db_path, &sqlite_config)
                 .map_err(|e| Error::Schema(e.to_string()))?,
         );
@@ -743,6 +752,8 @@ impl Brain {
                 .unwrap_or_else(|| Box::new(crate::activity::DefaultRedactionPolicy::default())),
             recognition,
             read_only: config.read_only,
+            // Off by default; opt in per-brain via `set_async_writeback`.
+            async_writeback: false,
             recurrence_feedback: std::env::var("SPECTRAL_RECURRENCE_FEEDBACK")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
@@ -2643,6 +2654,39 @@ impl Brain {
             .block_on(self.memory_store.reinforce_batch(keys, strength))
             .map_err(|e| Error::Schema(e.to_string()))?;
         Ok(())
+    }
+
+    /// Enable/disable asynchronous recall write-back. When on, the auto-reinforce
+    /// + retrieval-event log are spawned on the runtime instead of blocked on, so
+    /// `recall_cascade` returns at its retrieval floor without waiting on ambient
+    /// bookkeeping. Best-effort (see the `async_writeback` field docs); default off.
+    pub fn set_async_writeback(&mut self, on: bool) {
+        self.async_writeback = on;
+    }
+
+    /// Perform the recall write-back (auto-reinforce returned keys + log the
+    /// retrieval event). Synchronous by default; spawned on the runtime when
+    /// async write-back is enabled. Best-effort — errors are swallowed.
+    pub(crate) fn write_back(
+        &self,
+        keys: Vec<String>,
+        event: spectral_ingest::RetrievalEvent,
+        strength: f64,
+    ) {
+        if self.async_writeback {
+            let store = Arc::clone(&self.memory_store);
+            self.rt.spawn(async move {
+                let _ = store.reinforce_batch(&keys, strength).await;
+                let _ = store.log_retrieval_event(&event).await;
+            });
+        } else {
+            // One block_on for both writes (was two separate runtime round-trips).
+            let store = &self.memory_store;
+            self.rt.block_on(async move {
+                let _ = store.reinforce_batch(&keys, strength).await;
+                let _ = store.log_retrieval_event(&event).await;
+            });
+        }
     }
 
     /// Log a retrieval event (best-effort). Failures are silently ignored.

@@ -363,16 +363,13 @@ pub fn run_cascade_pipeline_scoped(
     // must not mutate a member's ranking state (score inflation, decay
     // clock resets) or write the caller's query metadata into its store.
     if !brain.is_read_only() {
-        // Auto-reinforce returned memories with a small strength nudge, batched
-        // into one transaction. Repeated retrievals accumulate; this makes the
-        // Archivist's decay/boost loop functional without caller-explicit
-        // reinforcement. Batching turns N single-row auto-commit updates (the
-        // dominant recall-latency cost) into one round-trip.
+        // Auto-reinforce returned memories (small strength nudge) + log the
+        // retrieval event for co-access mining. Repeated retrievals accumulate;
+        // this makes the Archivist's decay/boost loop functional without
+        // caller-explicit reinforcement. Batched into one transaction and, when
+        // async write-back is enabled, spawned off the recall critical path.
         const AUTO_REINFORCE_STRENGTH: f64 = 0.01;
         let keys: Vec<String> = results.iter().map(|h| h.key.clone()).collect();
-        let _ = brain.reinforce_batch_by_id(&keys, AUTO_REINFORCE_STRENGTH);
-
-        // Log retrieval event for future co-access mining / pattern detection.
         let memory_ids: Vec<&str> = results.iter().map(|h| h.id.as_str()).collect();
         let event = spectral_ingest::RetrievalEvent {
             query_hash: spectral_ingest::hash_query(query),
@@ -383,7 +380,7 @@ pub fn run_cascade_pipeline_scoped(
             question_type: None, // Set by bench caller if applicable
             session_id: context.session_id.clone(),
         };
-        let _ = brain.log_retrieval_event(&event);
+        brain.write_back(keys, event, AUTO_REINFORCE_STRENGTH);
     }
 
     // Associative recall spreading (opt-in via config.spread; OFF by default =
