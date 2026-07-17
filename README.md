@@ -153,9 +153,16 @@ front-runs one **optional** pre-retrieval query-expansion call (Claude Haiku)
 queries** figure measures. Recall without expansion is fully LLM-free.
 
 Honest framing: this is in-sample (the retrieval was developed against this
-dataset), so it is not a state-of-the-art claim; held-out numbers are expected
-to be lower. The denominator is 492 (8 transport failures quarantined), and
-most remaining failures are actor-side synthesis, not retrieval misses.
+dataset), so it is not a state-of-the-art claim. The denominator is 492 (8
+transport failures quarantined), and most remaining failures are actor-side
+synthesis, not retrieval misses.
+
+**Held-out generalization.** On **LoCoMo** — a *different* long-term-conversation
+benchmark the retrieval was never tuned on — deterministic recall holds up:
+**session-recall 92.9%** (120 questions), versus 98.6% in-sample. A ~6pp drop
+across an entirely different dataset is strong evidence the recall isn't overfit;
+the honest weak spot is multi-hop (multi-session) questions at 78.6%. Reproduce
+it (and everything else) with [BENCHMARKING.md](BENCHMARKING.md).
 
 Full results, per-category breakdown, and limitations: [docs/RESULTS.md](docs/RESULTS.md).
 
