@@ -1322,10 +1322,17 @@ fn fts_fusion_plural_strip_recovers_overstem_flood() {
     // fusion lifts the answer back to the top. Regression guard for the S-stemmer-
     // like second channel.
     let seed = |brain: &Brain| {
+        // The answer is deliberately LONGER than the flood docs so BM25 length
+        // normalization reliably ranks the short flood docs above it on the single
+        // low-IDF `engin` term under porter-only — the negative control below is
+        // then deterministic across architectures (an answer/flood length tie
+        // leaves FTS5's tie-break order arch-dependent). Fusion still recovers it:
+        // the unstemmed channel's plural-strip matches `engineer` exactly (only in
+        // the answer), which RRF lifts to the top regardless of its porter rank.
         brain
             .remember(
                 "answer",
-                "The startup finally hired one more senior backend engineer",
+                "After a long multi-week interview process the startup finally hired exactly one more experienced senior backend engineer to lead the platform reliability effort next quarter",
                 Visibility::Private,
             )
             .unwrap();
@@ -1333,7 +1340,7 @@ fn fts_fusion_plural_strip_recovers_overstem_flood() {
             brain
                 .remember(
                     &format!("flood{i}"),
-                    &format!("Engineering shipped the milestone number {i} on schedule"),
+                    &format!("Engineering shipped milestone {i}"),
                     Visibility::Private,
                 )
                 .unwrap();
