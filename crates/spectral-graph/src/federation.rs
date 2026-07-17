@@ -51,6 +51,14 @@ pub const DEFAULT_BRAIN_WEIGHT: f64 = 1.0;
 /// al. (2009), the de-facto standard used across search/RAG systems.
 pub const DEFAULT_RRF_K: f64 = 60.0;
 
+/// Default per-child contribution cap. Bounds any single member's footprint in
+/// the merged result so a flooding member cannot crowd out the others, while
+/// staying generous enough not to clip normal recall (each child returns at most
+/// the query's `k`, and the top ~20 by relevance are what a merged view shows).
+/// Set [`MergePolicy::per_child_cap`] to `None` for an uncapped, fully-trusted
+/// federation.
+pub const DEFAULT_PER_CHILD_CAP: usize = 20;
+
 /// How the coordinator fuses each child's ranked results into one list.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FusionMethod {
@@ -86,6 +94,28 @@ pub enum FusionMethod {
 /// and rewards cross-member agreement; the `per_child_cap` bounds flooding
 /// volume. None of this stops a *signed* insider — that is what signed
 /// provenance ([`Brain::verify_hit`](crate::brain::Brain::verify_hit)) is for.
+///
+/// # Residual attacks (know these before federating untrusted members)
+///
+/// RRF neutralizes the *score-inflation* flood, and the defaults below bound the
+/// remaining flooding/tiebreak vectors. What remains needs deployment trust:
+/// - **Distinct-content flooding — bounded by default.** RRF's per-origin dedup
+///   only collapses identical content, so a member returning many *distinct*
+///   items could occupy many merged slots. [`per_child_cap`](Self::per_child_cap)
+///   defaults to [`DEFAULT_PER_CHILD_CAP`] (20), capping any member's footprint;
+///   set it to `None` for a fully-trusted federation that wants every hit.
+/// - **Tiebreak grinding — mitigated.** Ties are broken by a *content* hash
+///   first (not the member-chosen `BrainId`), so a member cannot grind one low
+///   `BrainId` to win every tie across the federation; it would have to grind
+///   each item's content (which changes the content). `BrainId`/`hit.id` remain
+///   only as final total-order tiebreakers.
+/// - **Sybil-forged corroboration — deployment trust.** Cross-member agreement
+///   lifts honest content, but [`add_brain`](FederationCoordinator::add_brain)
+///   authenticates no identity, so K colluding brains could manufacture
+///   corroboration. This is not defensible at the merge layer — only federate
+///   members whose brains you trust to be distinct principals. (Signed
+///   provenance via [`Brain::verify_hit`](crate::brain::Brain::verify_hit) is
+///   the intended future basis for authenticated corroboration.)
 #[derive(Debug, Clone)]
 pub struct MergePolicy {
     /// Rank-fusion method across children. Default [`FusionMethod::Rrf`].
@@ -93,7 +123,8 @@ pub struct MergePolicy {
     /// Cap on the number of hits contributed per child (its top-N by own
     /// order), applied before fusion. Flooding-volume defense: one member
     /// cannot crowd out the others regardless of how many hits it returns.
-    /// `None` = uncapped. Default `None`.
+    /// **Defaults to [`DEFAULT_PER_CHILD_CAP`]** (`Some(20)`); set `None` for an
+    /// uncapped, fully-trusted federation.
     pub per_child_cap: Option<usize>,
 }
 
@@ -101,7 +132,7 @@ impl Default for MergePolicy {
     fn default() -> Self {
         Self {
             fusion: FusionMethod::Rrf { k: DEFAULT_RRF_K },
-            per_child_cap: None,
+            per_child_cap: Some(DEFAULT_PER_CHILD_CAP),
         }
     }
 }
@@ -404,11 +435,20 @@ fn merge_and_rank(
     match &policy.fusion {
         FusionMethod::RawScore => {
             // Legacy / undefended: rank on the member's self-asserted score.
+            // signal_score is member-controlled and unbounded — sanitize it so a
+            // NaN/Inf can't pin poison to the top (NaN sorts above +Inf under
+            // total_cmp). Clamp to signal_score's documented [0,1] range.
             for (origin, weight, hits) in capped {
+                let w = if weight.is_finite() { weight } else { 0.0 };
                 for hit in hits {
+                    let s = if hit.signal_score.is_finite() {
+                        hit.signal_score.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
                     ranked.push(LabeledHit {
                         origin,
-                        effective_score: hit.signal_score * weight,
+                        effective_score: s * w,
                         hit,
                     });
                 }
@@ -440,7 +480,14 @@ fn merge_and_rank(
             let mut fused: HashMap<[u8; 32], f64> = HashMap::new();
             for ((obytes, fp), rank) in &best_rank {
                 let w = weight_of.get(obytes).copied().unwrap_or(1.0);
-                *fused.entry(*fp).or_insert(0.0) += w / (k + *rank as f64);
+                let denom = k + *rank as f64;
+                // Guard a misconfigured k (<=0, NaN) that would make the
+                // contribution +inf/NaN and hijack the sort. Well-formed RRF has
+                // k > 0, so denom > 0 always; skip the contribution otherwise.
+                if !w.is_finite() || !denom.is_finite() || denom <= 0.0 {
+                    continue;
+                }
+                *fused.entry(*fp).or_insert(0.0) += w / denom;
             }
             for (origin, _weight, hits) in capped {
                 for hit in hits {
@@ -457,15 +504,25 @@ fn merge_and_rank(
         }
     }
 
-    // Primary key: effective (fused) score, descending. Tiebreak by origin
-    // BrainId bytes (BrainId is NOT Ord) then memory id — both ascending — for
-    // a total, deterministic order.
-    ranked.sort_by(|a, b| {
-        b.effective_score
-            .total_cmp(&a.effective_score)
-            .then_with(|| a.origin.as_bytes().cmp(b.origin.as_bytes()))
-            .then_with(|| a.hit.id.cmp(&b.hit.id))
+    // Primary key: effective (fused) score, descending. RRF produces many exact
+    // ties (every uncorroborated hit is 1/(k+0)); break them by a CONTENT hash
+    // first, not the member-chosen BrainId — otherwise a member could grind one
+    // low-sorting BrainId to win every tie across the federation. Content-first
+    // means an attacker would have to grind each item's content (which changes
+    // the content). BrainId/hit.id remain as final tiebreakers for a total,
+    // deterministic order. Fingerprint is precomputed to keep the sort O(n log n).
+    let mut keyed: Vec<([u8; 32], LabeledHit)> = ranked
+        .into_iter()
+        .map(|h| (content_fingerprint(&h.hit.content), h))
+        .collect();
+    keyed.sort_by(|a, b| {
+        b.1.effective_score
+            .total_cmp(&a.1.effective_score)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.origin.as_bytes().cmp(b.1.origin.as_bytes()))
+            .then_with(|| a.1.hit.id.cmp(&b.1.hit.id))
     });
+    let ranked: Vec<LabeledHit> = keyed.into_iter().map(|(_, h)| h).collect();
 
     // Overlapping memories from different brains are BOTH kept — distinct
     // provenance — but share the fused score, so a corroborated item's copies
@@ -645,12 +702,16 @@ mod tests {
         }
 
         // The ranking obeys the documented total order: effective_score
-        // non-increasing, ties broken by origin bytes then memory id.
+        // non-increasing, ties broken by content hash, then origin bytes, then
+        // memory id.
         for w in first.ranked.windows(2) {
             let (x, y) = (&w[0], &w[1]);
             let ord = y
                 .effective_score
                 .total_cmp(&x.effective_score)
+                .then_with(|| {
+                    content_fingerprint(&x.hit.content).cmp(&content_fingerprint(&y.hit.content))
+                })
                 .then_with(|| x.origin.as_bytes().cmp(y.origin.as_bytes()))
                 .then_with(|| x.hit.id.cmp(&y.hit.id));
             assert_ne!(
@@ -854,6 +915,34 @@ mod tests {
                 .any(|h| h.hit.content.contains("private secret")),
             "Private-context fan-out over one's own brains should see private memories"
         );
+    }
+
+    /// Regression: `Brain` drives its own runtime with `block_on`, which panics
+    /// if nested inside another Tokio runtime — the normal way a memory library
+    /// gets embedded (an async server handler). SafeRuntime offloads to a scoped
+    /// thread instead, so open + remember + recall all work from inside a runtime.
+    #[test]
+    fn brain_is_safe_to_call_from_inside_a_runtime() {
+        let outer = tokio::runtime::Runtime::new().unwrap();
+        outer.block_on(async {
+            let tmp = TempDir::new().unwrap();
+            // Brain::open itself block_ons during backfill — must not panic here.
+            let (brain, _dir) = open_child(&tmp, "async_ctx");
+            brain
+                .remember("k", "async context probe memory", Visibility::Private)
+                .unwrap();
+            let r = brain
+                .recall_cascade(
+                    "async context probe",
+                    &RecognitionContext::empty(),
+                    &CascadePipelineConfig::default(),
+                )
+                .unwrap();
+            assert!(
+                r.merged_hits.iter().any(|h| h.content.contains("probe")),
+                "recall from inside a runtime should work, not panic"
+            );
+        });
     }
 
     /// Async write-back: with it enabled, `recall_cascade` still applies the
@@ -1188,6 +1277,59 @@ mod tests {
             attacker_above_honest(&safe)
         );
         assert_eq!(honest_rank(&safe), 0, "honest answer should be at the top under RRF");
+    }
+
+    /// RawScore ranks on the member's self-asserted, unbounded signal_score.
+    /// A malicious member setting NaN/Inf/huge must not pin poison to the top
+    /// (NaN sorts above +Inf under total_cmp). The merge sanitizes non-finite
+    /// scores to 0 and clamps to [0,1], so an honest 0.5 stays above the poison.
+    #[test]
+    fn raw_score_merge_sanitizes_non_finite_poison() {
+        fn hit(id: &str, signal: f64) -> MemoryHit {
+            MemoryHit {
+                id: id.into(),
+                key: id.into(),
+                content: format!("content {id}"),
+                wing: None,
+                hall: None,
+                signal_score: signal,
+                visibility: "public".into(),
+                hits: 1,
+                source: None,
+                device_id: None,
+                confidence: 1.0,
+                created_at: None,
+                last_reinforced_at: None,
+                episode_id: None,
+                declarative_density: None,
+                description: None,
+                source_brain_id: None,
+                signature: None,
+            }
+        }
+        let honest = BrainId::from_bytes([1u8; 32]);
+        let attacker = BrainId::from_bytes([2u8; 32]);
+        // Honest asserts a legitimate max (1.0). Attacker asserts NaN/Inf, which
+        // under total_cmp would otherwise sort ABOVE any finite score. (A huge
+        // finite value clamps to a legitimate 1.0 — that's the documented
+        // undefended RawScore behavior, not the F5 bug.)
+        let contributions = vec![
+            (honest, 1.0, vec![hit("honest", 1.0)]),
+            (
+                attacker,
+                1.0,
+                vec![hit("nan", f64::NAN), hit("inf", f64::INFINITY)],
+            ),
+        ];
+        let (ranked, _) = merge_and_rank(contributions, &MergePolicy::raw_scores());
+        assert_eq!(
+            ranked[0].origin, honest,
+            "honest legit-max must outrank NaN/Inf poison after sanitization; got {:?}",
+            ranked.iter().map(|h| h.hit.id.as_str()).collect::<Vec<_>>()
+        );
+        // No poison sits above the honest answer.
+        let hr = ranked.iter().position(|h| h.origin == honest).unwrap();
+        assert_eq!(ranked[..hr].iter().filter(|h| h.origin == attacker).count(), 0);
     }
 
     /// RRF self-corroboration defense (regression for the bug the poisoning

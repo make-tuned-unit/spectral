@@ -46,6 +46,20 @@ fn remember_ep(brain: &Brain, key: &str, content: &str, ep: &str) {
         .unwrap();
 }
 
+fn remember_ep_vis(brain: &Brain, key: &str, content: &str, ep: &str, vis: Visibility) {
+    brain
+        .remember_with(
+            key,
+            content,
+            RememberOpts {
+                visibility: vis,
+                episode_id: Some(ep.to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+}
+
 fn keys(hits: &[spectral_ingest::MemoryHit]) -> Vec<String> {
     hits.iter().map(|h| h.key.clone()).collect()
 }
@@ -82,6 +96,60 @@ fn seed_corpus(brain: &Brain) {
 }
 
 #[test]
+fn spreading_respects_visibility_boundary() {
+    // A Public query-matching seed and a Private, lexically-disjoint mate share
+    // one episode. A Team-scoped recall must NOT let episode spreading pull the
+    // Private mate across the boundary (regression: spreading was visibility-blind
+    // and re-injected filtered content).
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    remember_ep_vis(
+        &brain,
+        "pub-seed",
+        "suggest a dinner using fresh ingredients for the weekend party",
+        "ev",
+        Visibility::Public,
+    );
+    remember_ep_vis(
+        &brain,
+        "priv-mate",
+        "growing cherry tomatoes basil and mint in the backyard garden",
+        "ev",
+        Visibility::Private,
+    );
+
+    let cfg = RecallTopKConfig { k: 5, ..RecallTopKConfig::default() };
+    let ep_cfg = AssocSpreadConfig {
+        mode: SpreadMode::Episode,
+        episode_budget: 4000,
+        ..AssocSpreadConfig::default()
+    };
+
+    // Team context: the private episode-mate must not appear.
+    let mut team = brain
+        .recall_topk_fts("suggest a dinner using ingredients", &cfg, Visibility::Team)
+        .unwrap();
+    associative_spread(&brain, &mut team, &ep_cfg, Visibility::Team);
+    assert!(
+        !keys(&team).contains(&"priv-mate".to_string()),
+        "spreading leaked a Private episode-mate into a Team-scoped recall: {:?}",
+        keys(&team)
+    );
+
+    // Private (own-brain) context: spreading DOES recover it — filter is scoped,
+    // not a blanket block.
+    let mut own = brain
+        .recall_topk_fts("suggest a dinner using ingredients", &cfg, Visibility::Private)
+        .unwrap();
+    associative_spread(&brain, &mut own, &ep_cfg, Visibility::Private);
+    assert!(
+        keys(&own).contains(&"priv-mate".to_string()),
+        "own-brain (Private) spreading should still recover the mate: {:?}",
+        keys(&own)
+    );
+}
+
+#[test]
 fn episode_spreading_recovers_lexically_disjoint_answer() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
@@ -104,7 +172,12 @@ fn episode_spreading_recovers_lexically_disjoint_answer() {
 
     // Off = no-op.
     let mut hits = base.clone();
-    associative_spread(&brain, &mut hits, &AssocSpreadConfig::default());
+    associative_spread(
+        &brain,
+        &mut hits,
+        &AssocSpreadConfig::default(),
+        Visibility::Private,
+    );
     assert_eq!(keys(&hits), base_keys, "Off mode must be a no-op");
 
     // Episode spreading recovers the answer via same-session co-occurrence.
@@ -117,6 +190,7 @@ fn episode_spreading_recovers_lexically_disjoint_answer() {
             episode_budget: 4000,
             ..AssocSpreadConfig::default()
         },
+        Visibility::Private,
     );
     assert!(
         keys(&hits).contains(&"e1-answer".to_string()),
@@ -145,6 +219,7 @@ fn rerank_recovers_within_bounded_context() {
             rerank_b: 2,
             ..AssocSpreadConfig::default()
         },
+        Visibility::Private,
     );
     // Rerank displaces rather than grows: context stays bounded (never grows by
     // more than the number of non-removable — sole-session — hits).

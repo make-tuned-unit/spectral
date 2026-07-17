@@ -515,6 +515,69 @@ pub struct AuditReport {
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
+///
+/// # Calling from an async runtime
+///
+/// `Brain` owns its own Tokio runtime and every method is synchronous, driving
+/// it with `block_on`. Tokio's `Runtime::block_on` panics if invoked from within
+/// another runtime, so `Brain` routes every internal `block_on` through
+/// [`SafeRuntime`]: when it detects an ambient runtime it drives the future on a
+/// fresh scoped thread instead of panicking. A `Brain` is therefore **safe to
+/// call from inside an async task** (axum/tonic handler, `tokio::spawn`, a
+/// `#[tokio::main]` body). Note the ambient-runtime path spawns one short-lived
+/// OS thread per call; for latency-sensitive async loops, hold the `Brain` on a
+/// dedicated blocking thread (e.g. via `spawn_blocking`) to take the cheap
+/// direct path.
+///
+/// The brain's Tokio runtime, wrapped so `block_on` never panics when called
+/// from inside another runtime. `Runtime::block_on` panics when nested; when an
+/// ambient runtime is detected we drive the future on a fresh scoped thread
+/// (which carries no runtime context) instead. The common synchronous caller —
+/// no ambient runtime — takes the direct `block_on` with zero overhead.
+struct SafeRuntime(Option<tokio::runtime::Runtime>);
+
+impl SafeRuntime {
+    fn inner(&self) -> &tokio::runtime::Runtime {
+        // `Some` for the whole lifetime; only `Drop` takes it.
+        self.0.as_ref().expect("SafeRuntime used after drop")
+    }
+
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: std::future::Future + Send,
+        F::Output: Send,
+    {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::scope(|s| s.spawn(|| self.inner().block_on(fut)).join().unwrap())
+        } else {
+            self.inner().block_on(fut)
+        }
+    }
+
+    fn spawn<F>(&self, fut: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.inner().spawn(fut)
+    }
+}
+
+impl Drop for SafeRuntime {
+    fn drop(&mut self) {
+        // `Runtime::drop` blocks to join worker threads and panics if that
+        // happens inside another runtime ("Cannot drop a runtime in a context
+        // where blocking is not allowed"). When we're nested in an ambient
+        // runtime, hand the inner runtime to a detached thread to shut down
+        // there (no ambient runtime → safe). Otherwise drop it here normally.
+        if let Some(rt) = self.0.take() {
+            if tokio::runtime::Handle::try_current().is_ok() {
+                std::thread::spawn(move || drop(rt));
+            }
+        }
+    }
+}
+
 pub struct Brain {
     identity: BrainIdentity,
     device_id: DeviceId,
@@ -555,7 +618,7 @@ pub struct Brain {
     /// `SPECTRAL_RECURRENCE_FEEDBACK=1`. Off by default (measure before
     /// defaulting — the co-retrieval lesson).
     recurrence_feedback: bool,
-    rt: tokio::runtime::Runtime,
+    rt: SafeRuntime,
 }
 
 /// Minimum recognition familiarity for an incoming write to count as a
@@ -678,19 +741,29 @@ impl Brain {
             },
         };
 
+        // Compile consumer-supplied routing patterns into an Error rather than
+        // panicking on a bad regex (these come from BrainConfig).
+        let compile_rules = |rules: &[(String, String)],
+                             kind: &str|
+         -> Result<Vec<(regex::Regex, String)>, Error> {
+            rules
+                .iter()
+                .map(|(p, label)| {
+                    regex::Regex::new(p)
+                        .map(|re| (re, label.clone()))
+                        .map_err(|e| Error::Schema(format!("invalid {kind} regex {p:?}: {e}")))
+                })
+                .collect()
+        };
         let ingest_config = spectral_ingest::ingest::IngestConfig {
-            wing_rules: wing_rules
-                .iter()
-                .map(|(p, w)| (regex::Regex::new(p).expect("invalid wing regex"), w.clone()))
-                .collect(),
-            hall_rules: hall_rules
-                .iter()
-                .map(|(p, h)| (regex::Regex::new(p).expect("invalid hall regex"), h.clone()))
-                .collect(),
+            wing_rules: compile_rules(&wing_rules, "wing")?,
+            hall_rules: compile_rules(&hall_rules, "hall")?,
             ..spectral_ingest::ingest::IngestConfig::default()
         };
 
-        let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Schema(e.to_string()))?;
+        let rt = SafeRuntime(Some(
+            tokio::runtime::Runtime::new().map_err(|e| Error::Schema(e.to_string()))?,
+        ));
 
         let device_id = config.device_id.unwrap_or_else(|| {
             let hostname = hostname::get()
@@ -2645,21 +2718,11 @@ impl Brain {
         Ok(())
     }
 
-    /// Reinforce many keys in one batched transaction. Used by the recall
-    /// write-back so the auto-reinforce of a full result set is one round-trip
-    /// instead of N. Best-effort; same nudge semantics as `reinforce_by_id`.
-    pub(crate) fn reinforce_batch_by_id(&self, keys: &[String], strength: f64) -> Result<(), Error> {
-        let _ = self
-            .rt
-            .block_on(self.memory_store.reinforce_batch(keys, strength))
-            .map_err(|e| Error::Schema(e.to_string()))?;
-        Ok(())
-    }
-
     /// Enable/disable asynchronous recall write-back. When on, the auto-reinforce
-    /// + retrieval-event log are spawned on the runtime instead of blocked on, so
-    /// `recall_cascade` returns at its retrieval floor without waiting on ambient
-    /// bookkeeping. Best-effort (see the `async_writeback` field docs); default off.
+    /// and retrieval-event log are spawned on the runtime instead of blocked on,
+    /// so `recall_cascade` returns at its retrieval floor without waiting on the
+    /// ambient bookkeeping. Best-effort (see the `async_writeback` field docs);
+    /// default off.
     pub fn set_async_writeback(&mut self, on: bool) {
         self.async_writeback = on;
     }
@@ -3496,7 +3559,12 @@ fn expand_number_words(raw_query: &str, words: &mut Vec<String>) {
 /// "is" is unrelated to the query). Guard: if that would empty the query, the
 /// unfiltered words are kept so an all-function-word query still recalls.
 pub(crate) fn fts_query_words_opts(query: &str, drop_stopwords: bool) -> Vec<String> {
-    let words: Vec<String> = query
+    // FTS5 MATCH is superlinear in term count and runs while holding the store's
+    // connection lock, so an unbounded query would stall the whole brain (a
+    // ~100k-word query hangs it for a minute+). Real recall queries are short;
+    // cap the term count defensively before building the MATCH.
+    const MAX_QUERY_WORDS: usize = 64;
+    let mut words: Vec<String> = query
         .split(|c: char| {
             !(c.is_alphanumeric() || c == '_' || c == '-' || c == '\'' || c == '\u{2019}')
         })
@@ -3512,6 +3580,7 @@ pub(crate) fn fts_query_words_opts(query: &str, drop_stopwords: bool) -> Vec<Str
         })
         .filter(|w| w.len() > 1)
         .collect();
+    words.truncate(MAX_QUERY_WORDS);
 
     if !drop_stopwords {
         return words;

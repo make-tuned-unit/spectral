@@ -100,23 +100,34 @@ impl AssocSpreadConfig {
 }
 
 /// Apply associative spreading to a retrieved hit list, in place.
-pub fn associative_spread(brain: &Brain, hits: &mut Vec<MemoryHit>, cfg: &AssocSpreadConfig) {
+///
+/// `visibility` is the caller's boundary: spread only surfaces memories whose own
+/// label admits it (`content >= context`), so spreading cannot re-introduce
+/// content the recall's visibility filter already excluded. Pass
+/// `Visibility::Private` for own-brain recall (admits everything).
+pub fn associative_spread(
+    brain: &Brain,
+    hits: &mut Vec<MemoryHit>,
+    cfg: &AssocSpreadConfig,
+    visibility: Visibility,
+) {
     match cfg.mode {
         SpreadMode::Off => {}
         SpreadMode::Episode => {
             let seed_refs = top_seed_refs(hits, cfg.seeds);
-            episode_fill(brain, hits, &seed_refs, cfg.episode_budget);
+            episode_fill(brain, hits, &seed_refs, cfg.episode_budget, visibility);
         }
         SpreadMode::CrossSession => {
-            cross_session(brain, hits, cfg.seeds, cfg.cross_n, cfg.cross_budget);
+            cross_session(brain, hits, cfg.seeds, cfg.cross_n, cfg.cross_budget, visibility);
         }
         SpreadMode::Combined => {
             let mut seed_refs = top_seed_refs(hits, cfg.seeds);
-            let added = cross_session(brain, hits, cfg.seeds, cfg.cross_n, cfg.cross_budget);
+            let added =
+                cross_session(brain, hits, cfg.seeds, cfg.cross_n, cfg.cross_budget, visibility);
             seed_refs.extend(added); // also complete the newly-found sessions
-            episode_fill(brain, hits, &seed_refs, cfg.episode_budget);
+            episode_fill(brain, hits, &seed_refs, cfg.episode_budget, visibility);
         }
-        SpreadMode::Rerank => rerank_displace(brain, hits, cfg.seeds, cfg.rerank_b),
+        SpreadMode::Rerank => rerank_displace(brain, hits, cfg.seeds, cfg.rerank_b, visibility),
     }
 }
 
@@ -141,6 +152,7 @@ fn cross_session(
     seeds: usize,
     n: usize,
     budget: usize,
+    visibility: Visibility,
 ) -> Vec<SeedRef> {
     let existing: HashSet<String> = hits.iter().map(|h| h.key.clone()).collect();
     let seed_contents: Vec<String> = hits.iter().take(seeds).map(|h| h.content.clone()).collect();
@@ -151,8 +163,9 @@ fn cross_session(
         k: n + 4,
         ..RecallTopKConfig::default()
     };
+    // recall_topk_fts enforces the boundary, so mates respect the caller's context.
     'seeds: for content in seed_contents {
-        if let Ok(mates) = brain.recall_topk_fts(&content, &prf_cfg, Visibility::Private) {
+        if let Ok(mates) = brain.recall_topk_fts(&content, &prf_cfg, visibility) {
             for mate in mates.into_iter().take(n) {
                 if existing.contains(&mate.key) || !added_keys.insert(mate.key.clone()) {
                     continue;
@@ -175,7 +188,13 @@ fn cross_session(
 
 // ── episode (same-session) proximity fill ──
 
-fn episode_fill(brain: &Brain, hits: &mut Vec<MemoryHit>, seed_refs: &[SeedRef], budget: usize) {
+fn episode_fill(
+    brain: &Brain,
+    hits: &mut Vec<MemoryHit>,
+    seed_refs: &[SeedRef],
+    budget: usize,
+    visibility: Visibility,
+) {
     let existing: HashSet<String> = hits.iter().map(|h| h.key.clone()).collect();
     let mut candidates: Vec<(i64, MemoryHit)> = Vec::new();
     let mut seen_eps = HashSet::new();
@@ -191,6 +210,11 @@ fn episode_fill(brain: &Brain, hits: &mut Vec<MemoryHit>, seed_refs: &[SeedRef],
         if let Ok(mems) = brain.list_memories_by_episode(&ep) {
             for mem in mems {
                 if existing.contains(&mem.key) || !cand_keys.insert(mem.key.clone()) {
+                    continue;
+                }
+                // list_memories_by_episode has no visibility clause — filter here
+                // so episode fill can't leak a private episode-mate of a seed.
+                if !crate::brain::str_to_vis(&mem.visibility).allows(visibility) {
                     continue;
                 }
                 let prox = match (seed_ts, mem.created_at.as_deref().and_then(parse_ts)) {
@@ -215,7 +239,13 @@ fn episode_fill(brain: &Brain, hits: &mut Vec<MemoryHit>, seed_refs: &[SeedRef],
 
 // ── rerank (session-preserving displacement) ──
 
-fn rerank_displace(brain: &Brain, hits: &mut Vec<MemoryHit>, seeds: usize, replace_b: usize) {
+fn rerank_displace(
+    brain: &Brain,
+    hits: &mut Vec<MemoryHit>,
+    seeds: usize,
+    replace_b: usize,
+    visibility: Visibility,
+) {
     let existing: HashSet<String> = hits.iter().map(|h| h.key.clone()).collect();
     let seed_refs = top_seed_refs(hits, seeds);
     let mut candidates: Vec<(i64, MemoryHit)> = Vec::new();
@@ -232,6 +262,9 @@ fn rerank_displace(brain: &Brain, hits: &mut Vec<MemoryHit>, seeds: usize, repla
         if let Ok(mems) = brain.list_memories_by_episode(&ep) {
             for mem in mems {
                 if existing.contains(&mem.key) || !cand_keys.insert(mem.key.clone()) {
+                    continue;
+                }
+                if !crate::brain::str_to_vis(&mem.visibility).allows(visibility) {
                     continue;
                 }
                 let prox = match (seed_ts, mem.created_at.as_deref().and_then(parse_ts)) {
