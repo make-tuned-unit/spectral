@@ -24,13 +24,34 @@ and "how does X relate to Y?" Vector databases answer the first question well.
 They struggle with the second. Retrieving a fact by embedding similarity does
 not give you the two-hop chain of relationships that led to that fact.
 
-Spectral gives your agent two complementary memory systems behind a single
-`Brain` handle, unified on one embedded **SQLite** database: a typed knowledge
-graph for entity relationships with ontology validation and 2-hop traversal, and
-a deterministic full-text recall path (SQLite FTS5 + BM25) with signal-score and
-recency ranking. No embedding model, no vector database, no LLM in the recall
-path. Recall porter-stems by default, so plural and inflected queries match
-singular content ("doctors" → "doctor") — deterministic, zero tokens.
+Spectral gives your agent several complementary kinds of memory behind a single
+`Brain` handle, unified on one embedded **SQLite** file — no embedding model, no
+vector database, no LLM in the recall path, no GPU.
+
+## The kinds of memory your agent gets
+
+One `Brain`, several ways to remember — each deterministic, embedding-free, and
+free to query:
+
+| Kind | Answers | How it works | Cost to query |
+|---|---|---|---|
+| **Recall** | "What do I know about X?" | SQLite FTS5 + BM25, porter-stemmed, signal-score & recency ranked | **$0**, deterministic |
+| **Recognition** | "Have I seen this before — and is it new?" | Landmark fingerprinting → a familiarity/novelty verdict with the exact matched features | **$0**, deterministic |
+| **Relational** | "How does X relate to Y?" | Typed knowledge graph with ontology validation and 2-hop traversal | **$0**, deterministic |
+| **Episodic / temporal** | "What happened around then?" | Session episodes + time-anchored recency ranking and decay | **$0**, deterministic |
+| **Adaptive** | "What matters *now*?" | Use-driven reinforcement, disuse decay, and lift-based anticipation (the feedback loop below) | **$0**, deterministic |
+| **Federated** | "What do *we* collectively know?" | Read-time fan-out across brains, provenance-ranked, visibility-scoped, poisoning-resistant | **$0**, deterministic |
+
+Vector databases answer the first row well and struggle with the rest —
+retrieving a fact by embedding similarity gives you neither the two-hop chain
+that led to it, nor "have I seen this before," nor a memory that adapts to use.
+Spectral covers all six with one embedded dependency. On **LongMemEval-S** it
+handles every memory-question type — single-session (user/assistant/preference),
+multi-session, temporal-reasoning, and knowledge-update (see
+[Results](#results-accuracy)).
+
+The rest of this README goes deep on the three that make Spectral distinct:
+recall + recognition, the adaptive feedback loop, and federation.
 
 ## Recall *and* recognition
 
@@ -40,19 +61,22 @@ what happened last time?"**
 
 - **Recall** retrieves what you know: deterministic FTS5 + BM25 over your
   memories, porter-stemmed, signal-score and recency ranked. No embeddings, no
-  model, sub-millisecond on 1k memories, and every rank is inspectable.
+  model, sub-millisecond on 1k memories, and ranked on transparent lexical
+  signals (BM25, signal-score, recency) rather than an opaque vector distance.
 - **Recognition** scores *familiarity vs novelty* for a new stimulus with an
   embedding-free engine built from three lineages: **landmark fingerprinting**
   (a stimulus's statistically salient features — rare stems, numbers,
   identifiers — scored by IDF; the text analog of spectral peaks above the noise
   floor, and where the name *Spectral* comes from), **Shazam-style pair hashes**
-  of co-occurring landmarks (coarse geometry survives rewording), and **winnowed
-  k-grams** with the MOSS guarantee (any shared verbatim run of *w + k − 1*
-  tokens is detected). Scoring borrows from cognitive psychology — REM's
-  log-inverse-frequency weighting and MINERVA 2's echo aggregation — into a
+  of co-occurring landmarks (robust to reformatting and near-duplicate edits),
+  and **winnowed k-grams** with the MOSS guarantee (any shared verbatim run of
+  *w + k − 1* tokens is detected). Scoring borrows from cognitive psychology —
+  REM's log-inverse-frequency weighting and MINERVA 2's echo aggregation — into a
   familiarity scalar; **novelty = 1 − familiarity**. No embeddings, no model,
-  and every verdict carries the exact features that produced it. Recognition
-  powers deduplication, recurrence feedback, and near-duplicate detection.
+  and every verdict carries the exact features that produced it. Recognition is
+  strong at near-duplicate and verbatim re-encounter detection (its measured
+  strength); it is **not** a paraphrase/semantic matcher — full paraphrases share
+  few landmarks. It powers deduplication and recurrence feedback.
 
 ## A memory that adapts through use
 
@@ -61,10 +85,14 @@ loop** — the closest thing to "what fires together, wires together" without a
 neural net:
 
 - **Use strengthens.** Every recall reinforces the memories it returns (a small
-  signal-score nudge), so what the agent actually uses rises over time. The
-  write-back is batched and optionally asynchronous, adding ~0 to recall latency.
-- **Disuse fades.** Unreinforced memories decay gently (~1%/week, floored) — the
-  stale is down-weighted, never silently deleted.
+  signal-score nudge), so what the agent actually uses rises over time. This is a
+  read with a write side effect: the write-back is batched into one transaction
+  by default, and can be moved fully off the recall path with opt-in async
+  write-back (`set_async_writeback`).
+- **Disuse fades.** An opt-in maintenance pass (the Archivist) decays memories
+  left unreinforced past an idle threshold — down-weighting the stale toward a
+  floor, never silently deleting it. Decay is a maintenance operation you invoke,
+  not an automatic background clock.
 - **Context lifts what's relevant now.** A `RecognitionContext` (current focus,
   recent activity, freshness) re-ranks toward what you're doing right now —
   penalty-only, so it never hijacks a query that explicitly names something else.
@@ -84,13 +112,41 @@ cold queries where the query must be encoded. Sub-millisecond recall on 1,000
 memories. ~2,500 ingests/sec. No GPU, no model weights, no per-query encoding
 cost. See [benchmarks](benches/RESULTS.md) for the full breakdown.
 
+## What it costs
+
+The design decision is to make memory operations **structurally free**, not just
+cheap:
+
+| | Spectral | Embedding / vector-DB memory |
+|---|---|---|
+| Recall query | **$0** — no model, no API call | an embedding call per query (often + an LLM) |
+| Ingest | **$0** — deterministic classify + index | an embedding call per item |
+| Infrastructure | one embedded SQLite file | a vector-DB service/server + index |
+| Hardware | CPU only — no GPU, no model weights | GPU or a hosted embedding endpoint |
+| Determinism | byte-reproducible | drifts with the model version |
+
+- **Recall and recognition make zero LLM calls** — `recognition_token_cost` is
+  structurally `0`, so you can *assert* the memory layer adds no per-query model
+  cost, not merely hope it's small.
+- **The one optional cost** is a pre-retrieval query-expansion call (Claude
+  Haiku, ≈ **$0.25 / 1k queries**) that lifts accuracy on paraphrase-heavy
+  questions. It's off unless you enable it; recall without it is fully LLM-free.
+- **Latency:** sub-millisecond recall on 1k memories; ~15–21 ms on
+  LongMemEval-scale haystacks (the adaptive write-back is batched, and optionally
+  moved off the recall path entirely).
+- **Storage:** a single SQLite file you own — copy it, back it up, delete it.
+  Local-first by construction, so "retain control of all your data" is the
+  default, not a setting.
+
 ## Results (accuracy)
 
 On **LongMemEval-S** (500 long-term-memory QA questions), Spectral scores
 **81.5% (401/492)** with a Claude Sonnet 4.6 actor — at a memory-layer
 retrieval overhead of **~169 tokens/query** and **~17 ms median retrieval
-latency**, with no embedding model, no vector database, and no LLM call in the
-recall path (memory-layer overhead ≈ $0.25/1k queries).
+latency**. The core recall path makes no LLM call, but this benchmarked config
+front-runs one **optional** pre-retrieval query-expansion call (Claude Haiku)
+— that call is the only memory-layer LLM cost, and it is what the **≈ $0.25/1k
+queries** figure measures. Recall without expansion is fully LLM-free.
 
 Honest framing: this is in-sample (the retrieval was developed against this
 dataset), so it is not a state-of-the-art claim; held-out numbers are expected
@@ -245,7 +301,7 @@ brains works today.
 |---|---|
 | Ingest throughput (empty brain) | ~2,540 ops/sec (393 us each) |
 | Recall latency (1,000 memories) | 564 us p50 |
-| Batch ingest (100 memories) | 98 ms total (~1,020/sec) |
+| Batch ingest (100 memories, fresh brain) | 235 ms total (~425/sec) |
 | vs neural vector cold query | 6.8x faster |
 | vs neural vector warm query | 1.6x slower (no encoding step to skip) |
 
@@ -268,9 +324,11 @@ cargo bench --bench vector_comparison -p spectral  # downloads ~330 MB model on 
 
 Vector databases win at pure semantic similarity search, especially on
 paraphrase queries where the query vocabulary differs entirely from the corpus.
-Cognee has a mature graph extraction pipeline (Cognify). Spectral wins at
-multi-hop topical queries without requiring a model, and is the only option
-with built-in federation primitives. Pick the tool that matches your query
+Cognee has a mature graph extraction pipeline (Cognify). Spectral matches vector
+search on multi-hop topical queries **without requiring a model** (a tie on our
+small synthetic suite — see [benches/RESULTS.md](benches/RESULTS.md); a
+keyword-free multi-hop test is future work), and is the only option here with
+built-in federation primitives. Pick the tool that matches your query
 pattern.
 
 ## When to use Spectral
