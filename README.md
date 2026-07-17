@@ -5,7 +5,8 @@
 <h1 align="center">Spectral</h1>
 
 <p align="center">
-  A frequency-domain memory system for AI agents, designed for federation.
+  A deterministic, embedding-free memory for AI agents — it recalls what you
+  know, recognizes what it has seen, and adapts through use. Federation-ready.
 </p>
 
 <p align="center">
@@ -31,12 +32,52 @@ recency ranking. No embedding model, no vector database, no LLM in the recall
 path. Recall porter-stems by default, so plural and inflected queries match
 singular content ("doctors" → "doctor") — deterministic, zero tokens.
 
-On top of these sits an experimental, embedding-free **recognition layer**
-(Shazam-inspired content fingerprinting and cognitive-shape matching) used for
-deduplication, recurrence feedback, and — in development — associative recall
-that spreads from full-text seeds through co-occurrence to bridge vocabulary
-gaps. See [docs/internal](docs/internal) for the recognition/spectrogram design
-and measurements.
+## Recall *and* recognition
+
+Most memory systems only *recall* — "what do I know about X?". Spectral adds a
+second, independent mode: *recognition* — **"have I encountered this before, and
+what happened last time?"**
+
+- **Recall** retrieves what you know: deterministic FTS5 + BM25 over your
+  memories, porter-stemmed, signal-score and recency ranked. No embeddings, no
+  model, sub-millisecond on 1k memories, and every rank is inspectable.
+- **Recognition** scores *familiarity vs novelty* for a new stimulus with an
+  embedding-free engine built from three lineages: **landmark fingerprinting**
+  (a stimulus's statistically salient features — rare stems, numbers,
+  identifiers — scored by IDF; the text analog of spectral peaks above the noise
+  floor, and where the name *Spectral* comes from), **Shazam-style pair hashes**
+  of co-occurring landmarks (coarse geometry survives rewording), and **winnowed
+  k-grams** with the MOSS guarantee (any shared verbatim run of *w + k − 1*
+  tokens is detected). Scoring borrows from cognitive psychology — REM's
+  log-inverse-frequency weighting and MINERVA 2's echo aggregation — into a
+  familiarity scalar; **novelty = 1 − familiarity**. No embeddings, no model,
+  and every verdict carries the exact features that produced it. Recognition
+  powers deduplication, recurrence feedback, and near-duplicate detection.
+
+## A memory that adapts through use
+
+Spectral is not a static index. Recall feeds a deterministic **ambient feedback
+loop** — the closest thing to "what fires together, wires together" without a
+neural net:
+
+- **Use strengthens.** Every recall reinforces the memories it returns (a small
+  signal-score nudge), so what the agent actually uses rises over time. The
+  write-back is batched and optionally asynchronous, adding ~0 to recall latency.
+- **Disuse fades.** Unreinforced memories decay gently (~1%/week, floored) — the
+  stale is down-weighted, never silently deleted.
+- **Context lifts what's relevant now.** A `RecognitionContext` (current focus,
+  recent activity, freshness) re-ranks toward what you're doing right now —
+  penalty-only, so it never hijacks a query that explicitly names something else.
+- **Co-access becomes anticipation.** Retrieval events are mined into lift-based
+  associations, so Spectral surfaces what your current context is *specifically*
+  associated with — suppressing globally-popular memories the way a good
+  recommender avoids pushing bestsellers at everyone.
+
+All of it is deterministic, local, and free of any model or LLM. See
+[docs/internal](docs/internal) for the recognition/spectrogram design and
+measurements.
+
+## Speed
 
 The numbers: 6.8x faster than neural vector search (BGE-small-en-v1.5) on
 cold queries where the query must be encoded. Sub-millisecond recall on 1,000
@@ -135,10 +176,19 @@ co-occurrence spreading are complementary layers under active measurement.
 **spectral-core** provides content-addressed entity IDs, Ed25519 brain
 identity, device IDs, and the four-level visibility system.
 
+**spectral-recognition** is the embedding-free recognition engine (sidecar
+`recognition.db`): landmark fingerprinting, Shazam-style pair hashes, and
+winnowed k-grams scored into a familiarity/novelty verdict. Answers "have I seen
+this before?" — powering deduplication, recurrence feedback, and near-duplicate
+detection, deterministically and with fully explainable verdicts.
+
 **spectral-spectrogram** classifies memories along seven cognitive dimensions
 (entity density, action type, emotional valence, etc.). Opt-in and experimental
 via `BrainConfig::enable_spectrogram`; the cross-wing resonance reader is not on
 the default recall path.
+
+Read-time **federation** (the `FederationCoordinator` fan-out) lives in
+`spectral-graph`, built entirely above the `Brain` API — no core changes.
 
 ## Federation primitives
 
@@ -166,9 +216,28 @@ enforced on read, not on write.
 **Versioned salt schemes.** Fingerprint hashes use a documented salt format
 for forward compatibility when the algorithm evolves.
 
-What is not built yet: the federation protocol itself (sync, conflict
-resolution, merge semantics). The primitives above are in place so that
-when federation ships, existing data is already annotated correctly.
+**Read-time fan-out (shipped).** A `FederationCoordinator` queries N held brains
+on each recall, tags every hit with its origin brain, and merges them into one
+provenance-ranked list — with the trust and privacy properties multi-contributor
+memory actually needs:
+
+- **Visibility boundary enforced coordinator-side** — a member's Private
+  memories never cross into a Team/Org/Public context.
+- **Poisoning-resistant merge (Reciprocal Rank Fusion).** A member controls its
+  own memories' scores, so ranking on raw score lets one peer flood the top by
+  self-asserting max-score, keyword-stuffed entries. RRF ranks on *position*, not
+  self-asserted score, and *sums across* members — so a lone assertion can't
+  dominate and independently-corroborated content rises. A per-child cap bounds
+  flooding volume.
+- **Read-only children** — a coordinator opens foreign brains read-only, so a
+  query writes no reinforce nudges or `query_hash` side-channels into a peer's
+  store.
+- **Graceful degradation** — one unhealthy member (locked/corrupt DB) is skipped
+  and reported, never aborts the whole query.
+
+What is not built yet: write-merge into a shared brain and cross-machine
+transport (sync, conflict resolution). Read-time federation over co-resident
+brains works today.
 
 ## Performance
 
@@ -235,8 +304,10 @@ For runnable code, see `crates/spectral/examples/quickstart.rs`.
 - ✅ Benchmarked vs TF-IDF and neural vectors ([#9](https://github.com/make-tuned-unit/spectral/pull/9), [#10](https://github.com/make-tuned-unit/spectral/pull/10))
 - ✅ Performance optimizations from production audit ([#13](https://github.com/make-tuned-unit/spectral/pull/13))
 - ✅ Cognitive Spectrogram (cross-wing matching, [#16](https://github.com/make-tuned-unit/spectral/pull/16))
-- 📋 Memify feedback loop (recall quality improves with use)
-- 📋 Federation protocol (sync, conflict resolution, merge)
+- ✅ Recognition engine (landmark fingerprinting, familiarity/novelty scoring)
+- ✅ Ambient feedback loop (use-driven reinforce, disuse decay, lift-based anticipation)
+- ✅ Read-time federation (fan-out coordinator: RRF poisoning-resistance, visibility boundary, provenance, graceful degradation)
+- 📋 Federation write-merge and cross-machine sync (conflict resolution)
 - 📋 brain.db migration tooling
 
 ## Operational considerations
