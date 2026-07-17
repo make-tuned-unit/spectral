@@ -24,13 +24,34 @@ and "how does X relate to Y?" Vector databases answer the first question well.
 They struggle with the second. Retrieving a fact by embedding similarity does
 not give you the two-hop chain of relationships that led to that fact.
 
-Spectral gives your agent two complementary memory systems behind a single
-`Brain` handle, unified on one embedded **SQLite** database: a typed knowledge
-graph for entity relationships with ontology validation and 2-hop traversal, and
-a deterministic full-text recall path (SQLite FTS5 + BM25) with signal-score and
-recency ranking. No embedding model, no vector database, no LLM in the recall
-path. Recall porter-stems by default, so plural and inflected queries match
-singular content ("doctors" → "doctor") — deterministic, zero tokens.
+Spectral gives your agent several complementary kinds of memory behind a single
+`Brain` handle, unified on one embedded **SQLite** file — no embedding model, no
+vector database, no LLM in the recall path, no GPU.
+
+## The kinds of memory your agent gets
+
+One `Brain`, several ways to remember — each deterministic, embedding-free, and
+free to query:
+
+| Kind | Answers | How it works | Cost to query |
+|---|---|---|---|
+| **Recall** | "What do I know about X?" | SQLite FTS5 + BM25, porter-stemmed, signal-score & recency ranked | **$0**, deterministic |
+| **Recognition** | "Have I seen this before — and is it new?" | Landmark fingerprinting → a familiarity/novelty verdict with the exact matched features | **$0**, deterministic |
+| **Relational** | "How does X relate to Y?" | Typed knowledge graph with ontology validation and 2-hop traversal | **$0**, deterministic |
+| **Episodic / temporal** | "What happened around then?" | Session episodes + time-anchored recency ranking and decay | **$0**, deterministic |
+| **Adaptive** | "What matters *now*?" | Use-driven reinforcement, disuse decay, and lift-based anticipation (the feedback loop below) | **$0**, deterministic |
+| **Federated** | "What do *we* collectively know?" | Read-time fan-out across brains, provenance-ranked, visibility-scoped, poisoning-resistant | **$0**, deterministic |
+
+Vector databases answer the first row well and struggle with the rest —
+retrieving a fact by embedding similarity gives you neither the two-hop chain
+that led to it, nor "have I seen this before," nor a memory that adapts to use.
+Spectral covers all six with one embedded dependency. On **LongMemEval-S** it
+handles every memory-question type — single-session (user/assistant/preference),
+multi-session, temporal-reasoning, and knowledge-update (see
+[Results](#results-accuracy)).
+
+The rest of this README goes deep on the three that make Spectral distinct:
+recall + recognition, the adaptive feedback loop, and federation.
 
 ## Recall *and* recognition
 
@@ -90,6 +111,32 @@ The numbers: 6.8x faster than neural vector search (BGE-small-en-v1.5) on
 cold queries where the query must be encoded. Sub-millisecond recall on 1,000
 memories. ~2,500 ingests/sec. No GPU, no model weights, no per-query encoding
 cost. See [benchmarks](benches/RESULTS.md) for the full breakdown.
+
+## What it costs
+
+The design decision is to make memory operations **structurally free**, not just
+cheap:
+
+| | Spectral | Embedding / vector-DB memory |
+|---|---|---|
+| Recall query | **$0** — no model, no API call | an embedding call per query (often + an LLM) |
+| Ingest | **$0** — deterministic classify + index | an embedding call per item |
+| Infrastructure | one embedded SQLite file | a vector-DB service/server + index |
+| Hardware | CPU only — no GPU, no model weights | GPU or a hosted embedding endpoint |
+| Determinism | byte-reproducible | drifts with the model version |
+
+- **Recall and recognition make zero LLM calls** — `recognition_token_cost` is
+  structurally `0`, so you can *assert* the memory layer adds no per-query model
+  cost, not merely hope it's small.
+- **The one optional cost** is a pre-retrieval query-expansion call (Claude
+  Haiku, ≈ **$0.25 / 1k queries**) that lifts accuracy on paraphrase-heavy
+  questions. It's off unless you enable it; recall without it is fully LLM-free.
+- **Latency:** sub-millisecond recall on 1k memories; ~15–21 ms on
+  LongMemEval-scale haystacks (the adaptive write-back is batched, and optionally
+  moved off the recall path entirely).
+- **Storage:** a single SQLite file you own — copy it, back it up, delete it.
+  Local-first by construction, so "retain control of all your data" is the
+  default, not a setting.
 
 ## Results (accuracy)
 
