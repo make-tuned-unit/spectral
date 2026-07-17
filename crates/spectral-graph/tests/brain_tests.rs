@@ -1233,15 +1233,31 @@ fn forget_missing_key_reports_not_existed() {
     );
 }
 
+/// Serializes the `SPECTRAL_FTS_FUSION` env window against porter-brain opens.
+/// The store captures the flag from this process-global env at `Brain::open`, so
+/// under parallel tests a porter (fusion-off) brain could open while a fusion
+/// test has the var set and silently become a fusion brain. Every open whose
+/// fusion state must be deterministic holds this lock across `Brain::open`.
+static FTS_FUSION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Open a brain with stemmed+unstemmed fusion active. The store reads
 /// `SPECTRAL_FTS_FUSION` at open and captures the flag, so the env var only
 /// needs to be set across `Brain::open` — recall reads the captured flag, not
-/// the env — which keeps the global-env window minimal.
+/// the env. The lock keeps that global-env window from leaking into a concurrent
+/// porter open (see [`open_porter_brain`]).
 fn open_fusion_brain(tmp: &TempDir) -> Brain {
+    let _guard = FTS_FUSION_ENV_LOCK.lock().unwrap();
     std::env::set_var("SPECTRAL_FTS_FUSION", "1");
     let brain = Brain::open(brain_config(tmp)).unwrap();
     std::env::remove_var("SPECTRAL_FTS_FUSION");
     brain
+}
+
+/// Open a default (porter-only, fusion-off) brain, guarded against a concurrent
+/// fusion test's env window so its fusion state is deterministic.
+fn open_porter_brain(tmp: &TempDir) -> Brain {
+    let _guard = FTS_FUSION_ENV_LOCK.lock().unwrap();
+    Brain::open(brain_config(tmp)).unwrap()
 }
 
 #[test]
@@ -1286,7 +1302,7 @@ fn fts_fusion_recovers_overstem_and_inflection_end_to_end() {
 
     // Porter-only (default): the short distractor wins the over-stem query.
     let tmp_p = TempDir::new().unwrap();
-    let porter = Brain::open(brain_config(&tmp_p)).unwrap();
+    let porter = open_porter_brain(&tmp_p);
     seed(&porter);
     assert_eq!(
         top(&porter, "university").as_deref(),
@@ -1359,7 +1375,7 @@ fn fts_fusion_plural_strip_recovers_overstem_flood() {
     };
 
     let tmp_p = TempDir::new().unwrap();
-    let porter = Brain::open(brain_config(&tmp_p)).unwrap();
+    let porter = open_porter_brain(&tmp_p);
     seed(&porter);
     assert_ne!(
         top(&porter).as_deref(),
