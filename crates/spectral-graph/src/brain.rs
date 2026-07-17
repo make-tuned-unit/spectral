@@ -792,9 +792,7 @@ impl Brain {
             if recognition_db.exists() {
                 spectral_recognition::SqliteRecognitionStore::open_read_only(&recognition_db)
             } else {
-                spectral_recognition::SqliteRecognitionStore::open(std::path::Path::new(
-                    ":memory:",
-                ))
+                spectral_recognition::SqliteRecognitionStore::open(std::path::Path::new(":memory:"))
             }
         } else {
             spectral_recognition::SqliteRecognitionStore::open(&recognition_db)
@@ -891,9 +889,11 @@ impl Brain {
         hit: &spectral_ingest::MemoryHit,
         pubkey: &spectral_core::identity::VerifyingKey,
     ) -> bool {
-        let (Some(sbid_bytes), Some(sig_bytes), Some(created_at)) =
-            (hit.source_brain_id, hit.signature.as_deref(), hit.created_at.as_deref())
-        else {
+        let (Some(sbid_bytes), Some(sig_bytes), Some(created_at)) = (
+            hit.source_brain_id,
+            hit.signature.as_deref(),
+            hit.created_at.as_deref(),
+        ) else {
             return false;
         };
         let Ok(sig) = spectral_core::identity::Signature::from_slice(sig_bytes) else {
@@ -1346,7 +1346,10 @@ impl Brain {
         // the store actually persisted (created_at default, cleaned content).
         if let Ok(Some(stored)) = self
             .rt
-            .block_on(self.memory_store.fetch_by_ids(std::slice::from_ref(&result.memory.id)))
+            .block_on(
+                self.memory_store
+                    .fetch_by_ids(std::slice::from_ref(&result.memory.id)),
+            )
             .map(|v| v.into_iter().next())
         {
             if let (Some(content_hash), Some(created_at)) =
@@ -1373,7 +1376,10 @@ impl Brain {
         // Only on genuinely new writes; a self-match is impossible pre-enroll.
         let mut recurrence = None;
         if self.recurrence_feedback
-            && matches!(result.write_outcome, spectral_ingest::WriteOutcome::Inserted)
+            && matches!(
+                result.write_outcome,
+                spectral_ingest::WriteOutcome::Inserted
+            )
         {
             let rec = self
                 .recognition
@@ -1707,7 +1713,11 @@ impl Brain {
 
         let mut present: std::collections::HashSet<String> =
             results.iter().map(|h| h.id.clone()).collect();
-        let seeds: Vec<String> = results.iter().take(SEED_HITS).map(|h| h.id.clone()).collect();
+        let seeds: Vec<String> = results
+            .iter()
+            .take(SEED_HITS)
+            .map(|h| h.id.clone())
+            .collect();
         let mut added = 0usize;
         for seed in seeds {
             if added >= MAX_ANTICIPATED {
@@ -1715,7 +1725,10 @@ impl Brain {
             }
             let recs = self
                 .rt
-                .block_on(self.memory_store.recommend_by_lift(&seed, MAX_ANTICIPATED, 2))
+                .block_on(
+                    self.memory_store
+                        .recommend_by_lift(&seed, MAX_ANTICIPATED, 2),
+                )
                 .unwrap_or_default();
             for r in recs {
                 if added >= MAX_ANTICIPATED {
@@ -2193,7 +2206,8 @@ impl Brain {
         // retrievals at least `min_co_count` times. Track summed co_count per
         // cluster for a cohesion score.
         let in_set: std::collections::HashSet<&str> = keys.iter().map(|s| s.as_str()).collect();
-        let mut parent: HashMap<String, String> = keys.iter().map(|k| (k.clone(), k.clone())).collect();
+        let mut parent: HashMap<String, String> =
+            keys.iter().map(|k| (k.clone(), k.clone())).collect();
         fn find(parent: &mut HashMap<String, String>, k: &str) -> String {
             let p = parent.get(k).cloned().unwrap_or_else(|| k.to_string());
             if p == k {
@@ -2263,7 +2277,11 @@ impl Brain {
                 }
             })
             .collect();
-        out.sort_by(|a, b| b.cohesion.partial_cmp(&a.cohesion).unwrap_or(std::cmp::Ordering::Equal));
+        out.sort_by(|a, b| {
+            b.cohesion
+                .partial_cmp(&a.cohesion)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(out)
     }
 
@@ -2296,7 +2314,9 @@ impl Brain {
             }
         }
         if contents.is_empty() {
-            return Err(Error::Schema("no valid source memories to consolidate".into()));
+            return Err(Error::Schema(
+                "no valid source memories to consolidate".into(),
+            ));
         }
         let summary = summarize(&contents);
         // Write the abstraction, tagged with its compaction tier.
@@ -3356,9 +3376,9 @@ fn visibility_to_str(v: Visibility) -> String {
 /// matches. These only ever pollute the candidate pool (a turn matching only
 /// "is" has nothing to do with the query).
 const FTS_STOPWORDS: &[&str] = &[
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "am",
-    "of", "to", "and", "or", "what", "which", "how", "did", "does", "do",
-    "that", "this", "these", "those", "for", "with", "there", "here",
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "am", "of", "to", "and",
+    "or", "what", "which", "how", "did", "does", "do", "that", "this", "these", "those", "for",
+    "with", "there", "here",
 ];
 
 fn is_fts_stopword(w: &str) -> bool {
@@ -3396,7 +3416,11 @@ fn fts_anticipatory_enabled() -> bool {
 fn key_to_id(key: &str) -> String {
     format!(
         "{:016x}",
-        u64::from_be_bytes(blake3::hash(key.as_bytes()).as_bytes()[..8].try_into().unwrap())
+        u64::from_be_bytes(
+            blake3::hash(key.as_bytes()).as_bytes()[..8]
+                .try_into()
+                .unwrap()
+        )
     )
 }
 
@@ -3684,8 +3708,14 @@ mod fts_query_words_tests {
 
     #[test]
     fn strips_possessive_ascii_and_unicode() {
-        assert_eq!(fts_query_words_opts("Marcus's title", false), vec!["Marcus", "title"]);
-        assert_eq!(fts_query_words_opts("Marcus\u{2019}s title", false), vec!["Marcus", "title"]);
+        assert_eq!(
+            fts_query_words_opts("Marcus's title", false),
+            vec!["Marcus", "title"]
+        );
+        assert_eq!(
+            fts_query_words_opts("Marcus\u{2019}s title", false),
+            vec!["Marcus", "title"]
+        );
     }
 
     #[test]
@@ -3697,18 +3727,33 @@ mod fts_query_words_tests {
             vec!["alice", "acme", "io"],
             "@ and . must split, not merge into 'aliceacmeio'"
         );
-        assert_eq!(fts_query_words_opts("and/or clause", false), vec!["and", "or", "clause"]);
-        assert_eq!(fts_query_words_opts("api.acme.dev cert", false), vec!["api", "acme", "dev", "cert"]);
+        assert_eq!(
+            fts_query_words_opts("and/or clause", false),
+            vec!["and", "or", "clause"]
+        );
+        assert_eq!(
+            fts_query_words_opts("api.acme.dev cert", false),
+            vec!["api", "acme", "dev", "cert"]
+        );
         // Intra-token hyphen/underscore are preserved (FTS re-tokenizes them).
-        assert_eq!(fts_query_words_opts("blue-green deploy", false), vec!["blue-green", "deploy"]);
+        assert_eq!(
+            fts_query_words_opts("blue-green deploy", false),
+            vec!["blue-green", "deploy"]
+        );
         // Possessive still handled after the split change.
-        assert_eq!(fts_query_words_opts("Sarah's role", false), vec!["Sarah", "role"]);
+        assert_eq!(
+            fts_query_words_opts("Sarah's role", false),
+            vec!["Sarah", "role"]
+        );
     }
 
     #[test]
     fn alias_expansion_bridges_and_tokenizes_multiword() {
         let mut aliases = std::collections::HashMap::new();
-        aliases.insert("ceo".to_string(), vec!["chief executive officer".to_string()]);
+        aliases.insert(
+            "ceo".to_string(),
+            vec!["chief executive officer".to_string()],
+        );
         aliases.insert("k8s".to_string(), vec!["kubernetes".to_string()]);
         let mut w = vec!["ceo".to_string(), "budget".to_string()];
         expand_aliases(&mut w, &aliases);
@@ -3719,7 +3764,10 @@ mod fts_query_words_tests {
         // Case-insensitive key match.
         let mut w2 = vec!["K8s".to_string()];
         expand_aliases(&mut w2, &aliases);
-        assert!(w2.iter().any(|x| x == "kubernetes"), "K8s should bridge: {w2:?}");
+        assert!(
+            w2.iter().any(|x| x == "kubernetes"),
+            "K8s should bridge: {w2:?}"
+        );
         // Empty table is a no-op.
         let mut w3 = vec!["ceo".to_string()];
         expand_aliases(&mut w3, &std::collections::HashMap::new());
@@ -3737,16 +3785,28 @@ mod fts_query_words_tests {
         // digit -> word (single digit survives via the raw scan)
         let mut w = vec!["puppies".to_string()];
         expand_number_words("3 puppies", &mut w);
-        assert!(w.iter().any(|x| x == "three"), "3 should bridge to three: {w:?}");
+        assert!(
+            w.iter().any(|x| x == "three"),
+            "3 should bridge to three: {w:?}"
+        );
         // word -> digit
         let mut w2 = vec!["kids".to_string()];
         expand_number_words("five kids", &mut w2);
-        assert!(w2.iter().any(|x| x == "5"), "five should bridge to 5: {w2:?}");
+        assert!(
+            w2.iter().any(|x| x == "5"),
+            "five should bridge to 5: {w2:?}"
+        );
         // Excluded homographs must NOT bridge (ambiguous content words).
         let mut w3 = vec!["thing".to_string()];
         expand_number_words("one second", &mut w3);
-        assert!(!w3.iter().any(|x| x == "1"), "'one' must not bridge (article): {w3:?}");
-        assert!(!w3.iter().any(|x| x == "2"), "'second' must not bridge (time unit): {w3:?}");
+        assert!(
+            !w3.iter().any(|x| x == "1"),
+            "'one' must not bridge (article): {w3:?}"
+        );
+        assert!(
+            !w3.iter().any(|x| x == "2"),
+            "'second' must not bridge (time unit): {w3:?}"
+        );
     }
 
     #[test]
@@ -3776,7 +3836,10 @@ mod fts_query_words_tests {
         // Ambiguous tokens that are often content are deliberately NOT stopwords.
         let out = fts_query_words_opts("the IT team can march in May", true);
         for kept in ["IT", "team", "can", "march", "in", "May"] {
-            assert!(out.iter().any(|w| w == kept), "{kept} must be kept, got {out:?}");
+            assert!(
+                out.iter().any(|w| w == kept),
+                "{kept} must be kept, got {out:?}"
+            );
         }
         assert!(!out.iter().any(|w| w == "the"), "'the' should be dropped");
     }

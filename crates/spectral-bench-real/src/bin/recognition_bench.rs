@@ -73,7 +73,11 @@ fn degrade(content: &str, seed: u64, drop_pct: u64) -> String {
 
 fn roc_auc(scored: &[(f64, bool)]) -> f64 {
     let pos: Vec<f64> = scored.iter().filter(|(_, l)| *l).map(|(s, _)| *s).collect();
-    let neg: Vec<f64> = scored.iter().filter(|(_, l)| !*l).map(|(s, _)| *s).collect();
+    let neg: Vec<f64> = scored
+        .iter()
+        .filter(|(_, l)| !*l)
+        .map(|(s, _)| *s)
+        .collect();
     if pos.is_empty() || neg.is_empty() {
         return f64::NAN;
     }
@@ -93,7 +97,10 @@ fn roc_auc(scored: &[(f64, bool)]) -> f64 {
 fn engine(minhash_on: bool) -> RecognitionEngine<InMemoryRecognitionStore> {
     let mut cfg = RecognitionConfig::default();
     if !minhash_on {
-        cfg.minhash = MinHashConfig { weight: 0.0, ..MinHashConfig::default() };
+        cfg.minhash = MinHashConfig {
+            weight: 0.0,
+            ..MinHashConfig::default()
+        };
     }
     let mut e = RecognitionEngine::new(InMemoryRecognitionStore::default(), cfg);
     for (i, c) in CORPUS.iter().enumerate() {
@@ -154,10 +161,28 @@ fn main() {
     println!("  lift: {:+.3}", auc_on - auc_off);
     println!();
     println!("With MinHash ON:");
-    println!("  exact re-encounters Recognized:      {}/{}", reco_on, CORPUS.len());
-    println!("  degraded@72% still Familiar+:        {}/{}", deg_on, CORPUS.len());
-    println!("  near-miss correctly flagged Novel:   {}/{}", nm_on, NEAR_MISS.len());
-    println!("  (MinHash OFF: {}/{} degraded familiar, {}/{} near-miss novel)", deg_off, CORPUS.len(), nm_off, NEAR_MISS.len());
+    println!(
+        "  exact re-encounters Recognized:      {}/{}",
+        reco_on,
+        CORPUS.len()
+    );
+    println!(
+        "  degraded@72% still Familiar+:        {}/{}",
+        deg_on,
+        CORPUS.len()
+    );
+    println!(
+        "  near-miss correctly flagged Novel:   {}/{}",
+        nm_on,
+        NEAR_MISS.len()
+    );
+    println!(
+        "  (MinHash OFF: {}/{} degraded familiar, {}/{} near-miss novel)",
+        deg_off,
+        CORPUS.len(),
+        nm_off,
+        NEAR_MISS.len()
+    );
     println!();
     println!("Deterministic, embedding-free, every verdict carries matched-feature evidence.");
     println!(

@@ -78,25 +78,47 @@ fn main() {
     let query = "quarterly review meeting";
     // now=None -> recency anchored to wall-clock (the risky default path a naive
     // consumer hits). Compare against recency disabled.
-    let default_cfg = RecallTopKConfig { k: 40, ..Default::default() }; // recency ON
-    let no_recency = RecallTopKConfig { k: 40, apply_recency_weighting: false, ..Default::default() };
+    let default_cfg = RecallTopKConfig {
+        k: 40,
+        ..Default::default()
+    }; // recency ON
+    let no_recency = RecallTopKConfig {
+        k: 40,
+        apply_recency_weighting: false,
+        ..Default::default()
+    };
 
     let rank_of = |cfg: &RecallTopKConfig| -> String {
-        let hits = brain.recall_topk_fts(query, cfg, Visibility::Private).unwrap();
+        let hits = brain
+            .recall_topk_fts(query, cfg, Visibility::Private)
+            .unwrap();
         match hits.iter().position(|h| h.key == "answer") {
             Some(i) => format!("rank {} (of {})", i + 1, hits.len()),
             None => "NOT in top-40".to_string(),
         }
     };
     let in_top40 = |cfg: &RecallTopKConfig| {
-        brain.recall_topk_fts(query, cfg, Visibility::Private).unwrap().iter().take(40).any(|h| h.key == "answer")
+        brain
+            .recall_topk_fts(query, cfg, Visibility::Private)
+            .unwrap()
+            .iter()
+            .take(40)
+            .any(|h| h.key == "answer")
     };
 
     println!("=== Recency-decay recall risk ===");
     println!("query {query:?}; answer is the MOST relevant match but ~3 years old;");
     println!("50 recent lower-relevance distractors overflow K=40.\n");
-    println!("  recency ON  (default): answer {}  in_top40={}", rank_of(&default_cfg), in_top40(&default_cfg));
-    println!("  recency OFF          : answer {}  in_top40={}", rank_of(&no_recency), in_top40(&no_recency));
+    println!(
+        "  recency ON  (default): answer {}  in_top40={}",
+        rank_of(&default_cfg),
+        in_top40(&default_cfg)
+    );
+    println!(
+        "  recency OFF          : answer {}  in_top40={}",
+        rank_of(&no_recency),
+        in_top40(&no_recency)
+    );
     println!();
     let on = rank_of(&default_cfg);
     let off = rank_of(&no_recency);
@@ -104,11 +126,17 @@ fn main() {
     // (1) parser fix: recency is now ACTIVE for an RFC3339-imported timestamp
     //     (ON ordering differs from OFF); previously both were identical because
     //     the parse failed and recency was silently inert for imports.
-    println!("  [1] recency now ACTIVE for imports (ON {on} != OFF {off}): {}", on != off);
+    println!(
+        "  [1] recency now ACTIVE for imports (ON {on} != OFF {off}): {}",
+        on != off
+    );
     // (2) additive bound: the relevant 10-year-old answer stays in top-40 rather
     //     than being annihilated out of it, as the old multiplicative decay
     //     (score *= 0.5^(3650/365) ≈ 0.001) would have done.
-    println!("  [2] relevant 10yr-old answer still in top-40 (not annihilated): {}", in_top40(&default_cfg));
+    println!(
+        "  [2] relevant 10yr-old answer still in top-40 (not annihilated): {}",
+        in_top40(&default_cfg)
+    );
     println!("\nDeterministic, $0, no LLM. Recency is now consistent (native + import) and a");
     println!("bounded tiebreaker, not a force that buries old-but-relevant answers.");
 }

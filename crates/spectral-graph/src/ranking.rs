@@ -966,7 +966,12 @@ mod tests {
                 .map(|i| make_hit(&format!("f{i}"), 0.6, None, Some("2023-05-25 12:00:00")))
                 .collect();
             v.push(make_hit("old_jan", 0.6, None, Some("2023-01-10 12:00:00"))); // FTS idx 8
-            v.push(make_hit("recent_may", 0.6, None, Some("2023-05-20 12:00:00"))); // FTS idx 9
+            v.push(make_hit(
+                "recent_may",
+                0.6,
+                None,
+                Some("2023-05-20 12:00:00"),
+            )); // FTS idx 9
             v.extend(
                 (0..8).map(|i| make_hit(&format!("g{i}"), 0.6, None, Some("2023-05-25 12:00:00"))),
             );

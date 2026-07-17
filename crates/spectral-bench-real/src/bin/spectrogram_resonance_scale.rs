@@ -41,7 +41,10 @@ fn open(dir: &Path, spectrogram: bool) -> Brain {
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 16
     }
     fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
@@ -49,7 +52,9 @@ impl Lcg {
     }
 }
 
-const WINGS: &[&str] = &["health", "home", "finance", "travel", "career", "hobby", "family", "learning"];
+const WINGS: &[&str] = &[
+    "health", "home", "finance", "travel", "career", "hobby", "family", "learning",
+];
 // Templates by action type. DECISION templates are what resonance should find.
 const DECIDE: &[&str] = &[
     "Decided to {v} the {n} because the {r} finally made it worth it",
@@ -71,9 +76,27 @@ const RECOMMEND: &[&str] = &[
     "Should probably {v} the {n} given the {r}",
     "Recommend {v}ing the {n} if the {r} holds",
 ];
-const NOUNS: &[&str] = &["schedule", "budget", "routine", "setup", "plan", "system", "gear", "process", "contract", "layout"];
-const VERBS: &[&str] = &["switch", "upgrade", "simplify", "consolidate", "rebuild", "replace"];
-const REASONS: &[&str] = &["cost", "time pressure", "reliability", "stress", "quality", "the deadline", "the maintenance load"];
+const NOUNS: &[&str] = &[
+    "schedule", "budget", "routine", "setup", "plan", "system", "gear", "process", "contract",
+    "layout",
+];
+const VERBS: &[&str] = &[
+    "switch",
+    "upgrade",
+    "simplify",
+    "consolidate",
+    "rebuild",
+    "replace",
+];
+const REASONS: &[&str] = &[
+    "cost",
+    "time pressure",
+    "reliability",
+    "stress",
+    "quality",
+    "the deadline",
+    "the maintenance load",
+];
 
 fn fill(rng: &mut Lcg, tmpl: &str) -> String {
     tmpl.replace("{v}", rng.pick(VERBS))
@@ -104,13 +127,24 @@ fn main() {
     // `rotate` = wing changes every write (thrashes the wing-corpus LRU cache,
     // worst case); `single` = all writes to one wing (cache-warm, real locality).
     let timed_ingest = |spectrogram: bool, rotate: bool, tag: &str| -> f64 {
-        let brain = open(&std::env::temp_dir().join(format!("spec-scale-{tag}")), spectrogram);
+        let brain = open(
+            &std::env::temp_dir().join(format!("spec-scale-{tag}")),
+            spectrogram,
+        );
         let t = Instant::now();
         for (i, (k, c, w, _)) in items.iter().enumerate() {
             let wing = if rotate { *w } else { "career" };
             let _ = i;
             brain
-                .remember_with(k, c, RememberOpts { visibility: Visibility::Private, wing: Some(wing.to_string()), ..Default::default() })
+                .remember_with(
+                    k,
+                    c,
+                    RememberOpts {
+                        visibility: Visibility::Private,
+                        wing: Some(wing.to_string()),
+                        ..Default::default()
+                    },
+                )
                 .unwrap();
         }
         t.elapsed().as_secs_f64() * 1000.0 / n_write as f64
@@ -120,25 +154,58 @@ fn main() {
     let on_warm = timed_ingest(true, false, "on-warm");
 
     println!("=== Spectrogram at scale ({n_write} memories, 8 wings, 4 action types) ===");
-    println!("(write times are DEBUG build; release is several× faster — the RATIO is the signal)\n");
+    println!(
+        "(write times are DEBUG build; release is several× faster — the RATIO is the signal)\n"
+    );
     println!("write cost per memory:");
     println!("  spectrogram OFF                : {off_ms:.3}ms");
-    println!("  ON, small wings (~25 mem corpus): {on_rot:.3}ms  ({:+.0}%)", 100.0 * (on_rot / off_ms - 1.0));
-    println!("  ON, one big wing (capped corpus): {on_warm:.3}ms  ({:+.0}%)", 100.0 * (on_warm / off_ms - 1.0));
-    println!("  -> cost is driven by wing CORPUS SIZE (novelty dimension), bounded at 256 mem/64KB.\n");
+    println!(
+        "  ON, small wings (~25 mem corpus): {on_rot:.3}ms  ({:+.0}%)",
+        100.0 * (on_rot / off_ms - 1.0)
+    );
+    println!(
+        "  ON, one big wing (capped corpus): {on_warm:.3}ms  ({:+.0}%)",
+        100.0 * (on_warm / off_ms - 1.0)
+    );
+    println!(
+        "  -> cost is driven by wing CORPUS SIZE (novelty dimension), bounded at 256 mem/64KB.\n"
+    );
 
     // ── Precision/recall sweep on the spectrogram-ON brain ──
     let brain = open(&std::env::temp_dir().join("spec-scale-eval"), true);
     for (k, c, w, _) in &items {
-        brain.remember_with(k, c, RememberOpts { visibility: Visibility::Private, wing: Some(w.to_string()), ..Default::default() }).unwrap();
+        brain
+            .remember_with(
+                k,
+                c,
+                RememberOpts {
+                    visibility: Visibility::Private,
+                    wing: Some(w.to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
     }
     // Seed = a fresh decision in a 9th wing (no keyword-tuned overlap).
-    brain.remember_with("seed", "Decided to consolidate the routine because the maintenance load kept growing", RememberOpts { visibility: Visibility::Private, wing: Some("work".into()), ..Default::default() }).unwrap();
+    brain
+        .remember_with(
+            "seed",
+            "Decided to consolidate the routine because the maintenance load kept growing",
+            RememberOpts {
+                visibility: Visibility::Private,
+                wing: Some("work".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
     let total_decisions = items.iter().filter(|(_, _, _, d)| *d).count();
     println!("corpus: {total_decisions} decisions among {n_write} memories (other-wing noise = discoveries/problems/recs)\n");
 
-    println!("{:<34}{:>8}{:>8}{:>8}{:>8}", "tolerance (tol/min_dims)", "hits", "prec", "recall", "F1");
+    println!(
+        "{:<34}{:>8}{:>8}{:>8}{:>8}",
+        "tolerance (tol/min_dims)", "hits", "prec", "recall", "F1"
+    );
     let _ = MatchTolerances::default(); // reference default; sweep overrides all fields
     let sweep = [
         ("loose  0.4 / 2", 0.4, 2usize),
@@ -156,15 +223,32 @@ fn main() {
             novelty: tol,
             min_matching_dimensions: min_dims,
         };
-        let res = brain.recall_cross_wing_with("Decided to consolidate the routine because the maintenance load kept growing", Visibility::Private, 50, &t).unwrap();
+        let res = brain
+            .recall_cross_wing_with(
+                "Decided to consolidate the routine because the maintenance load kept growing",
+                Visibility::Private,
+                50,
+                &t,
+            )
+            .unwrap();
         let hits = res.resonant_memories.len();
         // A resonant hit is "correct" iff its source memory is a DECISION.
-        let correct = res.resonant_memories.iter().filter(|r| {
-            items.iter().any(|(k, _, _, d)| *k == r.memory.key && *d)
-        }).count();
-        let prec = if hits > 0 { correct as f64 / hits as f64 } else { 0.0 };
+        let correct = res
+            .resonant_memories
+            .iter()
+            .filter(|r| items.iter().any(|(k, _, _, d)| *k == r.memory.key && *d))
+            .count();
+        let prec = if hits > 0 {
+            correct as f64 / hits as f64
+        } else {
+            0.0
+        };
         let recall = correct as f64 / total_decisions as f64;
-        let f1 = if prec + recall > 0.0 { 2.0 * prec * recall / (prec + recall) } else { 0.0 };
+        let f1 = if prec + recall > 0.0 {
+            2.0 * prec * recall / (prec + recall)
+        } else {
+            0.0
+        };
         println!("{label:<34}{hits:>8}{prec:>8.2}{recall:>8.2}{f1:>8.2}");
     }
 

@@ -61,7 +61,11 @@ const ONCE: &str = "The nightly deploy also had a transient DNS resolution error
 
 /// Stored signal_score of a memory by id (NOT the blended recall score).
 fn signal_of(brain: &Brain, id: &str) -> f64 {
-    brain.get_memory(id).unwrap().map(|m| m.signal_score).unwrap_or(f64::NAN)
+    brain
+        .get_memory(id)
+        .unwrap()
+        .map(|m| m.signal_score)
+        .unwrap_or(f64::NAN)
 }
 
 fn run(flag_on: bool) -> (Option<String>, f64, f64, f64) {
@@ -70,33 +74,56 @@ fn run(flag_on: bool) -> (Option<String>, f64, f64, f64) {
     } else {
         std::env::remove_var("SPECTRAL_RECURRENCE_FEEDBACK");
     }
-    let dir = std::env::temp_dir().join(if flag_on { "spectral-recur-on" } else { "spectral-recur-off" });
+    let dir = std::env::temp_dir().join(if flag_on {
+        "spectral-recur-on"
+    } else {
+        "spectral-recur-off"
+    });
     let _ = std::fs::remove_dir_all(&dir);
     let brain = open(&dir);
 
     // Write the original important fact once, and the control once.
-    let oom_id = brain.remember("deploy-oom", ORIGINAL, Visibility::Private).unwrap().memory_id;
-    brain.remember("deploy-dns", ONCE, Visibility::Private).unwrap();
+    let oom_id = brain
+        .remember("deploy-oom", ORIGINAL, Visibility::Private)
+        .unwrap()
+        .memory_id;
+    brain
+        .remember("deploy-dns", ONCE, Visibility::Private)
+        .unwrap();
     let signal_before = signal_of(&brain, &oom_id);
 
     // The user keeps bringing up the OOM issue — paraphrased restatements.
     let mut first_recurrence = None;
     for (i, r) in RESTATEMENTS.iter().enumerate() {
-        let res = brain.remember(&format!("deploy-oom-again-{i}"), r, Visibility::Private).unwrap();
+        let res = brain
+            .remember(&format!("deploy-oom-again-{i}"), r, Visibility::Private)
+            .unwrap();
         if first_recurrence.is_none() {
-            first_recurrence = res.recurrence.map(|rc| format!("{} (familiarity {:.2})", rc.matched_memory_id, rc.familiarity));
+            first_recurrence = res.recurrence.map(|rc| {
+                format!(
+                    "{} (familiarity {:.2})",
+                    rc.matched_memory_id, rc.familiarity
+                )
+            });
         }
     }
     let signal_after = signal_of(&brain, &oom_id);
 
     // DNS control signal (mentioned once, never reinforced).
     let dns_id = brain
-        .recall_topk_fts("nightly deploy failure", &RecallTopKConfig::default(), Visibility::Private)
+        .recall_topk_fts(
+            "nightly deploy failure",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
         .unwrap()
         .into_iter()
         .find(|h| h.key == "deploy-dns")
         .map(|h| h.id);
-    let dns_signal = dns_id.and_then(|id| brain.get_memory(&id).ok().flatten()).map(|m| m.signal_score).unwrap_or(f64::NAN);
+    let dns_signal = dns_id
+        .and_then(|id| brain.get_memory(&id).ok().flatten())
+        .map(|m| m.signal_score)
+        .unwrap_or(f64::NAN);
 
     (first_recurrence, signal_before, signal_after, dns_signal)
 }
@@ -105,12 +132,24 @@ fn main() {
     println!("=== Ambient recurrence-feedback benchmark ===");
     println!("scenario: one recurring OOM fact (restated 2x, paraphrased) + one equally-relevant DNS fact (mentioned once)\n");
 
-    for (label, on) in [("OFF (baseline)", false), ("ON (recurrence feedback)", true)] {
+    for (label, on) in [
+        ("OFF (baseline)", false),
+        ("ON (recurrence feedback)", true),
+    ] {
         let (recurrence, before, after, dns) = run(on);
         println!("--- {label} ---");
-        println!("  recurrence detected on 1st restatement: {}", recurrence.as_deref().unwrap_or("none"));
-        println!("  recurring OOM fact signal:  {before:.3} -> {after:.3} (delta {:+.3})", after - before);
-        println!("  once-mentioned DNS control: {dns:.3} (unchanged — not restated)", dns = dns);
+        println!(
+            "  recurrence detected on 1st restatement: {}",
+            recurrence.as_deref().unwrap_or("none")
+        );
+        println!(
+            "  recurring OOM fact signal:  {before:.3} -> {after:.3} (delta {:+.3})",
+            after - before
+        );
+        println!(
+            "  once-mentioned DNS control: {dns:.3} (unchanged — not restated)",
+            dns = dns
+        );
         println!();
     }
     println!("Deterministic, $0, no LLM. Verified: OFF = no effect; ON = re-encounter");

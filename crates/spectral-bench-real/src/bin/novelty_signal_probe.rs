@@ -48,7 +48,10 @@ fn main() {
         ("m1", "I decided to standardize all my projects on Rust"),
         ("m2", "Never schedule meetings for me before 9am"),
         ("m3", "My daughter Mia is five years old"),
-        ("m4", "The deploy failed last night due to a bad config value"),
+        (
+            "m4",
+            "The deploy failed last night due to a bad config value",
+        ),
         ("m5", "We shipped the new billing feature on Tuesday"),
         ("m6", "I prefer concise written summaries over long calls"),
         ("m7", "The team retro is scheduled for Friday afternoon"),
@@ -60,23 +63,50 @@ fn main() {
     // (label, content, classifier hall, durable?, expected-novelty-band)
     let stimuli: &[(&str, &str, &str, bool)] = &[
         // Genuinely new durable fact — not in corpus. Novel + durable.
-        ("novel durable   ", "I am severely allergic to shellfish and peanuts", "fact", true),
+        (
+            "novel durable   ",
+            "I am severely allergic to shellfish and peanuts",
+            "fact",
+            true,
+        ),
         // Restatement of an enrolled durable fact. REDUNDANT + still durable —
         // must STAY above the bar (it is a safety-critical constraint).
-        ("restated durable ", "I'm vegetarian, so no meat or fish for me at all", "fact", true),
+        (
+            "restated durable ",
+            "I'm vegetarian, so no meat or fish for me at all",
+            "fact",
+            true,
+        ),
         // Brand-new ephemeral chatter — novel but NOT durable. Must stay below.
-        ("novel ephemeral  ", "Grabbed sushi with a new client at a rooftop spot downtown", "event", false),
+        (
+            "novel ephemeral  ",
+            "Grabbed sushi with a new client at a rooftop spot downtown",
+            "event",
+            false,
+        ),
         // Gibberish — maximally novel, zero durability. Failure-mode canary.
-        ("gibberish        ", "Zxqp fnord blivet quxwomble threppy gnarfle wobbecks", "event", false),
+        (
+            "gibberish        ",
+            "Zxqp fnord blivet quxwomble threppy gnarfle wobbecks",
+            "event",
+            false,
+        ),
         // Restated ephemeral — redundant AND not durable. Stays below either way.
-        ("restated ephemeral", "The team retro is on Friday afternoon as planned", "event", false),
+        (
+            "restated ephemeral",
+            "The team retro is on Friday afternoon as planned",
+            "event",
+            false,
+        ),
     ];
 
     let bar = 0.70;
     let w = 0.15; // bounded novelty weight
 
     println!("=== Does recognition novelty belong IN the signal score? ===\n");
-    println!("weight w={w}, AAAK bar={bar}. novelty = 1 − MinHash familiarity vs the 8-memory corpus.\n");
+    println!(
+        "weight w={w}, AAAK bar={bar}. novelty = 1 − MinHash familiarity vs the 8-memory corpus.\n"
+    );
     println!(
         "{:<19} {:>4} {:>8} {:>8} {:>10} {:>10}   verdict",
         "stimulus", "dur", "novelty", "base", "symmetric", "boost-only"
@@ -129,11 +159,18 @@ fn main() {
     // right), so the sweep can only find the weight where novelty starts
     // BREAKING correct decisions — the safety ceiling.
     println!("\n=== weight sweep: safety ceiling + value check (symmetric variant) ===");
-    println!("{:>6} {:>10} {:>12} {:>14}", "w", "bad-flips", "bar-fixes", "rank-changes");
+    println!(
+        "{:>6} {:>10} {:>12} {:>14}",
+        "w", "bad-flips", "bar-fixes", "rank-changes"
+    );
     let precomputed: Vec<(f64, f64, bool)> = stimuli
         .iter()
         .map(|(_, content, hall, durable)| {
-            (engine.recognize(content).unwrap().novelty, baseline(content, hall), *durable)
+            (
+                engine.recognize(content).unwrap().novelty,
+                baseline(content, hall),
+                *durable,
+            )
         })
         .collect();
     for &sw in &[0.10_f64, 0.20, 0.30, 0.40, 0.50, 0.70, 1.00] {

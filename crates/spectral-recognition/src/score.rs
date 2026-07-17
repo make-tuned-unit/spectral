@@ -305,7 +305,16 @@ mod tests {
             fm(4, "b", "pair: common2", 90),
             fm(5, "b", "pair: common3", 90),
         ];
-        let r = score_candidates(&prints, &pair_matches, &[], &[], 100, &ScoreConfig::default(), 0.0, 0.0);
+        let r = score_candidates(
+            &prints,
+            &pair_matches,
+            &[],
+            &[],
+            100,
+            &ScoreConfig::default(),
+            0.0,
+            0.0,
+        );
         assert_eq!(r.traces[0].memory_id, "a", "rarity must beat raw count");
     }
 
@@ -322,7 +331,16 @@ mod tests {
                 ]
             })
             .collect();
-        let r = score_candidates(&prints, &pair_matches, &[], &[], 100, &ScoreConfig::default(), 0.0, 0.0);
+        let r = score_candidates(
+            &prints,
+            &pair_matches,
+            &[],
+            &[],
+            100,
+            &ScoreConfig::default(),
+            0.0,
+            0.0,
+        );
         assert!(
             !matches!(r.verdict, Verdict::Recognized { .. }),
             "ambiguous dual-match must not lock: {:?}",
@@ -334,7 +352,16 @@ mod tests {
     #[test]
     fn no_matches_is_novel_with_full_novelty() {
         let prints = prints_with(10);
-        let r = score_candidates(&prints, &[], &[], &[], 100, &ScoreConfig::default(), 0.0, 0.0);
+        let r = score_candidates(
+            &prints,
+            &[],
+            &[],
+            &[],
+            100,
+            &ScoreConfig::default(),
+            0.0,
+            0.0,
+        );
         assert_eq!(r.verdict, Verdict::Novel);
         assert_eq!(r.familiarity, 0.0);
         assert_eq!(r.novelty, 1.0);
@@ -345,7 +372,16 @@ mod tests {
         let prints = prints_with(10);
         let pair = vec![fm(1, "a", "pair: x", 1)];
         let gram = vec![fm(2, "b", "run: 'x y z'", 1)];
-        let r = score_candidates(&prints, &pair, &gram, &[], 100, &ScoreConfig::default(), 0.0, 0.0);
+        let r = score_candidates(
+            &prints,
+            &pair,
+            &gram,
+            &[],
+            100,
+            &ScoreConfig::default(),
+            0.0,
+            0.0,
+        );
         let a = r.traces.iter().find(|t| t.memory_id == "a").unwrap();
         let b = r.traces.iter().find(|t| t.memory_id == "b").unwrap();
         assert!(b.score > a.score * 1.9, "gram evidence must weigh ~2x");

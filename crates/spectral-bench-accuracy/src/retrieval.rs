@@ -445,16 +445,25 @@ pub fn apply_associative_spreading(brain: &Brain, hits: &mut Vec<MemoryHit>) {
             ..AssocSpreadConfig::default()
         }
     } else if let Some(b) = rerank {
-        AssocSpreadConfig { mode: SpreadMode::Rerank, seeds, rerank_b: b, ..AssocSpreadConfig::default() }
+        AssocSpreadConfig {
+            mode: SpreadMode::Rerank,
+            seeds,
+            rerank_b: b,
+            ..AssocSpreadConfig::default()
+        }
     } else if let Some(b) = budget {
-        AssocSpreadConfig { mode: SpreadMode::Episode, seeds, episode_budget: b, ..AssocSpreadConfig::default() }
+        AssocSpreadConfig {
+            mode: SpreadMode::Episode,
+            seeds,
+            episode_budget: b,
+            ..AssocSpreadConfig::default()
+        }
     } else {
         return;
     };
     // Bench runs against one's own brain — Private context admits everything.
     associative_spread(brain, hits, &cfg, Visibility::Private);
 }
-
 
 /// Retrieve via top-K FTS with additive re-ranking. No LLM cost.
 ///
@@ -620,7 +629,10 @@ pub fn retrieve_cascade(
     // Counting profile caps max_per_episode=3 to force session diversity; when
     // answer keys cluster >3 per session that undercounts. These let a sweep
     // find the key-recall/token frontier without re-ingesting brains.
-    if let Some(k) = std::env::var("SPECTRAL_CASCADE_K").ok().and_then(|v| v.parse::<usize>().ok()) {
+    if let Some(k) = std::env::var("SPECTRAL_CASCADE_K")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
         pipeline_config.k = k;
     }
     if let Some(mpe) = std::env::var("SPECTRAL_CASCADE_MAX_PER_EPISODE")

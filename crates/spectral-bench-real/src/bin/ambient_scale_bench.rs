@@ -46,8 +46,30 @@ const PER_TOPIC: usize = 8;
 
 // Distinctive per-topic subject so a topic query co-retrieves its own members,
 // plus shared broad words ("review notes") so a broad query spans topics.
-const SUBJECTS: &[&str] = &["kubernetes", "billing", "onboarding", "search", "payments", "telemetry", "caching", "auth", "mobile", "reporting", "ingestion", "scheduling"];
-const DETAILS: &[&str] = &["rollout plan", "cost review", "incident recap", "design tradeoff", "capacity limit", "migration step", "config change", "latency budget"];
+const SUBJECTS: &[&str] = &[
+    "kubernetes",
+    "billing",
+    "onboarding",
+    "search",
+    "payments",
+    "telemetry",
+    "caching",
+    "auth",
+    "mobile",
+    "reporting",
+    "ingestion",
+    "scheduling",
+];
+const DETAILS: &[&str] = &[
+    "rollout plan",
+    "cost review",
+    "incident recap",
+    "design tradeoff",
+    "capacity limit",
+    "migration step",
+    "config change",
+    "latency budget",
+];
 
 fn recall(brain: &Brain, q: &str) {
     let _ = brain.recall_topk_fts(q, &RecallTopKConfig::default(), Visibility::Private);
@@ -63,7 +85,10 @@ fn main() {
         for (i, detail) in DETAILS.iter().enumerate() {
             let key = format!("t{t:02}m{i}");
             let content = format!("{subject} {detail} review notes for item {i}");
-            let id = brain.remember(&key, &content, Visibility::Private).unwrap().memory_id;
+            let id = brain
+                .remember(&key, &content, Visibility::Private)
+                .unwrap()
+                .memory_id;
             if i == 0 {
                 seed_ids.push(id);
             }
@@ -72,7 +97,13 @@ fn main() {
     // Globally-popular memory: matches the broad "review notes" query strongly
     // (short, high broad-term density), so it is co-retrieved across many topics
     // — high raw co_count with everything, but specifically associated with none.
-    brain.remember("popular", "weekly review notes summary", Visibility::Private).unwrap();
+    brain
+        .remember(
+            "popular",
+            "weekly review notes summary",
+            Visibility::Private,
+        )
+        .unwrap();
 
     // ── Drive usage ──
     // Within-topic association: each topic subject query co-retrieves its members.
@@ -97,11 +128,16 @@ fn main() {
     }
     let pairs = brain.rebuild_co_retrieval_index().unwrap();
     println!("=== Ambient feedback at scale (lift vs raw co-count) ===");
-    println!("{} topics × {} memories + 1 popular; co_retrieval_pairs = {pairs}\n", TOPICS, PER_TOPIC);
+    println!(
+        "{} topics × {} memories + 1 popular; co_retrieval_pairs = {pairs}\n",
+        TOPICS, PER_TOPIC
+    );
 
     let topic_of = |key: &str| -> Option<usize> {
         // keys look like "t03m5"
-        key.strip_prefix('t').and_then(|r| r.get(0..2)).and_then(|s| s.parse::<usize>().ok())
+        key.strip_prefix('t')
+            .and_then(|r| r.get(0..2))
+            .and_then(|s| s.parse::<usize>().ok())
     };
 
     let (mut lift_prec, mut cc_prec) = (0.0f64, 0.0f64);
@@ -113,7 +149,14 @@ fn main() {
         let lift = brain.recommend(seed_id, 5, 1).unwrap();
         let cc = brain.related_memories(seed_id, 5).unwrap();
 
-        let key_of = |id: &str| brain.get_memory(id).ok().flatten().map(|m| m.key).unwrap_or_default();
+        let key_of = |id: &str| {
+            brain
+                .get_memory(id)
+                .ok()
+                .flatten()
+                .map(|m| m.key)
+                .unwrap_or_default()
+        };
 
         let score = |recs: &[spectral_ingest::RelatedMemory]| -> (f64, bool) {
             if recs.is_empty() {
@@ -143,10 +186,20 @@ fn main() {
 
     let n = seeds as f64;
     println!("aggregate over {seeds} topic seeds:");
-    println!("{:<28}{:>14}{:>14}", "metric", "lift (recommend)", "co_count (related)");
-    println!("{:<28}{:>14.2}{:>14.2}", "precision@5 (same topic)", lift_prec / n, cc_prec / n);
-    println!("{:<28}{:>14}{:>14}", "popular in top-5 (count)", lift_pop, cc_pop);
+    println!(
+        "{:<28}{:>14}{:>14}",
+        "metric", "lift (recommend)", "co_count (related)"
+    );
+    println!(
+        "{:<28}{:>14.2}{:>14.2}",
+        "precision@5 (same topic)",
+        lift_prec / n,
+        cc_prec / n
+    );
+    println!(
+        "{:<28}{:>14}{:>14}",
+        "popular in top-5 (count)", lift_pop, cc_pop
+    );
     println!("\nHigher precision + lower popular-count = better anticipatory targeting.");
     println!("Lift should keep the popular memory out of recommendations at scale.");
 }
-

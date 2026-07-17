@@ -53,13 +53,41 @@ fn main() {
 
     // Memories. A and B are about the same incident but share few query terms;
     // "popular" is a generic status memory that matches many broad queries.
-    let a = brain.remember("kube-deploy", "The production deploy runs on Kubernetes with blue-green rollouts", Visibility::Private).unwrap().memory_id;
-    brain.remember("deploy-outage", "Postmortem: the outage was a bad ingress config pushed during the release window", Visibility::Private).unwrap();
-    brain.remember("status", "The team met to review project status and agree on next steps this week", Visibility::Private).unwrap();
+    let a = brain
+        .remember(
+            "kube-deploy",
+            "The production deploy runs on Kubernetes with blue-green rollouts",
+            Visibility::Private,
+        )
+        .unwrap()
+        .memory_id;
+    brain
+        .remember(
+            "deploy-outage",
+            "Postmortem: the outage was a bad ingress config pushed during the release window",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "status",
+            "The team met to review project status and agree on next steps this week",
+            Visibility::Private,
+        )
+        .unwrap();
     for (k, c) in [
-        ("infra-cost", "Cloud infrastructure cost review flagged the staging cluster as over-provisioned"),
-        ("hiring", "Two engineering candidates cleared the final onsite and got offers"),
-        ("roadmap", "The Q3 roadmap review moved the search rewrite to Q4"),
+        (
+            "infra-cost",
+            "Cloud infrastructure cost review flagged the staging cluster as over-provisioned",
+        ),
+        (
+            "hiring",
+            "Two engineering candidates cleared the final onsite and got offers",
+        ),
+        (
+            "roadmap",
+            "The Q3 roadmap review moved the search rewrite to Q4",
+        ),
     ] {
         brain.remember(k, c, Visibility::Private).unwrap();
     }
@@ -72,7 +100,13 @@ fn main() {
     }
     // The status memory is retrieved alongside MANY unrelated things (broad,
     // generic) — this is what makes it globally popular but not specific.
-    for q in ["team status review", "project status week", "review next steps", "team meeting review", "status update review"] {
+    for q in [
+        "team status review",
+        "project status week",
+        "review next steps",
+        "team meeting review",
+        "status update review",
+    ] {
         for _ in 0..4 {
             let _ = recall(&brain, q);
         }
@@ -97,11 +131,19 @@ fn main() {
     let recs = brain.recommend(&a, 5, 1).unwrap();
     println!("\n  recommend(top hit) by lift:");
     for r in &recs {
-        println!("    {:<16} lift={:.2} co_count={}", r.memory_id, r.lift, r.co_count);
+        println!(
+            "    {:<16} lift={:.2} co_count={}",
+            r.memory_id, r.lift, r.co_count
+        );
     }
     // Map ids back to keys for readability.
     let key_of = |id: &str| -> String {
-        brain.get_memory(id).ok().flatten().map(|m| m.key).unwrap_or_else(|| id.to_string())
+        brain
+            .get_memory(id)
+            .ok()
+            .flatten()
+            .map(|m| m.key)
+            .unwrap_or_else(|| id.to_string())
     };
     let top_rec = recs.first().map(|r| key_of(&r.memory_id));
     println!("\n  top anticipated memory: {:?}", top_rec);

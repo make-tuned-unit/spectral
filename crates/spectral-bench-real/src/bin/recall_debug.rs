@@ -46,7 +46,14 @@ fn main() {
     let brain = open(&dir);
     for (key, content) in TURNS {
         brain
-            .remember_with(key, content, RememberOpts { visibility: Visibility::Private, ..Default::default() })
+            .remember_with(
+                key,
+                content,
+                RememberOpts {
+                    visibility: Visibility::Private,
+                    ..Default::default()
+                },
+            )
             .unwrap();
     }
 
@@ -54,11 +61,23 @@ fn main() {
     println!("query: {QUERY:?}\n");
 
     // Full-pool recall (k huge so K-truncation is NOT the cause).
-    let cfg = RecallTopKConfig { k: 50, fetch_mult: 1, apply_recency_weighting: false, ..Default::default() };
-    let hits = brain.recall_topk_fts(QUERY, &cfg, Visibility::Private).unwrap();
+    let cfg = RecallTopKConfig {
+        k: 50,
+        fetch_mult: 1,
+        apply_recency_weighting: false,
+        ..Default::default()
+    };
+    let hits = brain
+        .recall_topk_fts(QUERY, &cfg, Visibility::Private)
+        .unwrap();
     println!("recall_topk_fts returned {} hits:", hits.len());
     for h in &hits {
-        println!("  {:<22} signal={:.2}  {}", h.key, h.signal_score, &h.content[..h.content.len().min(60)]);
+        println!(
+            "  {:<22} signal={:.2}  {}",
+            h.key,
+            h.signal_score,
+            &h.content[..h.content.len().min(60)]
+        );
     }
     let got_answer = hits.iter().any(|h| h.key == "s2:turn:2:user");
     println!("\nanswer turn (s2:turn:2:user, 'Marcus ... Director of Engineering') retrieved: {got_answer}");
@@ -74,20 +93,65 @@ fn main() {
     // Ablate re-ranking signals one at a time to find which drops the turn.
     println!("\n--- ablation: does a re-ranking stage drop the answer turn? ---");
     let probe = |label: &str, c: RecallTopKConfig| {
-        let h = brain.recall_topk_fts(QUERY, &c, Visibility::Private).unwrap();
+        let h = brain
+            .recall_topk_fts(QUERY, &c, Visibility::Private)
+            .unwrap();
         let present = h.iter().any(|x| x.key == "s2:turn:2:user");
         println!("  {label:<28} answer_present={present}  n={}", h.len());
     };
-    probe("all signals default", RecallTopKConfig { k: 50, ..Default::default() });
-    probe("no signal_score weighting", RecallTopKConfig { k: 50, apply_signal_score_weighting: false, ..Default::default() });
-    probe("no entity resolution", RecallTopKConfig { k: 50, apply_entity_resolution: false, ..Default::default() });
-    probe("no context dedup", RecallTopKConfig { k: 50, apply_context_dedup: false, ..Default::default() });
-    probe("no recency", RecallTopKConfig { k: 50, apply_recency_weighting: false, ..Default::default() });
+    probe(
+        "all signals default",
+        RecallTopKConfig {
+            k: 50,
+            ..Default::default()
+        },
+    );
+    probe(
+        "no signal_score weighting",
+        RecallTopKConfig {
+            k: 50,
+            apply_signal_score_weighting: false,
+            ..Default::default()
+        },
+    );
+    probe(
+        "no entity resolution",
+        RecallTopKConfig {
+            k: 50,
+            apply_entity_resolution: false,
+            ..Default::default()
+        },
+    );
+    probe(
+        "no context dedup",
+        RecallTopKConfig {
+            k: 50,
+            apply_context_dedup: false,
+            ..Default::default()
+        },
+    );
+    probe(
+        "no recency",
+        RecallTopKConfig {
+            k: 50,
+            apply_recency_weighting: false,
+            ..Default::default()
+        },
+    );
 
     // ── Stopword filtering: noise reduction without dropping the answer ──
     println!("\n--- stopword filtering (SPECTRAL_FTS_STOPWORDS) ---");
     let show = |label: &str| {
-        let h = brain.recall_topk_fts(QUERY, &RecallTopKConfig { k: 50, ..Default::default() }, Visibility::Private).unwrap();
+        let h = brain
+            .recall_topk_fts(
+                QUERY,
+                &RecallTopKConfig {
+                    k: 50,
+                    ..Default::default()
+                },
+                Visibility::Private,
+            )
+            .unwrap();
         let keys: Vec<&str> = h.iter().map(|x| x.key.as_str()).collect();
         let answer = keys.contains(&"s2:turn:2:user");
         // turn 1 only matches the stopword "is" — it is pure noise for this query.

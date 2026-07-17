@@ -56,21 +56,51 @@ fn main() {
     let brain = open(&dir.join("brain"));
 
     // Answers share NO plain token with their query except via the lever.
-    brain.remember("sep", "Ticket filed by alice@acme.io about the outage", Visibility::Private).unwrap();
-    brain.remember("num", "The household adopted three golden retrievers", Visibility::Private).unwrap();
-    brain.remember("alias", "The CEO approved the budget increase", Visibility::Private).unwrap();
+    brain
+        .remember(
+            "sep",
+            "Ticket filed by alice@acme.io about the outage",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "num",
+            "The household adopted three golden retrievers",
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .remember(
+            "alias",
+            "The CEO approved the budget increase",
+            Visibility::Private,
+        )
+        .unwrap();
     // Distractors so a hit is non-trivial.
     for (i, d) in [
         "The weekly planning sync ran long again",
         "Coffee in the kitchen needs restocking",
         "A new designer joins the team Monday",
-    ].iter().enumerate() {
-        brain.remember(&format!("d{i}"), d, Visibility::Private).unwrap();
+    ]
+    .iter()
+    .enumerate()
+    {
+        brain
+            .remember(&format!("d{i}"), d, Visibility::Private)
+            .unwrap();
     }
 
     let hit = |q: &str, key: &str| -> bool {
         brain
-            .recall_topk_fts(q, &RecallTopKConfig { k: 40, ..Default::default() }, Visibility::Private)
+            .recall_topk_fts(
+                q,
+                &RecallTopKConfig {
+                    k: 40,
+                    ..Default::default()
+                },
+                Visibility::Private,
+            )
             .unwrap()
             .iter()
             .any(|h| h.key == key)
@@ -88,7 +118,11 @@ fn main() {
         if ok {
             pass += 1;
         }
-        println!("  {:<26} query {:<26} -> answer retrieved = {ok}", lever, format!("{query:?}"));
+        println!(
+            "  {:<26} query {:<26} -> answer retrieved = {ok}",
+            lever,
+            format!("{query:?}")
+        );
     }
 
     // Guard: the levers must not break ordinary recall (no regression).

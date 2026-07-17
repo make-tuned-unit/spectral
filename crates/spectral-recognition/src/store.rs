@@ -320,10 +320,22 @@ impl RecognitionStore for SqliteRecognitionStore {
             "DELETE FROM recognition_enrolled WHERE memory_id = ?1",
             [memory_id],
         )?;
-        tx.execute("DELETE FROM recognition_pairs WHERE memory_id = ?1", [memory_id])?;
-        tx.execute("DELETE FROM recognition_grams WHERE memory_id = ?1", [memory_id])?;
-        tx.execute("DELETE FROM recognition_minhash_sig WHERE memory_id = ?1", [memory_id])?;
-        tx.execute("DELETE FROM recognition_minhash_bands WHERE memory_id = ?1", [memory_id])?;
+        tx.execute(
+            "DELETE FROM recognition_pairs WHERE memory_id = ?1",
+            [memory_id],
+        )?;
+        tx.execute(
+            "DELETE FROM recognition_grams WHERE memory_id = ?1",
+            [memory_id],
+        )?;
+        tx.execute(
+            "DELETE FROM recognition_minhash_sig WHERE memory_id = ?1",
+            [memory_id],
+        )?;
+        tx.execute(
+            "DELETE FROM recognition_minhash_bands WHERE memory_id = ?1",
+            [memory_id],
+        )?;
         tx.commit()?;
         Ok(removed > 0)
     }

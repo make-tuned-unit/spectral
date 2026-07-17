@@ -112,7 +112,10 @@ fn default_hall_rule_pairs() -> Vec<(&'static str, &'static str)> {
             "fact",
         ),
         // Standing preferences — strong markers only (not bare "like/love").
-        (r"\bi (\w+ly )?prefer\b|\bi'?d rather\b|\bmy favou?rite\b", "preference"),
+        (
+            r"\bi (\w+ly )?prefer\b|\bi'?d rather\b|\bmy favou?rite\b",
+            "preference",
+        ),
         // Standing rules — directive framing after never/always, or explicit rule.
         (
             r"\b(never|always) (schedule|book|call|contact|email|send|use|run|deploy|share|give|forget|skip|miss)\b|\bmy rule is\b|\bas a rule\b|\bdo not ever\b|\bdon'?t ever\b",

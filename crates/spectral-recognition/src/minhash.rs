@@ -234,7 +234,10 @@ mod tests {
     #[test]
     fn band_hashes_collide_for_near_duplicates() {
         let cfg = MinHashConfig::default();
-        let a = signature("the quarterly budget review moved to thursday afternoon", &cfg);
+        let a = signature(
+            "the quarterly budget review moved to thursday afternoon",
+            &cfg,
+        );
         let b = signature("the quarterly budget review moved to thursday", &cfg);
         let ba: std::collections::HashSet<u64> = band_hashes(&a, &cfg).into_iter().collect();
         let bb = band_hashes(&b, &cfg);
