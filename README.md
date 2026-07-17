@@ -17,6 +17,10 @@
 
 **Status:** v0.0.1, experimental. APIs will change before 1.0.
 
+📄 **[One-page overview (PDF)](docs/assets/spectral-onepager.pdf)** — the six
+memory types, the cost story, and the measured proof on a single page. ([HTML
+version](docs/assets/spectral-onepager.html).)
+
 ## What Spectral does
 
 AI agents need persistent memory that supports both "what do I know about X?"
