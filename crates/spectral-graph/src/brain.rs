@@ -516,18 +516,68 @@ pub struct AuditReport {
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
 ///
-/// # Do not call `Brain` methods from inside an async runtime
+/// # Calling from an async runtime
 ///
 /// `Brain` owns its own Tokio runtime and every method is synchronous, driving
-/// it with `block_on`. Tokio's `block_on` **panics if invoked from within an
-/// existing runtime** (`Cannot start a runtime from within a runtime`), and a
-/// `Brain` **dropped** inside an async context panics for the same reason. So a
-/// `Brain` must not be used directly from an async task (an axum/tonic handler,
-/// a `#[tokio::main]` body, any `tokio::spawn`). From async code, run `Brain`
-/// calls on a blocking thread: `tokio::task::spawn_blocking(move || brain.recall(..))`
-/// (holding the `Brain` on that thread), or place the `Brain` behind a
-/// dedicated synchronous worker thread. This is a known ergonomic sharp edge; a
-/// natively-async surface is future work.
+/// it with `block_on`. Tokio's `Runtime::block_on` panics if invoked from within
+/// another runtime, so `Brain` routes every internal `block_on` through
+/// [`SafeRuntime`]: when it detects an ambient runtime it drives the future on a
+/// fresh scoped thread instead of panicking. A `Brain` is therefore **safe to
+/// call from inside an async task** (axum/tonic handler, `tokio::spawn`, a
+/// `#[tokio::main]` body). Note the ambient-runtime path spawns one short-lived
+/// OS thread per call; for latency-sensitive async loops, hold the `Brain` on a
+/// dedicated blocking thread (e.g. via `spawn_blocking`) to take the cheap
+/// direct path.
+///
+/// The brain's Tokio runtime, wrapped so `block_on` never panics when called
+/// from inside another runtime. `Runtime::block_on` panics when nested; when an
+/// ambient runtime is detected we drive the future on a fresh scoped thread
+/// (which carries no runtime context) instead. The common synchronous caller —
+/// no ambient runtime — takes the direct `block_on` with zero overhead.
+struct SafeRuntime(Option<tokio::runtime::Runtime>);
+
+impl SafeRuntime {
+    fn inner(&self) -> &tokio::runtime::Runtime {
+        // `Some` for the whole lifetime; only `Drop` takes it.
+        self.0.as_ref().expect("SafeRuntime used after drop")
+    }
+
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: std::future::Future + Send,
+        F::Output: Send,
+    {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::scope(|s| s.spawn(|| self.inner().block_on(fut)).join().unwrap())
+        } else {
+            self.inner().block_on(fut)
+        }
+    }
+
+    fn spawn<F>(&self, fut: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.inner().spawn(fut)
+    }
+}
+
+impl Drop for SafeRuntime {
+    fn drop(&mut self) {
+        // `Runtime::drop` blocks to join worker threads and panics if that
+        // happens inside another runtime ("Cannot drop a runtime in a context
+        // where blocking is not allowed"). When we're nested in an ambient
+        // runtime, hand the inner runtime to a detached thread to shut down
+        // there (no ambient runtime → safe). Otherwise drop it here normally.
+        if let Some(rt) = self.0.take() {
+            if tokio::runtime::Handle::try_current().is_ok() {
+                std::thread::spawn(move || drop(rt));
+            }
+        }
+    }
+}
+
 pub struct Brain {
     identity: BrainIdentity,
     device_id: DeviceId,
@@ -568,7 +618,7 @@ pub struct Brain {
     /// `SPECTRAL_RECURRENCE_FEEDBACK=1`. Off by default (measure before
     /// defaulting — the co-retrieval lesson).
     recurrence_feedback: bool,
-    rt: tokio::runtime::Runtime,
+    rt: SafeRuntime,
 }
 
 /// Minimum recognition familiarity for an incoming write to count as a
@@ -703,7 +753,9 @@ impl Brain {
             ..spectral_ingest::ingest::IngestConfig::default()
         };
 
-        let rt = tokio::runtime::Runtime::new().map_err(|e| Error::Schema(e.to_string()))?;
+        let rt = SafeRuntime(Some(
+            tokio::runtime::Runtime::new().map_err(|e| Error::Schema(e.to_string()))?,
+        ));
 
         let device_id = config.device_id.unwrap_or_else(|| {
             let hostname = hostname::get()

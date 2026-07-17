@@ -51,6 +51,14 @@ pub const DEFAULT_BRAIN_WEIGHT: f64 = 1.0;
 /// al. (2009), the de-facto standard used across search/RAG systems.
 pub const DEFAULT_RRF_K: f64 = 60.0;
 
+/// Default per-child contribution cap. Bounds any single member's footprint in
+/// the merged result so a flooding member cannot crowd out the others, while
+/// staying generous enough not to clip normal recall (each child returns at most
+/// the query's `k`, and the top ~20 by relevance are what a merged view shows).
+/// Set [`MergePolicy::per_child_cap`] to `None` for an uncapped, fully-trusted
+/// federation.
+pub const DEFAULT_PER_CHILD_CAP: usize = 20;
+
 /// How the coordinator fuses each child's ranked results into one list.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FusionMethod {
@@ -89,21 +97,25 @@ pub enum FusionMethod {
 ///
 /// # Residual attacks (know these before federating untrusted members)
 ///
-/// RRF neutralizes the *score-inflation* flood, but a determined malicious
-/// member can still degrade the merge:
-/// - **Distinct-content flooding.** RRF's per-origin dedup only collapses
-///   identical content, so a member returning many *distinct* high-ranked items
-///   still occupies many merged slots. Each member is bounded by the query's
-///   `k`, but set [`per_child_cap`](Self::per_child_cap) to a small N to bound a
-///   member's merge footprint further. **It is `None` (uncapped) by default** —
-///   set it for untrusted federations.
-/// - **Sybil-forged corroboration.** Cross-member agreement is the signal that
+/// RRF neutralizes the *score-inflation* flood, and the defaults below bound the
+/// remaining flooding/tiebreak vectors. What remains needs deployment trust:
+/// - **Distinct-content flooding — bounded by default.** RRF's per-origin dedup
+///   only collapses identical content, so a member returning many *distinct*
+///   items could occupy many merged slots. [`per_child_cap`](Self::per_child_cap)
+///   defaults to [`DEFAULT_PER_CHILD_CAP`] (20), capping any member's footprint;
+///   set it to `None` for a fully-trusted federation that wants every hit.
+/// - **Tiebreak grinding — mitigated.** Ties are broken by a *content* hash
+///   first (not the member-chosen `BrainId`), so a member cannot grind one low
+///   `BrainId` to win every tie across the federation; it would have to grind
+///   each item's content (which changes the content). `BrainId`/`hit.id` remain
+///   only as final total-order tiebreakers.
+/// - **Sybil-forged corroboration — deployment trust.** Cross-member agreement
 ///   lifts honest content, but [`add_brain`](FederationCoordinator::add_brain)
-///   authenticates no identity, so K colluding brains manufacture corroboration.
-///   Only federate members whose brains you trust to be distinct principals.
-/// - **Tiebreak grinding.** At the common `1/(k+0)` score tie the order is
-///   decided by `BrainId` then member-supplied `hit.id`; a member can grind a
-///   low-sorting `BrainId` to win ties. Impact is limited to tie ordering.
+///   authenticates no identity, so K colluding brains could manufacture
+///   corroboration. This is not defensible at the merge layer — only federate
+///   members whose brains you trust to be distinct principals. (Signed
+///   provenance via [`Brain::verify_hit`](crate::brain::Brain::verify_hit) is
+///   the intended future basis for authenticated corroboration.)
 #[derive(Debug, Clone)]
 pub struct MergePolicy {
     /// Rank-fusion method across children. Default [`FusionMethod::Rrf`].
@@ -111,8 +123,8 @@ pub struct MergePolicy {
     /// Cap on the number of hits contributed per child (its top-N by own
     /// order), applied before fusion. Flooding-volume defense: one member
     /// cannot crowd out the others regardless of how many hits it returns.
-    /// `None` = uncapped. **Default `None`** — set a small N for untrusted
-    /// federations (see the type-level "Residual attacks" note).
+    /// **Defaults to [`DEFAULT_PER_CHILD_CAP`]** (`Some(20)`); set `None` for an
+    /// uncapped, fully-trusted federation.
     pub per_child_cap: Option<usize>,
 }
 
@@ -120,7 +132,7 @@ impl Default for MergePolicy {
     fn default() -> Self {
         Self {
             fusion: FusionMethod::Rrf { k: DEFAULT_RRF_K },
-            per_child_cap: None,
+            per_child_cap: Some(DEFAULT_PER_CHILD_CAP),
         }
     }
 }
@@ -492,15 +504,25 @@ fn merge_and_rank(
         }
     }
 
-    // Primary key: effective (fused) score, descending. Tiebreak by origin
-    // BrainId bytes (BrainId is NOT Ord) then memory id — both ascending — for
-    // a total, deterministic order.
-    ranked.sort_by(|a, b| {
-        b.effective_score
-            .total_cmp(&a.effective_score)
-            .then_with(|| a.origin.as_bytes().cmp(b.origin.as_bytes()))
-            .then_with(|| a.hit.id.cmp(&b.hit.id))
+    // Primary key: effective (fused) score, descending. RRF produces many exact
+    // ties (every uncorroborated hit is 1/(k+0)); break them by a CONTENT hash
+    // first, not the member-chosen BrainId — otherwise a member could grind one
+    // low-sorting BrainId to win every tie across the federation. Content-first
+    // means an attacker would have to grind each item's content (which changes
+    // the content). BrainId/hit.id remain as final tiebreakers for a total,
+    // deterministic order. Fingerprint is precomputed to keep the sort O(n log n).
+    let mut keyed: Vec<([u8; 32], LabeledHit)> = ranked
+        .into_iter()
+        .map(|h| (content_fingerprint(&h.hit.content), h))
+        .collect();
+    keyed.sort_by(|a, b| {
+        b.1.effective_score
+            .total_cmp(&a.1.effective_score)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.origin.as_bytes().cmp(b.1.origin.as_bytes()))
+            .then_with(|| a.1.hit.id.cmp(&b.1.hit.id))
     });
+    let ranked: Vec<LabeledHit> = keyed.into_iter().map(|(_, h)| h).collect();
 
     // Overlapping memories from different brains are BOTH kept — distinct
     // provenance — but share the fused score, so a corroborated item's copies
@@ -680,12 +702,16 @@ mod tests {
         }
 
         // The ranking obeys the documented total order: effective_score
-        // non-increasing, ties broken by origin bytes then memory id.
+        // non-increasing, ties broken by content hash, then origin bytes, then
+        // memory id.
         for w in first.ranked.windows(2) {
             let (x, y) = (&w[0], &w[1]);
             let ord = y
                 .effective_score
                 .total_cmp(&x.effective_score)
+                .then_with(|| {
+                    content_fingerprint(&x.hit.content).cmp(&content_fingerprint(&y.hit.content))
+                })
                 .then_with(|| x.origin.as_bytes().cmp(y.origin.as_bytes()))
                 .then_with(|| x.hit.id.cmp(&y.hit.id));
             assert_ne!(
@@ -889,6 +915,34 @@ mod tests {
                 .any(|h| h.hit.content.contains("private secret")),
             "Private-context fan-out over one's own brains should see private memories"
         );
+    }
+
+    /// Regression: `Brain` drives its own runtime with `block_on`, which panics
+    /// if nested inside another Tokio runtime — the normal way a memory library
+    /// gets embedded (an async server handler). SafeRuntime offloads to a scoped
+    /// thread instead, so open + remember + recall all work from inside a runtime.
+    #[test]
+    fn brain_is_safe_to_call_from_inside_a_runtime() {
+        let outer = tokio::runtime::Runtime::new().unwrap();
+        outer.block_on(async {
+            let tmp = TempDir::new().unwrap();
+            // Brain::open itself block_ons during backfill — must not panic here.
+            let (brain, _dir) = open_child(&tmp, "async_ctx");
+            brain
+                .remember("k", "async context probe memory", Visibility::Private)
+                .unwrap();
+            let r = brain
+                .recall_cascade(
+                    "async context probe",
+                    &RecognitionContext::empty(),
+                    &CascadePipelineConfig::default(),
+                )
+                .unwrap();
+            assert!(
+                r.merged_hits.iter().any(|h| h.content.contains("probe")),
+                "recall from inside a runtime should work, not panic"
+            );
+        });
     }
 
     /// Async write-back: with it enabled, `recall_cascade` still applies the
