@@ -1042,8 +1042,9 @@ impl SqliteStore {
         Ok(results)
     }
 
-    #[cfg(test)]
-    pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    /// Crate-internal raw connection access (tests + the `federation_sync`
+    /// storage-layer module). Not exposed outside the crate.
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap()
     }
 }
