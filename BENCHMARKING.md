@@ -224,10 +224,35 @@ Two findings, one honest verdict:
   (11.8%→7.8% key-recall) removed supporting detail the actor needed.
 
 Coverage and depth trade against each other at fixed K. The implied lever —
-apply stratification **conditionally**, only when the ranked pool is
-session-concentrated — would in principle keep both fixes and avoid all five
-breaks, but that is a hypothesis derived from this data; it must be validated
-on a fresh split before being claimed (see the honesty ledger).
+capture the coverage gain without the depth cost — was pre-registered as
+**coverage backfill** (keep monolith top-K/2 intact, round-robin session
+coverage into the back half) and validated on a **fresh split** of 40 unseen
+multi-session questions:
+
+| arm (fresh split) | session-recall | key-recall | accuracy |
+|---|:-:|:-:|:-:|
+| monolith | 92.6% | 11.9% | **40%** |
+| stratified (blanket) | 100.0% | 8.2% | — |
+| backfill (pre-registered) | 96.2% | 11.5% | 38% |
+
+**Validation verdict: no lift — backfill does not ship** (net −1, fixed 1 /
+broke 2; the ship bar was net ≥ 0). Three honest observations:
+- The calibration split had been unusually coverage-starved (85.2% monolith
+  session-recall, 2 total misses); the fresh split's monolith was healthier
+  (92.6%, 0 misses) — regression to the mean ate most of the addressable gap.
+- Backfill's coverage is bounded by the wide retrieval pool: on 5 of 9
+  coverage-deficient questions the missing session wasn't in the top-200 pool
+  at all, so no re-ranking policy could recover it.
+- Even where backfill *did* recover coverage, the actor sometimes still failed
+  (and once regressed) — on this benchmark, multi-session accuracy is
+  dominated by actor-side synthesis, not retrieval coverage (consistent with
+  §5's 29-synthesis / 12-retrieval failure decomposition).
+
+Conclusion across the family: partitioning/stratification mechanisms reliably
+lift retrieval *coverage* but have not converted to accuracy in any variant
+tested — matching the repo-wide pattern (ACR, fetch_mult). The one federation
+result that **did** convert (§5b) added *content* (a teammate's memories), not
+ranking policy.
 
 ## 6. Honesty ledger (do not delete)
 
