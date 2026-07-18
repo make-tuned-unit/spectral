@@ -145,11 +145,26 @@ invariants close the privacy subtlety:
   construction: Spectral emits plaintext packs to encrypt and re-indexes whatever
   plaintext is handed back.
 
-## v1 build status
+## Build status
 
-Implemented + tested in `crates/spectral-graph/src/federation_sync.rs`:
-canonical object hash, shared-wing manifest, `export_pack`/`import_pack`, OR-Set
-union, tombstones, and the two load-bearing proofs — **sovereignty** (a `Local`
-object never appears in any pack) and **convergence** (two brains importing the
-same packs reach the identical shared object set). Scope-spanning recall via the
-coordinator and have/want negotiation are the next slice.
+**Store layer** (`spectral-ingest::federation_sync`): canonical object hash,
+shared-wing manifest, `share`/`enumerate`/`export_pack`/`import_pack`/`tombstone`,
+OR-Set union, `missing_locally` (have/want), and `provenance`. Proven by:
+sovereignty (a `Local` object never appears in any pack), convergence (two brains
+importing the same pack reach the identical object set, idempotent, imported
+content is FTS-searchable), cross-author accumulation, tombstone-with-no-
+resurrection, have/want, and provenance tagging.
+
+**Brain layer** (`spectral-graph::federation_recall`): `share_memory`,
+`export_shared_wing`, `import_shared_wing`, `shared_wing_hashes`,
+`shared_wing_want`, `tombstone_shared`, and **`recall_scoped(query, RealmScope)`**
+— scope-spanning recall that tags each result with provenance and applies the
+view-scoping filter to the *final* hit list (the chokepoint). Proven by: an
+end-to-end sync→recall provenance test, and the adversarial view-scoping property
+— **with associative spreading ON, a `Private` episode-mate of a shared seed
+never surfaces in a shared-scope recall.**
+
+**Still Permagent's / next:** identity, E2E pack crypto (slots around
+`export_pack`/`import_pack`), transport, tombstone-authz policy, and the
+end-to-end federation *accuracy* A/B (private-only vs private+shared-merged,
+cap-on-by-default) that gates shipping.

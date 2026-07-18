@@ -18,6 +18,7 @@
 
 use crate::sqlite_store::SqliteStore;
 use anyhow::Result;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 /// A memory object as it travels on the wire — source fields only. The importer
@@ -293,6 +294,60 @@ fn apply_tombstone(store: &SqliteStore, wing_id: &str, target_hash: &str) -> Res
     Ok(())
 }
 
+/// Where a recalled memory came from — the provenance a scope-spanning recall
+/// attaches so the agent/UI can tell "team knowledge" from "mine."
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    /// The user's own private memory (referenced by no shared wing).
+    Private,
+    /// A memory merged from a shared wing, tagged with its authoring brain.
+    Shared {
+        wing_id: String,
+        author_id: Option<[u8; 32]>,
+    },
+}
+
+/// Have/want negotiation: the object hashes `remote` advertises that we lack —
+/// the "want" set to request. Symmetric: swap the arguments for the "send" set.
+pub fn missing_locally(local: &[String], remote: &[String]) -> Vec<String> {
+    let have: std::collections::HashSet<&String> = local.iter().collect();
+    remote
+        .iter()
+        .filter(|h| !have.contains(h))
+        .cloned()
+        .collect()
+}
+
+/// Provenance of a stored memory (by its local key): which shared wing it belongs
+/// to and its authoring brain, or [`Origin::Private`] for a local-only memory.
+pub fn provenance(store: &SqliteStore, mem_key: &str) -> Result<Origin> {
+    let conn = store.conn();
+    let wing: Option<String> = conn
+        .query_row(
+            "SELECT wing_id FROM shared_wing_members WHERE mem_key = ?1 LIMIT 1",
+            rusqlite::params![mem_key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match wing {
+        None => Ok(Origin::Private),
+        Some(wing_id) => {
+            let author: Option<Vec<u8>> = conn
+                .query_row(
+                    "SELECT source_brain_id FROM memories WHERE key = ?1",
+                    rusqlite::params![mem_key],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+            Ok(Origin::Shared {
+                wing_id,
+                author_id: author.and_then(|v| v.try_into().ok()),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +362,33 @@ mod tests {
             rusqlite::params![format!("local_{key}"), key, content, blob],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn missing_locally_is_the_want_set() {
+        let local = vec!["a".to_string(), "b".to_string()];
+        let remote = vec!["b".to_string(), "c".to_string(), "d".to_string()];
+        assert_eq!(missing_locally(&local, &remote), vec!["c", "d"]);
+        // symmetric: 'a' is local-only, so remote lacks it
+        assert_eq!(missing_locally(&remote, &local), vec!["a"]);
+        assert!(missing_locally(&local, &local).is_empty());
+    }
+
+    #[tokio::test]
+    async fn provenance_distinguishes_shared_from_private() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_local(&store, "mine", "my own private note", None);
+        insert_local(&store, "ours", "a shared team note", Some([7u8; 32]));
+        share(&store, "ours", "team").unwrap();
+
+        assert_eq!(provenance(&store, "mine").unwrap(), Origin::Private);
+        match provenance(&store, "ours").unwrap() {
+            Origin::Shared { wing_id, author_id } => {
+                assert_eq!(wing_id, "team");
+                assert_eq!(author_id, Some([7u8; 32]));
+            }
+            Origin::Private => panic!("shared memory tagged Private"),
+        }
     }
 
     /// SOVEREIGNTY: a memory that is never shared (no manifest entry) can never
