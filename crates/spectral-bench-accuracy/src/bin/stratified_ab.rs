@@ -153,6 +153,24 @@ fn stratify(pool: &[MemoryHit], k: usize) -> Vec<MemoryHit> {
     out
 }
 
+/// PRE-REGISTERED variant (frozen before the fresh-split run): coverage
+/// backfill. Keep the monolith's top half of the budget untouched (preserves
+/// the per-session depth that blanket stratification destroyed), then fill the
+/// remaining slots with round-robin session coverage from the wide pool
+/// (recovers the missing-session coverage that fixed the deficient questions).
+fn backfill(m_top: &[MemoryHit], pool: &[MemoryHit], k: usize) -> Vec<MemoryHit> {
+    let keep = k / 2;
+    let mut out: Vec<MemoryHit> = m_top.iter().take(keep).cloned().collect();
+    let have: HashSet<String> = out.iter().map(|h| h.key.clone()).collect();
+    let rest: Vec<MemoryHit> = pool
+        .iter()
+        .filter(|h| !have.contains(&h.key))
+        .cloned()
+        .collect();
+    out.extend(stratify(&rest, k - out.len()));
+    out
+}
+
 fn context_lines(hits: &[MemoryHit]) -> Vec<String> {
     hits.iter()
         .map(|h| {
@@ -170,6 +188,7 @@ fn main() -> Result<()> {
     let mut max_q = 40usize;
     let mut k = 40usize;
     let mut accuracy = false;
+    let mut no_shard = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -183,6 +202,10 @@ fn main() -> Result<()> {
             }
             "--accuracy" => {
                 accuracy = true;
+                i += 1;
+            }
+            "--no-shard" => {
+                no_shard = true;
                 i += 1;
             }
             other => anyhow::bail!("unknown arg {other}"),
@@ -214,10 +237,10 @@ fn main() -> Result<()> {
     );
 
     let ctx = spectral_cascade::RecognitionContext::empty();
-    let mut sums = [[0.0f64; 2]; 3]; // arm -> [sess_sum, key_sum]
-    let mut zeros = [0usize; 3];
-    let mut acc = [0usize; 2]; // [monolith_ok, stratified_ok] (accuracy leg)
-    let names = ["monolith", "sharded", "stratified"];
+    let mut sums = [[0.0f64; 2]; 4]; // arm -> [sess_sum, key_sum]
+    let mut zeros = [0usize; 4];
+    let mut acc = [0usize; 2]; // [monolith_ok, backfill_ok] (accuracy leg)
+    let names = ["monolith", "sharded", "stratified", "backfill"];
 
     for (qi, q) in sample.iter().enumerate() {
         // Arm M + T corpus: one brain with everything.
@@ -250,44 +273,55 @@ fn main() -> Result<()> {
         let t_hits = stratify(&pool, k);
         let t_keys: Vec<String> = t_hits.iter().map(|h| h.key.clone()).collect();
 
-        // Arm S: one brain per session, coordinator fan-out (internal federation).
-        let mut dirs: Vec<TempDir> = Vec::new();
-        let mut coord = FederationCoordinator::new();
-        for si in 0..q.haystack_sessions.len() {
-            let td = TempDir::new()?;
-            let b = brain(td.path())?;
-            remember_turns(&b, q, Some(si))?;
-            coord.add_brain(b, td.path().to_path_buf());
-            dirs.push(td);
-        }
-        let fan = coord
-            .fan_out_recall(
-                &q.question,
-                &ctx,
-                &CascadePipelineConfig::default(),
-                Visibility::Private,
-            )
-            .map_err(|e| anyhow::anyhow!("fan_out: {e}"))?;
-        let mut seen = HashSet::new();
-        let s_keys: Vec<String> = fan
-            .ranked
-            .iter()
-            .map(|lh| lh.hit.key.clone())
-            .filter(|kk| seen.insert(kk.clone()))
-            .take(k)
-            .collect();
+        // Arm B (pre-registered): monolith top-half + session-coverage backfill.
+        let b_hits = backfill(&m_hits.merged_hits, &pool, k);
+        let b_keys: Vec<String> = b_hits.iter().map(|h| h.key.clone()).collect();
 
-        for (ai, keys) in [&m_keys, &s_keys, &t_keys].iter().enumerate() {
+        // Arm S: one brain per session, coordinator fan-out (internal federation).
+        let s_keys: Vec<String> = if no_shard {
+            Vec::new()
+        } else {
+            let mut dirs: Vec<TempDir> = Vec::new();
+            let mut coord = FederationCoordinator::new();
+            for si in 0..q.haystack_sessions.len() {
+                let td = TempDir::new()?;
+                let b = brain(td.path())?;
+                remember_turns(&b, q, Some(si))?;
+                coord.add_brain(b, td.path().to_path_buf());
+                dirs.push(td);
+            }
+            let fan = coord
+                .fan_out_recall(
+                    &q.question,
+                    &ctx,
+                    &CascadePipelineConfig::default(),
+                    Visibility::Private,
+                )
+                .map_err(|e| anyhow::anyhow!("fan_out: {e}"))?;
+            let mut seen = HashSet::new();
+            fan.ranked
+                .iter()
+                .map(|lh| lh.hit.key.clone())
+                .filter(|kk| seen.insert(kk.clone()))
+                .take(k)
+                .collect()
+        };
+
+        for (ai, keys) in [&m_keys, &s_keys, &t_keys, &b_keys].iter().enumerate() {
+            if no_shard && ai == 1 {
+                continue;
+            }
             let (sr, kr, z) = score(q, keys);
             sums[ai][0] += sr;
             sums[ai][1] += kr;
             zeros[ai] += z as usize;
         }
         let (msr, _, _) = score(q, &m_keys);
-        let (ssr, _, _) = score(q, &s_keys);
         let (tsr, _, _) = score(q, &t_keys);
+        let (bsr, _, _) = score(q, &b_keys);
 
-        // Accuracy leg: same actor/judge/question, only the context differs.
+        // Accuracy leg: same actor/judge/question, only the context differs —
+        // monolith vs the pre-registered backfill variant.
         let mut acc_note = String::new();
         if let Some((actor, judge)) = &clients {
             let shape = QuestionType::classify(&q.question);
@@ -301,21 +335,21 @@ fn main() -> Result<()> {
                     .cloned()
                     .collect::<Vec<_>>(),
             );
-            let t_ctx = context_lines(&t_hits);
+            let b_ctx = context_lines(&b_hits);
             let (m_ans, _) = actor.answer(&q.question, qdate, &m_ctx, shape)?;
             let (m_grade, _) = judge.grade(&q.question, &m_ans, &q.answer_text(), category)?;
-            let (t_ans, _) = actor.answer(&q.question, qdate, &t_ctx, shape)?;
-            let (t_grade, _) = judge.grade(&q.question, &t_ans, &q.answer_text(), category)?;
+            let (b_ans, _) = actor.answer(&q.question, qdate, &b_ctx, shape)?;
+            let (b_grade, _) = judge.grade(&q.question, &b_ans, &q.answer_text(), category)?;
             acc[0] += m_grade.correct as usize;
-            acc[1] += t_grade.correct as usize;
+            acc[1] += b_grade.correct as usize;
             acc_note = format!(
-                " | acc M={} T={}",
+                " | acc M={} B={}",
                 if m_grade.correct { "PASS" } else { "fail" },
-                if t_grade.correct { "PASS" } else { "fail" }
+                if b_grade.correct { "PASS" } else { "fail" }
             );
         }
         eprintln!(
-            "[{}/{}] {} sess-rec M={msr:.2} S={ssr:.2} T={tsr:.2}{acc_note}",
+            "[{}/{}] {} sess-rec M={msr:.2} T={tsr:.2} B={bsr:.2}{acc_note}",
             qi + 1,
             sample.len(),
             q.question_id
@@ -331,7 +365,11 @@ fn main() -> Result<()> {
         "{:<14}{:>12}{:>10}{:>7}",
         "arm", "sess-recall", "key-rec", "zero"
     );
-    for ai in 0..3 {
+    for ai in 0..4 {
+        if no_shard && ai == 1 {
+            println!("{:<14}{:>12}{:>10}{:>7}", names[ai], "(skipped)", "-", "-");
+            continue;
+        }
         println!(
             "{:<14}{:>11.1}%{:>9.1}%{:>7}",
             names[ai],
@@ -343,7 +381,7 @@ fn main() -> Result<()> {
     if clients.is_some() {
         println!("\n=== ACCURACY (same actor/judge, context is the only variable) ===");
         println!(
-            "monolith   {:>3}/{}  ({:.0}%)\nstratified {:>3}/{}  ({:.0}%)   net {:+}",
+            "monolith  {:>3}/{}  ({:.0}%)\nbackfill  {:>3}/{}  ({:.0}%)   net {:+}",
             acc[0],
             sample.len(),
             100.0 * acc[0] as f64 / n,
