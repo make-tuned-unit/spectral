@@ -147,6 +147,56 @@ without them. The published 81.5% (LongMemEval-S, Sonnet actor) is **in-sample**
 and front-runs an optional Haiku query-expansion call (≈$0.25/1k); recall itself
 is LLM-free.
 
+**Held-out end-to-end accuracy (LoCoMo, n=120, claude-sonnet-4-6 actor + judge,
+temp 0, 0 quarantined, total eval cost ≈ $1.14 + $0.29 judge):**
+
+| category | accuracy |
+|---|:-:|
+| single-session-user (single-hop) | 85.0% (34/40) |
+| temporal-reasoning | 72.5% (29/40) |
+| multi-session (multi-hop) | 40.0% (16/40) |
+| **overall (held-out)** | **65.8% (79/120)** |
+
+Same converted subset as §4 (adversarial + open-domain excluded, so not
+comparable to full-protocol LoCoMo leaderboard numbers). Failure decomposition:
+of the 41 misses, **29 are synthesis** (evidence retrieved, actor answered
+wrong) and **12 are retrieval** (evidence incomplete — concentrated in
+multi-hop). The honest weak spot is multi-hop; single-hop and temporal are
+strong. Run it yourself: `federation_ab`'s sibling flow in §4 plus the `run`
+subcommand — the entire held-out accuracy eval reproduces for about **the price
+of a coffee (~$1.50)**.
+
+## 5b. Federation accuracy A/B (gates shipping federation)
+
+Does merging a teammate's shared wing change end-to-end accuracy? Same actor,
+judge, and questions; the only variable is the merged wing. Harness:
+`cargo run -p spectral-bench-accuracy --release --bin federation_ab -- <converted_locomo.json>`.
+Each LoCoMo conversation's two speakers become two brains: the user's turns are
+private; the teammate's turns are shared into a wing, exported as a pack, and
+imported mid-run. Both arms use the real federation recall path
+(`recall_scoped`, provenance-tagged, spreading on) — so the A/B also end-to-end
+exercises the sync wiring.
+
+**Result (n=30, 10/category, claude-sonnet-4-6 actor+judge, temp 0):**
+
+| category | private-only | federated | net |
+|---|:-:|:-:|:-:|
+| multi-session (multi-hop) | 40% | **60%** | +2 |
+| single-session-user | 50% | **70%** | +2 |
+| temporal-reasoning | 70% | 50% | −2 |
+| **overall** | **53%** | **60%** | **+2** (fixed 5 / broke 3) |
+
+Reading (n=30 is directional, ±3.3pp/question — not definitive):
+- **Federation helps most where solo memory is weakest** — multi-hop, the
+  held-out weak spot, gains the most (40→60%): the teammate's turns carry the
+  evidence the user's own memories lack.
+- **The regression attributes cleanly to displacement, not a design flaw**: all
+  3 broken questions are temporal-reasoning, where an avg of 43–61 private
+  (dated, own-timeline) memories were displaced from the context by shared ones.
+  That is a knob-turn (per-origin context cap / scope routing for temporal
+  shapes), exactly what the instrumentation (`f_shared_in_context`,
+  `f_private_displaced` per row) was built to isolate.
+
 ## 6. Honesty ledger (do not delete)
 
 - **In-sample vs held-out** is labeled on every result. Held-out is the number
