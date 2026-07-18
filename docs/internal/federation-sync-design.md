@@ -164,7 +164,30 @@ end-to-end sync→recall provenance test, and the adversarial view-scoping prope
 — **with associative spreading ON, a `Private` episode-mate of a shared seed
 never surfaces in a shared-scope recall.**
 
+**Precise semantics (reviewed 2026-07-18):**
+- Import **re-derives wing/hall/signal locally** (classifier + signal scorer, same
+  as native ingest) — imported content is first-class for reranking/TACT, not an
+  unclassified blob. Episode/recognition enrollment are not re-derived (imported
+  content has no local episode; recognition enrollment is a possible next slice).
+- `RealmScope::Private` means *unshared* memories: once you share your own memory
+  into a wing, its provenance is `Shared` and it leaves the Private-scope view
+  (it still appears under `All` and the wing's scope).
+- Tombstoning an object **unshares everywhere but only hard-deletes imported
+  copies** (their row id is the object-hash). The author's original row keeps its
+  native id and survives locally — "stop sharing" ≠ "forget"; pair with
+  `Brain::forget` to also delete locally.
+- The `supersedes` field is in the object model + hash, but the within-author
+  supersede chain is **not yet persisted/applied** on import — v1 accumulates all
+  versions; wiring supersede-collapse is a next slice.
+
+**Federation accuracy A/B (run 2026-07-18, `federation_ab` bin, BENCHMARKING.md
+§5b):** private-only 53% → federated 60% (n=30 LoCoMo, fixed 5 / broke 3).
+Helps most on multi-hop (40→60%) — the teammate's memories carry evidence the
+user lacks; the only regression is temporal (−2), attributed by the per-row
+instrumentation to private-memory displacement (a context-cap/scope-routing
+knob, not a redesign). Matches the pre-registered expectation.
+
 **Still Permagent's / next:** identity, E2E pack crypto (slots around
-`export_pack`/`import_pack`), transport, tombstone-authz policy, and the
-end-to-end federation *accuracy* A/B (private-only vs private+shared-merged,
-cap-on-by-default) that gates shipping.
+`export_pack`/`import_pack`), transport, tombstone-authz policy, per-origin
+context caps for the temporal displacement regression, and re-running the A/B
+at larger n before user-facing ship.

@@ -226,6 +226,10 @@ pub fn export_pack(store: &SqliteStore, wing_id: &str) -> Result<Pack> {
 pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
     ensure_sync_tables(store)?;
     let mut merged = 0usize;
+    // Re-derive classification locally, exactly as native ingest does — the
+    // design's "ship source, re-derive on import" rule. Wing/hall/signal are
+    // corpus/config-relative and are never shipped in the pack.
+    let ingest_cfg = crate::ingest::IngestConfig::default();
     {
         let conn = store.conn();
         for obj in &pack.objects {
@@ -238,11 +242,19 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
             );
             let content_hash = blake3::hash(obj.content.as_bytes()).to_hex().to_string();
             let author_blob: Option<Vec<u8>> = obj.author_id.map(|a| a.to_vec());
+            let wing = crate::classifier::classify_wing(
+                &obj.key,
+                &obj.content,
+                "core",
+                &ingest_cfg.wing_rules,
+            );
+            let hall = crate::classifier::classify_hall(&obj.content, &ingest_cfg.hall_rules);
+            let signal = crate::signal::score_memory(&obj.content, &hall);
             let n = conn.execute(
                 "INSERT OR IGNORE INTO memories
                     (id, key, content, visibility, created_at, content_hash,
-                     source_brain_id, signal_score, confidence)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0.5, 1.0)",
+                     source_brain_id, wing, hall, signal_score, confidence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1.0)",
                 rusqlite::params![
                     oh,
                     local_key,
@@ -251,6 +263,9 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
                     obj.created_at,
                     content_hash,
                     author_blob,
+                    wing,
+                    hall,
+                    signal,
                 ],
             )?;
             merged += n;
@@ -320,7 +335,9 @@ pub fn missing_locally(local: &[String], remote: &[String]) -> Vec<String> {
 
 /// Provenance of a stored memory (by its local key): which shared wing it belongs
 /// to and its authoring brain, or [`Origin::Private`] for a local-only memory.
+/// Safe on a brain that has never shared anything (creates the sync tables).
 pub fn provenance(store: &SqliteStore, mem_key: &str) -> Result<Origin> {
+    ensure_sync_tables(store)?;
     let conn = store.conn();
     let wing: Option<String> = conn
         .query_row(
@@ -465,6 +482,45 @@ mod tests {
         assert!(
             hits.iter().any(|h| h.content.contains("frankfurt")),
             "imported shared memory should be searchable locally"
+        );
+    }
+
+    /// Imported memories are re-classified locally (wing/hall/signal derived at
+    /// import, not shipped) — the "re-derive on import" rule, so reranking and
+    /// TACT tiers treat imported content as first-class, not unclassified blobs.
+    #[tokio::test]
+    async fn import_rederives_classification_locally() {
+        let a = SqliteStore::open_in_memory().unwrap();
+        insert_local(
+            &a,
+            "k1",
+            "we decided to deploy the api on friday",
+            Some([1u8; 32]),
+        );
+        share(&a, "k1", "team").unwrap();
+        let pack = export_pack(&a, "team").unwrap();
+
+        let b = SqliteStore::open_in_memory().unwrap();
+        import_pack(&b, &pack).unwrap();
+        let (wing, hall, signal): (Option<String>, Option<String>, f64) = b
+            .conn()
+            .query_row(
+                "SELECT wing, hall, signal_score FROM memories WHERE key LIKE 'team::%'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(
+            wing.is_some(),
+            "imported memory must get a locally-derived wing"
+        );
+        assert!(
+            hall.is_some(),
+            "imported memory must get a locally-derived hall"
+        );
+        assert!(
+            signal > 0.0,
+            "imported memory must get a derived signal score"
         );
     }
 

@@ -157,6 +157,27 @@ mod tests {
         .unwrap()
     }
 
+    /// Regression: scope-spanning recall must work on a brain that has NEVER
+    /// used federation (no sync tables yet) — provenance lookup must not fail
+    /// with "no such table" on a virgin brain.
+    #[test]
+    fn recall_scoped_works_on_a_brain_that_never_federated() {
+        let tmp = TempDir::new().unwrap();
+        let br = brain(&tmp);
+        br.remember(
+            "solo",
+            "a note about the quarterly report deadline",
+            Visibility::Private,
+        )
+        .unwrap();
+        let hits = br
+            .recall_scoped("quarterly report", RealmScope::All)
+            .expect("recall_scoped must work before any share/import");
+        assert!(hits
+            .iter()
+            .any(|(h, o)| h.content.contains("quarterly") && matches!(o, Origin::Private)));
+    }
+
     /// End-to-end: brain A shares a memory, brain B imports the pack, and B's
     /// scope-spanning recall surfaces it — tagged with the shared wing + A's
     /// author — while B's own private memory is tagged Private.
