@@ -587,6 +587,10 @@ pub struct Brain {
     ontology_path: PathBuf,
     store: GraphStore,
     memory_store: Arc<dyn MemoryStore>,
+    /// Concrete handle to the same store, for the federation-sync primitives
+    /// (which need SQLite-level access). Points at the same object as
+    /// `memory_store`; not a second store.
+    sqlite: Arc<SqliteStore>,
     llm_client: Option<Box<dyn LlmClient>>,
     entity_policy: EntityPolicy,
     enable_spectrogram: bool,
@@ -716,10 +720,11 @@ impl Brain {
             // like the stopword/anticipatory levers.
             fts_fusion: false,
         };
-        let memory_store: Arc<dyn MemoryStore> = Arc::new(
+        let sqlite = Arc::new(
             SqliteStore::open_with_config(&memory_db_path, &sqlite_config)
                 .map_err(|e| Error::Schema(e.to_string()))?,
         );
+        let memory_store: Arc<dyn MemoryStore> = sqlite.clone();
         // Resolve wing/hall rules — shared between ingest and TACT retrieval.
         let wing_rules = config
             .wing_rules
@@ -811,6 +816,7 @@ impl Brain {
             ontology_path,
             store,
             memory_store,
+            sqlite,
             llm_client: config.llm_client,
             entity_policy: config.entity_policy,
             enable_spectrogram: config.enable_spectrogram,
@@ -869,6 +875,12 @@ impl Brain {
     /// Returns this brain's stable identifier.
     pub fn brain_id(&self) -> &BrainId {
         self.identity.brain_id()
+    }
+
+    /// Concrete store handle for the federation-sync primitives (same object as
+    /// `memory_store`). Crate-internal.
+    pub(crate) fn sqlite_store(&self) -> &SqliteStore {
+        &self.sqlite
     }
 
     /// Returns this brain's public verifying key (for signature verification

@@ -7,6 +7,7 @@
 
 pub mod activity;
 pub mod classifier;
+pub mod federation_sync;
 pub mod fingerprint;
 pub mod ingest;
 pub mod signal;
