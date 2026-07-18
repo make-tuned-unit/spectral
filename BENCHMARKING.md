@@ -197,6 +197,38 @@ Reading (n=30 is directional, ±3.3pp/question — not definitive):
   shapes), exactly what the instrumentation (`f_shared_in_context`,
   `f_private_displaced` per row) was built to isolate.
 
+## 5c. Internal federation / stratified retrieval (single-user, content constant)
+
+Does partitioning ONE user's memory (multi-DB fan-out, or in-DB per-session
+stratification) improve multi-session recall? Harness:
+`cargo run -p spectral-bench-accuracy --release --bin stratified_ab -- <converted_locomo.json> [--accuracy]`
+— three arms over the same corpus and context budget (K=40), LoCoMo
+multi-session slice (n=40):
+
+| arm | session-recall | key-recall | zero-recall | accuracy |
+|---|:-:|:-:|:-:|:-:|
+| monolith (today) | 85.2% | 11.8% | 2 | **35%** |
+| sharded (one brain/session + fan-out) | **100.0%** | 7.0% | 0 | — |
+| stratified (in-DB round-robin) | **100.0%** | 7.8% | 0 | 28% |
+
+Two findings, one honest verdict:
+- **The coverage mechanism works, and multi-DB is unnecessary for it.** Both
+  partitioned arms reach perfect session coverage (11 questions improved, 0
+  regressed, both total-miss questions recovered), and the in-DB stratified
+  variant matches multi-DB sharding — same guarantee, none of the N-brains
+  overhead.
+- **Blanket stratification does NOT convert to accuracy** (35%→28%, fixed 2 /
+  broke 5). The decomposition is clean: both fixes are exactly the
+  coverage-deficient questions (session-recall 0.60/0.00 → 1.00); all five
+  breaks had *full* monolith coverage already, and thinner per-session depth
+  (11.8%→7.8% key-recall) removed supporting detail the actor needed.
+
+Coverage and depth trade against each other at fixed K. The implied lever —
+apply stratification **conditionally**, only when the ranked pool is
+session-concentrated — would in principle keep both fixes and avoid all five
+breaks, but that is a hypothesis derived from this data; it must be validated
+on a fresh split before being claimed (see the honesty ledger).
+
 ## 6. Honesty ledger (do not delete)
 
 - **In-sample vs held-out** is labeled on every result. Held-out is the number
