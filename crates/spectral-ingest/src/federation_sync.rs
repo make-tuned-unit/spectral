@@ -365,6 +365,58 @@ pub fn provenance(store: &SqliteStore, mem_key: &str) -> Result<Origin> {
     }
 }
 
+/// Batched provenance for a set of memory keys — the recall hot path. Resolves
+/// every key in one set-based query instead of the per-key N+1 (`provenance` in a
+/// loop): one `ensure_sync_tables`, one `LEFT JOIN` per chunk. Keys absent from
+/// any shared wing map to [`Origin::Private`]. A key in several wings resolves to
+/// one of them (stable within a call).
+pub fn provenance_batch(
+    store: &SqliteStore,
+    mem_keys: &[&str],
+) -> Result<std::collections::HashMap<String, Origin>> {
+    use std::collections::HashMap;
+    let mut out: HashMap<String, Origin> = mem_keys
+        .iter()
+        .map(|k| (k.to_string(), Origin::Private))
+        .collect();
+    if mem_keys.is_empty() {
+        return Ok(out);
+    }
+    ensure_sync_tables(store)?;
+    let conn = store.conn();
+    // Chunk under SQLite's bound-variable ceiling (~999).
+    for chunk in mem_keys.chunks(400) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT s.mem_key, s.wing_id, m.source_brain_id
+             FROM shared_wing_members s
+             LEFT JOIN memories m ON m.key = s.mem_key
+             WHERE s.mem_key IN ({placeholders})
+             ORDER BY s.wing_id",
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            let mem_key: String = r.get(0)?;
+            let wing_id: String = r.get(1)?;
+            let author: Option<Vec<u8>> = r.get(2)?;
+            Ok((mem_key, wing_id, author))
+        })?;
+        for row in rows {
+            let (mem_key, wing_id, author) = row?;
+            out.insert(
+                mem_key,
+                Origin::Shared {
+                    wing_id,
+                    author_id: author.and_then(|v| v.try_into().ok()),
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +458,32 @@ mod tests {
             }
             Origin::Private => panic!("shared memory tagged Private"),
         }
+    }
+
+    /// `provenance_batch` resolves a mixed set in one query and agrees with the
+    /// per-key `provenance` on every key, including keys absent from any wing.
+    #[tokio::test]
+    async fn provenance_batch_matches_per_key_and_defaults_missing_to_private() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        insert_local(&store, "mine", "my own private note", None);
+        insert_local(&store, "ours", "a shared team note", Some([7u8; 32]));
+        share(&store, "ours", "team").unwrap();
+
+        // empty input is a no-op, not an error
+        assert!(provenance_batch(&store, &[]).unwrap().is_empty());
+
+        let keys = ["mine", "ours", "never_seen"];
+        let batch = provenance_batch(&store, &keys).unwrap();
+        assert_eq!(batch.len(), 3);
+        for key in keys {
+            assert_eq!(
+                batch.get(key).cloned().unwrap_or(Origin::Private),
+                provenance(&store, key).unwrap(),
+                "batch disagrees with per-key provenance for {key}"
+            );
+        }
+        // a key never inserted anywhere still resolves to Private
+        assert_eq!(batch["never_seen"], Origin::Private);
     }
 
     /// SOVEREIGNTY: a memory that is never shared (no manifest entry) can never

@@ -116,10 +116,16 @@ impl Brain {
         let ctx = RecognitionContext::empty();
         let result = self.recall_cascade_with_pipeline(query, &ctx, &cfg)?;
 
+        // Resolve provenance for every hit in one set-based query rather than a
+        // per-hit N+1 (`provenance` in a loop): the merged pool can be large and
+        // each lookup was its own `ensure_sync_tables` + query round-trip.
+        let keys: Vec<&str> = result.merged_hits.iter().map(|h| h.key.as_str()).collect();
+        let origins = federation_sync::provenance_batch(self.sqlite_store(), &keys)
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
         let mut out = Vec::with_capacity(result.merged_hits.len());
         for hit in result.merged_hits {
-            let origin = federation_sync::provenance(self.sqlite_store(), &hit.key)
-                .map_err(|e| Error::Schema(e.to_string()))?;
+            let origin = origins.get(&hit.key).cloned().unwrap_or(Origin::Private);
             if scope.admits(&origin) {
                 out.push((hit, origin));
             }
