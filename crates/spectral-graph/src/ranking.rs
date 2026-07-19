@@ -409,13 +409,16 @@ pub fn apply_reranking_pipeline(
         }
     }
 
-    // Single sort by composite score
-    let mut indexed: Vec<(usize, f64)> = scores.into_iter().enumerate().collect();
+    // Single sort by composite score. Move the hits instead of cloning: `scores`
+    // is index-aligned with `candidates`, so zip and sort the (hit, score) pairs
+    // by score. The sort is stable, so ties preserve input (index) order — exactly
+    // what the prior `(usize, f64)` sort produced — but with zero deep clones of
+    // the candidate bodies (`candidates` is owned and unused after this).
+    let mut indexed: Vec<(MemoryHit, f64)> = candidates.into_iter().zip(scores).collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let mut sorted: Vec<MemoryHit> = indexed
         .into_iter()
-        .map(|(i, score)| {
-            let mut hit = candidates[i].clone();
+        .map(|(mut hit, score)| {
             hit.signal_score = score; // Store composite as signal_score for downstream
             hit
         })
