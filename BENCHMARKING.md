@@ -254,6 +254,42 @@ tested — matching the repo-wide pattern (ACR, fetch_mult). The one federation
 result that **did** convert (§5b) added *content* (a teammate's memories), not
 ranking policy.
 
+## 5d. Actor-synthesis prompt (multi-hop) — pre-registered, NO lift
+
+29 of 41 held-out multi-hop failures (§5) are actor-side: the evidence is
+retrieved, the actor answers wrong — most often *under-enumeration* (returning
+two items when three exist across sessions). The default `factual_direct` prompt
+that the shape-classifier routes "What/Which" questions to opens with "answer in
+as few words as possible" — actively *instructing* under-enumeration. A revised
+prompt (V1: decide one-vs-several first, enumerate the complete set across all
+sessions when several, stay terse when one) was frozen after calibration and
+validated by `replay-actor` (retrieval held constant, prompt the only variable):
+
+| split | n | baseline | V1 | net | fixed / broke |
+|---|:-:|:-:|:-:|:-:|:-:|
+| calibration (design-informed — tainted) | 40 | 40.0% | 50.0% | +4 | 4 / 0 |
+| fresh (untainted) | 40 | 40.0% | 42.5% | +1 | 3 / 2 |
+| extension (untainted) | 100 | 48.0% | 51.0% | +3 | 8 / 5 |
+| **pooled clean (fresh+ext)** | **140** | **45.7%** | **48.6%** | **+4** | **11 / 7** |
+
+**Verdict: no ship.** Pre-registered bar was net > 0 **and** discordant ratio
+≳ 2:1; the pooled result is net +4 but ratio **1.57:1**, sign test p = 0.48 —
+statistically indistinguishable from noise. The direction is consistently
+positive (+4 / +1 / +3), but the breaks and fixes split across *both* question
+shapes (fixed: 5 enumeration / 6 other; broke: 3 enumeration / 4 other), so no
+shape-targeted variant cleanly captures the wins. The mechanism is a
+precision/recall trade at the answer level: enumeration pressure raises recall
+(recovers missed items) but lowers precision (adds unsupported ones), netting
+out within noise.
+
+**Family conclusion (do not re-chase):** across every lever tested — ACR,
+`fetch_mult`, stratification/backfill (§5c), and this actor prompt — *retrieval
+re-ranking and actor prompting have not moved multi-hop accuracy on this
+benchmark.* The only intervention that converted (§5b) **added content**
+(a teammate's shared memories). The honest read: LoCoMo multi-hop is bottlenecked
+by information the brain doesn't hold, not by how it ranks or is prompted over
+what it holds.
+
 ## 6. Honesty ledger (do not delete)
 
 - **In-sample vs held-out** is labeled on every result. Held-out is the number
