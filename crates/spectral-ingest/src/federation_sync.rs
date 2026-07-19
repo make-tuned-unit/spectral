@@ -103,10 +103,17 @@ fn hex8(b: &[u8]) -> String {
 pub fn ensure_sync_tables(store: &SqliteStore) -> Result<()> {
     let conn = store.conn();
     conn.execute_batch(
+        // `orig_key`/`supersedes` are the wire object's ORIGINAL identity, kept so
+        // an imported object can be re-exported and round-trip its `object_hash`
+        // (the local `mem_key` is a synthetic, injective storage key for imports
+        // and would not re-hash to the manifest entry). For a natively-shared
+        // memory these equal its own key / `NULL`.
         "CREATE TABLE IF NOT EXISTS shared_wing_members (
             wing_id     TEXT NOT NULL,
             object_hash TEXT NOT NULL,
             mem_key     TEXT NOT NULL,
+            orig_key    TEXT,
+            supersedes  TEXT,
             PRIMARY KEY (wing_id, object_hash)
          );
          CREATE TABLE IF NOT EXISTS sync_tombstones (
@@ -116,6 +123,18 @@ pub fn ensure_sync_tables(store: &SqliteStore) -> Result<()> {
             PRIMARY KEY (wing_id, target_hash)
          );",
     )?;
+    // Idempotent migration for manifests created before the round-trip identity
+    // columns existed. ADD COLUMN errors if the column is already present; that
+    // (and only that) is the expected no-op, so the result is intentionally
+    // discarded.
+    let _ = conn.execute(
+        "ALTER TABLE shared_wing_members ADD COLUMN orig_key TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE shared_wing_members ADD COLUMN supersedes TEXT",
+        [],
+    );
     Ok(())
 }
 
@@ -152,10 +171,15 @@ pub fn share(store: &SqliteStore, mem_key: &str, wing_id: &str) -> Result<String
         .ok_or_else(|| anyhow::anyhow!("no memory with key {mem_key}"))?;
     let oh = obj.object_hash();
     let conn = store.conn();
+    // For a native share the local `mem_key` IS the wire key and there is no
+    // supersede, so `orig_key = mem_key` and `supersedes = NULL` — recorded
+    // explicitly so export reconstructs from the same columns for shared and
+    // imported objects alike.
     conn.execute(
-        "INSERT OR IGNORE INTO shared_wing_members (wing_id, object_hash, mem_key)
-         VALUES (?1, ?2, ?3)",
-        rusqlite::params![wing_id, oh, mem_key],
+        "INSERT OR IGNORE INTO shared_wing_members
+            (wing_id, object_hash, mem_key, orig_key, supersedes)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![wing_id, oh, mem_key, obj.key, obj.supersedes],
     )?;
     Ok(oh)
 }
@@ -180,26 +204,46 @@ pub fn enumerate(store: &SqliteStore, wing_id: &str) -> Result<Vec<String>> {
 /// appear here. Ships source fields only; the importer re-derives indexes.
 pub fn export_pack(store: &SqliteStore, wing_id: &str) -> Result<Pack> {
     ensure_sync_tables(store)?;
-    let members: Vec<(String, String)> = {
-        let conn = store.conn();
-        let mut stmt = conn
-            .prepare("SELECT object_hash, mem_key FROM shared_wing_members WHERE wing_id = ?1")?;
+    let conn = store.conn();
+    // One set-based join, not an N+1 (was: fetch the manifest keys, then a
+    // per-member SELECT). Each wire object is reconstructed from the manifest's
+    // stored ORIGINAL identity (`orig_key`/`supersedes`) joined to the memory's
+    // shipped fields, so an imported object re-hashes to its manifest entry and
+    // can be relayed onward. `COALESCE(orig_key, mem_key)` handles rows written
+    // before the identity columns existed (native shares, whose key was lossless).
+    let objects = {
+        let mut stmt = conn.prepare(
+            "SELECT s.object_hash, COALESCE(s.orig_key, s.mem_key), s.supersedes,
+                    m.content, m.source_brain_id, m.created_at, m.visibility
+             FROM shared_wing_members s
+             JOIN memories m ON m.key = s.mem_key
+             WHERE s.wing_id = ?1",
+        )?;
         let rows = stmt.query_map(rusqlite::params![wing_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            let expected_hash: String = r.get(0)?;
+            let author: Option<Vec<u8>> = r.get(4)?;
+            let obj = MemoryObject {
+                key: r.get(1)?,
+                content: r.get(3)?,
+                author_id: author.and_then(|v| v.try_into().ok()),
+                created_at: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                visibility: r.get(6)?,
+                supersedes: r.get(2)?,
+            };
+            Ok((expected_hash, obj))
         })?;
-        rows.filter_map(Result::ok).collect()
-    };
-    let mut objects = Vec::new();
-    for (expected_hash, mem_key) in members {
-        if let Some(obj) = object_for_key(store, &mem_key)? {
-            // Integrity: the stored row must still hash to the manifest entry.
+        let mut objects = Vec::new();
+        for row in rows {
+            let (expected_hash, obj) = row?;
+            // Integrity: the reconstructed object must still hash to its manifest
+            // entry (defends against a locally-mutated content/identity row).
             if obj.object_hash() == expected_hash {
                 objects.push(obj);
             }
         }
-    }
+        objects
+    };
     let tombstones = {
-        let conn = store.conn();
         let mut stmt =
             conn.prepare("SELECT target_hash, ts FROM sync_tombstones WHERE wing_id = ?1")?;
         let rows = stmt.query_map(rusqlite::params![wing_id], |r| {
@@ -219,9 +263,10 @@ pub fn export_pack(store: &SqliteStore, wing_id: &str) -> Result<Pack> {
 }
 
 /// Merge a pack into the local store (OR-Set union) and re-index. Imported
-/// objects are stored under an author-scoped local key so cross-author same-key
-/// contributions accumulate rather than overwrite; `id = object_hash` dedups
-/// re-imports. FTS re-indexing happens via the memories AFTER-INSERT trigger.
+/// objects are stored under an object-scoped local key (`author::key::hash`) so
+/// distinct contributions accumulate rather than overwrite, while the SAME object
+/// shared into several wings still maps to one local row (`id = object_hash`
+/// dedups). FTS re-indexing happens via the memories AFTER-INSERT trigger.
 /// Returns the number of new objects merged.
 pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
     ensure_sync_tables(store)?;
@@ -232,30 +277,52 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
     let ingest_cfg = crate::ingest::IngestConfig::default();
     {
         let conn = store.conn();
-        for obj in &pack.objects {
-            let oh = obj.object_hash();
-            let local_key = format!(
-                "{}::{}::{}",
-                pack.wing_id,
-                author_short(&obj.author_id),
-                obj.key
-            );
-            let content_hash = blake3::hash(obj.content.as_bytes()).to_hex().to_string();
-            let author_blob: Option<Vec<u8>> = obj.author_id.map(|a| a.to_vec());
-            let wing = crate::classifier::classify_wing(
-                &obj.key,
-                &obj.content,
-                "core",
-                &ingest_cfg.wing_rules,
-            );
-            let hall = crate::classifier::classify_hall(&obj.content, &ingest_cfg.hall_rules);
-            let signal = crate::signal::score_memory(&obj.content, &hall);
-            let n = conn.execute(
+        // One transaction for the whole pack: without it each INSERT is its own
+        // autocommit (an fsync + FTS-trigger firing per row) and a mid-pack error
+        // would leave a half-merged wing. Prepare the two INSERTs once, not per
+        // object.
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut mem_stmt = tx.prepare(
                 "INSERT OR IGNORE INTO memories
                     (id, key, content, visibility, created_at, content_hash,
                      source_brain_id, wing, hall, signal_score, confidence)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1.0)",
-                rusqlite::params![
+            )?;
+            let mut man_stmt = tx.prepare(
+                "INSERT OR IGNORE INTO shared_wing_members
+                    (wing_id, object_hash, mem_key, orig_key, supersedes)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for obj in &pack.objects {
+                let oh = obj.object_hash();
+                // Object-scoped, injective local key: a prefix of the
+                // (content-addressed, author-bound) object hash makes two DISTINCT
+                // objects never collide on the UNIQUE `memories.key`. Without it a
+                // same-author update or a 4-byte `author_short` collision maps two
+                // different-content objects to one key, and `INSERT OR IGNORE`
+                // silently drops the second while its manifest entry survives —
+                // a lost version + a phantom hash that diverges across brains.
+                // The key is deliberately NOT wing-scoped: the same object shared
+                // into several wings must dedup to ONE local row (by `id = oh`),
+                // so every wing's manifest entry resolves to it.
+                let local_key = format!(
+                    "{}::{}::{}",
+                    author_short(&obj.author_id),
+                    obj.key,
+                    &oh[..16]
+                );
+                let content_hash = blake3::hash(obj.content.as_bytes()).to_hex().to_string();
+                let author_blob: Option<Vec<u8>> = obj.author_id.map(|a| a.to_vec());
+                let wing = crate::classifier::classify_wing(
+                    &obj.key,
+                    &obj.content,
+                    "core",
+                    &ingest_cfg.wing_rules,
+                );
+                let hall = crate::classifier::classify_hall(&obj.content, &ingest_cfg.hall_rules);
+                let signal = crate::signal::score_memory(&obj.content, &hall);
+                let n = mem_stmt.execute(rusqlite::params![
                     oh,
                     local_key,
                     obj.content,
@@ -266,15 +333,21 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
                     wing,
                     hall,
                     signal,
-                ],
-            )?;
-            merged += n;
-            conn.execute(
-                "INSERT OR IGNORE INTO shared_wing_members (wing_id, object_hash, mem_key)
-                 VALUES (?1, ?2, ?3)",
-                rusqlite::params![pack.wing_id, oh, local_key],
-            )?;
+                ])?;
+                merged += n;
+                // Persist the wire object's ORIGINAL identity so it round-trips on
+                // re-export (`orig_key`/`supersedes`) even though it is stored
+                // under the synthetic `local_key`.
+                man_stmt.execute(rusqlite::params![
+                    pack.wing_id,
+                    oh,
+                    local_key,
+                    obj.key,
+                    obj.supersedes,
+                ])?;
+            }
         }
+        tx.commit()?;
     }
     for t in &pack.tombstones {
         apply_tombstone(store, &pack.wing_id, &t.target_hash)?;
@@ -297,10 +370,18 @@ fn apply_tombstone(store: &SqliteStore, wing_id: &str, target_hash: &str) -> Res
         "INSERT OR IGNORE INTO sync_tombstones (wing_id, target_hash) VALUES (?1, ?2)",
         rusqlite::params![wing_id, target_hash],
     )?;
-    // The local rows this object was stored under (there may be one; id=hash).
+    // Hard-delete the local copy (id = hash) ONLY if no OTHER wing still shares
+    // this object. The same content-addressed object can be a member of several
+    // wings; a wing-scoped retraction must not destroy the copy the other wings
+    // still serve. The `wing_id <> ?2` guard ignores this wing's own manifest row
+    // (removed just below), so a single-wing object is still deleted.
     conn.execute(
-        "DELETE FROM memories WHERE id = ?1",
-        rusqlite::params![target_hash],
+        "DELETE FROM memories WHERE id = ?1
+           AND NOT EXISTS (
+             SELECT 1 FROM shared_wing_members
+             WHERE object_hash = ?1 AND wing_id <> ?2
+           )",
+        rusqlite::params![target_hash, wing_id],
     )?;
     conn.execute(
         "DELETE FROM shared_wing_members WHERE wing_id = ?1 AND object_hash = ?2",
@@ -502,10 +583,12 @@ mod tests {
 
         let b = SqliteStore::open_in_memory().unwrap();
         import_pack(&b, &pack).unwrap();
+        // Imported rows are stored under an object-scoped local key
+        // `{author_short}::{orig_key}::{hash}` (deliberately not wing-prefixed).
         let (wing, hall, signal): (Option<String>, Option<String>, f64) = b
             .conn()
             .query_row(
-                "SELECT wing, hall, signal_score FROM memories WHERE key LIKE 'team::%'",
+                "SELECT wing, hall, signal_score FROM memories WHERE key LIKE '%::k1::%'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -594,5 +677,141 @@ mod tests {
             !enumerate(&b, "team").unwrap().contains(&doomed),
             "a tombstoned object must not be resurrectable by re-import"
         );
+    }
+
+    /// C1: two DIFFERENT authors whose 4-byte `author_short` collides, same key,
+    /// same wing. The pre-fix local key `{wing}::{author_short}::{key}` was
+    /// identical for both, so `INSERT OR IGNORE` on the UNIQUE `memories.key`
+    /// silently dropped the second author's memory while its manifest entry
+    /// survived (phantom hash / lost content / cross-brain divergence). The
+    /// object-hash suffix keeps them distinct, restoring the cross-author
+    /// accumulation guarantee even under a short-id collision.
+    #[tokio::test]
+    async fn cross_author_short_id_collision_still_accumulates() {
+        let mut a1 = [0u8; 32];
+        a1[..4].copy_from_slice(&[0xAB, 0xCD, 0xEF, 0x01]);
+        a1[10] = 1;
+        let mut a2 = [0u8; 32];
+        a2[..4].copy_from_slice(&[0xAB, 0xCD, 0xEF, 0x01]);
+        a2[10] = 2;
+        assert_eq!(
+            &a1[..4],
+            &a2[..4],
+            "authors must share their short-id prefix"
+        );
+        assert_ne!(a1, a2, "but be distinct principals");
+
+        let o1 = MemoryObject {
+            key: "policy".into(),
+            content: "A says ship on green".into(),
+            author_id: Some(a1),
+            created_at: "2026/01/01 (Thu) 10:00".into(),
+            visibility: "team".into(),
+            supersedes: None,
+        };
+        let o2 = MemoryObject {
+            key: "policy".into(),
+            content: "B says ship on friday".into(),
+            author_id: Some(a2),
+            created_at: "2026/01/01 (Thu) 10:00".into(),
+            visibility: "team".into(),
+            supersedes: None,
+        };
+        let pack = Pack {
+            wing_id: "team".into(),
+            objects: vec![o1, o2],
+            tombstones: vec![],
+        };
+
+        let m = SqliteStore::open_in_memory().unwrap();
+        assert_eq!(
+            import_pack(&m, &pack).unwrap(),
+            2,
+            "both authors' memories must be stored, not silently dropped"
+        );
+        assert_eq!(enumerate(&m, "team").unwrap().len(), 2);
+        let hits = m.fts_search(&["ship".into()], 10).await.unwrap();
+        assert!(hits.iter().any(|h| h.content.contains("green")));
+        assert!(hits.iter().any(|h| h.content.contains("friday")));
+    }
+
+    /// C2: an imported object must survive re-export so it can be RELAYED onward
+    /// (A -> B -> C). The re-exported object must round-trip its `object_hash` —
+    /// which requires reconstructing the wire object from the stored ORIGINAL
+    /// identity (`orig_key`/`supersedes`), not from the synthetic local key.
+    #[tokio::test]
+    async fn imported_objects_relay_and_round_trip_their_hash() {
+        let a = SqliteStore::open_in_memory().unwrap();
+        insert_local(&a, "deploy", "deploy needs two approvals", Some([3u8; 32]));
+        share(&a, "deploy", "team").unwrap();
+        let pa = export_pack(&a, "team").unwrap();
+        let a_hash = pa.objects[0].object_hash();
+
+        // B holds the object ONLY by import, then re-exports it.
+        let b = SqliteStore::open_in_memory().unwrap();
+        import_pack(&b, &pa).unwrap();
+        let pb = export_pack(&b, "team").unwrap();
+        assert_eq!(
+            pb.objects.len(),
+            1,
+            "imported object was dropped from re-export (relay broken)"
+        );
+        assert_eq!(
+            pb.objects[0].object_hash(),
+            a_hash,
+            "re-exported object must round-trip its content hash"
+        );
+        assert_eq!(
+            pb.objects[0].key, "deploy",
+            "the original wire key must be restored, not the local storage key"
+        );
+
+        // C imports from B (the relay) and converges on A's object set.
+        let c = SqliteStore::open_in_memory().unwrap();
+        import_pack(&c, &pb).unwrap();
+        assert_eq!(
+            enumerate(&c, "team").unwrap(),
+            enumerate(&a, "team").unwrap(),
+            "A and C (relayed through B) must converge on the same object set"
+        );
+        let hits = c.fts_search(&["deploy".into()], 10).await.unwrap();
+        assert!(hits.iter().any(|h| h.content.contains("two approvals")));
+    }
+
+    /// C3: the same object shared into two wings, tombstoned from one. The
+    /// wing-scoped retraction must NOT destroy the local copy the OTHER wing
+    /// still serves (the old global `DELETE FROM memories WHERE id = hash` did).
+    #[tokio::test]
+    async fn tombstone_is_scoped_and_spares_other_wings() {
+        let src = SqliteStore::open_in_memory().unwrap();
+        insert_local(&src, "policy", "rotate creds quarterly", Some([5u8; 32]));
+        let h = share(&src, "policy", "wing-a").unwrap();
+        share(&src, "policy", "wing-b").unwrap(); // SAME object, second wing
+        let pack_a = export_pack(&src, "wing-a").unwrap();
+        let pack_b = export_pack(&src, "wing-b").unwrap();
+
+        // m holds the object (one local row, id = hash) as a member of both wings.
+        let m = SqliteStore::open_in_memory().unwrap();
+        import_pack(&m, &pack_a).unwrap();
+        import_pack(&m, &pack_b).unwrap();
+
+        tombstone(&m, "wing-a", &h).unwrap();
+
+        assert!(
+            enumerate(&m, "wing-a").unwrap().is_empty(),
+            "wing-a must no longer serve the retracted object"
+        );
+        assert_eq!(
+            enumerate(&m, "wing-b").unwrap(),
+            vec![h.clone()],
+            "wing-b must still serve the object"
+        );
+        let pack_b2 = export_pack(&m, "wing-b").unwrap();
+        assert_eq!(
+            pack_b2.objects.len(),
+            1,
+            "wing-a's tombstone destroyed the copy wing-b still shares"
+        );
+        assert!(pack_b2.objects[0].content.contains("rotate creds"));
     }
 }
