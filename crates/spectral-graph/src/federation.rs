@@ -418,7 +418,6 @@ fn merge_and_rank(
     contributions: Vec<(BrainId, f64, Vec<MemoryHit>)>,
     policy: &MergePolicy,
 ) -> (Vec<LabeledHit>, Vec<(BrainId, usize)>) {
-    let mut ranked: Vec<LabeledHit> = Vec::new();
     let mut per_brain: Vec<(BrainId, usize)> = Vec::with_capacity(contributions.len());
 
     // Apply the per-child cap first, then record each hit with its
@@ -432,26 +431,57 @@ fn merge_and_rank(
         capped.push((origin, weight, hits));
     }
 
+    // Flatten the capped contributions once, computing each hit's content
+    // fingerprint a SINGLE time. The fingerprint has three consumers — RRF dedup
+    // (best rank per origin+content), the fused-score lookup, and the tiebreak
+    // sort key below — and each `content_fingerprint` call is a blake3 hash plus
+    // two String allocations, so computing it once here (was 3× per hit) keeps
+    // the merge's hashing O(n) and threads the fp straight into the sort.
+    struct Flat {
+        origin: BrainId,
+        fp: [u8; 32],
+        weight: f64,
+        rank: usize,
+        hit: MemoryHit,
+    }
+    let mut flat: Vec<Flat> = Vec::new();
+    for (origin, weight, hits) in capped {
+        for (rank, hit) in hits.into_iter().enumerate() {
+            let fp = content_fingerprint(&hit.content);
+            flat.push(Flat {
+                origin,
+                fp,
+                weight,
+                rank,
+                hit,
+            });
+        }
+    }
+
+    // (fingerprint, hit) pairs in contribution order; the fp is carried, not
+    // recomputed, into the tiebreak sort.
+    let mut keyed: Vec<([u8; 32], LabeledHit)> = Vec::with_capacity(flat.len());
     match &policy.fusion {
         FusionMethod::RawScore => {
             // Legacy / undefended: rank on the member's self-asserted score.
             // signal_score is member-controlled and unbounded — sanitize it so a
             // NaN/Inf can't pin poison to the top (NaN sorts above +Inf under
             // total_cmp). Clamp to signal_score's documented [0,1] range.
-            for (origin, weight, hits) in capped {
-                let w = if weight.is_finite() { weight } else { 0.0 };
-                for hit in hits {
-                    let s = if hit.signal_score.is_finite() {
-                        hit.signal_score.clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    ranked.push(LabeledHit {
-                        origin,
+            for f in flat {
+                let w = if f.weight.is_finite() { f.weight } else { 0.0 };
+                let s = if f.hit.signal_score.is_finite() {
+                    f.hit.signal_score.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                keyed.push((
+                    f.fp,
+                    LabeledHit {
+                        origin: f.origin,
                         effective_score: s * w,
-                        hit,
-                    });
-                }
+                        hit: f.hit,
+                    },
+                ));
             }
         }
         FusionMethod::Rrf { k } => {
@@ -464,19 +494,18 @@ fn merge_and_rank(
             // Every surviving copy carries the fused score, preserving each
             // origin's provenance.
             let mut best_rank: HashMap<([u8; 32], [u8; 32]), usize> = HashMap::new();
-            for (origin, _weight, hits) in &capped {
-                let obytes = *origin.as_bytes();
-                for (rank, hit) in hits.iter().enumerate() {
-                    let fp = content_fingerprint(&hit.content);
-                    best_rank
-                        .entry((obytes, fp))
-                        .and_modify(|r| *r = (*r).min(rank))
-                        .or_insert(rank);
-                }
+            for f in &flat {
+                let obytes = *f.origin.as_bytes();
+                best_rank
+                    .entry((obytes, f.fp))
+                    .and_modify(|r| *r = (*r).min(f.rank))
+                    .or_insert(f.rank);
             }
             // weight lookup by origin bytes.
-            let weight_of: HashMap<[u8; 32], f64> =
-                capped.iter().map(|(o, w, _)| (*o.as_bytes(), *w)).collect();
+            let weight_of: HashMap<[u8; 32], f64> = flat
+                .iter()
+                .map(|f| (*f.origin.as_bytes(), f.weight))
+                .collect();
             let mut fused: HashMap<[u8; 32], f64> = HashMap::new();
             for ((obytes, fp), rank) in &best_rank {
                 let w = weight_of.get(obytes).copied().unwrap_or(1.0);
@@ -489,17 +518,16 @@ fn merge_and_rank(
                 }
                 *fused.entry(*fp).or_insert(0.0) += w / denom;
             }
-            for (origin, _weight, hits) in capped {
-                for hit in hits {
-                    let score = *fused
-                        .get(&content_fingerprint(&hit.content))
-                        .unwrap_or(&0.0);
-                    ranked.push(LabeledHit {
-                        origin,
+            for f in flat {
+                let score = *fused.get(&f.fp).unwrap_or(&0.0);
+                keyed.push((
+                    f.fp,
+                    LabeledHit {
+                        origin: f.origin,
                         effective_score: score,
-                        hit,
-                    });
-                }
+                        hit: f.hit,
+                    },
+                ));
             }
         }
     }
@@ -510,11 +538,8 @@ fn merge_and_rank(
     // low-sorting BrainId to win every tie across the federation. Content-first
     // means an attacker would have to grind each item's content (which changes
     // the content). BrainId/hit.id remain as final tiebreakers for a total,
-    // deterministic order. Fingerprint is precomputed to keep the sort O(n log n).
-    let mut keyed: Vec<([u8; 32], LabeledHit)> = ranked
-        .into_iter()
-        .map(|h| (content_fingerprint(&h.hit.content), h))
-        .collect();
+    // deterministic order. Fingerprint is precomputed (above) to keep the sort
+    // O(n log n).
     keyed.sort_by(|a, b| {
         b.1.effective_score
             .total_cmp(&a.1.effective_score)
