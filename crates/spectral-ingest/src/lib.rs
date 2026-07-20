@@ -10,6 +10,7 @@ pub mod classifier;
 pub mod federation_sync;
 pub mod fingerprint;
 pub mod ingest;
+pub mod replicated_set;
 pub mod signal;
 pub mod signal_scorer;
 #[cfg(feature = "sqlite")]
