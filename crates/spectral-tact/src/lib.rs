@@ -138,9 +138,7 @@ pub async fn retrieve(
         });
     }
 
-    let bundle = build_context_bundle(&memories, config.max_context_chars);
-    let context_block =
-        format!("\n--- MEMORY CONTEXT (via TACT) ---\n{bundle}\n--- END MEMORY CONTEXT ---\n");
+    let context_block = format_context_block(&memories, config.max_context_chars);
 
     Ok(TactResult {
         method,
@@ -149,6 +147,18 @@ pub async fn retrieve(
         memories,
         context_block,
     })
+}
+
+/// Format the system-prompt injection block for a set of memories. The single
+/// source of truth for the block's shape, so a caller that filters `memories`
+/// (e.g. by visibility) can rebuild `context_block` and be sure the formatted
+/// text can never contain a dropped memory. Returns `""` for an empty set.
+pub fn format_context_block(memories: &[MemoryHit], max_context_chars: usize) -> String {
+    if memories.is_empty() {
+        return String::new();
+    }
+    let bundle = build_context_bundle(memories, max_context_chars);
+    format!("\n--- MEMORY CONTEXT (via TACT) ---\n{bundle}\n--- END MEMORY CONTEXT ---\n")
 }
 
 fn build_context_bundle(memories: &[MemoryHit], max_chars: usize) -> String {

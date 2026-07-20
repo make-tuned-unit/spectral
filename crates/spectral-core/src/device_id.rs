@@ -98,11 +98,19 @@ impl FromStr for DeviceId {
                 s.len()
             )));
         }
+        // Operate on raw bytes: `s` is len 64 but may not be 64 ASCII chars, so
+        // slicing `&s[..]` at 2-byte offsets would panic on a char boundary.
+        // Requiring canonical ASCII hex digits also rejects the `+`/whitespace
+        // that `u8::from_str_radix` would otherwise accept (breaks round-trip).
+        let hex = s.as_bytes();
         let mut bytes = [0u8; 32];
         for (i, byte) in bytes.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| {
-                Error::InvalidDeviceId(format!("invalid hex at position {}", i * 2))
+            let hi = crate::hex_val(hex[i * 2])
+                .ok_or_else(|| Error::InvalidDeviceId(format!("invalid hex at position {}", i * 2)))?;
+            let lo = crate::hex_val(hex[i * 2 + 1]).ok_or_else(|| {
+                Error::InvalidDeviceId(format!("invalid hex at position {}", i * 2 + 1))
             })?;
+            *byte = (hi << 4) | lo;
         }
         Ok(DeviceId(bytes))
     }
@@ -118,5 +126,34 @@ impl<'de> Deserialize<'de> for DeviceId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::DeviceId;
+    use std::str::FromStr;
+
+    #[test]
+    fn rejects_non_ascii_64_bytes_without_panic() {
+        // 64 bytes but not 64 chars: a 3-byte '€' plus 61 ASCII. Must Err, not panic.
+        let s = format!("{}{}", "\u{20AC}", "a".repeat(61));
+        assert_eq!(s.len(), 64);
+        assert!(DeviceId::from_str(&s).is_err());
+    }
+
+    #[test]
+    fn rejects_leading_plus_non_canonical() {
+        // `u8::from_str_radix` used to accept "+f"; canonical hex must reject it.
+        let s = format!("+f{}", "0".repeat(62));
+        assert_eq!(s.len(), 64);
+        assert!(DeviceId::from_str(&s).is_err());
+    }
+
+    #[test]
+    fn round_trips_canonical_hex() {
+        let s = "ab".repeat(32);
+        let id = DeviceId::from_str(&s).expect("valid hex");
+        assert_eq!(id.to_string(), s);
     }
 }
