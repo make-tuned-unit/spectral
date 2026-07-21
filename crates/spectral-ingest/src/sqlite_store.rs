@@ -290,8 +290,13 @@ impl SqliteStore {
         if Self::fusion_index_present(conn) {
             return Ok(());
         }
+        // One transaction: the CREATE and its repopulating INSERT commit together,
+        // so a crash between them can't leave `memories_fts_raw` present-but-empty
+        // (which `fusion_index_present` would then treat as built, skipping the
+        // repopulate forever).
         conn.execute_batch(
-            "CREATE VIRTUAL TABLE memories_fts_raw USING fts5(
+            "BEGIN IMMEDIATE;
+             CREATE VIRTUAL TABLE memories_fts_raw USING fts5(
                  content,
                  content=memories, content_rowid=rowid, tokenize = 'unicode61'
              );
@@ -307,7 +312,8 @@ impl SqliteStore {
                  VALUES ('delete', old.rowid, old.content);
                  INSERT INTO memories_fts_raw(rowid, content) VALUES (new.rowid, new.content);
              END;
-             INSERT INTO memories_fts_raw(rowid, content) SELECT rowid, content FROM memories;",
+             INSERT INTO memories_fts_raw(rowid, content) SELECT rowid, content FROM memories;
+             COMMIT;",
         )?;
         Ok(())
     }
@@ -349,8 +355,16 @@ impl SqliteStore {
     /// tokenizer-change migration. The memories table itself is untouched.
     fn fts_rebuild_batch(fts_tokenizer: Option<&str>) -> String {
         let fts_tok = Self::fts_tokenize_clause(fts_tokenizer);
+        // Wrapped in one transaction so the DROP and the repopulating INSERT commit
+        // together. `execute_batch` otherwise autocommits each statement, leaving a
+        // crash-between-them window where `memories_fts` exists but is empty — and a
+        // later matching-tokenizer open skips the rebuild, so FTS recall silently
+        // returns nothing for the whole corpus. SQLite DDL is transactional, so a
+        // crash mid-rebuild rolls back to the intact prior index. (BEGIN here is
+        // safe: every caller invokes this on a fresh connection in autocommit mode.)
         format!(
-            "DROP TRIGGER IF EXISTS memories_ai;
+            "BEGIN IMMEDIATE;
+             DROP TRIGGER IF EXISTS memories_ai;
              DROP TRIGGER IF EXISTS memories_ad;
              DROP TRIGGER IF EXISTS memories_au;
              DROP TABLE IF EXISTS memories_fts;
@@ -376,7 +390,8 @@ impl SqliteStore {
              END;
 
              INSERT INTO memories_fts(rowid, key, content, description)
-             SELECT rowid, key, content, COALESCE(description, '') FROM memories;"
+             SELECT rowid, key, content, COALESCE(description, '') FROM memories;
+             COMMIT;"
         )
     }
 
@@ -1047,6 +1062,30 @@ impl SqliteStore {
     pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap()
     }
+
+    /// Drop the entire wing read-cache. Call after ANY mutation that changes,
+    /// removes, or adds a memory outside the `MemoryStore` write/delete methods —
+    /// e.g. the federation import/tombstone paths mutate `memories` directly and
+    /// would otherwise keep serving a stale (or deleted) row from `wing_search`.
+    pub(crate) fn invalidate_wing_cache(&self) {
+        wing_cache_clear(&self.wing_cache);
+    }
+}
+
+/// Drop a single wing's cached entry (a mutation confined to one known wing).
+fn wing_cache_pop(cache: &Arc<Mutex<LruCache<String, Vec<MemoryHit>>>>, wing: &str) {
+    if let Ok(mut c) = cache.lock() {
+        c.pop(wing);
+    }
+}
+
+/// Drop every cached wing (a mutation whose affected wing(s) aren't cheaply known,
+/// or that spans many). Correctness over cache-hit rate — these paths are rare
+/// relative to reads, so the next `wing_search` simply repopulates.
+fn wing_cache_clear(cache: &Arc<Mutex<LruCache<String, Vec<MemoryHit>>>>) {
+    if let Ok(mut c) = cache.lock() {
+        c.clear();
+    }
 }
 
 /// Standard column list for memory queries.
@@ -1144,14 +1183,18 @@ impl MemoryStore for SqliteStore {
             // Wrap in a single transaction for atomicity.
             let tx = conn.transaction()?;
 
-            // Probe for existing row.
-            let existing: Option<(Option<String>, String)> = tx
+            // Probe for existing row. Also read the STORED wing: a content update
+            // keeps the row's existing wing, but the incoming `memory.wing` may
+            // differ (classification is content-driven), so cache invalidation
+            // must target the stored wing, not just the incoming one.
+            let existing: Option<(Option<String>, String, Option<String>)> = tx
                 .query_row(
-                    "SELECT content_hash, content FROM memories WHERE key = ?1",
+                    "SELECT content_hash, content, wing FROM memories WHERE key = ?1",
                     params![memory.key],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .ok();
+            let stored_wing: Option<String> = existing.as_ref().and_then(|(_, _, w)| w.clone());
 
             let outcome = match existing {
                 None => {
@@ -1247,7 +1290,7 @@ impl MemoryStore for SqliteStore {
 
                     WriteOutcome::Inserted
                 }
-                Some((existing_hash, existing_content)) => {
+                Some((existing_hash, existing_content, _)) => {
                     // Resolve effective hash: use stored hash, or compute from existing content if NULL.
                     let effective_existing_hash = existing_hash.unwrap_or_else(|| {
                         blake3::hash(existing_content.as_bytes())
@@ -1310,12 +1353,16 @@ impl MemoryStore for SqliteStore {
 
             tx.commit()?;
 
-            // Invalidate wing cache for the written memory's wing.
+            // Invalidate the wing cache for BOTH the incoming wing and the stored
+            // wing. On a content update the row keeps its stored wing while the
+            // incoming classification may differ; invalidating only the incoming
+            // wing would leave the stored wing serving pre-update content.
             if outcome != WriteOutcome::NoOp {
                 if let Some(ref wing) = memory.wing {
-                    if let Ok(mut cache) = wing_cache.lock() {
-                        cache.pop(wing);
-                    }
+                    wing_cache_pop(&wing_cache, wing);
+                }
+                if let Some(ref wing) = stored_wing {
+                    wing_cache_pop(&wing_cache, wing);
                 }
             }
 
@@ -1413,19 +1460,24 @@ impl MemoryStore for SqliteStore {
                         UNION ALL
                         SELECT target_memory_id AS memory_id FROM matched_pairs
                     )
+                    -- Exclude consolidated sources BEFORE the LIMIT. Filtering after
+                    -- (in the outer query) shrank the result below max_results when
+                    -- top-hit memories were consolidated, hiding lower-ranked but
+                    -- valid matches. Mirrors fts_search.
+                    WHERE memory_id NOT IN (
+                        SELECT id FROM memories
+                        WHERE key IN (SELECT source_key FROM consolidation_edges)
+                    )
                     GROUP BY memory_id
                     ORDER BY hits DESC
                     LIMIT ?{limit_param}
                 )
-                SELECT m.id, m.key, m.content, m.wing, m.hall, m.signal_score,
-                       m.visibility, m.source, m.device_id, m.confidence,
-                       m.created_at, m.last_reinforced_at, ms.hits,
-                       m.declarative_density
+                SELECT m.{cols}, ms.hits
                 FROM memory_scores ms
                 JOIN memories m ON m.id = ms.memory_id
-                WHERE m.key NOT IN (SELECT source_key FROM consolidation_edges)
                 ORDER BY ms.hits DESC",
                 hash_placeholders = hash_placeholders,
+                cols = MEMORY_COLUMNS.replace(", ", ", m."),
                 limit_param = hashes.len() + 3,
             );
 
@@ -1443,12 +1495,12 @@ impl MemoryStore for SqliteStore {
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 param_values.iter().map(|p| p.as_ref()).collect();
 
+            // Full MEMORY_COLUMNS projection (20 cols) + ms.hits at index 20, so the
+            // shared row parser fills episode_id/description/source_brain_id/
+            // signature (previously nulled by a 14-column projection).
             let rows = stmt.query_map(param_refs.as_slice(), |row| {
-                let hits: i64 = row.get(12)?;
-                let mut hit = memory_hit_from_row(row, hits as usize)?;
-                // Column 13 in this query is declarative_density (not compaction_tier)
-                hit.declarative_density = row.get(13).ok();
-                Ok(hit)
+                let hits: i64 = row.get(20)?;
+                memory_hit_from_row(row, hits as usize)
             })?;
 
             let mut results = Vec::new();
@@ -2018,10 +2070,15 @@ impl MemoryStore for SqliteStore {
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // Normalize both sides with datetime(): `created_at` is stored in two
+            // formats (SQLite space-format by default, RFC3339 for historical
+            // imports), and a raw string compare misorders them within a day
+            // (space 0x20 < 'T' 0x54). datetime() canonicalizes both to UTC
+            // `YYYY-MM-DD HH:MM:SS` so the range and ordering are correct.
             let sql = format!(
                 "SELECT {MEMORY_COLUMNS} FROM memories \
-                 WHERE wing = ?1 AND created_at > ?2 \
-                 ORDER BY created_at DESC LIMIT ?3"
+                 WHERE wing = ?1 AND datetime(created_at) > datetime(?2) \
+                 ORDER BY datetime(created_at) DESC LIMIT ?3"
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![wing, since, limit as i64], memory_from_row)?;
@@ -2041,13 +2098,19 @@ impl MemoryStore for SqliteStore {
         let wing = wing.to_string();
         let before = before.to_string();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // datetime() on both sides: `created_at` mixes SQLite and RFC3339
+            // formats; a raw string compare would delete the wrong rows at a day
+            // boundary. This is a DELETE, so the mis-compare is destructive.
             let deleted = conn.execute(
-                "DELETE FROM memories WHERE wing = ?1 AND created_at < ?2",
+                "DELETE FROM memories WHERE wing = ?1 AND datetime(created_at) < datetime(?2)",
                 params![wing, before],
             )?;
+            drop(conn);
+            wing_cache_pop(&wing_cache, &wing);
             Ok(deleted)
         })
     }
@@ -2058,6 +2121,7 @@ impl MemoryStore for SqliteStore {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<ForgetReceipt>> + Send + '_>> {
         let key = key.to_string();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
         Box::pin(async move {
             use rusqlite::OptionalExtension;
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -2108,10 +2172,17 @@ impl MemoryStore for SqliteStore {
             // retrieval_events store memory ids in a JSON array; scrub any
             // event that referenced this memory (right-to-be-forgotten covers
             // the access log too). The quoted-id match avoids substring
-            // collisions across the 16-hex-char ids.
-            let id_needle = format!("%\"{id}\"%");
+            // collisions across the 16-hex-char ids. `write()` accepts arbitrary
+            // caller ids, so escape LIKE metacharacters (`%`/`_`/`\`) and declare
+            // ESCAPE — otherwise an id containing `%` would over-match and scrub
+            // unrelated events.
+            let escaped_id = id
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let id_needle = format!("%\"{escaped_id}\"%");
             receipt.retrieval_events = tx.execute(
-                "DELETE FROM retrieval_events WHERE memory_ids_json LIKE ?1",
+                "DELETE FROM retrieval_events WHERE memory_ids_json LIKE ?1 ESCAPE '\\'",
                 params![id_needle],
             )?;
 
@@ -2121,6 +2192,12 @@ impl MemoryStore for SqliteStore {
             receipt.memory_rows =
                 tx.execute("DELETE FROM memories WHERE key = ?1", params![key])?;
             tx.commit()?;
+            drop(conn);
+
+            // Right-to-be-forgotten: the wing read-cache must not keep serving the
+            // deleted memory. Clear it wholesale — the row's wing isn't loaded here
+            // and a forget must be certain, not best-effort.
+            wing_cache_clear(&wing_cache);
 
             // FTS is a shadow of the memories row; the trigger removed it.
             receipt.fts_rows = receipt.memory_rows;
@@ -2138,12 +2215,19 @@ impl MemoryStore for SqliteStore {
         let sbid = source_brain_id.to_vec();
         let sig = signature.to_vec();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let n = conn.execute(
                 "UPDATE memories SET source_brain_id = ?1, signature = ?2 WHERE id = ?3",
                 params![sbid, sig, memory_id],
             )?;
+            drop(conn);
+            // source_brain_id/signature are served fields on a cached MemoryHit;
+            // the wing isn't loaded here, so clear the cache.
+            if n > 0 {
+                wing_cache_clear(&wing_cache);
+            }
             Ok(n)
         })
     }
@@ -2155,6 +2239,7 @@ impl MemoryStore for SqliteStore {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
         let wing = wing.to_string();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -2176,10 +2261,13 @@ impl MemoryStore for SqliteStore {
             // an autocommit (+ statement recompile) per source.
             let tx = conn.unchecked_transaction()?;
             {
+                // datetime() so the "recent per source" ranking is correct across
+                // mixed created_at formats — otherwise "keep the N most recent"
+                // keeps/deletes the wrong rows at a day boundary (a DELETE).
                 let mut del_stmt = tx.prepare(
                     "DELETE FROM memories WHERE wing = ?1 AND source = ?2 AND id NOT IN (\
                          SELECT id FROM memories WHERE wing = ?1 AND source = ?2 \
-                         ORDER BY created_at DESC LIMIT ?3\
+                         ORDER BY datetime(created_at) DESC LIMIT ?3\
                      )",
                 )?;
                 for source in &sources {
@@ -2187,6 +2275,10 @@ impl MemoryStore for SqliteStore {
                 }
             }
             tx.commit()?;
+            drop(conn);
+            if total_deleted > 0 {
+                wing_cache_pop(&wing_cache, &wing);
+            }
             Ok(total_deleted)
         })
     }
@@ -2412,12 +2504,16 @@ impl MemoryStore for SqliteStore {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         let memory_id = memory_id.to_string();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             conn.execute(
                 "UPDATE memories SET declarative_density = ?1 WHERE id = ?2",
                 params![density, memory_id],
             )?;
+            drop(conn);
+            // declarative_density is a served field on a cached MemoryHit.
+            wing_cache_clear(&wing_cache);
             Ok(())
         })
     }
@@ -2430,12 +2526,16 @@ impl MemoryStore for SqliteStore {
         let memory_id = memory_id.to_string();
         let tier_str = tier.as_str().to_string();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             conn.execute(
                 "UPDATE memories SET compaction_tier = ?1 WHERE id = ?2",
                 params![tier_str, memory_id],
             )?;
+            drop(conn);
+            // compaction_tier is a served field on a cached MemoryHit.
+            wing_cache_clear(&wing_cache);
             Ok(())
         })
     }
@@ -2636,6 +2736,7 @@ impl MemoryStore for SqliteStore {
         let id = id.to_string();
         let description = description.to_string();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let rows_affected = conn.execute(
@@ -2647,6 +2748,9 @@ impl MemoryStore for SqliteStore {
             if rows_affected == 0 {
                 anyhow::bail!("memory not found: {id}");
             }
+            drop(conn);
+            // description is a served field on a cached MemoryHit.
+            wing_cache_clear(&wing_cache);
             Ok(())
         })
     }
@@ -3009,12 +3113,18 @@ impl MemoryStore for SqliteStore {
         let target_key = target_key.to_string();
         let opts = opts.clone();
         let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // One transaction for the whole consolidation: an `AbortAll` bail after
+            // an earlier source's edge was already written must roll back, or that
+            // source is left consolidated (excluded from search) while the caller
+            // is told the operation failed and the target never gained its signal.
+            let tx = conn.unchecked_transaction()?;
 
             // Verify target exists
-            let target_exists: bool = conn.query_row(
+            let target_exists: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM memories WHERE key = ?1)",
                 params![target_key],
                 |row| row.get(0),
@@ -3038,7 +3148,7 @@ impl MemoryStore for SqliteStore {
                 }
 
                 // Check source exists
-                let source_exists: bool = conn.query_row(
+                let source_exists: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM memories WHERE key = ?1)",
                     params![source],
                     |row| row.get(0),
@@ -3052,7 +3162,7 @@ impl MemoryStore for SqliteStore {
                 }
 
                 // Check if already consolidated elsewhere
-                let existing_target: Option<String> = conn
+                let existing_target: Option<String> = tx
                     .query_row(
                         "SELECT target_key FROM consolidation_edges WHERE source_key = ?1",
                         params![source],
@@ -3075,7 +3185,7 @@ impl MemoryStore for SqliteStore {
                 }
 
                 // Insert edge
-                conn.execute(
+                tx.execute(
                     "INSERT OR IGNORE INTO consolidation_edges (source_key, target_key)
                      VALUES (?1, ?2)",
                     params![source, target_key],
@@ -3084,7 +3194,7 @@ impl MemoryStore for SqliteStore {
 
                 // Chain flattening: if source was previously a target, add edges from its
                 // inbound sources to the new target. Original edges preserved for history.
-                conn.execute(
+                tx.execute(
                     "INSERT OR IGNORE INTO consolidation_edges (source_key, target_key)
                      SELECT source_key, ?1
                      FROM consolidation_edges
@@ -3103,31 +3213,37 @@ impl MemoryStore for SqliteStore {
                         .join(", ");
                     let sql =
                         format!("SELECT COALESCE(SUM(signal_score), 0.0) FROM memories WHERE key IN ({keys_csv})");
-                    conn.query_row(&sql, [], |row| row.get(0))?
+                    tx.query_row(&sql, [], |row| row.get(0))?
                 };
 
-                let current_score: f64 = conn.query_row(
+                let current_score: f64 = tx.query_row(
                     "SELECT signal_score FROM memories WHERE key = ?1",
                     params![target_key],
                     |row| row.get(0),
                 )?;
                 let new_score = (current_score + sum).min(1.0);
-                conn.execute(
+                tx.execute(
                     "UPDATE memories SET signal_score = ?1 WHERE key = ?2",
                     params![new_score, target_key],
                 )?;
 
+                tx.commit()?;
+                drop(conn);
+                // Edges exclude sources from search and the target's signal changed;
+                // both affect wing_search output.
+                wing_cache_clear(&wing_cache);
                 Ok(ConsolidationResult {
                     consolidated,
                     skipped,
                     target_score_after: new_score,
                 })
             } else {
-                let current_score: f64 = conn.query_row(
+                let current_score: f64 = tx.query_row(
                     "SELECT signal_score FROM memories WHERE key = ?1",
                     params![target_key],
                     |row| row.get(0),
                 )?;
+                tx.commit()?;
                 Ok(ConsolidationResult {
                     consolidated,
                     skipped,
@@ -3499,6 +3615,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fts_rebuild_is_atomic_so_a_failed_rebuild_preserves_the_index() {
+        // The FTS rebuild (DROP + CREATE + repopulate) must be one transaction:
+        // if it fails partway, the original populated index must survive rather
+        // than be left dropped-or-empty (which would silently break all recall).
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "k1".into(),
+            content: "the quarterly budget review is scheduled".into(),
+            wing: Some("general".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        store.write(&mem, &[]).await.unwrap();
+        assert_eq!(
+            store
+                .fts_search(&["budget".into()], 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Run the real rebuild batch but with a syntax error appended so it fails
+        // AFTER the DROP/CREATE — the transaction must roll the whole thing back.
+        let batch = SqliteStore::fts_rebuild_batch(None);
+        // Splice a guaranteed failure before the COMMIT.
+        let poisoned = batch.replace("COMMIT;", "INSERT INTO no_such_table VALUES (1); COMMIT;");
+        let err = store.conn().execute_batch(&poisoned);
+        assert!(err.is_err(), "poisoned rebuild must fail");
+
+        // The original index must still answer — the failed rebuild rolled back.
+        let hits = store.fts_search(&["budget".into()], 10).await.unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "a failed rebuild must leave the original FTS index intact"
+        );
+    }
+
+    #[tokio::test]
     async fn porter_tokenizer_bridges_plural_queries() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("porter.db");
@@ -3827,6 +3998,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn since_query_handles_mixed_timestamp_formats() {
+        // Regression: created_at is stored in two formats (SQLite space-format and
+        // RFC3339). A raw string compare misorders them within a day — an RFC3339
+        // 01:00 (`...T01...`) string-compares GREATER than a space-format cutoff at
+        // noon, so an early-morning memory wrongly passed a `> noon` filter.
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut a = make_mem("late", "ka", "wing");
+        a.created_at = Some("2026-07-20 23:00:00".into()); // space-format, 23:00
+        let mut b = make_mem("early", "kb", "wing");
+        b.created_at = Some("2026-07-20T01:00:00+00:00".into()); // RFC3339, 01:00
+        store.write(&a, &[]).await.unwrap();
+        store.write(&b, &[]).await.unwrap();
+
+        // "since noon" must include only the 23:00 memory, not the 01:00 one.
+        let since = store
+            .list_wing_memories_since("wing", "2026-07-20 12:00:00", 10)
+            .await
+            .unwrap();
+        let keys: Vec<&str> = since.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["ka"],
+            "only the 23:00 memory is after noon; the RFC3339 01:00 must be excluded"
+        );
+    }
+
+    #[tokio::test]
+    async fn fingerprint_search_populates_full_row() {
+        // Regression: the projection was 14 columns parsed by the 20-column row
+        // parser, so episode_id/description/source_brain_id/signature were always
+        // None on this retrieval channel.
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mk = |id: &str, key: &str, content: &str, hall: &str| Memory {
+            id: id.into(),
+            key: key.into(),
+            content: content.into(),
+            wing: Some("w".into()),
+            hall: Some(hall.into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: Some("ep1".into()),
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        store
+            .write(&mk("m0", "k0", "anchor", "event"), &[])
+            .await
+            .unwrap();
+        let fp = Fingerprint {
+            id: "fp1".into(),
+            hash: "abc123".into(),
+            anchor_memory_id: "m0".into(),
+            target_memory_id: "m1".into(),
+            wing: "w".into(),
+            anchor_hall: "event".into(),
+            target_hall: "fact".into(),
+            time_delta_bucket: "same_day".into(),
+        };
+        store
+            .write(&mk("m1", "k1", "findme", "fact"), &[fp])
+            .await
+            .unwrap();
+        store
+            .set_description("m1", "a helpful description")
+            .await
+            .unwrap();
+
+        let hits = store
+            .fingerprint_search("w", "fact", &["abc123".to_string()], 10)
+            .await
+            .unwrap();
+        let m1 = hits
+            .iter()
+            .find(|h| h.id == "m1")
+            .expect("m1 should be a fingerprint hit");
+        assert_eq!(
+            m1.episode_id.as_deref(),
+            Some("ep1"),
+            "episode_id must round-trip"
+        );
+        assert_eq!(
+            m1.description.as_deref(),
+            Some("a helpful description"),
+            "description must round-trip"
+        );
+    }
+
+    #[tokio::test]
     async fn idempotent_fingerprint_insert() {
         let store = SqliteStore::open_in_memory().unwrap();
         let m0 = Memory {
@@ -3974,6 +4243,74 @@ mod tests {
         // Next query should see the new memory
         let r2 = store.wing_search("apollo", &[], 10).await.unwrap();
         assert_eq!(r2.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn wing_cache_invalidated_on_forget() {
+        // Regression: `delete_memory_by_key` returned a full ForgetReceipt while
+        // the wing cache kept serving the deleted memory from `wing_search` — a
+        // right-to-be-forgotten violation.
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("m1", "k1", "apollo"), &[])
+            .await
+            .unwrap();
+
+        // Prime the cache.
+        assert_eq!(store.wing_search("apollo", &[], 10).await.unwrap().len(), 1);
+        assert!(store
+            .wing_cache
+            .lock()
+            .unwrap()
+            .peek(&"apollo".to_string())
+            .is_some());
+
+        // Forget it — the receipt claims a purge, so the cache must not survive.
+        let receipt = store.delete_memory_by_key("k1").await.unwrap();
+        assert!(receipt.existed);
+        assert_eq!(receipt.memory_rows, 1);
+
+        let after = store.wing_search("apollo", &[], 10).await.unwrap();
+        assert!(
+            after.is_empty(),
+            "a forgotten memory must not be served from the wing cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidate_abort_all_rolls_back_partial_edges() {
+        // Regression: consolidate_into ran without a transaction, so an AbortAll
+        // bail after an earlier source's edge was written left that source
+        // consolidated (excluded from search) while the caller was told it failed.
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&make_mem("t", "target", "w"), &[])
+            .await
+            .unwrap();
+        store
+            .write(&make_mem("s1", "src1", "w"), &[])
+            .await
+            .unwrap();
+        // src2 intentionally absent → AbortAll must bail.
+
+        let opts = ConsolidateOpts {
+            on_invalid_source: InvalidSourcePolicy::AbortAll,
+        };
+        let res = store
+            .consolidate_into(
+                &["src1".to_string(), "src2_missing".to_string()],
+                "target",
+                &opts,
+            )
+            .await;
+        assert!(res.is_err(), "AbortAll with a missing source must fail");
+
+        // src1's edge must have been rolled back — nothing consolidated.
+        let edges = store.list_consolidated(None).await.unwrap();
+        assert!(
+            edges.is_empty(),
+            "a failed AbortAll must leave no consolidation edges behind"
+        );
     }
 
     #[tokio::test]

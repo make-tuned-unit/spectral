@@ -93,10 +93,28 @@ pub fn ensure_set_tables(store: &SqliteStore) -> Result<()> {
 pub fn put(store: &SqliteStore, namespace: &str, object_hash: &str, blob: &[u8]) -> Result<bool> {
     ensure_set_tables(store)?;
     let conn = store.conn();
+    // A tombstone dominates: never re-add a retracted object. Without this the row
+    // is resurrected at the storage layer — `enumerate` hides it, but `export_set`
+    // re-ships it to peers, resurrecting a revoked object across the whole set.
+    if is_tombstoned(&conn, namespace, object_hash)? {
+        return Ok(false);
+    }
     let n = conn.execute(
         "INSERT OR IGNORE INTO replicated_set_members (namespace, object_hash, blob)
          VALUES (?1, ?2, ?3)",
         rusqlite::params![namespace, object_hash, blob],
+    )?;
+    Ok(n > 0)
+}
+
+/// Is `hash` retracted in `namespace`? A tombstone dominates a re-add (OR-Set
+/// remove wins). Caller must already hold the connection lock (no re-lock).
+fn is_tombstoned(conn: &rusqlite::Connection, namespace: &str, hash: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM replicated_set_tombstones
+         WHERE namespace = ?1 AND target_hash = ?2",
+        rusqlite::params![namespace, hash],
+        |r| r.get(0),
     )?;
     Ok(n > 0)
 }
@@ -124,8 +142,14 @@ pub fn export_set(store: &SqliteStore, namespace: &str) -> Result<SetPack> {
     ensure_set_tables(store)?;
     let conn = store.conn();
     let objects = {
-        let mut stmt = conn
-            .prepare("SELECT object_hash, blob FROM replicated_set_members WHERE namespace = ?1")?;
+        // Exclude tombstoned members: a retracted object must never ride out in a
+        // pack (it would resurrect on the receiving peer). Mirrors `enumerate`.
+        let mut stmt = conn.prepare(
+            "SELECT object_hash, blob FROM replicated_set_members
+             WHERE namespace = ?1
+               AND object_hash NOT IN
+                   (SELECT target_hash FROM replicated_set_tombstones WHERE namespace = ?1)",
+        )?;
         let rows = stmt.query_map(rusqlite::params![namespace], |r| {
             Ok(SetObject {
                 object_hash: r.get(0)?,
@@ -161,9 +185,20 @@ pub fn export_set(store: &SqliteStore, namespace: &str) -> Result<SetPack> {
 /// pack. Returns the number of newly-merged objects.
 pub fn import_set(store: &SqliteStore, pack: &SetPack) -> Result<usize> {
     ensure_set_tables(store)?;
+    // The set of hashes this pack retracts (its own tombstones) — an object and
+    // its tombstone can arrive in the same pack, and the tombstone must win
+    // regardless of order, so we skip these on the object insert below.
+    let pack_retracted: std::collections::HashSet<&str> = pack
+        .tombstones
+        .iter()
+        .map(|t| t.target_hash.as_str())
+        .collect();
     let mut merged = 0usize;
     {
         let conn = store.conn();
+        // One transaction for the whole pack — objects AND tombstones — so a
+        // mid-pack failure leaves the set unchanged rather than half-merged with
+        // tombstones half-applied.
         let tx = conn.unchecked_transaction()?;
         {
             let mut put_stmt = tx.prepare(
@@ -171,6 +206,13 @@ pub fn import_set(store: &SqliteStore, pack: &SetPack) -> Result<usize> {
                  VALUES (?1, ?2, ?3)",
             )?;
             for obj in &pack.objects {
+                // A tombstone dominates: skip an object retracted in this pack or
+                // already retracted locally. Otherwise re-import resurrects it.
+                if pack_retracted.contains(obj.object_hash.as_str())
+                    || is_tombstoned(&tx, &pack.namespace, &obj.object_hash)?
+                {
+                    continue;
+                }
                 merged += put_stmt.execute(rusqlite::params![
                     pack.namespace,
                     obj.object_hash,
@@ -178,18 +220,39 @@ pub fn import_set(store: &SqliteStore, pack: &SetPack) -> Result<usize> {
                 ])?;
             }
         }
+        for t in &pack.tombstones {
+            apply_tombstone_tx(&tx, &pack.namespace, &t.target_hash)?;
+        }
         tx.commit()?;
-    }
-    for t in &pack.tombstones {
-        apply_tombstone(store, &pack.namespace, &t.target_hash)?;
     }
     Ok(merged)
 }
 
 /// Have/want: given a remote's advertised hashes for a namespace, the subset we
 /// lack and should request. A thin convenience over [`missing_locally`].
+///
+/// Pure over the two lists — it does not know about local tombstones, so a peer
+/// still advertising an object you have *retracted* is reported as wanted. Use
+/// [`want_scoped`] to suppress those; re-importing a retracted object is harmless
+/// (import refuses to resurrect it) but re-requesting it every round is wasted.
 pub fn want(local: &[String], remote: &[String]) -> Vec<String> {
     missing_locally(local, remote)
+}
+
+/// Have/want that also subtracts objects you have locally tombstoned, so a peer
+/// that has not yet seen your retraction does not make you re-request it forever.
+pub fn want_scoped(store: &SqliteStore, namespace: &str, remote: &[String]) -> Result<Vec<String>> {
+    ensure_set_tables(store)?;
+    let have = enumerate(store, namespace)?;
+    let conn = store.conn();
+    let mut wanted = Vec::new();
+    let have_set: std::collections::HashSet<&String> = have.iter().collect();
+    for h in remote {
+        if !have_set.contains(h) && !is_tombstoned(&conn, namespace, h)? {
+            wanted.push(h.clone());
+        }
+    }
+    Ok(wanted)
 }
 
 /// Retract an object from a namespace (OR-Set remove): record the tombstone and
@@ -203,14 +266,24 @@ pub fn tombstone_set(store: &SqliteStore, namespace: &str, target_hash: &str) ->
 
 fn apply_tombstone(store: &SqliteStore, namespace: &str, target_hash: &str) -> Result<()> {
     let conn = store.conn();
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    apply_tombstone_tx(&tx, namespace, target_hash)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Record a retraction and drop the local blob, atomically within `tx`. Both
+/// statements share the caller's transaction so a crash between them cannot leave
+/// a tombstoned-but-still-stored (and thus still-exportable) object.
+fn apply_tombstone_tx(tx: &rusqlite::Connection, namespace: &str, target_hash: &str) -> Result<()> {
+    tx.execute(
         "INSERT OR IGNORE INTO replicated_set_tombstones (namespace, target_hash)
          VALUES (?1, ?2)",
         rusqlite::params![namespace, target_hash],
     )?;
     // Namespace-scoped delete: the blob is keyed by (namespace, object_hash), so
     // this can never touch another namespace's copy of the same hash.
-    conn.execute(
+    tx.execute(
         "DELETE FROM replicated_set_members WHERE namespace = ?1 AND object_hash = ?2",
         rusqlite::params![namespace, target_hash],
     )?;
@@ -320,6 +393,63 @@ mod tests {
         assert!(
             enumerate(&store, "realm:a").unwrap().is_empty(),
             "a tombstoned object must not be resurrectable by re-import"
+        );
+        // Storage-level, not just enumerate-hidden: a resurrected row would ride
+        // out in the export and re-infect peers. The export must be empty too.
+        assert!(
+            export_set(&store, "realm:a").unwrap().objects.is_empty(),
+            "a tombstoned object must not reappear in an exported pack"
+        );
+    }
+
+    #[test]
+    fn put_after_tombstone_is_refused() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let o = obj(b"revoked-keyring-epoch");
+        put(&store, "realm:k", &o.object_hash, &o.blob).unwrap();
+        tombstone_set(&store, "realm:k", &o.object_hash).unwrap();
+
+        // Re-publishing a retracted hash must be refused, not silently stored and
+        // then leaked out via export.
+        assert!(!put(&store, "realm:k", &o.object_hash, &o.blob).unwrap());
+        assert!(export_set(&store, "realm:k").unwrap().objects.is_empty());
+    }
+
+    #[test]
+    fn same_pack_object_and_tombstone_lets_tombstone_win() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let o = obj(b"racing-object");
+        let pack = SetPack {
+            namespace: "realm:z".into(),
+            objects: vec![o.clone()],
+            tombstones: vec![SetTombstone {
+                target_hash: o.object_hash.clone(),
+                ts: "2026-01-01 00:00:00".into(),
+            }],
+        };
+        import_set(&store, &pack).unwrap();
+        assert!(
+            enumerate(&store, "realm:z").unwrap().is_empty(),
+            "an object retracted in the same pack must not survive import"
+        );
+    }
+
+    #[test]
+    fn want_scoped_suppresses_locally_tombstoned() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let o = obj(b"retracted-here");
+        put(&store, "realm:w", &o.object_hash, &o.blob).unwrap();
+        tombstone_set(&store, "realm:w", &o.object_hash).unwrap();
+
+        // A peer that has not seen our retraction still advertises the object.
+        let remote = vec![o.object_hash.clone(), "brand-new".to_string()];
+        // Pure `want` (over the have-list) would re-request the tombstoned hash...
+        let have = enumerate(&store, "realm:w").unwrap();
+        assert!(want(&have, &remote).contains(&o.object_hash));
+        // ...but the scoped variant suppresses it, requesting only the genuinely new one.
+        assert_eq!(
+            want_scoped(&store, "realm:w", &remote).unwrap(),
+            vec!["brand-new".to_string()]
         );
     }
 

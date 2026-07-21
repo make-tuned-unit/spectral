@@ -74,11 +74,14 @@ pub fn boost_entity_clusters(candidates: &mut [MemoryHit], boost_factor: f64) {
         return;
     }
 
-    // Group indices by wing
+    // Group indices by wing. Wingless hits form no cluster — grouping them under
+    // "" would spuriously boost the top of an all-unclassified set.
     let mut wing_groups: std::collections::HashMap<String, Vec<usize>> =
         std::collections::HashMap::new();
     for (i, hit) in candidates.iter().enumerate() {
-        let wing = hit.wing.clone().unwrap_or_default();
+        let Some(wing) = hit.wing.clone().filter(|w| !w.is_empty()) else {
+            continue;
+        };
         wing_groups.entry(wing).or_default().push(i);
     }
 
@@ -369,16 +372,20 @@ pub fn apply_reranking_pipeline(
     // relevant old memory still outranks fresher noise, while fresh content gets
     // a mild edge on ties — consistent with the other additive boosts and safe
     // for LongMemEval's multi-session/temporal answers, which are often old.
-    if config.apply_recency {
+    // Guard `half_life_days <= 0`: `0.5.powf(0.0/0.0)` is NaN, which would poison
+    // `scores` and make the final `partial_cmp` sort a non-total order (a panic on
+    // rustc's total-order-checked sort). The standalone `apply_recency_weight` has
+    // the same guard.
+    if config.apply_recency && config.recency_half_life_days > 0.0 {
         let now = context.now;
         for (i, hit) in candidates.iter().enumerate() {
-            let age_days = hit
-                .created_at
-                .as_deref()
-                .and_then(parse_created_at)
-                .map(|dt| (now - dt).num_hours() as f64 / 24.0)
-                .unwrap_or(0.0)
-                .max(0.0);
+            // Unknown/unparseable timestamp → NO recency boost. Treating it as
+            // age 0 (freshness 1.0 = brand new) let undated memories outrank
+            // correctly-dated old ones on ties.
+            let Some(dt) = hit.created_at.as_deref().and_then(parse_created_at) else {
+                continue;
+            };
+            let age_days = ((now - dt).num_hours() as f64 / 24.0).max(0.0);
             // freshness in [0,1]: 1.0 = brand new, -> 0 as age grows.
             let freshness = 0.5_f64.powf(age_days / config.recency_half_life_days);
             scores[i] += RECENCY_BOOST_WEIGHT * freshness;
@@ -390,7 +397,12 @@ pub fn apply_reranking_pipeline(
         let mut wing_groups: std::collections::HashMap<String, Vec<usize>> =
             std::collections::HashMap::new();
         for (i, hit) in candidates.iter().enumerate() {
-            let wing = hit.wing.clone().unwrap_or_default();
+            // Skip wingless hits: grouping them under "" forms a phantom cluster,
+            // so ≥2 unclassified candidates would spuriously boost their top member
+            // as if it led a real entity cluster.
+            let Some(wing) = hit.wing.clone().filter(|w| !w.is_empty()) else {
+                continue;
+            };
             wing_groups.entry(wing).or_default().push(i);
         }
         for indices in wing_groups.values() {
@@ -476,6 +488,58 @@ mod tests {
             source_brain_id: None,
             signature: None,
         }
+    }
+
+    #[test]
+    fn zero_half_life_does_not_produce_nan_or_panic() {
+        // Regression: recency_half_life_days = 0.0 gave 0.5.powf(0/0) = NaN, which
+        // poisoned scores and made the final total-order sort panic. Mixing an
+        // undated hit (which must get NO recency boost) stresses both guards.
+        let now = Utc::now();
+        let dated = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        let candidates = vec![
+            make_hit("undated", 0.9, Some("w"), None),
+            make_hit("dated", 0.5, Some("w"), Some(&dated)),
+        ];
+        let config = RerankingConfig {
+            recency_half_life_days: 0.0,
+            apply_entity_boost: true,
+            ..Default::default()
+        };
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let ranked = apply_reranking_pipeline(candidates, &config, &ctx, &empty_co_boosts());
+        // No panic, and every composite score is finite (no NaN leaked through).
+        assert!(ranked.iter().all(|h| h.signal_score.is_finite()));
+    }
+
+    #[test]
+    fn wingless_hits_do_not_form_a_phantom_entity_cluster() {
+        // Regression: wing:None hits grouped under "" and the top one got the
+        // entity-cluster boost as if it led a real cluster.
+        let ctx = spectral_cascade::RecognitionContext::empty();
+        let boost = 0.05;
+
+        // Two wingless hits at equal signal — neither should be boosted.
+        let wingless = vec![
+            make_hit("a", 0.5, None, None),
+            make_hit("b", 0.5, None, None),
+        ];
+        let config = RerankingConfig {
+            apply_recency: false,
+            apply_signal_score: false,
+            apply_entity_boost: true,
+            entity_boost_weight: boost,
+            ..Default::default()
+        };
+        let ranked = apply_reranking_pipeline(wingless, &config, &ctx, &empty_co_boosts());
+        // Composite starts from FTS position only (signal/recency off): 1.0 and 0.5.
+        // No entity boost was added to the top, so it stays exactly 1.0.
+        let top = ranked.iter().find(|h| h.id == "a").unwrap();
+        assert!(
+            (top.signal_score - 1.0).abs() < 1e-9,
+            "wingless top must not receive the entity-cluster boost, got {}",
+            top.signal_score
+        );
     }
 
     #[test]

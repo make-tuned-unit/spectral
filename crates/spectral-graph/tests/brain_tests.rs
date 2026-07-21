@@ -156,6 +156,57 @@ fn recall_multi_hop_cognee_example() {
 }
 
 #[test]
+fn recall_does_not_leak_private_content_through_the_tact_field() {
+    // Regression: `recall` filtered `memory_hits` by visibility but returned the
+    // raw `tact` result verbatim — whose `memories` were unfiltered and whose
+    // `context_block` (formatted for system-prompt injection) contained private
+    // content. A caller injecting `result.tact.context_block` at Team scope would
+    // have shipped private memories into a team context.
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+
+    let secret = "clandestine passphrase hunter2 quartz meridian";
+    brain
+        .remember("secret note", secret, Visibility::Private)
+        .unwrap();
+    brain
+        .remember(
+            "public note",
+            "public quartz meridian announcement everyone",
+            Visibility::Public,
+        )
+        .unwrap();
+
+    // A Public-scope recall must not surface the private memory anywhere.
+    let result = brain.recall("quartz meridian", Visibility::Public).unwrap();
+
+    assert!(
+        result.memory_hits.iter().all(|h| h.visibility != "private"),
+        "memory_hits must exclude private content at Public scope"
+    );
+    assert!(
+        result
+            .tact
+            .memories
+            .iter()
+            .all(|h| h.visibility != "private"),
+        "tact.memories must be visibility-filtered, not raw"
+    );
+    assert!(
+        !result.tact.context_block.contains("hunter2"),
+        "the injection block must never contain private content"
+    );
+    assert!(
+        result
+            .tact
+            .memories
+            .iter()
+            .all(|h| !h.content.contains("hunter2")),
+        "no private content may survive in the returned tact result"
+    );
+}
+
+#[test]
 fn recall_unknown_query_empty() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();

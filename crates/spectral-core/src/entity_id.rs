@@ -95,11 +95,20 @@ impl FromStr for EntityId {
                 s.len()
             )));
         }
+        // Operate on raw bytes: `s` is len 64 but may not be 64 ASCII chars, so
+        // slicing `&s[..]` at 2-byte offsets would panic on a char boundary.
+        // Requiring canonical ASCII hex digits also rejects the `+`/whitespace
+        // that `u8::from_str_radix` would otherwise accept (breaks round-trip).
+        let hex = s.as_bytes();
         let mut bytes = [0u8; 32];
         for (i, byte) in bytes.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| {
+            let hi = crate::hex_val(hex[i * 2]).ok_or_else(|| {
                 Error::InvalidEntityId(format!("invalid hex at position {}", i * 2))
             })?;
+            let lo = crate::hex_val(hex[i * 2 + 1]).ok_or_else(|| {
+                Error::InvalidEntityId(format!("invalid hex at position {}", i * 2 + 1))
+            })?;
+            *byte = (hi << 4) | lo;
         }
         Ok(EntityId(bytes))
     }

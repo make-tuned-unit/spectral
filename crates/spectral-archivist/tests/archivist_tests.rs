@@ -307,6 +307,49 @@ fn apply_decay_respects_floor() {
     );
 }
 
+#[test]
+fn apply_decay_reads_production_timestamp_format() {
+    // Regression: `last_reinforced_at` is stored in SQLite `datetime('now')`
+    // format (`YYYY-MM-DD HH:MM:SS`), but decay compared it against RFC3339
+    // cutoffs. At a day boundary the space-format value string-compared LESS than
+    // an RFC3339 cutoff, flipping eligibility. Insert timestamps in the REAL
+    // stored format and confirm both branches fire correctly.
+    let conn = test_db();
+    // Reinforced 3 days ago → inside the 7-day boost window → boost.
+    conn.execute(
+        "INSERT INTO memories (id, key, content, wing, hall, signal_score, last_reinforced_at) \
+         VALUES ('recent', 'kr', 'm', 'apollo', 'fact', 0.6, datetime('now','-3 days'))",
+        [],
+    )
+    .unwrap();
+    // Reinforced 40 days ago → past the 30-day decay threshold → decay.
+    conn.execute(
+        "INSERT INTO memories (id, key, content, wing, hall, signal_score, last_reinforced_at) \
+         VALUES ('stale', 'ks', 'm', 'apollo', 'fact', 0.7, datetime('now','-40 days'))",
+        [],
+    )
+    .unwrap();
+
+    let a = archivist_from_conn(conn);
+    let stats = a.apply_decay().unwrap();
+    assert_eq!(stats.boosted, 1, "the 3-day-old memory must boost");
+    assert_eq!(stats.decayed, 1, "the 40-day-old memory must decay");
+
+    // updated_at must stay in the SQLite space format (no RFC3339 'T'/offset).
+    let updated: String = a
+        .conn()
+        .query_row(
+            "SELECT updated_at FROM memories WHERE id = 'recent'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        !updated.contains('T') && !updated.contains('+'),
+        "updated_at must remain SQLite-format, got {updated}"
+    );
+}
+
 // ── Consolidation candidate tests ────────────────────────────────
 
 #[test]

@@ -1517,6 +1517,16 @@ impl Brain {
             })
             .collect();
 
+        // Enforce the visibility contract on the RAW tact result too: its
+        // `memories` and `context_block` (formatted for system-prompt injection)
+        // are returned verbatim, so leaving them unfiltered would leak private
+        // content a caller injects via `result.tact.context_block`. Rebuild both
+        // from the already-filtered, decayed `memory_hits`.
+        let mut tact = tact;
+        tact.memories = memory_hits.clone();
+        tact.context_block =
+            spectral_tact::format_context_block(&memory_hits, self.tact_config.max_context_chars);
+
         let graph = self.recall_graph(query, context_visibility)?;
 
         Ok(HybridRecallResult {

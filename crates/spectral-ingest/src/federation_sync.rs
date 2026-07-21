@@ -217,7 +217,9 @@ pub fn export_pack(store: &SqliteStore, wing_id: &str) -> Result<Pack> {
                     m.content, m.source_brain_id, m.created_at, m.visibility
              FROM shared_wing_members s
              JOIN memories m ON m.key = s.mem_key
-             WHERE s.wing_id = ?1",
+             WHERE s.wing_id = ?1
+               AND s.object_hash NOT IN
+                   (SELECT target_hash FROM sync_tombstones WHERE wing_id = ?1)",
         )?;
         let rows = stmt.query_map(rusqlite::params![wing_id], |r| {
             let expected_hash: String = r.get(0)?;
@@ -275,6 +277,13 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
     // design's "ship source, re-derive on import" rule. Wing/hall/signal are
     // corpus/config-relative and are never shipped in the pack.
     let ingest_cfg = crate::ingest::IngestConfig::default();
+    // Hashes this pack retracts — an object and its tombstone can ride in the same
+    // pack, and the tombstone must win regardless of loop order.
+    let pack_retracted: std::collections::HashSet<&str> = pack
+        .tombstones
+        .iter()
+        .map(|t| t.target_hash.as_str())
+        .collect();
     {
         let conn = store.conn();
         // One transaction for the whole pack: without it each INSERT is its own
@@ -296,6 +305,40 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
             )?;
             for obj in &pack.objects {
                 let oh = obj.object_hash();
+                // A tombstone dominates: skip an object retracted in this pack or
+                // already retracted locally. Otherwise re-importing an object from
+                // a peer that hasn't seen the tombstone resurrects it — the memory
+                // row and manifest entry return, and `recall_scoped` re-admits the
+                // retracted content under its shared origin.
+                if pack_retracted.contains(oh.as_str()) || is_tombstoned(&tx, &pack.wing_id, &oh)? {
+                    continue;
+                }
+                // Dedup against an object we ALREADY hold locally, under whatever
+                // local key it was first stored: a NATIVE share keeps the original
+                // `mem_key` (id != oh), a prior import used the synthetic
+                // `local_key` (id = oh). Both leave a manifest row keyed by oh, so
+                // reuse that key for THIS wing's manifest instead of inserting a
+                // second content row. Without this, an own object gossiped back
+                // (A→B→A) is duplicated in recall AND — the duplicate being
+                // referenced by no manifest under its synthetic key — resolves to
+                // Origin::Private, surfacing team content as private.
+                let existing_key: Option<String> = tx
+                    .query_row(
+                        "SELECT mem_key FROM shared_wing_members WHERE object_hash = ?1 LIMIT 1",
+                        rusqlite::params![oh],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(existing_key) = existing_key {
+                    man_stmt.execute(rusqlite::params![
+                        pack.wing_id,
+                        oh,
+                        existing_key,
+                        obj.key,
+                        obj.supersedes,
+                    ])?;
+                    continue;
+                }
                 // Object-scoped, injective local key: a prefix of the
                 // (content-addressed, author-bound) object hash makes two DISTINCT
                 // objects never collide on the UNIQUE `memories.key`. Without it a
@@ -347,11 +390,18 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
                 ])?;
             }
         }
+        // Apply the pack's tombstones inside the same transaction (was: after
+        // commit, as separate autocommits — a crash between left objects merged
+        // and retractions unapplied).
+        for t in &pack.tombstones {
+            apply_tombstone_tx(&tx, &pack.wing_id, &t.target_hash)?;
+        }
         tx.commit()?;
     }
-    for t in &pack.tombstones {
-        apply_tombstone(store, &pack.wing_id, &t.target_hash)?;
-    }
+    // This path mutates `memories` directly (bypassing the store's write/delete
+    // methods), so the wing read-cache would otherwise keep serving pre-import
+    // rows — or a tombstoned row that was just deleted.
+    store.invalidate_wing_cache();
     Ok(merged)
 }
 
@@ -361,12 +411,26 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
 /// same object cannot resurrect it.
 pub fn tombstone(store: &SqliteStore, wing_id: &str, target_hash: &str) -> Result<()> {
     ensure_sync_tables(store)?;
-    apply_tombstone(store, wing_id, target_hash)
+    apply_tombstone(store, wing_id, target_hash)?;
+    // Hard-deletes a `memories` row directly; drop the stale wing read-cache.
+    store.invalidate_wing_cache();
+    Ok(())
 }
 
 fn apply_tombstone(store: &SqliteStore, wing_id: &str, target_hash: &str) -> Result<()> {
     let conn = store.conn();
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    apply_tombstone_tx(&tx, wing_id, target_hash)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Record a retraction, drop the manifest entry, and hard-delete the local copy —
+/// atomically within `tx`. Sharing the caller's transaction means a crash mid-way
+/// can't leave a tombstoned-but-still-stored object (which `export_pack` would
+/// otherwise re-ship) or a half-applied retraction.
+fn apply_tombstone_tx(tx: &rusqlite::Connection, wing_id: &str, target_hash: &str) -> Result<()> {
+    tx.execute(
         "INSERT OR IGNORE INTO sync_tombstones (wing_id, target_hash) VALUES (?1, ?2)",
         rusqlite::params![wing_id, target_hash],
     )?;
@@ -375,7 +439,7 @@ fn apply_tombstone(store: &SqliteStore, wing_id: &str, target_hash: &str) -> Res
     // wings; a wing-scoped retraction must not destroy the copy the other wings
     // still serve. The `wing_id <> ?2` guard ignores this wing's own manifest row
     // (removed just below), so a single-wing object is still deleted.
-    conn.execute(
+    tx.execute(
         "DELETE FROM memories WHERE id = ?1
            AND NOT EXISTS (
              SELECT 1 FROM shared_wing_members
@@ -383,11 +447,22 @@ fn apply_tombstone(store: &SqliteStore, wing_id: &str, target_hash: &str) -> Res
            )",
         rusqlite::params![target_hash, wing_id],
     )?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM shared_wing_members WHERE wing_id = ?1 AND object_hash = ?2",
         rusqlite::params![wing_id, target_hash],
     )?;
     Ok(())
+}
+
+/// Is `hash` retracted in `wing_id`? A tombstone dominates a re-import (OR-Set
+/// remove wins). Caller must already hold the connection lock (no re-lock).
+fn is_tombstoned(conn: &rusqlite::Connection, wing_id: &str, hash: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM sync_tombstones WHERE wing_id = ?1 AND target_hash = ?2",
+        rusqlite::params![wing_id, hash],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 /// Where a recalled memory came from — the provenance a scope-spanning recall
@@ -493,6 +568,42 @@ pub fn provenance_batch(
                     author_id: author.and_then(|v| v.try_into().ok()),
                 },
             );
+        }
+    }
+    Ok(out)
+}
+
+/// Every shared wing each key belongs to (a memory can be shared into several).
+/// Keys in no wing are simply absent from the map (→ treat as `Private`). Unlike
+/// [`provenance_batch`], which collapses a multi-wing key to one representative
+/// wing, this returns the FULL set — the scope filter needs it, or a multi-wing
+/// object is wrongly rejected from a scope that names only one of its wings.
+pub fn wings_for_keys(
+    store: &SqliteStore,
+    mem_keys: &[&str],
+) -> Result<std::collections::HashMap<String, Vec<String>>> {
+    use std::collections::HashMap;
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    if mem_keys.is_empty() {
+        return Ok(out);
+    }
+    ensure_sync_tables(store)?;
+    let conn = store.conn();
+    for chunk in mem_keys.chunks(400) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT mem_key, wing_id FROM shared_wing_members
+             WHERE mem_key IN ({placeholders}) ORDER BY wing_id",
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (k, w) = row?;
+            out.entry(k).or_default().push(w);
         }
     }
     Ok(out)
@@ -755,6 +866,49 @@ mod tests {
             !enumerate(&b, "team").unwrap().contains(&doomed),
             "a tombstoned object must not be resurrectable by re-import"
         );
+        // Storage-level, not just enumerate-hidden: a resurrected row would ride
+        // out in B's export and re-infect the mesh, and `recall_scoped` would
+        // re-admit it. The re-exported pack must not carry the retracted object.
+        let reexport = export_pack(&b, "team").unwrap();
+        assert!(
+            !reexport.objects.iter().any(|o| o.object_hash() == doomed),
+            "a tombstoned object must not reappear in a re-exported pack"
+        );
+    }
+
+    /// GOSSIP-BACK: A shares an object, it relays through B, and comes back to A.
+    /// A must NOT store a second copy of its own object, and the object must stay
+    /// Shared — not resurface as a duplicate mislabeled Private.
+    #[tokio::test]
+    async fn own_object_gossiped_back_is_not_duplicated_or_mislabeled() {
+        let a = SqliteStore::open_in_memory().unwrap();
+        insert_local(&a, "k1", "a shared team note", Some([9u8; 32]));
+        share(&a, "k1", "team").unwrap();
+
+        // B holds it by import, then relays a fresh pack.
+        let b = SqliteStore::open_in_memory().unwrap();
+        import_pack(&b, &export_pack(&a, "team").unwrap()).unwrap();
+        let from_b = export_pack(&b, "team").unwrap();
+
+        // A imports its OWN object back.
+        import_pack(&a, &from_b).unwrap();
+
+        // Exactly one content row for that content — no duplicate.
+        let rows: i64 = a
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE content = 'a shared team note'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "own object gossiped back must not be duplicated");
+
+        // And it stays Shared (team), never Private.
+        match provenance(&a, "k1").unwrap() {
+            Origin::Shared { wing_id, .. } => assert_eq!(wing_id, "team"),
+            Origin::Private => panic!("gossiped-back team object mislabeled Private"),
+        }
     }
 
     /// C1: two DIFFERENT authors whose 4-byte `author_short` collides, same key,
