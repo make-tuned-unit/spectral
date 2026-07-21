@@ -123,10 +123,42 @@ impl Brain {
         let origins = federation_sync::provenance_batch(self.sqlite_store(), &keys)
             .map_err(|e| Error::Schema(e.to_string()))?;
 
+        // For a `Shared` scope, admission is a MEMBERSHIP question over ALL the
+        // wings a key belongs to — not the single representative wing
+        // `provenance_batch` returns. Otherwise a memory shared into several wings
+        // is rejected from a scope naming only one of its wings (a false negative).
+        let wings_map = match &scope {
+            RealmScope::Shared(_) => Some(
+                federation_sync::wings_for_keys(self.sqlite_store(), &keys)
+                    .map_err(|e| Error::Schema(e.to_string()))?,
+            ),
+            _ => None,
+        };
+
         let mut out = Vec::with_capacity(result.merged_hits.len());
         for hit in result.merged_hits {
             let origin = origins.get(&hit.key).cloned().unwrap_or(Origin::Private);
-            if scope.admits(&origin) {
+            let admitted = match (&scope, &origin) {
+                (RealmScope::Shared(wanted), Origin::Shared { author_id, .. }) => {
+                    // Admit if the key belongs to ANY wanted wing; re-tag the
+                    // Origin with an in-scope wing so the returned provenance is
+                    // consistent with the scope the caller asked for.
+                    let member_wings = wings_map
+                        .as_ref()
+                        .and_then(|m| m.get(&hit.key))
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    member_wings
+                        .iter()
+                        .find(|w| wanted.contains(w))
+                        .map(|w| Origin::Shared {
+                            wing_id: w.clone(),
+                            author_id: *author_id,
+                        })
+                }
+                _ => scope.admits(&origin).then_some(origin),
+            };
+            if let Some(origin) = admitted {
                 out.push((hit, origin));
             }
         }
@@ -235,6 +267,45 @@ mod tests {
         assert!(team
             .iter()
             .any(|(h, _)| h.content.contains("deploy runbook")));
+    }
+
+    /// Regression: a memory shared into TWO wings must be admitted by a scope that
+    /// names EITHER wing. Provenance collapses a multi-wing key to one
+    /// representative wing; the scope filter must consider full membership, or the
+    /// object vanishes from a recall naming only the non-representative wing.
+    #[test]
+    fn multi_wing_memory_is_admitted_by_either_wing_scope() {
+        let tmp = TempDir::new().unwrap();
+        let br = brain(&tmp);
+        br.remember(
+            "shared-doc",
+            "the incident postmortem for the april outage",
+            Visibility::Team,
+        )
+        .unwrap();
+        // Shared into two wings. "team-a" < "team-b", so provenance's ORDER BY
+        // resolves the representative to "team-b" — the case that used to reject a
+        // "team-a"-scoped recall.
+        br.share_memory("shared-doc", "team-a").unwrap();
+        br.share_memory("shared-doc", "team-b").unwrap();
+
+        for wing in ["team-a", "team-b"] {
+            let hits = br
+                .recall_scoped(
+                    "incident postmortem outage",
+                    RealmScope::Shared(vec![wing.into()]),
+                )
+                .unwrap();
+            let found = hits
+                .iter()
+                .find(|(h, _)| h.content.contains("postmortem"))
+                .unwrap_or_else(|| panic!("multi-wing memory missing from {wing} scope"));
+            // Tagged with the in-scope wing the caller asked for.
+            match &found.1 {
+                Origin::Shared { wing_id, .. } => assert_eq!(wing_id, wing),
+                Origin::Private => panic!("shared memory tagged Private under {wing} scope"),
+            }
+        }
     }
 
     /// The view-scoping property, adversarial shape: with associative spreading

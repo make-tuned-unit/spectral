@@ -290,8 +290,13 @@ impl SqliteStore {
         if Self::fusion_index_present(conn) {
             return Ok(());
         }
+        // One transaction: the CREATE and its repopulating INSERT commit together,
+        // so a crash between them can't leave `memories_fts_raw` present-but-empty
+        // (which `fusion_index_present` would then treat as built, skipping the
+        // repopulate forever).
         conn.execute_batch(
-            "CREATE VIRTUAL TABLE memories_fts_raw USING fts5(
+            "BEGIN IMMEDIATE;
+             CREATE VIRTUAL TABLE memories_fts_raw USING fts5(
                  content,
                  content=memories, content_rowid=rowid, tokenize = 'unicode61'
              );
@@ -307,7 +312,8 @@ impl SqliteStore {
                  VALUES ('delete', old.rowid, old.content);
                  INSERT INTO memories_fts_raw(rowid, content) VALUES (new.rowid, new.content);
              END;
-             INSERT INTO memories_fts_raw(rowid, content) SELECT rowid, content FROM memories;",
+             INSERT INTO memories_fts_raw(rowid, content) SELECT rowid, content FROM memories;
+             COMMIT;",
         )?;
         Ok(())
     }
@@ -349,8 +355,16 @@ impl SqliteStore {
     /// tokenizer-change migration. The memories table itself is untouched.
     fn fts_rebuild_batch(fts_tokenizer: Option<&str>) -> String {
         let fts_tok = Self::fts_tokenize_clause(fts_tokenizer);
+        // Wrapped in one transaction so the DROP and the repopulating INSERT commit
+        // together. `execute_batch` otherwise autocommits each statement, leaving a
+        // crash-between-them window where `memories_fts` exists but is empty — and a
+        // later matching-tokenizer open skips the rebuild, so FTS recall silently
+        // returns nothing for the whole corpus. SQLite DDL is transactional, so a
+        // crash mid-rebuild rolls back to the intact prior index. (BEGIN here is
+        // safe: every caller invokes this on a fresh connection in autocommit mode.)
         format!(
-            "DROP TRIGGER IF EXISTS memories_ai;
+            "BEGIN IMMEDIATE;
+             DROP TRIGGER IF EXISTS memories_ai;
              DROP TRIGGER IF EXISTS memories_ad;
              DROP TRIGGER IF EXISTS memories_au;
              DROP TABLE IF EXISTS memories_fts;
@@ -376,7 +390,8 @@ impl SqliteStore {
              END;
 
              INSERT INTO memories_fts(rowid, key, content, description)
-             SELECT rowid, key, content, COALESCE(description, '') FROM memories;"
+             SELECT rowid, key, content, COALESCE(description, '') FROM memories;
+             COMMIT;"
         )
     }
 
@@ -1445,19 +1460,24 @@ impl MemoryStore for SqliteStore {
                         UNION ALL
                         SELECT target_memory_id AS memory_id FROM matched_pairs
                     )
+                    -- Exclude consolidated sources BEFORE the LIMIT. Filtering after
+                    -- (in the outer query) shrank the result below max_results when
+                    -- top-hit memories were consolidated, hiding lower-ranked but
+                    -- valid matches. Mirrors fts_search.
+                    WHERE memory_id NOT IN (
+                        SELECT id FROM memories
+                        WHERE key IN (SELECT source_key FROM consolidation_edges)
+                    )
                     GROUP BY memory_id
                     ORDER BY hits DESC
                     LIMIT ?{limit_param}
                 )
-                SELECT m.id, m.key, m.content, m.wing, m.hall, m.signal_score,
-                       m.visibility, m.source, m.device_id, m.confidence,
-                       m.created_at, m.last_reinforced_at, ms.hits,
-                       m.declarative_density
+                SELECT m.{cols}, ms.hits
                 FROM memory_scores ms
                 JOIN memories m ON m.id = ms.memory_id
-                WHERE m.key NOT IN (SELECT source_key FROM consolidation_edges)
                 ORDER BY ms.hits DESC",
                 hash_placeholders = hash_placeholders,
+                cols = MEMORY_COLUMNS.replace(", ", ", m."),
                 limit_param = hashes.len() + 3,
             );
 
@@ -1475,12 +1495,12 @@ impl MemoryStore for SqliteStore {
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 param_values.iter().map(|p| p.as_ref()).collect();
 
+            // Full MEMORY_COLUMNS projection (20 cols) + ms.hits at index 20, so the
+            // shared row parser fills episode_id/description/source_brain_id/
+            // signature (previously nulled by a 14-column projection).
             let rows = stmt.query_map(param_refs.as_slice(), |row| {
-                let hits: i64 = row.get(12)?;
-                let mut hit = memory_hit_from_row(row, hits as usize)?;
-                // Column 13 in this query is declarative_density (not compaction_tier)
-                hit.declarative_density = row.get(13).ok();
-                Ok(hit)
+                let hits: i64 = row.get(20)?;
+                memory_hit_from_row(row, hits as usize)
             })?;
 
             let mut results = Vec::new();
@@ -2144,10 +2164,17 @@ impl MemoryStore for SqliteStore {
             // retrieval_events store memory ids in a JSON array; scrub any
             // event that referenced this memory (right-to-be-forgotten covers
             // the access log too). The quoted-id match avoids substring
-            // collisions across the 16-hex-char ids.
-            let id_needle = format!("%\"{id}\"%");
+            // collisions across the 16-hex-char ids. `write()` accepts arbitrary
+            // caller ids, so escape LIKE metacharacters (`%`/`_`/`\`) and declare
+            // ESCAPE — otherwise an id containing `%` would over-match and scrub
+            // unrelated events.
+            let escaped_id = id
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let id_needle = format!("%\"{escaped_id}\"%");
             receipt.retrieval_events = tx.execute(
-                "DELETE FROM retrieval_events WHERE memory_ids_json LIKE ?1",
+                "DELETE FROM retrieval_events WHERE memory_ids_json LIKE ?1 ESCAPE '\\'",
                 params![id_needle],
             )?;
 
@@ -3577,6 +3604,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fts_rebuild_is_atomic_so_a_failed_rebuild_preserves_the_index() {
+        // The FTS rebuild (DROP + CREATE + repopulate) must be one transaction:
+        // if it fails partway, the original populated index must survive rather
+        // than be left dropped-or-empty (which would silently break all recall).
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "m1".into(),
+            key: "k1".into(),
+            content: "the quarterly budget review is scheduled".into(),
+            wing: Some("general".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        store.write(&mem, &[]).await.unwrap();
+        assert_eq!(store.fts_search(&["budget".into()], 10).await.unwrap().len(), 1);
+
+        // Run the real rebuild batch but with a syntax error appended so it fails
+        // AFTER the DROP/CREATE — the transaction must roll the whole thing back.
+        let batch = SqliteStore::fts_rebuild_batch(None);
+        // Splice a guaranteed failure before the COMMIT.
+        let poisoned = batch.replace("COMMIT;", "INSERT INTO no_such_table VALUES (1); COMMIT;");
+        let err = store.conn().execute_batch(&poisoned);
+        assert!(err.is_err(), "poisoned rebuild must fail");
+
+        // The original index must still answer — the failed rebuild rolled back.
+        let hits = store.fts_search(&["budget".into()], 10).await.unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "a failed rebuild must leave the original FTS index intact"
+        );
+    }
+
+    #[tokio::test]
     async fn porter_tokenizer_bridges_plural_queries() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("porter.db");
@@ -3902,6 +3977,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn fingerprint_search_populates_full_row() {
+        // Regression: the projection was 14 columns parsed by the 20-column row
+        // parser, so episode_id/description/source_brain_id/signature were always
+        // None on this retrieval channel.
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mk = |id: &str, key: &str, content: &str, hall: &str| Memory {
+            id: id.into(),
+            key: key.into(),
+            content: content.into(),
+            wing: Some("w".into()),
+            hall: Some(hall.into()),
+            signal_score: 0.7,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: Some("ep1".into()),
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        store.write(&mk("m0", "k0", "anchor", "event"), &[]).await.unwrap();
+        let fp = Fingerprint {
+            id: "fp1".into(),
+            hash: "abc123".into(),
+            anchor_memory_id: "m0".into(),
+            target_memory_id: "m1".into(),
+            wing: "w".into(),
+            anchor_hall: "event".into(),
+            target_hall: "fact".into(),
+            time_delta_bucket: "same_day".into(),
+        };
+        store
+            .write(&mk("m1", "k1", "findme", "fact"), &[fp])
+            .await
+            .unwrap();
+        store.set_description("m1", "a helpful description").await.unwrap();
+
+        let hits = store
+            .fingerprint_search("w", "fact", &["abc123".to_string()], 10)
+            .await
+            .unwrap();
+        let m1 = hits
+            .iter()
+            .find(|h| h.id == "m1")
+            .expect("m1 should be a fingerprint hit");
+        assert_eq!(m1.episode_id.as_deref(), Some("ep1"), "episode_id must round-trip");
+        assert_eq!(
+            m1.description.as_deref(),
+            Some("a helpful description"),
+            "description must round-trip"
+        );
     }
 
     #[tokio::test]

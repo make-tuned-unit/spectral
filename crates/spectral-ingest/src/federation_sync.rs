@@ -310,6 +310,32 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
                 if pack_retracted.contains(oh.as_str()) || is_tombstoned(&tx, &pack.wing_id, &oh)? {
                     continue;
                 }
+                // Dedup against an object we ALREADY hold locally, under whatever
+                // local key it was first stored: a NATIVE share keeps the original
+                // `mem_key` (id != oh), a prior import used the synthetic
+                // `local_key` (id = oh). Both leave a manifest row keyed by oh, so
+                // reuse that key for THIS wing's manifest instead of inserting a
+                // second content row. Without this, an own object gossiped back
+                // (A→B→A) is duplicated in recall AND — the duplicate being
+                // referenced by no manifest under its synthetic key — resolves to
+                // Origin::Private, surfacing team content as private.
+                let existing_key: Option<String> = tx
+                    .query_row(
+                        "SELECT mem_key FROM shared_wing_members WHERE object_hash = ?1 LIMIT 1",
+                        rusqlite::params![oh],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(existing_key) = existing_key {
+                    man_stmt.execute(rusqlite::params![
+                        pack.wing_id,
+                        oh,
+                        existing_key,
+                        obj.key,
+                        obj.supersedes,
+                    ])?;
+                    continue;
+                }
                 // Object-scoped, injective local key: a prefix of the
                 // (content-addressed, author-bound) object hash makes two DISTINCT
                 // objects never collide on the UNIQUE `memories.key`. Without it a
@@ -543,6 +569,42 @@ pub fn provenance_batch(
                     author_id: author.and_then(|v| v.try_into().ok()),
                 },
             );
+        }
+    }
+    Ok(out)
+}
+
+/// Every shared wing each key belongs to (a memory can be shared into several).
+/// Keys in no wing are simply absent from the map (→ treat as `Private`). Unlike
+/// [`provenance_batch`], which collapses a multi-wing key to one representative
+/// wing, this returns the FULL set — the scope filter needs it, or a multi-wing
+/// object is wrongly rejected from a scope that names only one of its wings.
+pub fn wings_for_keys(
+    store: &SqliteStore,
+    mem_keys: &[&str],
+) -> Result<std::collections::HashMap<String, Vec<String>>> {
+    use std::collections::HashMap;
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    if mem_keys.is_empty() {
+        return Ok(out);
+    }
+    ensure_sync_tables(store)?;
+    let conn = store.conn();
+    for chunk in mem_keys.chunks(400) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT mem_key, wing_id FROM shared_wing_members
+             WHERE mem_key IN ({placeholders}) ORDER BY wing_id",
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (k, w) = row?;
+            out.entry(k).or_default().push(w);
         }
     }
     Ok(out)
@@ -813,6 +875,41 @@ mod tests {
             !reexport.objects.iter().any(|o| o.object_hash() == doomed),
             "a tombstoned object must not reappear in a re-exported pack"
         );
+    }
+
+    /// GOSSIP-BACK: A shares an object, it relays through B, and comes back to A.
+    /// A must NOT store a second copy of its own object, and the object must stay
+    /// Shared — not resurface as a duplicate mislabeled Private.
+    #[tokio::test]
+    async fn own_object_gossiped_back_is_not_duplicated_or_mislabeled() {
+        let a = SqliteStore::open_in_memory().unwrap();
+        insert_local(&a, "k1", "a shared team note", Some([9u8; 32]));
+        share(&a, "k1", "team").unwrap();
+
+        // B holds it by import, then relays a fresh pack.
+        let b = SqliteStore::open_in_memory().unwrap();
+        import_pack(&b, &export_pack(&a, "team").unwrap()).unwrap();
+        let from_b = export_pack(&b, "team").unwrap();
+
+        // A imports its OWN object back.
+        import_pack(&a, &from_b).unwrap();
+
+        // Exactly one content row for that content — no duplicate.
+        let rows: i64 = a
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE content = 'a shared team note'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "own object gossiped back must not be duplicated");
+
+        // And it stays Shared (team), never Private.
+        match provenance(&a, "k1").unwrap() {
+            Origin::Shared { wing_id, .. } => assert_eq!(wing_id, "team"),
+            Origin::Private => panic!("gossiped-back team object mislabeled Private"),
+        }
     }
 
     /// C1: two DIFFERENT authors whose 4-byte `author_short` collides, same key,
