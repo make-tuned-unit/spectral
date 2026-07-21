@@ -2070,10 +2070,15 @@ impl MemoryStore for SqliteStore {
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // Normalize both sides with datetime(): `created_at` is stored in two
+            // formats (SQLite space-format by default, RFC3339 for historical
+            // imports), and a raw string compare misorders them within a day
+            // (space 0x20 < 'T' 0x54). datetime() canonicalizes both to UTC
+            // `YYYY-MM-DD HH:MM:SS` so the range and ordering are correct.
             let sql = format!(
                 "SELECT {MEMORY_COLUMNS} FROM memories \
-                 WHERE wing = ?1 AND created_at > ?2 \
-                 ORDER BY created_at DESC LIMIT ?3"
+                 WHERE wing = ?1 AND datetime(created_at) > datetime(?2) \
+                 ORDER BY datetime(created_at) DESC LIMIT ?3"
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![wing, since, limit as i64], memory_from_row)?;
@@ -2097,8 +2102,11 @@ impl MemoryStore for SqliteStore {
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // datetime() on both sides: `created_at` mixes SQLite and RFC3339
+            // formats; a raw string compare would delete the wrong rows at a day
+            // boundary. This is a DELETE, so the mis-compare is destructive.
             let deleted = conn.execute(
-                "DELETE FROM memories WHERE wing = ?1 AND created_at < ?2",
+                "DELETE FROM memories WHERE wing = ?1 AND datetime(created_at) < datetime(?2)",
                 params![wing, before],
             )?;
             drop(conn);
@@ -2253,10 +2261,13 @@ impl MemoryStore for SqliteStore {
             // an autocommit (+ statement recompile) per source.
             let tx = conn.unchecked_transaction()?;
             {
+                // datetime() so the "recent per source" ranking is correct across
+                // mixed created_at formats — otherwise "keep the N most recent"
+                // keeps/deletes the wrong rows at a day boundary (a DELETE).
                 let mut del_stmt = tx.prepare(
                     "DELETE FROM memories WHERE wing = ?1 AND source = ?2 AND id NOT IN (\
                          SELECT id FROM memories WHERE wing = ?1 AND source = ?2 \
-                         ORDER BY created_at DESC LIMIT ?3\
+                         ORDER BY datetime(created_at) DESC LIMIT ?3\
                      )",
                 )?;
                 for source in &sources {
@@ -3977,6 +3988,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn since_query_handles_mixed_timestamp_formats() {
+        // Regression: created_at is stored in two formats (SQLite space-format and
+        // RFC3339). A raw string compare misorders them within a day — an RFC3339
+        // 01:00 (`...T01...`) string-compares GREATER than a space-format cutoff at
+        // noon, so an early-morning memory wrongly passed a `> noon` filter.
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut a = make_mem("late", "ka", "wing");
+        a.created_at = Some("2026-07-20 23:00:00".into()); // space-format, 23:00
+        let mut b = make_mem("early", "kb", "wing");
+        b.created_at = Some("2026-07-20T01:00:00+00:00".into()); // RFC3339, 01:00
+        store.write(&a, &[]).await.unwrap();
+        store.write(&b, &[]).await.unwrap();
+
+        // "since noon" must include only the 23:00 memory, not the 01:00 one.
+        let since = store
+            .list_wing_memories_since("wing", "2026-07-20 12:00:00", 10)
+            .await
+            .unwrap();
+        let keys: Vec<&str> = since.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["ka"],
+            "only the 23:00 memory is after noon; the RFC3339 01:00 must be excluded"
+        );
     }
 
     #[tokio::test]
