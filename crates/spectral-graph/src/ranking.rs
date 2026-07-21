@@ -531,8 +531,7 @@ mod tests {
             entity_boost_weight: boost,
             ..Default::default()
         };
-        let ranked =
-            apply_reranking_pipeline(wingless, &config, &ctx, &empty_co_boosts());
+        let ranked = apply_reranking_pipeline(wingless, &config, &ctx, &empty_co_boosts());
         // Composite starts from FTS position only (signal/recency off): 1.0 and 0.5.
         // No entity boost was added to the top, so it stays exactly 1.0.
         let top = ranked.iter().find(|h| h.id == "a").unwrap();

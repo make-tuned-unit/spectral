@@ -279,8 +279,11 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
     let ingest_cfg = crate::ingest::IngestConfig::default();
     // Hashes this pack retracts — an object and its tombstone can ride in the same
     // pack, and the tombstone must win regardless of loop order.
-    let pack_retracted: std::collections::HashSet<&str> =
-        pack.tombstones.iter().map(|t| t.target_hash.as_str()).collect();
+    let pack_retracted: std::collections::HashSet<&str> = pack
+        .tombstones
+        .iter()
+        .map(|t| t.target_hash.as_str())
+        .collect();
     {
         let conn = store.conn();
         // One transaction for the whole pack: without it each INSERT is its own
@@ -426,11 +429,7 @@ fn apply_tombstone(store: &SqliteStore, wing_id: &str, target_hash: &str) -> Res
 /// atomically within `tx`. Sharing the caller's transaction means a crash mid-way
 /// can't leave a tombstoned-but-still-stored object (which `export_pack` would
 /// otherwise re-ship) or a half-applied retraction.
-fn apply_tombstone_tx(
-    tx: &rusqlite::Connection,
-    wing_id: &str,
-    target_hash: &str,
-) -> Result<()> {
+fn apply_tombstone_tx(tx: &rusqlite::Connection, wing_id: &str, target_hash: &str) -> Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO sync_tombstones (wing_id, target_hash) VALUES (?1, ?2)",
         rusqlite::params![wing_id, target_hash],

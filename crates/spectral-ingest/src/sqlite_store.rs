@@ -3643,7 +3643,14 @@ mod tests {
             signature: None,
         };
         store.write(&mem, &[]).await.unwrap();
-        assert_eq!(store.fts_search(&["budget".into()], 10).await.unwrap().len(), 1);
+        assert_eq!(
+            store
+                .fts_search(&["budget".into()], 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         // Run the real rebuild batch but with a syntax error appended so it fails
         // AFTER the DROP/CREATE — the transaction must roll the whole thing back.
@@ -4045,7 +4052,10 @@ mod tests {
             source_brain_id: None,
             signature: None,
         };
-        store.write(&mk("m0", "k0", "anchor", "event"), &[]).await.unwrap();
+        store
+            .write(&mk("m0", "k0", "anchor", "event"), &[])
+            .await
+            .unwrap();
         let fp = Fingerprint {
             id: "fp1".into(),
             hash: "abc123".into(),
@@ -4060,7 +4070,10 @@ mod tests {
             .write(&mk("m1", "k1", "findme", "fact"), &[fp])
             .await
             .unwrap();
-        store.set_description("m1", "a helpful description").await.unwrap();
+        store
+            .set_description("m1", "a helpful description")
+            .await
+            .unwrap();
 
         let hits = store
             .fingerprint_search("w", "fact", &["abc123".to_string()], 10)
@@ -4070,7 +4083,11 @@ mod tests {
             .iter()
             .find(|h| h.id == "m1")
             .expect("m1 should be a fingerprint hit");
-        assert_eq!(m1.episode_id.as_deref(), Some("ep1"), "episode_id must round-trip");
+        assert_eq!(
+            m1.episode_id.as_deref(),
+            Some("ep1"),
+            "episode_id must round-trip"
+        );
         assert_eq!(
             m1.description.as_deref(),
             Some("a helpful description"),
@@ -4266,13 +4283,18 @@ mod tests {
         // bail after an earlier source's edge was written left that source
         // consolidated (excluded from search) while the caller was told it failed.
         let store = SqliteStore::open_in_memory().unwrap();
-        store.write(&make_mem("t", "target", "w"), &[]).await.unwrap();
-        store.write(&make_mem("s1", "src1", "w"), &[]).await.unwrap();
+        store
+            .write(&make_mem("t", "target", "w"), &[])
+            .await
+            .unwrap();
+        store
+            .write(&make_mem("s1", "src1", "w"), &[])
+            .await
+            .unwrap();
         // src2 intentionally absent → AbortAll must bail.
 
         let opts = ConsolidateOpts {
             on_invalid_source: InvalidSourcePolicy::AbortAll,
-            ..Default::default()
         };
         let res = store
             .consolidate_into(

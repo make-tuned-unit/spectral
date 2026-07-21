@@ -105,8 +105,9 @@ impl FromStr for DeviceId {
         let hex = s.as_bytes();
         let mut bytes = [0u8; 32];
         for (i, byte) in bytes.iter_mut().enumerate() {
-            let hi = crate::hex_val(hex[i * 2])
-                .ok_or_else(|| Error::InvalidDeviceId(format!("invalid hex at position {}", i * 2)))?;
+            let hi = crate::hex_val(hex[i * 2]).ok_or_else(|| {
+                Error::InvalidDeviceId(format!("invalid hex at position {}", i * 2))
+            })?;
             let lo = crate::hex_val(hex[i * 2 + 1]).ok_or_else(|| {
                 Error::InvalidDeviceId(format!("invalid hex at position {}", i * 2 + 1))
             })?;

@@ -188,8 +188,11 @@ pub fn import_set(store: &SqliteStore, pack: &SetPack) -> Result<usize> {
     // The set of hashes this pack retracts (its own tombstones) — an object and
     // its tombstone can arrive in the same pack, and the tombstone must win
     // regardless of order, so we skip these on the object insert below.
-    let pack_retracted: std::collections::HashSet<&str> =
-        pack.tombstones.iter().map(|t| t.target_hash.as_str()).collect();
+    let pack_retracted: std::collections::HashSet<&str> = pack
+        .tombstones
+        .iter()
+        .map(|t| t.target_hash.as_str())
+        .collect();
     let mut merged = 0usize;
     {
         let conn = store.conn();
@@ -272,11 +275,7 @@ fn apply_tombstone(store: &SqliteStore, namespace: &str, target_hash: &str) -> R
 /// Record a retraction and drop the local blob, atomically within `tx`. Both
 /// statements share the caller's transaction so a crash between them cannot leave
 /// a tombstoned-but-still-stored (and thus still-exportable) object.
-fn apply_tombstone_tx(
-    tx: &rusqlite::Connection,
-    namespace: &str,
-    target_hash: &str,
-) -> Result<()> {
+fn apply_tombstone_tx(tx: &rusqlite::Connection, namespace: &str, target_hash: &str) -> Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO replicated_set_tombstones (namespace, target_hash)
          VALUES (?1, ?2)",

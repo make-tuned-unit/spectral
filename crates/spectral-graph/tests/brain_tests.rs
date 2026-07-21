@@ -181,14 +181,15 @@ fn recall_does_not_leak_private_content_through_the_tact_field() {
     let result = brain.recall("quartz meridian", Visibility::Public).unwrap();
 
     assert!(
-        result
-            .memory_hits
-            .iter()
-            .all(|h| h.visibility != "private"),
+        result.memory_hits.iter().all(|h| h.visibility != "private"),
         "memory_hits must exclude private content at Public scope"
     );
     assert!(
-        result.tact.memories.iter().all(|h| h.visibility != "private"),
+        result
+            .tact
+            .memories
+            .iter()
+            .all(|h| h.visibility != "private"),
         "tact.memories must be visibility-filtered, not raw"
     );
     assert!(
@@ -196,7 +197,11 @@ fn recall_does_not_leak_private_content_through_the_tact_field() {
         "the injection block must never contain private content"
     );
     assert!(
-        result.tact.memories.iter().all(|h| !h.content.contains("hunter2")),
+        result
+            .tact
+            .memories
+            .iter()
+            .all(|h| !h.content.contains("hunter2")),
         "no private content may survive in the returned tact result"
     );
 }
