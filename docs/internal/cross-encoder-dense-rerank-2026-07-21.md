@@ -89,3 +89,32 @@ recall-safe, but it is (a) unproven to accuracy on this benchmark and (b) blocke
 no-embedding product stance.** File it with the other measured-but-not-shipped retrieval
 levers; its real test is a semantic-regime production workload with a weak actor — the
 same regime lever #2 targets.
+
+## Addendum — dense's real value is the vocab-mismatch tail (not the aggregate)
+
+The aggregate dense null above is *windowed*: the main probe fuses dense rank only inside
+the top-120 pool, so it structurally can't see the deep operands. A separate full-pool
+probe (`deep_operand_probe.py`) measures where **dense** ranks the two deep vocab-mismatch
+operands that BM25 buries — the exact operands no rerank-over-pool arm could recover:
+
+| case | operand | BM25 pool-rank | **dense pool-rank** |
+|---|---|---|---|
+| gpt4_7fce9456 | `answer_a679a86a_3:turn:8` | 197 | **48** |
+| gpt4_15e38248 | `answer_8858d9dc_3:turn:1` | 302 | **19** |
+
+`bge-small-en-v1.5` lifts the pos-302 operand to **rank 19 — into the top-40 retrieved
+set** — and the pos-197 operand to 48. gpt4_15e38248 is the case that stayed at sr=0.75
+for *every* rerank arm in the main table (its operand was beyond the top-120 window); a
+**full-pool dense hybrid** (not the windowed one measured above) would retrieve it.
+
+**This sharpens the dense verdict.** Dense is near-null as a fusion over a BM25-won
+lexical pool (most LongMemEval-S cases), but it is the **only measured lever that
+structurally addresses Spectral's genuine hard floor** — the vocabulary-mismatch cases
+`RESIDUAL_FLOOR.md` flagged as the architectural residual (ba358f49 "I'm 32", pos 187/147;
+this same pos-197/302 family). BM25, cross-encoder-over-BM25-pool, and K-extension all
+*cannot* rank an operand with zero content-word overlap; a dense bi-encoder can, and here
+does (283- and 149-position lifts). The untested config that would actually move the hard
+floor is therefore a **full-pool BM25+dense hybrid as a retrieval primary** — which is
+also the deepest collision with the no-embedding/local-first stance and the largest new
+build. It is a value decision, not a benchmark verdict; but the claim "no cheap retrieval
+lever touches the vocab-mismatch floor" is now false for dense specifically.
