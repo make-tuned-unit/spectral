@@ -483,6 +483,27 @@ pub trait MemoryStore: Send + Sync {
 
     /// List memories in a wing created after `since` (ISO-8601), ordered by
     /// created_at DESC, up to `limit`.
+    /// Like [`list_wing_memories`](Self::list_wing_memories) but returns at
+    /// most `limit` peers, highest-signal first with a deterministic tiebreak.
+    ///
+    /// Used to bound constellation fingerprint fan-out, which is otherwise
+    /// O(wing size) per write. The provided implementation is correct but
+    /// still reads the full wing; backends should override it with a pushed-
+    /// down LIMIT.
+    fn list_wing_memories_capped(
+        &self,
+        wing: &str,
+        min_signal: f64,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
+        let wing = wing.to_string();
+        Box::pin(async move {
+            let mut peers = self.list_wing_memories(&wing, min_signal).await?;
+            peers.truncate(limit);
+            Ok(peers)
+        })
+    }
+
     fn list_wing_memories_since(
         &self,
         wing: &str,

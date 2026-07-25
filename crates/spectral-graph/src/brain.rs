@@ -3067,6 +3067,24 @@ impl Brain {
         self.async_writeback = on;
     }
 
+    /// Bound constellation fingerprint fan-out per write. `None` (default) is
+    /// unbounded, matching all previously measured behaviour.
+    ///
+    /// Unbounded pairing is what makes ingest cost grow with corpus size: a
+    /// new memory is paired with *every* qualifying peer in its wing, and
+    /// ~73% of memories land in `general`. Measured over 800 sequential
+    /// writes, per-memory ingest cost grew 12.5x; capping at
+    /// [`DEFAULT_MAX_FINGERPRINT_PEERS`](spectral_ingest::ingest::DEFAULT_MAX_FINGERPRINT_PEERS)
+    /// flattens that to 1.6x and stores ~73% fewer edges.
+    ///
+    /// Opt-in because it is not retrieval-neutral: `time_delta_bucket` is part
+    /// of the fingerprint hash, so bounding fan-out changes which hashes exist
+    /// and therefore what the TACT tier-1 reader returns. A/B on your own
+    /// workload before enabling it in production.
+    pub fn set_max_fingerprint_peers(&mut self, cap: Option<usize>) {
+        self.ingest_config.max_fingerprint_peers = cap;
+    }
+
     /// Perform the recall write-back (auto-reinforce returned keys + log the
     /// retrieval event). Synchronous by default; spawned on the runtime when
     /// async write-back is enabled. Best-effort — errors are swallowed.

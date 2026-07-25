@@ -19,6 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   association. Same-session memories immediately contribute once to the
   co-retrieval index, and index rebuilds preserve those write-time pairs.
 
+### Changed (write-path performance)
+- Constellation fingerprint fan-out is now bounded. `generate_fingerprints`
+  previously paired every new memory with *every* qualifying peer in its wing
+  via an unbounded read, which made per-write cost grow linearly with corpus
+  size (O(N) per write, O(N^2) stored edges) — ~73% of memories classify into
+  the `general` wing, so each write paired against nearly the whole corpus.
+  New `IngestConfig::max_fingerprint_peers` (default `Some(64)`), settable on
+  an open brain via `Brain::set_max_fingerprint_peers`, with
+  `SPECTRAL_MAX_FINGERPRINT_PEERS=0` restoring the legacy unbounded behaviour.
+  Measured over 800 sequential writes: **63% faster**, per-write growth 12.2x
+  → 2.8x, 73% fewer stored edges, and the advantage widens with corpus size.
+  Retrieval is unchanged on 42 paired oracle questions across four routing
+  shapes (0 contexts changed, 0 answer-key delta, 0 token delta). Peers are
+  selected most-recent-first, matching the temporal locality these edges
+  encode. See `docs/internal/fingerprint-fanout-cap-2026-07-25.md`, including
+  the one path where behaviour does legitimately change.
+
 ### Changed (hardening pass)
 - `Brain::forget` verification now fails closed and reports
   `VerificationStatus::{VerifiedClear, ResidualFound, VerificationFailed}`.

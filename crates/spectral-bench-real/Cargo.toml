@@ -47,6 +47,7 @@ spectral-spectrogram = { path = "../spectral-spectrogram" }
 blake3 = { workspace = true }
 spectral-ingest = { path = "../spectral-ingest", features = ["sqlite"] }
 spectral-recognition = { path = "../spectral-recognition" }
+spectral-tact = { path = "../spectral-tact" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
@@ -55,3 +56,12 @@ anyhow = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
+tempfile = "3"
+
+[[bin]]
+name = "write_path_cost"
+path = "src/bin/write_path_cost.rs"
+
+[[bin]]
+name = "fingerprint_cap_equivalence"
+path = "src/bin/fingerprint_cap_equivalence.rs"

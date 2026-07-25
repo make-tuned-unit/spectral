@@ -13,6 +13,32 @@ use crate::{Episode, Fingerprint, Memory, MemoryStore, TimeBucket};
 /// Default time gap for auto-detecting episode boundaries (30 minutes).
 const EPISODE_GAP_MINUTES: i64 = 30;
 
+/// Recommended cap on constellation fingerprint fan-out per write, for
+/// callers who opt into [`IngestConfig::max_fingerprint_peers`].
+///
+/// Measured on this repo's own corpus: 508 memories produced 70,796 edges
+/// (~278 peers/memory) because the wing key collapses ~73% of memories into
+/// `general`. That near-clique is what made per-write cost grow linearly with
+/// corpus size. 64 keeps a dense recent neighbourhood while making ingest
+/// cost flat. Not applied by default — see the field docs for why.
+pub const DEFAULT_MAX_FINGERPRINT_PEERS: usize = 64;
+
+/// Resolve the fingerprint fan-out cap, honouring the
+/// `SPECTRAL_MAX_FINGERPRINT_PEERS` ablation override. `0` restores the
+/// legacy unbounded behaviour; any other value overrides the cap. Follows the
+/// existing `SPECTRAL_*` ablation-knob convention so the default can be
+/// A/B'd without a rebuild.
+fn default_max_fingerprint_peers() -> Option<usize> {
+    match std::env::var("SPECTRAL_MAX_FINGERPRINT_PEERS") {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(0) => None,
+            Ok(n) => Some(n),
+            Err(_) => Some(DEFAULT_MAX_FINGERPRINT_PEERS),
+        },
+        Err(_) => Some(DEFAULT_MAX_FINGERPRINT_PEERS),
+    }
+}
+
 /// Configuration for the ingestion pipeline.
 #[derive(Debug, Clone)]
 pub struct IngestConfig {
@@ -22,6 +48,23 @@ pub struct IngestConfig {
     pub hall_rules: Vec<(Regex, String)>,
     /// Minimum signal_score for fingerprint generation (default 0.5).
     pub signal_threshold: f64,
+    /// Maximum number of existing wing peers a new memory is paired with when
+    /// generating constellation fingerprints. `None` (the default) = unbounded,
+    /// matching all previously measured behaviour.
+    ///
+    /// Unbounded pairing is O(peers) per write and O(N^2) in stored rows,
+    /// because ~73% of memories classify into the `general` wing and form a
+    /// near-clique. Setting this to [`DEFAULT_MAX_FINGERPRINT_PEERS`] makes
+    /// ingest cost flat in corpus size (measured 12.5x -> 1.6x growth over
+    /// 800 writes, ~73% fewer stored edges).
+    ///
+    /// This is opt-in, not the default, because it is NOT retrieval-neutral:
+    /// `time_delta_bucket` is part of the fingerprint hash, so bounding
+    /// fan-out changes which (hall, bucket) hashes exist and therefore what
+    /// `fingerprint_search` returns. Enable it after an end-to-end A/B on
+    /// your own workload — the affected reader is the TACT tier-1 path, which
+    /// this repo has separately measured at no retrieval effect.
+    pub max_fingerprint_peers: Option<usize>,
 }
 
 impl Default for IngestConfig {
@@ -30,6 +73,7 @@ impl Default for IngestConfig {
             wing_rules: classifier::default_wing_rules(),
             hall_rules: classifier::default_hall_rules(),
             signal_threshold: 0.5,
+            max_fingerprint_peers: default_max_fingerprint_peers(),
         }
     }
 }
@@ -256,9 +300,20 @@ async fn generate_fingerprints(
     let wing = new_memory.wing.as_deref().unwrap_or("general");
     let new_hall = new_memory.hall.as_deref().unwrap_or("none");
 
-    let peers = store
-        .list_wing_memories(wing, config.signal_threshold)
-        .await?;
+    let peers = match config.max_fingerprint_peers {
+        // +1: the new memory may itself already be in the wing listing and is
+        // skipped below, so ask for one extra to still fill the cap.
+        Some(cap) => {
+            store
+                .list_wing_memories_capped(wing, config.signal_threshold, cap.saturating_add(1))
+                .await?
+        }
+        None => {
+            store
+                .list_wing_memories(wing, config.signal_threshold)
+                .await?
+        }
+    };
 
     let mut fingerprints = Vec::with_capacity(peers.len());
 
@@ -293,6 +348,13 @@ async fn generate_fingerprints(
             target_hall: new_hall.to_string(),
             time_delta_bucket: bucket.to_string(),
         });
+    }
+
+    // The peer read asked for cap+1 so that a re-write of an already-stored
+    // key (which appears in its own wing listing and is skipped above) still
+    // fills the cap. Trim so the cap is exact in both cases.
+    if let Some(cap) = config.max_fingerprint_peers {
+        fingerprints.truncate(cap);
     }
 
     Ok(fingerprints)

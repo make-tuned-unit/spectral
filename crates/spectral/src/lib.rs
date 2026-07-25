@@ -485,6 +485,13 @@ impl Brain {
         self.inner.rebuild_co_retrieval_index()
     }
 
+    /// Bound constellation fingerprint fan-out per write. `None` (default) is
+    /// unbounded. Setting a cap makes ingest cost flat in corpus size instead
+    /// of growing with it; see the inner method for the measured trade-off.
+    pub fn set_max_fingerprint_peers(&mut self, cap: Option<usize>) {
+        self.inner.set_max_fingerprint_peers(cap);
+    }
+
     /// Report bounded coverage of derived memory state without mutating it.
     pub fn derivation_health(&self, limit: usize) -> Result<DerivationHealthReport, Error> {
         self.inner.derivation_health(limit)

@@ -1403,6 +1403,38 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    fn list_wing_memories_capped(
+        &self,
+        wing: &str,
+        min_signal: f64,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
+        let wing = wing.to_string();
+        let conn = self.conn.clone();
+
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // Most-recent-first, NOT highest-signal-first. These edges encode
+            // temporal locality (`time_delta_bucket` is part of the
+            // fingerprint hash), and a signal-ordered cap was measured to
+            // systematically retain the oldest peers, which changed what
+            // `fingerprint_search` returned. `id` tiebreaks so a capped read
+            // is deterministic when timestamps collide (bulk ingest writes
+            // many rows within the same second).
+            let sql = format!(
+                "SELECT {MEMORY_COLUMNS} FROM memories WHERE wing = ?1 AND signal_score >= ?2
+                 ORDER BY datetime(created_at) DESC, id DESC LIMIT ?3"
+            );
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(params![wing, min_signal, limit as i64], memory_from_row)?;
+            let mut memories = Vec::new();
+            for row in rows {
+                memories.push(row?);
+            }
+            Ok(memories)
+        })
+    }
+
     fn list_memories_by_signal(
         &self,
         min_signal: f64,
@@ -5535,6 +5567,73 @@ mod tests {
         let store = SqliteStore::open_in_memory().unwrap();
         let count = store.rebuild_co_retrieval_index().await.unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn capped_wing_listing_is_bounded_and_recent_first() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        for i in 0..10 {
+            let mut m = make_mem(&format!("m{i}"), &format!("k{i}"), "w");
+            // Explicit, strictly increasing timestamps so "most recent" is
+            // unambiguous rather than resolved by the id tiebreak.
+            m.created_at = Some(format!("2026-07-{:02} 12:00:00", i + 1));
+            store.write(&m, &[]).await.unwrap();
+        }
+
+        let all = store.list_wing_memories("w", 0.0).await.unwrap();
+        assert_eq!(all.len(), 10, "uncapped listing is unchanged");
+
+        let capped = store.list_wing_memories_capped("w", 0.0, 3).await.unwrap();
+        let ids: Vec<&str> = capped.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["m9", "m8", "m7"],
+            "cap must retain the most RECENT peers; a signal-ordered cap was \
+             measured to retain the oldest and change fingerprint_search output"
+        );
+
+        // Asking for more than exists is not an error and does not pad.
+        let over = store.list_wing_memories_capped("w", 0.0, 50).await.unwrap();
+        assert_eq!(over.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn fingerprint_cap_bounds_edges_written_per_memory() {
+        use crate::ingest::{ingest_with, IngestConfig, IngestOpts};
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = IngestConfig {
+            max_fingerprint_peers: Some(4),
+            ..IngestConfig::default()
+        };
+        for i in 0..12 {
+            ingest_with(
+                &format!("{i:016x}"),
+                &format!("note:{i}"),
+                "a durable observation about the deployment region",
+                "note",
+                0.0,
+                "private",
+                &config,
+                &store,
+                IngestOpts::default(),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Unbounded pairing would give sum(0..12) = 66 edges; the cap holds
+        // each write to at most 4, so the total is bounded by 12 * 4.
+        let edges: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM constellation_fingerprints", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            edges <= 48,
+            "cap=4 over 12 writes must bound edges to <=48, got {edges}"
+        );
+        assert!(edges > 0, "cap must not disable fingerprinting entirely");
     }
 
     #[tokio::test]
