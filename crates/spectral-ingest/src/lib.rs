@@ -693,6 +693,15 @@ pub trait MemoryStore: Send + Sync {
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
 
+    /// Durably associate a memory with its originating session and immediately
+    /// add same-session pairs to the co-retrieval index. Idempotent for an
+    /// existing `(memory_id, session_id)` association.
+    fn associate_memory_session(
+        &self,
+        memory_id: &str,
+        session_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
     // ── Session queries ──
 
     /// List retrieval events for a given session, ordered by timestamp ASC.

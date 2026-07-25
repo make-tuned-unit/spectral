@@ -32,6 +32,12 @@ pub struct ScoreConfig {
     /// Minimum rarity-weighted score for a `Recognized` verdict (guards
     /// against tiny stimuli where coverage is trivially high).
     pub recognize_min_score: f64,
+    /// Minimum normalized familiarity for an identity-bearing `Recognized`
+    /// verdict. Absolute evidence alone can be high for a same-template but
+    /// different event; this gate reserves identity for probes whose matched
+    /// evidence covers enough of the stimulus. Lower-confidence echoes remain
+    /// `Familiar` rather than being discarded as novel.
+    pub recognize_min_familiarity: f64,
     /// Lead margin: best trace must exceed runner-up's score by this factor
     /// to be `Recognized` (ACR's θ+δ margin rule; prevents flapping between
     /// two similar traces).
@@ -57,6 +63,7 @@ impl Default for ScoreConfig {
         Self {
             recognize_coverage: 0.35,
             recognize_min_score: 3.0,
+            recognize_min_familiarity: 0.60,
             recognize_margin: 1.5,
             familiar_floor: 0.10,
             familiar_min_score: 2.5,
@@ -227,6 +234,7 @@ pub fn score_candidates(
             let clear_lead = best.score >= runner_up * config.recognize_margin;
             if best.coverage >= config.recognize_coverage
                 && best.score >= config.recognize_min_score
+                && familiarity >= config.recognize_min_familiarity
                 && clear_lead
             {
                 (
@@ -385,5 +393,27 @@ mod tests {
         let a = r.traces.iter().find(|t| t.memory_id == "a").unwrap();
         let b = r.traces.iter().find(|t| t.memory_id == "b").unwrap();
         assert!(b.score > a.score * 1.9, "gram evidence must weigh ~2x");
+    }
+
+    #[test]
+    fn absolute_evidence_cannot_claim_identity_at_low_familiarity() {
+        let prints = prints_with(10);
+        // Four rare matches clear the legacy coverage, score, and margin
+        // gates, but cover too little of the probe to establish identity.
+        let pair_matches: Vec<FeatureMatch> = (0..4)
+            .map(|i| fm(i, "same-template", &format!("pair: f{i}"), 1))
+            .collect();
+        let r = score_candidates(
+            &prints,
+            &pair_matches,
+            &[],
+            &[],
+            100,
+            &ScoreConfig::default(),
+            0.0,
+            0.0,
+        );
+        assert!(r.familiarity < ScoreConfig::default().recognize_min_familiarity);
+        assert_eq!(r.verdict, Verdict::Familiar);
     }
 }

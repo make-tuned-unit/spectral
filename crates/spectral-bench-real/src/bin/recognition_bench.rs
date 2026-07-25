@@ -111,10 +111,16 @@ fn engine(minhash_on: bool) -> RecognitionEngine<InMemoryRecognitionStore> {
 
 /// Score familiar (exact + degraded@72%) vs near-miss novel, return AUC and
 /// the verdict breakdown counts.
-fn evaluate(minhash_on: bool) -> (f64, usize, usize, usize) {
+fn evaluate(minhash_on: bool) -> (f64, usize, usize, usize, usize, usize, Vec<f64>, Vec<f64>) {
     let e = engine(minhash_on);
     let mut scored: Vec<(f64, bool)> = Vec::new();
-    let (mut exact_reco, mut degraded_fam, mut nearmiss_novel) = (0, 0, 0);
+    let (
+        mut exact_reco,
+        mut degraded_fam,
+        mut degraded_reco,
+        mut nearmiss_novel,
+        mut nearmiss_reco,
+    ) = (0, 0, 0, 0, 0);
 
     for c in CORPUS {
         let r = e.recognize(c).unwrap();
@@ -123,27 +129,57 @@ fn evaluate(minhash_on: bool) -> (f64, usize, usize, usize) {
             exact_reco += 1;
         }
     }
+    let mut degraded_scores = Vec::new();
     for (i, c) in CORPUS.iter().enumerate() {
         let probe = degrade(c, i as u64 + 1, 72);
         let r = e.recognize(&probe).unwrap();
+        degraded_scores.push(r.familiarity);
         scored.push((r.familiarity, true));
         if !matches!(r.verdict, Verdict::Novel) {
             degraded_fam += 1;
         }
+        if matches!(r.verdict, Verdict::Recognized { .. }) {
+            degraded_reco += 1;
+        }
     }
+    let mut near_miss_scores = Vec::new();
     for c in NEAR_MISS {
         let r = e.recognize(c).unwrap();
+        near_miss_scores.push(r.familiarity);
         scored.push((r.familiarity, false));
         if matches!(r.verdict, Verdict::Novel) {
             nearmiss_novel += 1;
         }
+        if matches!(r.verdict, Verdict::Recognized { .. }) {
+            nearmiss_reco += 1;
+        }
     }
-    (roc_auc(&scored), exact_reco, degraded_fam, nearmiss_novel)
+    (
+        roc_auc(&scored),
+        exact_reco,
+        degraded_fam,
+        degraded_reco,
+        nearmiss_novel,
+        nearmiss_reco,
+        degraded_scores,
+        near_miss_scores,
+    )
 }
 
 fn main() {
-    let (auc_off, _, deg_off, nm_off) = evaluate(false);
-    let (auc_on, reco_on, deg_on, nm_on) = evaluate(true);
+    let (auc_off, _, deg_off, _, nm_off, _, _, _) = evaluate(false);
+    let (
+        auc_on,
+        reco_on,
+        deg_on,
+        deg_reco_on,
+        nm_on,
+        nm_reco_on,
+        mut degraded_scores,
+        mut near_miss_scores,
+    ) = evaluate(true);
+    degraded_scores.sort_by(f64::total_cmp);
+    near_miss_scores.sort_by(f64::total_cmp);
 
     println!("=== Recognition re-encounter benchmark (MinHash lift) ===");
     println!(
@@ -172,8 +208,18 @@ fn main() {
         CORPUS.len()
     );
     println!(
+        "  degraded@72% identity Recognized:     {}/{}",
+        deg_reco_on,
+        CORPUS.len()
+    );
+    println!(
         "  near-miss correctly flagged Novel:   {}/{}",
         nm_on,
+        NEAR_MISS.len()
+    );
+    println!(
+        "  near-miss falsely identity Recognized:{}/{}",
+        nm_reco_on,
         NEAR_MISS.len()
     );
     println!(
@@ -182,6 +228,13 @@ fn main() {
         CORPUS.len(),
         nm_off,
         NEAR_MISS.len()
+    );
+    println!(
+        "  familiarity ranges: degraded {:.3}..{:.3}; near-miss {:.3}..{:.3}",
+        degraded_scores.first().copied().unwrap_or_default(),
+        degraded_scores.last().copied().unwrap_or_default(),
+        near_miss_scores.first().copied().unwrap_or_default(),
+        near_miss_scores.last().copied().unwrap_or_default(),
     );
     println!();
     println!("Deterministic, embedding-free, every verdict carries matched-feature evidence.");

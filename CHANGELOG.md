@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (hardening pass)
+- `RecallOptions` and `RecallProfile` plus `Brain::recall_with`, a canonical
+  integrated recall entry point that requires an explicit visibility boundary.
+  Added `recall_cascade_scoped` to the umbrella crate; legacy `recall` remains a
+  compatibility path.
+- Bounded `derivation_health` and idempotent `repair_derivations` APIs for
+  interrupted density, signature, recognition, content-hash, and spectrogram
+  derivations.
+- `RememberOpts::session_id` now persists an idempotent `memory_sessions`
+  association. Same-session memories immediately contribute once to the
+  co-retrieval index, and index rebuilds preserve those write-time pairs.
+
+### Changed (hardening pass)
+- `Brain::forget` verification now fails closed and reports
+  `VerificationStatus::{VerifiedClear, ResidualFound, VerificationFailed}`.
+- Auto-created ontology entities are escaped through TOML serialization and
+  persisted with atomic replacement instead of interpolated append strings.
+- Neural comparison tooling now requires explicit `neural-bench` or
+  `neural-baseline` features, keeping normal all-target verification free of
+  ONNX Runtime platform constraints.
+- Recognition now reserves identity-bearing `Recognized` verdicts for
+  familiarity >= 0.60, and recurrence feedback reinforces only those verdicts.
+  This prevents topical/same-template near misses from polluting recall state
+  while preserving lower-confidence re-encounters as `Familiar`.
+- Ambient reranking now adapts its mismatch penalty to lexical decisiveness:
+  ambiguous queries receive stronger contextual disambiguation, while a top
+  candidate with uniquely matching query terms retains explicit-query control.
+
 ### Changed (feat/porter-default)
 - **Porter stemming is now the default FTS tokenizer** (`"porter unicode61"`). Plural/inflected queries bridge to singular content ("doctors" → "doctor") deterministically, at zero runtime cost — no LLM, no embeddings. Validated Tier-0 (zero-evidence questions 8→4, answer-key recall 51.8%→54.7% on LongMemEval-S) and Tier-1 (deterministic porter-only pipeline at parity with LLM-assisted query expansion, 46/60 vs 43/60). Configure via `BrainConfig::fts_tokenizer`, the `BrainBuilder::fts_tokenizer()` builder method, `SqliteStoreConfig::fts_tokenizer`, or the `SPECTRAL_FTS_TOKENIZER` env var; set `"unicode61"` (or empty) to restore unstemmed matching.
 - **Automatic FTS tokenizer migration**: opening a brain whose FTS index was built with a different tokenizer triggers a one-time index rebuild (drop + recreate + repopulate; the memories table is untouched). Existing brains pick up porter stemming on next open with no re-ingest.

@@ -23,10 +23,12 @@ anyhow = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true }
+fastembed = { version = "5", optional = true, default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
 
 [features]
 default = ["http-llm"]
 http-llm = ["dep:reqwest"]
+neural-bench = ["dep:fastembed"]
 
 [dev-dependencies]
 chrono = { workspace = true }
@@ -34,7 +36,6 @@ tempfile = "3"
 wiremock = "0.6"
 tokio = { workspace = true }
 criterion = { workspace = true }
-fastembed = { version = "5", default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
 
 [[bench]]
 name = "retrieval"
@@ -43,3 +44,4 @@ harness = false
 [[bench]]
 name = "vector_comparison"
 harness = false
+required-features = ["neural-bench"]

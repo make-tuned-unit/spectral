@@ -36,9 +36,15 @@ jobs:
           echo "$REAL_CARGO_DIR" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
       - name: Unit and integration tests
-        run: cargo test --workspace --lib --tests
+        run: cargo test --workspace --lib --tests --examples
       - name: Doc tests
         run: cargo test --workspace --doc
+      - name: Architecture documentation guard
+        run: |
+          if grep -Eiq 'graph\.kz|Kuzu' docs/operational-considerations.md crates/spectral/src/lib.rs; then
+            echo "Public operational docs reference the retired Kuzu storage engine"
+            exit 1
+          fi
 
   lint:
     runs-on: ubuntu-latest

@@ -716,7 +716,16 @@ impl SqliteStore {
             CREATE INDEX IF NOT EXISTS idx_co_retrieval_a
                 ON co_retrieval_pairs(memory_id_a);
             CREATE INDEX IF NOT EXISTS idx_co_retrieval_b
-                ON co_retrieval_pairs(memory_id_b);",
+                ON co_retrieval_pairs(memory_id_b);
+            CREATE TABLE IF NOT EXISTS memory_sessions (
+                memory_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (memory_id, session_id),
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS idx_memory_sessions_session
+                ON memory_sessions(session_id);",
         )?;
 
         // session_id column on retrieval_events
@@ -2978,6 +2987,24 @@ impl MemoryStore for SqliteStore {
                 }
             }
 
+            // A write-time session is one additional observation that its
+            // member memories belong together. Count each pair once per
+            // originating session; unlike recall events this is not amplified
+            // by repeated queries.
+            let mut session_stmt = conn.prepare(
+                "SELECT a.memory_id, b.memory_id
+                 FROM memory_sessions a
+                 JOIN memory_sessions b
+                   ON a.session_id = b.session_id AND a.memory_id < b.memory_id",
+            )?;
+            let session_pairs: Vec<(String, String)> = session_stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            drop(session_stmt);
+            for pair in session_pairs {
+                *pair_counts.entry(pair).or_insert(0) += 1;
+            }
+
             // Atomic truncate-and-rewrite
             let tx = conn.transaction()?;
 
@@ -2999,6 +3026,58 @@ impl MemoryStore for SqliteStore {
             tx.commit()?;
 
             Ok(pair_counts.len())
+        })
+    }
+
+    fn associate_memory_session(
+        &self,
+        memory_id: &str,
+        session_id: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let session_id = session_id.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let tx = conn.transaction()?;
+            let inserted = tx.execute(
+                "INSERT OR IGNORE INTO memory_sessions (memory_id, session_id) VALUES (?1, ?2)",
+                params![memory_id, session_id],
+            )?;
+            if inserted == 0 {
+                tx.commit()?;
+                return Ok(0);
+            }
+
+            let peers: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "SELECT memory_id FROM memory_sessions
+                     WHERE session_id = ?1 AND memory_id <> ?2",
+                )?;
+                let rows = stmt
+                    .query_map(params![session_id, memory_id], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                rows
+            };
+            let now = chrono::Utc::now().to_rfc3339();
+            for peer in &peers {
+                let (a, b) = if memory_id < *peer {
+                    (memory_id.as_str(), peer.as_str())
+                } else {
+                    (peer.as_str(), memory_id.as_str())
+                };
+                tx.execute(
+                    "INSERT INTO co_retrieval_pairs
+                         (memory_id_a, memory_id_b, co_count, last_updated)
+                     VALUES (?1, ?2, 1, ?3)
+                     ON CONFLICT(memory_id_a, memory_id_b) DO UPDATE SET
+                         co_count = co_count + 1,
+                         last_updated = excluded.last_updated",
+                    params![a, b, now],
+                )?;
+            }
+            tx.commit()?;
+            Ok(peers.len())
         })
     }
 
@@ -5456,6 +5535,57 @@ mod tests {
         let store = SqliteStore::open_in_memory().unwrap();
         let count = store.rebuild_co_retrieval_index().await.unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn write_time_session_is_durable_idempotent_and_ranked() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.write(&make_mem("m1", "k1", "w"), &[]).await.unwrap();
+        store.write(&make_mem("m2", "k2", "w"), &[]).await.unwrap();
+
+        assert_eq!(
+            store
+                .associate_memory_session("m1", "chat-a")
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .associate_memory_session("m2", "chat-a")
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .associate_memory_session("m2", "chat-a")
+                .await
+                .unwrap(),
+            0,
+            "replaying the same write must not inflate the pair"
+        );
+        let related = store.related_memories("m1", 10).await.unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].memory_id, "m2");
+        assert_eq!(related[0].co_count, 1);
+
+        // Rebuilding must preserve the write-time signal, not erase it.
+        assert_eq!(store.rebuild_co_retrieval_index().await.unwrap(), 1);
+        let rebuilt = store.related_memories("m1", 10).await.unwrap();
+        assert_eq!(rebuilt[0].co_count, 1);
+
+        let stored: i64 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM memory_sessions WHERE session_id = 'chat-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 2);
     }
 
     #[tokio::test]

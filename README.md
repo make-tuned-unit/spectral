@@ -176,7 +176,7 @@ spectral = { git = "https://github.com/make-tuned-unit/spectral" }
 ```
 
 ```rust
-use spectral::{Brain, Visibility};
+use spectral::{Brain, RecallOptions, Visibility};
 
 // Open or create a brain at a directory path
 let brain = Brain::open("./my-brain")?;
@@ -184,9 +184,12 @@ let brain = Brain::open("./my-brain")?;
 // Remember free-text observations
 brain.remember("auth-decision", "Decided to use Clerk for auth", Visibility::Private)?;
 
-// Recall with hybrid search (fingerprints + graph + FTS)
-let result = brain.recall_local("what was the auth decision")?;
-for hit in &result.memory_hits {
+// Integrated recall with an explicit visibility boundary
+let result = brain.recall_with(
+    "what was the auth decision",
+    &RecallOptions::new(Visibility::Private),
+)?;
+for hit in &result.merged_hits {
     println!("[{}] {}", hit.key, hit.content);
 }
 

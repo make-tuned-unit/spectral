@@ -133,12 +133,64 @@ pub struct ForgetReport {
     /// Post-delete probe: `recognize` on the deleted content did not return a
     /// `Recognized` verdict naming the forgotten memory. `true` = verified gone.
     pub recognize_clear: bool,
+    /// Detailed outcome of the recall verification probe. Unlike the legacy
+    /// boolean, this preserves probe failures instead of treating them as
+    /// evidence that the memory is gone.
+    pub recall_verification: VerificationStatus,
+    /// Detailed outcome of the recognition verification probe.
+    pub recognition_verification: VerificationStatus,
+}
+
+/// Outcome of a post-delete verification probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerificationStatus {
+    /// The probe completed and found no residual reference to the memory.
+    VerifiedClear,
+    /// The probe completed and still found the forgotten memory.
+    ResidualFound,
+    /// The probe could not establish an answer. Verification is fail-closed:
+    /// this state never counts as successful forgetting.
+    VerificationFailed(String),
+}
+
+/// Coverage of the deterministic fields derived after a primary memory write.
+/// Counts are over at most `scanned` memories, making the report safe to use as
+/// a bounded health probe on large brains.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DerivationHealthReport {
+    pub scanned: usize,
+    pub missing_content_hash: usize,
+    pub missing_declarative_density: usize,
+    pub missing_signature: usize,
+    pub missing_spectrogram: usize,
+}
+
+impl DerivationHealthReport {
+    pub fn is_healthy(&self) -> bool {
+        self.missing_content_hash == 0
+            && self.missing_declarative_density == 0
+            && self.missing_signature == 0
+            && self.missing_spectrogram == 0
+    }
+}
+
+/// Work completed by [`Brain::repair_derivations`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DerivationRepairReport {
+    pub scanned: usize,
+    pub content_hashes_repaired: usize,
+    pub densities_repaired: usize,
+    pub signatures_repaired: usize,
+    pub recognition_enrollments_refreshed: usize,
+    pub spectrograms_repaired: usize,
 }
 
 impl ForgetReport {
     /// The memory existed and every substrate + probe confirms it is gone.
     pub fn fully_forgotten(&self) -> bool {
-        self.store.existed && self.recall_clear && self.recognize_clear
+        self.store.existed
+            && self.recall_verification == VerificationStatus::VerifiedClear
+            && self.recognition_verification == VerificationStatus::VerifiedClear
     }
 }
 
@@ -194,6 +246,10 @@ pub struct RememberOpts {
     /// Assign the memory to this episode. `None` = auto-detect via
     /// time-gap heuristic.
     pub episode_id: Option<String>,
+    /// Originating conversation/session. Persisted as a durable memory-session
+    /// association and consumed by co-retrieval ranking; memories written in
+    /// the same session become associated once, idempotently.
+    pub session_id: Option<String>,
     /// Compaction tier for ambient stream memories. Set to `Some(Raw)` when
     /// ingesting raw activity events; the Librarian (or other consumer-side
     /// compaction process) updates this to `HourlyRollup`, `DailyRollup`, or
@@ -228,6 +284,9 @@ pub struct RememberResult {
     /// near-duplicate. `None` when recurrence feedback is off or no prior
     /// match crossed the familiarity threshold.
     pub recurrence: Option<Recurrence>,
+    /// Non-fatal failures while deriving secondary indexes or metadata. The
+    /// primary memory is committed; call `repair_derivations` to reconcile.
+    pub derivation_warnings: Vec<String>,
 }
 
 /// A detected content recurrence: the incoming memory re-encountered a prior
@@ -584,6 +643,7 @@ pub struct Brain {
     ontology: Ontology,
     /// Entities created at runtime via AutoCreate policy. Checked alongside the ontology.
     runtime_entities: Mutex<Vec<crate::ontology::OntologyEntity>>,
+    ontology_write: Mutex<()>,
     ontology_path: PathBuf,
     store: GraphStore,
     memory_store: Arc<dyn MemoryStore>,
@@ -630,7 +690,7 @@ pub struct Brain {
 /// high-confidence re-encounters — restatements that reuse the salient
 /// specifics (the recognition strong regime), not loose paraphrases (its weak
 /// regime, which needs embeddings) — to avoid false reinforcement.
-const RECURRENCE_MIN_FAMILIARITY: f64 = 0.4;
+const RECURRENCE_MIN_FAMILIARITY: f64 = 0.60;
 /// Reinforcement strength applied to a recurring prior memory. Bounded and
 /// small: recurrence nudges importance, it does not saturate it.
 const RECURRENCE_STRENGTH: f64 = 0.05;
@@ -813,6 +873,7 @@ impl Brain {
             device_id,
             ontology,
             runtime_entities: Mutex::new(Vec::new()),
+            ontology_write: Mutex::new(()),
             ontology_path,
             store,
             memory_store,
@@ -1212,20 +1273,68 @@ impl Brain {
         aliases: &[String],
         visibility: Visibility,
     ) -> Result<(), Error> {
-        use std::fmt::Write;
-        let mut block = String::new();
-        writeln!(block).unwrap();
-        writeln!(block, "[[entity]]").unwrap();
-        writeln!(block, "type = \"{}\"", entity_type).unwrap();
-        writeln!(block, "canonical = \"{}\"", canonical).unwrap();
-        let alias_strs: Vec<String> = aliases.iter().map(|a| format!("\"{}\"", a)).collect();
-        writeln!(block, "aliases = [{}]", alias_strs.join(", ")).unwrap();
-        writeln!(block, "visibility = \"{}\"", visibility_to_str(visibility)).unwrap();
+        let _guard = self
+            .ontology_write
+            .lock()
+            .map_err(|e| Error::Schema(format!("ontology write lock poisoned: {e}")))?;
+        let source = std::fs::read_to_string(&self.ontology_path)?;
+        let mut document: toml::Value = toml::from_str(&source)?;
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| Error::Ontology("ontology root must be a TOML table".into()))?;
+        let entities = root
+            .entry("entity")
+            .or_insert_with(|| toml::Value::Array(Vec::new()))
+            .as_array_mut()
+            .ok_or_else(|| Error::Ontology("ontology entity must be an array of tables".into()))?;
 
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&self.ontology_path)?;
-        std::io::Write::write_all(&mut file, block.as_bytes())?;
+        let mut entity = toml::map::Map::new();
+        entity.insert("type".into(), toml::Value::String(entity_type.into()));
+        entity.insert("canonical".into(), toml::Value::String(canonical.into()));
+        entity.insert(
+            "aliases".into(),
+            toml::Value::Array(aliases.iter().cloned().map(toml::Value::String).collect()),
+        );
+        entity.insert(
+            "visibility".into(),
+            toml::Value::String(visibility_to_str(visibility)),
+        );
+        entities.push(toml::Value::Table(entity));
+
+        // Serialize the complete valid document and atomically replace it, so
+        // crashes cannot leave a half-written ontology. The lock prevents two
+        // threads sharing this Brain from racing the read/modify/write cycle.
+        let serialized = toml::to_string_pretty(&document)
+            .map_err(|e| Error::Ontology(format!("failed to serialize ontology: {e}")))?;
+        let mut temp = None;
+        for sequence in 0..100u8 {
+            let path = self.ontology_path.with_extension(format!(
+                "toml.tmp.{}.{}",
+                std::process::id(),
+                sequence
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    temp = Some((path, file));
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let (temp_path, mut temp_file) =
+            temp.ok_or_else(|| Error::Schema("unable to allocate temporary ontology file".into()))?;
+        std::io::Write::write_all(&mut temp_file, serialized.as_bytes())?;
+        temp_file.sync_all()?;
+        drop(temp_file);
+        if let Err(error) = std::fs::rename(&temp_path, &self.ontology_path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -1310,6 +1419,7 @@ impl Brain {
         opts: RememberOpts,
     ) -> Result<RememberResult, Error> {
         self.ensure_writable("remember_with")?;
+        let mut derivation_warnings = Vec::new();
         let memory_id = format!(
             "{:016x}",
             u64::from_be_bytes(
@@ -1320,6 +1430,7 @@ impl Brain {
         );
 
         let vis_str = visibility_to_str(opts.visibility);
+        let session_id = opts.session_id.clone();
         let ingest_opts = spectral_ingest::ingest::IngestOpts {
             source: opts.source,
             device_id: opts.device_id,
@@ -1344,12 +1455,23 @@ impl Brain {
             ))
             .map_err(|e| Error::Schema(e.to_string()))?;
 
+        if let Some(session_id) = session_id.as_deref().filter(|id| !id.is_empty()) {
+            self.rt
+                .block_on(
+                    self.memory_store
+                        .associate_memory_session(&result.memory.id, session_id),
+                )
+                .map_err(|e| Error::Schema(format!("persist memory session: {e}")))?;
+        }
+
         // Compute and store declarative density
         let density = crate::ranking::declarative_density(content);
-        let _ = self.rt.block_on(
+        if let Err(error) = self.rt.block_on(
             self.memory_store
                 .set_declarative_density(&result.memory.id, density),
-        );
+        ) {
+            derivation_warnings.push(format!("declarative density: {error}"));
+        }
 
         // Sign the contribution (best-effort — a signing failure degrades
         // provenance but must not block the write). Signs over the STORED
@@ -1371,12 +1493,16 @@ impl Brain {
                     .identity
                     .sign_memory(content_hash, created_at, &stored.visibility);
                 let sbid = *self.identity.brain_id().as_bytes();
-                let _ = self.rt.block_on(self.memory_store.set_signature(
+                if let Err(error) = self.rt.block_on(self.memory_store.set_signature(
                     &result.memory.id,
                     &sbid,
                     &sig.to_bytes(),
-                ));
+                )) {
+                    derivation_warnings.push(format!("signed provenance: {error}"));
+                }
             }
+        } else {
+            derivation_warnings.push("signed provenance: stored memory could not be read".into());
         }
 
         // Ambient recurrence feedback: BEFORE enrolling the new memory, check
@@ -1399,7 +1525,15 @@ impl Brain {
                 .ok()
                 .and_then(|engine| engine.recognize(content).ok());
             if let Some(rec) = rec {
-                if rec.familiarity >= RECURRENCE_MIN_FAMILIARITY {
+                // Ambient learning must require an identity-bearing verdict,
+                // not merely topical familiarity. Otherwise a same-domain,
+                // different event can reinforce the wrong prior and gradually
+                // pollute recall ranking.
+                if matches!(
+                    rec.verdict,
+                    spectral_recognition::Verdict::Recognized { .. }
+                ) && rec.familiarity >= RECURRENCE_MIN_FAMILIARITY
+                {
                     if let Some(top) = rec.traces.first() {
                         if top.memory_id != result.memory.id {
                             if let Ok(Some(prior)) = self.get_memory(&top.memory_id) {
@@ -1420,7 +1554,10 @@ impl Brain {
         if let Ok(mut engine) = self.recognition.lock() {
             if let Err(e) = engine.enroll(&result.memory.id, content) {
                 tracing::warn!("recognition enroll failed (non-fatal): {e}");
+                derivation_warnings.push(format!("recognition enrollment: {e}"));
             }
+        } else {
+            derivation_warnings.push("recognition enrollment: lock poisoned".into());
         }
 
         // Compute and store spectrogram if enabled
@@ -1429,7 +1566,7 @@ impl Brain {
                 self.spectrogram_context(result.memory.wing.as_deref(), &result.memory.id);
             let fp = self.spectrogram_analyzer.analyze(&result.memory, &context);
             let peak_json = serde_json::to_string(&fp.peak_dimensions).unwrap_or_default();
-            let _ = self.rt.block_on(self.memory_store.write_spectrogram(
+            if let Err(error) = self.rt.block_on(self.memory_store.write_spectrogram(
                 &result.memory.id,
                 fp.entity_density,
                 fp.action_type.as_str(),
@@ -1439,7 +1576,9 @@ impl Brain {
                 fp.temporal_specificity,
                 fp.novelty,
                 &peak_json,
-            ));
+            )) {
+                derivation_warnings.push(format!("spectrogram: {error}"));
+            }
         }
 
         Ok(RememberResult {
@@ -1453,6 +1592,7 @@ impl Brain {
             confidence: result.memory.confidence,
             write_outcome: result.write_outcome,
             recurrence,
+            derivation_warnings,
         })
     }
 
@@ -1843,6 +1983,48 @@ impl Brain {
             total_tokens_used: tokens_used,
             max_confidence,
             total_recognition_token_cost: 0,
+            explanation: spectral_cascade::result::RetrievalExplanation {
+                visibility_boundary: visibility_to_str(visibility),
+                candidate_fetch_multiplier: pipeline_config.fetch_mult.max(1),
+                applied_signals: {
+                    let mut signals = vec!["lexical_rank".to_string()];
+                    if pipeline_config.apply_signal_reranking {
+                        signals.push("memory_signal".into());
+                    }
+                    if pipeline_config.apply_ambient_boost {
+                        signals.push("ambient_context".into());
+                    }
+                    if pipeline_config.apply_declarative_boost {
+                        signals.push("declarative_density".into());
+                    }
+                    if pipeline_config.apply_recency {
+                        signals.push("recency".into());
+                    }
+                    if pipeline_config.co_retrieval_weight != 0.0 {
+                        signals.push("co_retrieval".into());
+                    }
+                    if pipeline_config.apply_context_dedup {
+                        signals.push("context_dedup".into());
+                    }
+                    if pipeline_config.apply_episode_diversity {
+                        signals.push("episode_diversity".into());
+                    }
+                    if !matches!(
+                        pipeline_config.spread.mode,
+                        crate::spreading::SpreadMode::Off
+                    ) {
+                        signals.push("associative_spreading".into());
+                    }
+                    signals
+                },
+                co_retrieval_weight: pipeline_config.co_retrieval_weight,
+                recency_half_life_days: pipeline_config
+                    .apply_recency
+                    .then_some(pipeline_config.recency_half_life_days),
+                episode_diversity_cap: pipeline_config
+                    .apply_episode_diversity
+                    .then_some(pipeline_config.max_per_episode),
+            },
         })
     }
 
@@ -2120,28 +2302,48 @@ impl Brain {
 
         // Verification probe. If the memory never existed, treat probes as
         // vacuously clear so `fully_forgotten()` keys off `existed`.
-        let (recall_clear, recognize_clear) = if !store.existed || content.is_empty() {
-            (true, true)
+        let (recall_verification, recognition_verification) = if !store.existed
+            || content.is_empty()
+        {
+            (
+                VerificationStatus::VerifiedClear,
+                VerificationStatus::VerifiedClear,
+            )
         } else {
-            let recall_clear = self
-                .recall_topk_fts(&content, &RecallTopKConfig::default(), Visibility::Private)
-                .map(|hits| !hits.iter().any(|h| h.key == key))
-                .unwrap_or(true);
-            let recognize_clear = match self.recognize(&content) {
-                Ok(r) => !matches!(
-                    r.verdict,
-                    spectral_recognition::Verdict::Recognized { memory_id: ref mid } if *mid == memory_id
-                ),
-                Err(_) => true,
+            let recall_verification = match self.recall_topk_fts(
+                &content,
+                &RecallTopKConfig::default(),
+                Visibility::Private,
+            ) {
+                Ok(hits) if hits.iter().any(|h| h.key == key) => VerificationStatus::ResidualFound,
+                Ok(_) => VerificationStatus::VerifiedClear,
+                Err(error) => VerificationStatus::VerificationFailed(error.to_string()),
             };
-            (recall_clear, recognize_clear)
+            let recognition_verification = match self.recognize(&content) {
+                Ok(r)
+                    if matches!(
+                        r.verdict,
+                        spectral_recognition::Verdict::Recognized { memory_id: ref mid } if *mid == memory_id
+                    ) =>
+                {
+                    VerificationStatus::ResidualFound
+                }
+                Ok(_) => VerificationStatus::VerifiedClear,
+                Err(error) => VerificationStatus::VerificationFailed(error.to_string()),
+            };
+            (recall_verification, recognition_verification)
         };
+
+        let recall_clear = recall_verification == VerificationStatus::VerifiedClear;
+        let recognize_clear = recognition_verification == VerificationStatus::VerifiedClear;
 
         Ok(ForgetReport {
             store,
             recognition_removed,
             recall_clear,
             recognize_clear,
+            recall_verification,
+            recognition_verification,
         })
     }
 
@@ -2447,6 +2649,102 @@ impl Brain {
         self.rt
             .block_on(self.memory_store.backfill_content_hashes())
             .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Inspect bounded coverage of fields derived from primary memory rows.
+    /// This is read-only and suitable for health checks.
+    pub fn derivation_health(&self, limit: usize) -> Result<DerivationHealthReport, Error> {
+        let memories = self
+            .rt
+            .block_on(self.memory_store.list_memories_by_signal(0.0, limit))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        let missing_spectrogram = if self.enable_spectrogram {
+            self.rt
+                .block_on(self.memory_store.memories_without_spectrogram(limit))
+                .map_err(|e| Error::Schema(e.to_string()))?
+                .len()
+        } else {
+            0
+        };
+        Ok(DerivationHealthReport {
+            scanned: memories.len(),
+            missing_content_hash: memories
+                .iter()
+                .filter(|memory| memory.content_hash.is_none())
+                .count(),
+            missing_declarative_density: memories
+                .iter()
+                .filter(|memory| memory.declarative_density.is_none())
+                .count(),
+            missing_signature: memories
+                .iter()
+                .filter(|memory| memory.signature.is_none())
+                .count(),
+            missing_spectrogram,
+        })
+    }
+
+    /// Idempotently rebuild bounded derived state after a partial ingest or
+    /// upgrade. Primary memory rows are never changed or deleted.
+    pub fn repair_derivations(&self, limit: usize) -> Result<DerivationRepairReport, Error> {
+        self.ensure_writable("repair_derivations")?;
+        let content_hashes_repaired = self
+            .rt
+            .block_on(self.memory_store.backfill_content_hashes())
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        let memories = self
+            .rt
+            .block_on(self.memory_store.list_memories_by_signal(0.0, limit))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        let mut report = DerivationRepairReport {
+            scanned: memories.len(),
+            content_hashes_repaired,
+            ..DerivationRepairReport::default()
+        };
+
+        for memory in memories {
+            if memory.declarative_density.is_none() {
+                let density = crate::ranking::declarative_density(&memory.content);
+                self.rt
+                    .block_on(
+                        self.memory_store
+                            .set_declarative_density(&memory.id, density),
+                    )
+                    .map_err(|e| Error::Schema(e.to_string()))?;
+                report.densities_repaired += 1;
+            }
+
+            if memory.signature.is_none() {
+                if let (Some(content_hash), Some(created_at)) =
+                    (memory.content_hash.as_deref(), memory.created_at.as_deref())
+                {
+                    let signature =
+                        self.identity
+                            .sign_memory(content_hash, created_at, &memory.visibility);
+                    let brain_id = *self.identity.brain_id().as_bytes();
+                    report.signatures_repaired += self
+                        .rt
+                        .block_on(self.memory_store.set_signature(
+                            &memory.id,
+                            &brain_id,
+                            &signature.to_bytes(),
+                        ))
+                        .map_err(|e| Error::Schema(e.to_string()))?;
+                }
+            }
+
+            self.recognition
+                .lock()
+                .map_err(|e| Error::Schema(format!("recognition lock poisoned: {e}")))?
+                .enroll(&memory.id, &memory.content)
+                .map_err(|e| Error::Schema(format!("recognition repair failed: {e}")))?;
+            report.recognition_enrollments_refreshed += 1;
+        }
+
+        if self.enable_spectrogram {
+            report.spectrograms_repaired = self.backfill_spectrograms()?;
+        }
+        Ok(report)
     }
 
     /// List retrieval events for a given session, ordered by timestamp ASC.

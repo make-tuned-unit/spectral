@@ -1,122 +1,67 @@
-# Operational Considerations
+# Operational considerations
 
-This document covers crash recovery, concurrency, and known limitations
-discovered through testing. Read this if you're running Spectral in a
-long-lived process (an agent, a daemon, a server).
+Spectral stores relational data, memories, full-text indexes, fingerprints, and
+derived ranking state in one SQLite database (`memory.db`). Recognition uses a
+second SQLite sidecar (`recognition.db`) because it has an independent index
+lifecycle. Identity and ontology metadata are files in the same brain directory.
 
-## Crash recovery
+## Durability and recovery
 
-### What survives a crash
+Primary memory writes and their FTS/fingerprint rows are transactional. A
+`remember()` call that returns successfully has committed its primary row.
+Density, signed provenance, recognition enrollment, and optional spectrograms
+are derived immediately afterward. An interruption in that phase can leave a
+valid, recallable memory with incomplete derived state.
 
-Spectral uses two storage engines. Both handle crashes differently:
+Use the bounded health probe and idempotent repair API after an unclean shutdown
+or upgrade:
 
-**SQLite (memory store — `memory.db`)**
+```rust,no_run
+# use spectral::Brain;
+# let brain = Brain::open("./my-brain")?;
+let health = brain.derivation_health(10_000)?;
+if !health.is_healthy() {
+    let repaired = brain.repair_derivations(10_000)?;
+    eprintln!("repaired: {repaired:?}");
+}
+# Ok::<(), spectral::Error>(())
+```
 
-SQLite with WAL (Write-Ahead Logging) mode ensures that completed SQL
-statements are durable. If your process crashes, every `remember()` call
-that returned `Ok(...)` will be there when you reopen the brain.
+Ontology auto-creation is persisted through validated TOML serialization and an
+atomic file replacement. A crash sees either the old or new complete ontology.
 
-**Kuzu (graph store — `graph.kz`)**
-
-Kuzu operations (entity upserts, triple inserts) are individually durable.
-If `assert()` returned `Ok(...)`, the data survived.
-
-### What doesn't survive
-
-**Partial fingerprint sets (SQLite)**
-
-`Brain::remember()` calls `MemoryStore::write()`, which does one INSERT
-for the memory and then one INSERT per fingerprint — without wrapping
-them in an explicit transaction. If the process crashes between the memory
-INSERT and the last fingerprint INSERT:
-
-- The memory exists and is retrievable via FTS search.
-- Some fingerprints are missing, so fingerprint-based retrieval may not
-  find it until the next `remember()` call pairs it again.
-
-This is a durability gap, not corruption. No data is invalid; some
-retrieval paths are temporarily degraded.
-
-**Partial graph assertions (Kuzu)**
-
-`Brain::assert()` does three separate operations: upsert subject entity,
-upsert object entity, insert triple. If the process crashes between them:
-
-- Entities may exist without their connecting triple ("dangling entities").
-- Since `upsert_entity` is idempotent, re-running the same `assert()`
-  after recovery will complete the operation.
-
-### Recommended recovery pattern
-
-After an unclean shutdown, simply reopen the brain and continue. There
-is no need for a repair step. If you track which operations were in
-flight, re-running them is safe — all write operations are idempotent.
+`Brain::forget` deletes all indexed traces and verifies recall and recognition
+afterward. Verification failures are reported as `VerificationFailed`; they are
+never counted as successful forgetting by `fully_forgotten()`.
 
 ## Concurrency
 
-### Single process, multiple threads
+A `Brain` may be shared across threads. SQLite access is serialized through the
+store connection, so operations are correct but write throughput is bounded by
+one connection. Batch APIs are preferable to large numbers of tiny concurrent
+writes.
 
-**Safe.** A single `Brain` instance can be shared across threads
-(wrapped in `Arc<Brain>`). All operations take `&self`, not `&mut self`.
+SQLite WAL supports multiple processes, but Spectral does not coordinate
+application-level read/modify/write operations between independent `Brain`
+instances. Use one writer process per brain. Open peer brains with `read_only`
+for federation fan-out; this prevents migrations, feedback writes, and query
+telemetry from mutating a brain you do not own.
 
-- **SQLite**: Serialized via `Arc<Mutex<Connection>>`. Threads take
-  turns; no parallel writes.
-- **Kuzu**: Creates a fresh `Connection` per operation. Kuzu serializes
-  writes internally.
+## Visibility
 
-This means concurrent writes are *correct but sequential*. If throughput
-matters, batch your writes rather than spawning many threads.
+Use `Brain::recall_with` for new integrations. It requires a `RecallOptions`
+value with an explicit visibility boundary and runs the integrated cascade.
+The older `recall` and `recall_local` methods remain compatibility paths using
+basic TACT retrieval. `recall_cascade` is intentionally local/unrestricted;
+external and federated callers must use `recall_cascade_scoped`.
 
-### Multiple processes, same brain
+## Backups and upgrades
 
-**Not recommended.** Two separate processes opening the same `data_dir`
-create two separate Kuzu database handles and two separate SQLite
-connections.
+Stop the writer or use SQLite's backup facilities before copying a live brain.
+Back up the whole directory so `memory.db`, `recognition.db`, identity keys, and
+the ontology stay together. After upgrading, open the brain normally, run
+`derivation_health`, and repair any reported gaps.
 
-- **SQLite**: Handles multi-process access correctly via WAL file locks.
-  Both processes can read and write safely.
-- **Kuzu**: Does not reliably support multiple processes opening the
-  same database directory simultaneously. The second open may succeed,
-  fail, or produce undefined behavior depending on the Kuzu version and
-  platform.
-
-**Recommendation:** Use a single writer process per brain. If you need
-multi-process access, have one process own the brain and expose it via
-IPC (socket, gRPC, etc.).
-
-### Last-write-wins semantics
-
-When multiple threads `remember()` the same key, the SQLite `ON CONFLICT`
-clause applies: the last write wins. The final state will be the content
-from whichever thread wrote last. This is correct but non-deterministic
-if ordering matters to you.
-
-## Known limitations
-
-| Limitation | Impact | Workaround |
-|---|---|---|
-| No explicit transactions in `MemoryStore::write()` | Partial fingerprint sets after crash | Re-run `remember()` to regenerate |
-| No transaction wrapping in `Brain::assert()` | Dangling entities after crash | Re-run the `assert()` |
-| Single `Mutex` serializes all SQLite access | No write parallelism | Batch writes, accept serialization |
-| Kuzu doesn't support multi-process access | Second process may fail or corrupt | One writer process per brain |
-| No read replicas or snapshots | Can't serve reads during heavy writes | Accept serialized access |
-
-## Production deployment recommendations
-
-1. **One writer per brain.** Don't open the same `data_dir` from multiple
-   processes. Use IPC if you need multi-process access.
-
-2. **Handle errors, retry operations.** All Brain write methods are
-   idempotent. If a write fails or the process crashes, retry on next
-   startup.
-
-3. **Back up before upgrades.** The SQLite and Kuzu files are the brain's
-   state. Copy `data_dir` before upgrading Spectral versions.
-
-4. **Monitor disk space.** Both SQLite WAL files and Kuzu data directories
-   can grow. Kuzu in particular produces large intermediate files during
-   schema operations.
-
-5. **Use `recall_local()` for internal queries.** Only use visibility-
-   filtered `recall(query, context)` when serving external/federated
-   requests.
+Monitor database and WAL size. Retrieval events are adaptive-state input and
+can grow continuously in long-lived deployments; consumers should establish a
+retention policy appropriate to their audit requirements.

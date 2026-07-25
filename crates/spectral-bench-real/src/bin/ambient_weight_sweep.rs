@@ -248,6 +248,7 @@ fn main() {
     let run = |cases: &[AmbCase], w: AmbientBoostWeights| -> usize {
         let cfg = CascadePipelineConfig {
             ambient_weights: w,
+            adaptive_ambient: false,
             ..Default::default()
         };
         cases
@@ -310,6 +311,28 @@ fn main() {
             overrides.len()
         );
     }
+    let adaptive = CascadePipelineConfig::default();
+    let run_adaptive = |cases: &[AmbCase]| -> usize {
+        cases
+            .iter()
+            .filter(|c| {
+                let mut ctx = RecognitionContext::empty();
+                ctx.focus_wing = Some(c.focus.to_string());
+                brain
+                    .recall_cascade(c.query, &ctx, &adaptive)
+                    .ok()
+                    .and_then(|r| r.merged_hits.first().map(|h| h.key == c.expect))
+                    .unwrap_or(false)
+            })
+            .count()
+    };
+    println!(
+        "adaptive lexical gate: A={}/{} B={}/{}",
+        run_adaptive(&amb),
+        amb.len(),
+        run_adaptive(&overrides),
+        overrides.len()
+    );
     println!("\nDeterministic, $0, no LLM. The right default maximizes disambiguation subject");
     println!("to never hijacking an explicit query.");
 }

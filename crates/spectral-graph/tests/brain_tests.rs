@@ -1284,6 +1284,63 @@ fn forget_missing_key_reports_not_existed() {
     );
 }
 
+#[test]
+fn forget_report_never_treats_probe_failure_as_verified() {
+    use spectral_graph::brain::{ForgetReport, VerificationStatus};
+
+    let report = ForgetReport {
+        store: spectral_ingest::ForgetReceipt {
+            existed: true,
+            memory_rows: 1,
+            ..Default::default()
+        },
+        recognition_removed: true,
+        recall_clear: false,
+        recognize_clear: true,
+        recall_verification: VerificationStatus::VerificationFailed("database busy".into()),
+        recognition_verification: VerificationStatus::VerifiedClear,
+    };
+    assert!(!report.fully_forgotten());
+}
+
+#[test]
+fn derivation_health_detects_and_repairs_legacy_gaps() {
+    let tmp = TempDir::new().unwrap();
+    let memory_db = tmp.path().join("memory.db");
+    {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        brain
+            .remember(
+                "repair-me",
+                "The deployment region is Halifax",
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+
+    let conn = rusqlite::Connection::open(&memory_db).unwrap();
+    conn.execute(
+        "UPDATE memories
+         SET content_hash = NULL, declarative_density = NULL, signature = NULL
+         WHERE key = 'repair-me'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    let before = brain.derivation_health(100).unwrap();
+    assert_eq!(before.missing_content_hash, 1);
+    assert_eq!(before.missing_declarative_density, 1);
+    assert_eq!(before.missing_signature, 1);
+
+    let repaired = brain.repair_derivations(100).unwrap();
+    assert_eq!(repaired.content_hashes_repaired, 1);
+    assert_eq!(repaired.densities_repaired, 1);
+    assert_eq!(repaired.signatures_repaired, 1);
+    assert!(brain.derivation_health(100).unwrap().is_healthy());
+}
+
 /// Serializes the `SPECTRAL_FTS_FUSION` env window against porter-brain opens.
 /// The store captures the flag from this process-global env at `Brain::open`, so
 /// under parallel tests a porter (fusion-off) brain could open while a fusion

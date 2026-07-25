@@ -1,4 +1,4 @@
-use spectral::{Brain, RecallTopKConfig, RememberOpts, Visibility};
+use spectral::{Brain, RecallOptions, RecallProfile, RecallTopKConfig, RememberOpts, Visibility};
 use tempfile::TempDir;
 
 fn open_brain(tmp: &TempDir) -> Brain {
@@ -27,6 +27,58 @@ fn seed(brain: &Brain) {
             },
         )
         .unwrap();
+}
+
+#[test]
+fn recall_with_requires_and_enforces_visibility() {
+    let tmp = TempDir::new().unwrap();
+    let brain = open_brain(&tmp);
+    brain
+        .remember("private", "private launch code zephyr", Visibility::Private)
+        .unwrap();
+    brain
+        .remember("public", "public launch code zephyr", Visibility::Public)
+        .unwrap();
+
+    let options = RecallOptions::new(Visibility::Public).profile(RecallProfile::Balanced);
+    let result = brain.recall_with("launch code zephyr", &options).unwrap();
+    assert!(result.merged_hits.iter().any(|hit| hit.key == "public"));
+    assert!(!result.merged_hits.iter().any(|hit| hit.key == "private"));
+    assert_eq!(result.explanation.visibility_boundary, "public");
+    assert!(result
+        .explanation
+        .applied_signals
+        .iter()
+        .any(|signal| signal == "lexical_rank"));
+}
+
+#[test]
+fn derivation_health_is_clean_after_normal_ingest_and_repair_is_idempotent() {
+    let tmp = TempDir::new().unwrap();
+    let brain = open_brain(&tmp);
+    seed(&brain);
+
+    let health = brain.derivation_health(100).unwrap();
+    assert!(
+        health.is_healthy(),
+        "unexpected derivation gaps: {health:?}"
+    );
+
+    let repaired = brain.repair_derivations(100).unwrap();
+    assert_eq!(repaired.content_hashes_repaired, 0);
+    assert_eq!(repaired.densities_repaired, 0);
+    assert_eq!(repaired.signatures_repaired, 0);
+    assert!(brain.derivation_health(100).unwrap().is_healthy());
+}
+
+#[test]
+fn normal_ingest_reports_no_derivation_warnings() {
+    let tmp = TempDir::new().unwrap();
+    let brain = open_brain(&tmp);
+    let result = brain
+        .remember("healthy", "A fully derived memory", Visibility::Private)
+        .unwrap();
+    assert!(result.derivation_warnings.is_empty());
 }
 
 // ── set_compaction_tier ─────────────────────────────────────────────

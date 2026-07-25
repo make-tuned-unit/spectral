@@ -2,11 +2,9 @@
 //!
 //! A frequency-domain memory system for AI agents, designed for federation.
 //!
-//! Spectral gives your agent two complementary memory systems:
-//! - A **knowledge graph** (Kuzu) for typed entity relationships
-//! - A **fingerprint store** (SQLite + FTS5) for fast topical retrieval
-//!
-//! Both are accessible through a single [`Brain`] handle.
+//! Spectral gives your agent complementary recall, recognition, and relational
+//! memory over one embedded SQLite database, accessible through a single
+//! [`Brain`] handle.
 //!
 //! ## Quick start
 //!
@@ -50,7 +48,7 @@
 //! | Crate | Role |
 //! |---|---|
 //! | `spectral-core` | Content-addressed IDs, identity, visibility |
-//! | `spectral-graph` | Kuzu graph store, ontology, canonicalization, Brain API |
+//! | `spectral-graph` | SQLite graph store, ontology, canonicalization, Brain API |
 //! | `spectral-ingest` | Memory ingestion: classify, score, fingerprint (Constellation) |
 //! | `spectral-tact` | TACT retrieval: fingerprint → wing → FTS search |
 //! | `spectral-spectrogram` | *(reserved)* Phase 2 cognitive cross-wing matching |
@@ -70,10 +68,11 @@ pub use spectral_graph::activity::{
     RedactionPolicy, RollupStats,
 };
 pub use spectral_graph::brain::{
-    AaakOpts, AaakResult, AssertResult, CrossWingRecallResult, EntityPolicy, HybridRecallResult,
-    IngestResult, IngestTextOpts, IngestTextResult, RecallResult, RecallTopKConfig, ReinforceOpts,
-    ReinforceResult, RejectedTriple, RejectionReason, RememberOpts, RememberResult,
-    ResonantMemoryHit,
+    AaakOpts, AaakResult, AssertResult, CrossWingRecallResult, DerivationHealthReport,
+    DerivationRepairReport, EntityPolicy, HybridRecallResult, IngestResult, IngestTextOpts,
+    IngestTextResult, RecallResult, RecallTopKConfig, ReinforceOpts, ReinforceResult,
+    RejectedTriple, RejectionReason, RememberOpts, RememberResult, ResonantMemoryHit,
+    VerificationStatus,
 };
 pub use spectral_graph::Error;
 pub use spectral_ingest::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
@@ -83,6 +82,50 @@ pub use spectral_tact::LlmClient;
 // Re-export chrono types used in the public API surface (recall_at, recall_local_at)
 // so consumers don't need to pin chrono as a direct dependency.
 pub use chrono::{DateTime, Utc};
+
+/// Stable retrieval profiles for [`Brain::recall_with`].
+///
+/// Profiles are intentionally coarse. Callers needing experimental tuning can
+/// still use `recall_cascade_scoped` with a full `CascadePipelineConfig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecallProfile {
+    /// Lowest-complexity deterministic cascade with adaptive context disabled.
+    Fast,
+    /// Validated default cascade: signal, recency, density, and dedup enabled.
+    Balanced,
+    /// Balanced retrieval plus caller-provided ambient recognition context.
+    Adaptive,
+}
+
+/// Options for the canonical, visibility-safe integrated recall path.
+#[derive(Debug, Clone)]
+pub struct RecallOptions {
+    /// Required visibility boundary. There is deliberately no `Default` impl,
+    /// so external/federated callers cannot accidentally omit this decision.
+    pub visibility: Visibility,
+    pub profile: RecallProfile,
+    pub context: spectral_graph::RecognitionContext,
+}
+
+impl RecallOptions {
+    pub fn new(visibility: Visibility) -> Self {
+        Self {
+            visibility,
+            profile: RecallProfile::Balanced,
+            context: spectral_graph::RecognitionContext::empty(),
+        }
+    }
+
+    pub fn profile(mut self, profile: RecallProfile) -> Self {
+        self.profile = profile;
+        self
+    }
+
+    pub fn context(mut self, context: spectral_graph::RecognitionContext) -> Self {
+        self.context = context;
+        self
+    }
+}
 
 // Sub-crate access for advanced users
 pub use spectral_core as core;
@@ -128,7 +171,8 @@ impl std::fmt::Debug for Brain {
 impl Brain {
     /// Open or create a brain at the given path with sensible defaults.
     ///
-    /// Uses `<path>/graph.kz` for the graph, `<path>/memory.db` for memories,
+    /// Uses `<path>/memory.db` for graph, memories, and full-text indexes,
+    /// plus `<path>/recognition.db` for the recognition sidecar,
     /// `<path>/ontology.toml` if present (empty ontology otherwise),
     /// default wing/hall rules, and no LLM client.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
@@ -267,6 +311,32 @@ impl Brain {
         self.inner.recall_local_at(query, now)
     }
 
+    /// Canonical integrated recall path. Unlike the legacy [`recall`](Self::recall)
+    /// compatibility method, this applies the complete cascade and requires an
+    /// explicit visibility boundary through [`RecallOptions`].
+    pub fn recall_with(
+        &self,
+        query: &str,
+        options: &RecallOptions,
+    ) -> Result<spectral_cascade::result::CascadeResult, Error> {
+        let mut config = spectral_graph::cascade_layers::CascadePipelineConfig::default();
+        match options.profile {
+            RecallProfile::Fast => {
+                config.apply_ambient_boost = false;
+                config.apply_declarative_boost = false;
+                config.apply_episode_diversity = false;
+                config.co_retrieval_weight = 0.0;
+                config.spread = spectral_graph::spreading::AssocSpreadConfig::default();
+            }
+            RecallProfile::Balanced => {
+                config.apply_ambient_boost = false;
+            }
+            RecallProfile::Adaptive => {}
+        }
+        self.inner
+            .recall_cascade_scoped(query, &options.context, &config, options.visibility)
+    }
+
     /// Graph-only recall filtered by visibility context.
     pub fn recall_graph(
         &self,
@@ -395,12 +465,34 @@ impl Brain {
         self.inner.recall_cascade(query, context, config)
     }
 
+    /// Integrated cascade recall with an explicit visibility boundary.
+    pub fn recall_cascade_scoped(
+        &self,
+        query: &str,
+        context: &spectral_graph::RecognitionContext,
+        config: &spectral_graph::cascade_layers::CascadePipelineConfig,
+        visibility: Visibility,
+    ) -> Result<spectral_cascade::result::CascadeResult, Error> {
+        self.inner
+            .recall_cascade_scoped(query, context, config, visibility)
+    }
+
     /// Rebuild the co-retrieval pairs index from accumulated retrieval events.
     ///
     /// Full recompute (not incremental). Atomic replace via single transaction —
     /// concurrent reads are safe. Idempotent. Returns the number of pairs written.
     pub fn rebuild_co_retrieval_index(&self) -> Result<usize, Error> {
         self.inner.rebuild_co_retrieval_index()
+    }
+
+    /// Report bounded coverage of derived memory state without mutating it.
+    pub fn derivation_health(&self, limit: usize) -> Result<DerivationHealthReport, Error> {
+        self.inner.derivation_health(limit)
+    }
+
+    /// Idempotently repair derived state after interrupted or legacy ingests.
+    pub fn repair_derivations(&self, limit: usize) -> Result<DerivationRepairReport, Error> {
+        self.inner.repair_derivations(limit)
     }
 
     /// Direct access to the underlying graph store.

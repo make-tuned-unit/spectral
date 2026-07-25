@@ -373,6 +373,53 @@ fn auto_created_entities_persist_across_brain_reopen() {
     assert_eq!(result.subject.canonical, "Alice");
 }
 
+#[test]
+fn auto_created_entities_are_toml_escaped_and_reopenable() {
+    let tmp = TempDir::new().unwrap();
+    let ontology_path = copy_ontology(&tmp);
+    let brain = Brain::open(BrainConfig {
+        data_dir: tmp.path().to_path_buf(),
+        ontology_path: ontology_path.clone(),
+        memory_db_path: None,
+        llm_client: None,
+        wing_rules: None,
+        hall_rules: None,
+        device_id: None,
+        enable_spectrogram: false,
+        entity_policy: EntityPolicy::AutoCreate,
+        sqlite_mmap_size: None,
+        fts_tokenizer: None,
+        read_only: false,
+        activity_wing: "activity".into(),
+        redaction_policy: None,
+        tact_config: None,
+    })
+    .unwrap();
+
+    let adversarial = "Alice \"Admin\"\n[[predicate]]";
+    brain
+        .assert_typed(
+            ("person", adversarial),
+            "studies",
+            ("topic", "Library"),
+            0.9,
+            Visibility::Private,
+        )
+        .unwrap();
+    drop(brain);
+
+    let parsed = spectral_graph::ontology::Ontology::load(&ontology_path).unwrap();
+    assert!(parsed
+        .entities
+        .iter()
+        .any(|entity| entity.canonical == adversarial));
+    assert_eq!(
+        parsed.predicates.len(),
+        4,
+        "input must not inject TOML tables"
+    );
+}
+
 // ── Default policy test ──────────────────────────────────────────
 
 #[test]

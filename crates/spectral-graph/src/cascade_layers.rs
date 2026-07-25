@@ -172,6 +172,10 @@ pub struct CascadePipelineConfig {
     pub apply_ambient_boost: bool,
     /// Weights for the ambient boost.
     pub ambient_weights: AmbientBoostWeights,
+    /// Strengthen ambient disambiguation only when lexical evidence is tied.
+    /// A query with a decisive top lexical match keeps the conservative
+    /// weights so context cannot hijack an explicit request.
+    pub adaptive_ambient: bool,
     /// Apply signal_score re-ranking. Default true.
     pub apply_signal_reranking: bool,
     /// Apply recency decay. Default true.
@@ -219,6 +223,7 @@ impl Default for CascadePipelineConfig {
             k: 40,
             apply_ambient_boost: true,
             ambient_weights: AmbientBoostWeights::default(),
+            adaptive_ambient: true,
             apply_signal_reranking: true,
             apply_recency: true,
             recency_half_life_days: 365.0,
@@ -259,6 +264,29 @@ impl Default for CascadePipelineConfig {
 mod config_tests {
     use super::*;
 
+    fn hit(key: &str, content: &str) -> MemoryHit {
+        MemoryHit {
+            id: key.into(),
+            key: key.into(),
+            content: content.into(),
+            wing: None,
+            hall: None,
+            signal_score: 0.5,
+            visibility: "private".into(),
+            hits: 1,
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            declarative_density: None,
+            description: None,
+            source_brain_id: None,
+            signature: None,
+        }
+    }
+
     #[test]
     fn default_fetch_mult_is_off_pending_actor_validation() {
         // The widening capability exists but defaults OFF (1): retrieval-Pareto-
@@ -267,6 +295,27 @@ mod config_tests {
         // silently re-defaulted to 3 without a deterministic, powered actor
         // validation. Flip to 3 only alongside that evidence.
         assert_eq!(CascadePipelineConfig::default().fetch_mult, 1);
+    }
+
+    #[test]
+    fn adaptive_ambient_detects_lexically_decisive_query() {
+        let hits = vec![
+            hit("work:notes", "sprint deploy checklist and open bugs"),
+            hit("cooking:notes", "recipe garlic and salt"),
+        ];
+        assert!(ambient_query_is_decisive(
+            "sprint deploy checklist bugs",
+            &hits
+        ));
+    }
+
+    #[test]
+    fn adaptive_ambient_treats_shared_terms_as_ambiguous() {
+        let hits = vec![
+            hit("work:notes", "the sprint review notes"),
+            hit("cooking:notes", "the recipe review notes"),
+        ];
+        assert!(!ambient_query_is_decisive("review notes", &hits));
     }
 }
 
@@ -326,6 +375,19 @@ pub fn run_cascade_pipeline_scoped(
     }
 
     // Step 2: Unified re-ranking pipeline (same implementation as topk_fts)
+    let ambient_weights = if config.apply_ambient_boost
+        && config.adaptive_ambient
+        && !ambient_query_is_decisive(query, &candidates)
+    {
+        AmbientBoostWeights {
+            // 0.45 clears both ambiguity fixtures; the lexical decisiveness
+            // gate prevents this stronger damp from touching explicit queries.
+            mismatch_penalty: 0.45,
+            ..config.ambient_weights
+        }
+    } else {
+        config.ambient_weights
+    };
     let reranking_config = crate::ranking::RerankingConfig {
         apply_signal_score: config.apply_signal_reranking,
         signal_score_weight: 0.3,
@@ -334,7 +396,7 @@ pub fn run_cascade_pipeline_scoped(
         apply_entity_boost: false,
         entity_boost_weight: 0.05,
         apply_ambient_boost: config.apply_ambient_boost,
-        ambient_weights: config.ambient_weights,
+        ambient_weights,
         apply_declarative_boost: config.apply_declarative_boost,
         declarative_weight: 0.10,
         co_retrieval_weight: config.co_retrieval_weight,
@@ -395,4 +457,36 @@ pub fn run_cascade_pipeline_scoped(
     crate::spreading::associative_spread(brain, &mut results, &config.spread, visibility);
 
     Ok(results)
+}
+
+/// Whether the first lexical candidate has a clear query-term advantage over
+/// every alternative. Ambient context is a disambiguator, so it should become
+/// stronger only when lexical evidence is tied; a decisive explicit query
+/// keeps the conservative penalty that is proven not to hijack requests.
+fn ambient_query_is_decisive(query: &str, candidates: &[MemoryHit]) -> bool {
+    if candidates.len() < 2 {
+        return true;
+    }
+    let terms: HashSet<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|t| t.len() > 2 && !matches!(t.as_str(), "the" | "and" | "for" | "with"))
+        .collect();
+    if terms.len() < 2 {
+        return false;
+    }
+    let overlap = |hit: &MemoryHit| {
+        let text = format!("{} {}", hit.key, hit.content).to_lowercase();
+        let tokens: HashSet<&str> = text
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .collect();
+        terms
+            .iter()
+            .filter(|term| tokens.contains(term.as_str()))
+            .count()
+    };
+    let first = overlap(&candidates[0]);
+    let runner_up = candidates[1..].iter().map(overlap).max().unwrap_or(0);
+    first >= 2 && first > runner_up
 }
