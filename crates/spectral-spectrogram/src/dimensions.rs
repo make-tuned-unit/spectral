@@ -320,16 +320,23 @@ pub fn temporal_specificity(content: &str) -> f64 {
         .count();
 
     // Date-like patterns: "2026-04-28", "04/28", "April 13", "May 5 2026"
-    let date_regex_count = regex::Regex::new(
-        r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{1,2}(?:st|nd|rd|th)?\s+\d{4}",
-    )
-    .unwrap()
-    .find_iter(content)
-    .count();
+    // Static patterns: compiled once, not once per memory. This runs on every
+    // memory at ingest when spectrograms are enabled.
+    static DATE_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let date_regex_count = DATE_RE
+        .get_or_init(|| {
+            regex::Regex::new(
+                r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{1,2}(?:st|nd|rd|th)?\s+\d{4}",
+            )
+            .unwrap()
+        })
+        .find_iter(content)
+        .count();
 
     // Clock time patterns: "3pm", "at 14:30", "10:00 AM"
-    let clock_count = regex::Regex::new(r"\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm|AM|PM)")
-        .unwrap()
+    static CLOCK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let clock_count = CLOCK_RE
+        .get_or_init(|| regex::Regex::new(r"\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm|AM|PM)").unwrap())
         .find_iter(content)
         .count();
 

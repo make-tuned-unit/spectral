@@ -19,6 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   association. Same-session memories immediately contribute once to the
   co-retrieval index, and index rebuilds preserve those write-time pairs.
 
+### Changed (read-path performance)
+- Wing/hall classification no longer recompiles its regexes on every call.
+  `TactConfig` stores rules as pattern strings and `detect_wing`/`detect_hall`
+  called `Regex::new` inside the match loop, so every TACT retrieval — i.e.
+  every cascade recall — recompiled every rule. Compile-once caches added here
+  and for four static patterns (`extract_query_terms`, `extract_fts_words`, and
+  two in `spectral-spectrogram::dimensions`, which ran per memory at ingest).
+  Classification 0.2828 ms → 0.0059 ms (48x); **cascade recall 5.38 ms → 1.48 ms
+  (72% faster)** at 100 memories and 57% faster at 800; `recall_local` 89%
+  faster. Retrieval is byte-identical (25-question oracle: 0 context-hash, 0
+  answer-key, 0 token differences). No subsystem was removed or bypassed.
+- Added `spectral_tact::retrieve_memories`, a sibling of `retrieve` that skips
+  building `context_block`. The cascade path consumed only `memories` and
+  discarded the formatted block. Measured null on its own; kept as elimination
+  of wasted allocation. See `docs/internal/read-path-regex-cache-2026-07-25.md`,
+  which also records the levers tested and rejected.
+
 ### Changed (write-path performance)
 - Constellation fingerprint fan-out is now bounded. `generate_fingerprints`
   previously paired every new memory with *every* qualifying peer in its wing

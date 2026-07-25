@@ -65,3 +65,15 @@ path = "src/bin/write_path_cost.rs"
 [[bin]]
 name = "fingerprint_cap_equivalence"
 path = "src/bin/fingerprint_cap_equivalence.rs"
+
+[[bin]]
+name = "recall_path_cost"
+path = "src/bin/recall_path_cost.rs"
+
+[[bin]]
+name = "stmt_cache_probe"
+path = "src/bin/stmt_cache_probe.rs"
+
+[[bin]]
+name = "tact_tier_probe"
+path = "src/bin/tact_tier_probe.rs"

@@ -1703,9 +1703,11 @@ impl Brain {
     ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
         let mut config = self.tact_config.clone();
         config.max_results = max_results;
+        // `retrieve_memories`, not `retrieve`: this returns only `memories`,
+        // so formatting a context block here would be built and dropped.
         let result = self
             .rt
-            .block_on(spectral_tact::retrieve(
+            .block_on(spectral_tact::retrieve_memories(
                 query,
                 &config,
                 self.memory_store.as_ref(),

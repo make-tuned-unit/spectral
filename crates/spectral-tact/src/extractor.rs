@@ -78,7 +78,9 @@ fn generate_query_hashes(hall: &str, wing: &str) -> Vec<String> {
 }
 
 fn extract_fts_words(msg: &str) -> Vec<String> {
-    let re = regex::Regex::new(r"\w+").unwrap();
+    // Static pattern: compile once, not once per query.
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"\w+").unwrap());
     re.find_iter(&msg.to_lowercase())
         .map(|m| m.as_str().to_string())
         .collect()

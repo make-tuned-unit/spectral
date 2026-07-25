@@ -1,12 +1,43 @@
 //! Wing and hall classification — regex-based keyword matching.
 
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
+
 use regex::Regex;
+
+/// Compile-once cache for classification patterns.
+///
+/// `TactConfig` stores wing/hall rules as pattern *strings*, and classification
+/// runs on every TACT retrieval — which is every cascade recall. Compiling each
+/// pattern per call made classification cost ~0.28 ms, entirely in
+/// `Regex::new`. Patterns come from configuration and are a small fixed set, so
+/// they are cached by pattern text.
+///
+/// A pattern that fails to compile is cached as `None` and skipped, preserving
+/// the previous `if let Ok(re)` behaviour exactly (including not erroring out).
+fn compiled(pattern: &str) -> Option<Regex> {
+    static CACHE: OnceLock<RwLock<HashMap<String, Option<Regex>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+
+    if let Ok(read) = cache.read() {
+        if let Some(hit) = read.get(pattern) {
+            // `Regex` is internally reference-counted, so this clone is cheap.
+            return hit.clone();
+        }
+    }
+
+    let built = Regex::new(pattern).ok();
+    if let Ok(mut write) = cache.write() {
+        write.insert(pattern.to_string(), built.clone());
+    }
+    built
+}
 
 /// Detect the wing (project/domain) from a query string.
 pub fn detect_wing(msg: &str, rules: &[(String, String)]) -> Option<String> {
     let lower = msg.to_lowercase();
     for (pattern, wing) in rules {
-        if let Ok(re) = Regex::new(pattern) {
+        if let Some(re) = compiled(pattern) {
             if re.is_match(&lower) {
                 return Some(wing.clone());
             }
@@ -19,7 +50,7 @@ pub fn detect_wing(msg: &str, rules: &[(String, String)]) -> Option<String> {
 pub fn detect_hall(msg: &str, rules: &[(String, String)]) -> Option<String> {
     let lower = msg.to_lowercase();
     for (pattern, hall) in rules {
-        if let Ok(re) = Regex::new(pattern) {
+        if let Some(re) = compiled(pattern) {
             if re.is_match(&lower) {
                 return Some(hall.clone());
             }
@@ -30,7 +61,9 @@ pub fn detect_hall(msg: &str, rules: &[(String, String)]) -> Option<String> {
 
 /// Extract query terms for overlap boosting. Filters out terms <= 2 chars.
 pub fn extract_query_terms(msg: &str) -> Vec<String> {
-    let re = Regex::new(r"[a-z0-9]+").unwrap();
+    // Static pattern: compile once, not once per query.
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"[a-z0-9]+").unwrap());
     re.find_iter(&msg.to_lowercase())
         .map(|m| m.as_str().to_string())
         .filter(|t| t.len() > 2)

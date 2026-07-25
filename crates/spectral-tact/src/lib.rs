@@ -108,10 +108,34 @@ pub struct TactResult {
 }
 
 /// Run the full TACT retrieval pipeline.
+/// [`retrieve`] without building `context_block`.
+///
+/// The cascade path consumes only `TactResult::memories` and discards the
+/// formatted block, so paying for the formatting there is pure waste on every
+/// recall. Same classification, same tiers, same `memories` and `method` —
+/// only `context_block` differs (always empty). Callers that need the prompt
+/// block should keep using [`retrieve`].
+pub async fn retrieve_memories(
+    user_msg: &str,
+    config: &TactConfig,
+    store: &dyn MemoryStore,
+) -> anyhow::Result<TactResult> {
+    retrieve_inner(user_msg, config, store, false).await
+}
+
 pub async fn retrieve(
     user_msg: &str,
     config: &TactConfig,
     store: &dyn MemoryStore,
+) -> anyhow::Result<TactResult> {
+    retrieve_inner(user_msg, config, store, true).await
+}
+
+async fn retrieve_inner(
+    user_msg: &str,
+    config: &TactConfig,
+    store: &dyn MemoryStore,
+    build_context_block: bool,
 ) -> anyhow::Result<TactResult> {
     if user_msg.split_whitespace().count() < config.min_words {
         return Ok(TactResult {
@@ -138,7 +162,11 @@ pub async fn retrieve(
         });
     }
 
-    let context_block = format_context_block(&memories, config.max_context_chars);
+    let context_block = if build_context_block {
+        format_context_block(&memories, config.max_context_chars)
+    } else {
+        String::new()
+    };
 
     Ok(TactResult {
         method,
