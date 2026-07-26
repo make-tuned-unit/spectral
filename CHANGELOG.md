@@ -19,6 +19,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   association. Same-session memories immediately contribute once to the
   co-retrieval index, and index rebuilds preserve those write-time pairs.
 
+### Added (read concurrency)
+- `SqliteStore` no longer serialises reads behind the write connection. A pool
+  of read-only connections (`SqliteStoreConfig::read_pool_size`, default 4,
+  `SPECTRAL_READ_POOL_SIZE` to override, 0/1 to disable) spreads hot read paths
+  across separate WAL readers while writes keep the single connection, so write
+  serialisation and last-write-wins semantics are unchanged. Concurrent recall
+  throughput was previously hard-capped at ~483/sec no matter how many threads
+  asked; it now reaches **869/sec at 8 threads (+80%)**, and single-threaded
+  recall improved too. A size sweep shows the gain plateaus past 4 readers on a
+  4-core host. Never applied to in-memory databases, where a second connection
+  would be a different database. Retrieval is byte-identical (25-question
+  oracle: 0 context-hash, 0 answer-key, 0 token differences), including
+  read-after-write.
+
+### Fixed
+- Two tests passed a `TempDir` inline (`config(&TempDir::new().unwrap())`),
+  which dropped it at the end of the statement and deleted the brain directory
+  while the store still held it open. A single connection survived on an open
+  fd; multiple WAL connections cannot, since shared-memory coordination needs
+  the `-shm` file by path. Bound the directories.
+
 ### Changed (read-path performance)
 - Wing/hall classification no longer recompiles its regexes on every call.
   `TactConfig` stores rules as pattern strings and `detect_wing`/`detect_hall`

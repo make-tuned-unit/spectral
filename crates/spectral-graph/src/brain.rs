@@ -779,6 +779,11 @@ impl Brain {
             // BrainConfig field yet — keeps this an env-gated experimental lever
             // like the stopword/anticipatory levers.
             fts_fusion: false,
+            // Default pool. Override with SPECTRAL_READ_POOL_SIZE; 0 or 1
+            // restores the pre-pool single-connection behaviour.
+            read_pool_size: std::env::var("SPECTRAL_READ_POOL_SIZE")
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok()),
         };
         let sqlite = Arc::new(
             SqliteStore::open_with_config(&memory_db_path, &sqlite_config)

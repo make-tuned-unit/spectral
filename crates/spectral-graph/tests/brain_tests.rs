@@ -1248,7 +1248,10 @@ fn remembered_memories_are_signed_and_verifiable() {
     );
 
     // Does NOT verify against a different key (impersonation defense).
-    let other = Brain::open(brain_config(&TempDir::new().unwrap())).unwrap();
+    // Bound, not inline: an inline TempDir is dropped at the end of the
+    // statement, deleting the directory while the store still holds it open.
+    let other_dir = TempDir::new().unwrap();
+    let other = Brain::open(brain_config(&other_dir)).unwrap();
     assert!(
         !Brain::verify_hit(hit, other.verifying_key()),
         "signature must not verify against a foreign key"

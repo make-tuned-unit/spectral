@@ -347,7 +347,10 @@ fn concurrent_access_is_deadlock_free_and_consistent() {
 #[test]
 fn federation_fans_out_and_enforces_the_boundary() {
     let tmp = TempDir::new().unwrap();
-    let a = Brain::open(config(&TempDir::new_in(tmp.path()).unwrap())).unwrap();
+    // Bind the TempDirs: passing them inline drops each one at the end of the
+    // statement, deleting the brain directory out from under the open store.
+    let a_dir = TempDir::new_in(tmp.path()).unwrap();
+    let a = Brain::open(config(&a_dir)).unwrap();
     a.remember(
         "a-pub",
         "Team wiki: the deploy runbook lives in Notion",
@@ -361,7 +364,8 @@ fn federation_fans_out_and_enforces_the_boundary() {
     )
     .unwrap();
 
-    let b = Brain::open(config(&TempDir::new_in(tmp.path()).unwrap())).unwrap();
+    let b_dir = TempDir::new_in(tmp.path()).unwrap();
+    let b = Brain::open(config(&b_dir)).unwrap();
     b.remember(
         "b-pub",
         "Team wiki: deploy approvals go through the release channel",

@@ -46,6 +46,15 @@ use crate::TimeBucket;
 
 const WING_CACHE_CAPACITY: usize = 32;
 
+/// Default number of read-only connections opened alongside the write
+/// connection for file-backed databases.
+///
+/// Reads previously serialised behind the single write connection, capping
+/// recall throughput at ~564/sec regardless of caller concurrency. Four covers
+/// the measured plateau without holding many file descriptors open per brain;
+/// tune via [`SqliteStoreConfig::read_pool_size`].
+pub const DEFAULT_READ_POOL_SIZE: usize = 4;
+
 /// Default FTS5 tokenizer for the memories index. Porter stemming bridges
 /// plural/inflected queries to singular content deterministically and at
 /// zero runtime cost — the recall-path complement to Spectral's no-LLM,
@@ -96,6 +105,20 @@ pub struct SqliteStoreConfig {
     /// the mode for federated read-time fan-out over a brain you don't own.
     /// Fails if the database file does not exist.
     pub read_only: bool,
+    /// Number of extra read-only connections for concurrent recall.
+    ///
+    /// - `None` (default) — [`DEFAULT_READ_POOL_SIZE`] for file-backed
+    ///   read-write opens; no pool otherwise.
+    /// - `Some(0)` or `Some(1)` — disable pooling; all reads share the write
+    ///   connection, the pre-pool behaviour.
+    /// - `Some(n)` — open exactly *n* reader connections.
+    ///
+    /// Reads are correct either way; this only affects how many can run at
+    /// once. WAL readers observe the latest committed snapshot, so a read
+    /// issued after a committed write still sees it. Never applied to
+    /// in-memory databases, where a second connection would be a different
+    /// database entirely.
+    pub read_pool_size: Option<usize>,
     /// Enable stemmed + unstemmed **RRF fusion** for FTS recall. Default false.
     ///
     /// Porter stemming (the default tokenizer) is a recall device that trades
@@ -124,6 +147,22 @@ pub struct SqliteStoreConfig {
 /// invalidated on writes that affect the cached wing.
 pub struct SqliteStore {
     conn: Arc<Mutex<Connection>>,
+    /// Read-only connections used by hot read paths.
+    ///
+    /// Every operation used to serialise through `conn`, including reads, which
+    /// capped recall throughput at ~564/sec no matter how many threads asked
+    /// (measured: 1.54x at 2 threads, then flat at 4 and 8). WAL permits
+    /// concurrent readers, so reads are spread across this pool while writes
+    /// keep the single `conn` — preserving the existing write serialisation and
+    /// last-write-wins semantics exactly.
+    ///
+    /// Empty when pooling does not apply: in-memory databases (a second
+    /// connection would be a *different* database), already-read-only opens,
+    /// or an explicit size of 0/1. `read_conn()` then falls back to `conn`.
+    readers: Vec<Arc<Mutex<Connection>>>,
+    /// Round-robin cursor into `readers`. Relaxed ordering: this only needs to
+    /// spread load, not to be exact.
+    next_reader: Arc<std::sync::atomic::AtomicUsize>,
     /// LRU cache: wing name -> memories for that wing.
     /// Invalidated by `write()` when the written memory's wing matches a cached entry.
     wing_cache: Arc<Mutex<LruCache<String, Vec<MemoryHit>>>>,
@@ -153,6 +192,67 @@ impl SqliteStore {
             }
             Err(_) => MIN_MMAP, // fallback for new databases
         }
+    }
+
+    /// Open `size` read-only connections against an existing database file.
+    ///
+    /// Called only after all schema creation and migration has finished on the
+    /// write connection, so readers never observe a half-migrated file. Each
+    /// gets the same per-connection pragmas as the writer plus
+    /// `query_only = ON`, which turns any accidental write on a read path into
+    /// a driver error rather than silent divergence.
+    ///
+    /// Best-effort: if a reader fails to open, the pool is simply smaller (or
+    /// empty), and `read_conn()` falls back to the write connection. A brain
+    /// that opens must not fail because an optional reader could not.
+    fn open_reader_pool(path: &Path, mmap_size: u64, size: usize) -> Vec<Arc<Mutex<Connection>>> {
+        use rusqlite::OpenFlags;
+        let mut readers = Vec::with_capacity(size);
+        for _ in 0..size {
+            let opened = Connection::open_with_flags(
+                path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .and_then(|c| {
+                c.execute_batch(&format!(
+                    "PRAGMA temp_store = MEMORY;
+                     PRAGMA mmap_size  = {mmap_size};
+                     PRAGMA query_only = ON;"
+                ))
+                .map(|_| c)
+            });
+            match opened {
+                Ok(c) => readers.push(Arc::new(Mutex::new(c))),
+                Err(e) => {
+                    tracing::warn!("read-pool connection failed to open (non-fatal): {e}");
+                    break;
+                }
+            }
+        }
+        readers
+    }
+
+    /// Resolve the configured read-pool size for a file-backed open.
+    fn resolve_read_pool_size(config: &SqliteStoreConfig) -> usize {
+        match config.read_pool_size {
+            // 0 and 1 both mean "no separate readers" — with one reader there
+            // is nothing to interleave with, so skip the extra file handle.
+            Some(0) | Some(1) => 0,
+            Some(n) => n,
+            None => DEFAULT_READ_POOL_SIZE,
+        }
+    }
+
+    /// A connection for a read-only query: round-robin over the pool, or the
+    /// write connection when no pool exists.
+    fn read_conn(&self) -> Arc<Mutex<Connection>> {
+        if self.readers.is_empty() {
+            return self.conn.clone();
+        }
+        let i = self
+            .next_reader
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.readers[i % self.readers.len()].clone()
     }
 
     /// Open or create a memory database at the given path.
@@ -195,8 +295,13 @@ impl SqliteStore {
         } else {
             false
         };
+        // Readers open only after every migration above has completed, so they
+        // can never observe a half-migrated file.
+        let readers = Self::open_reader_pool(path, mmap_size, Self::resolve_read_pool_size(config));
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            readers,
+            next_reader: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             wing_cache: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(WING_CACHE_CAPACITY).unwrap(),
             ))),
@@ -234,8 +339,13 @@ impl SqliteStore {
         // Read-only: never create the raw index; fuse only if it already exists
         // in the file (a replica synced from a fusion-enabled brain).
         let fusion = Self::fusion_enabled(config) && Self::fusion_index_present(&conn);
+        // Federated read-time fan-out is exactly the concurrent-read case, so
+        // a read-only open gets a pool too. Nothing here mutates the file.
+        let readers = Self::open_reader_pool(path, mmap_size, Self::resolve_read_pool_size(config));
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            readers,
+            next_reader: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             wing_cache: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(WING_CACHE_CAPACITY).unwrap(),
             ))),
@@ -254,6 +364,10 @@ impl SqliteStore {
         conn.execute_batch("PRAGMA foreign_keys = ON")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            // No pool: a second connection to ":memory:" is a *different*
+            // database, not another view of this one.
+            readers: Vec::new(),
+            next_reader: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             wing_cache: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(WING_CACHE_CAPACITY).unwrap(),
             ))),
@@ -1385,7 +1499,7 @@ impl MemoryStore for SqliteStore {
         min_signal: f64,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
         let wing = wing.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -1410,7 +1524,7 @@ impl MemoryStore for SqliteStore {
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
         let wing = wing.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -1440,7 +1554,7 @@ impl MemoryStore for SqliteStore {
         min_signal: f64,
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -1468,7 +1582,7 @@ impl MemoryStore for SqliteStore {
         let wing = wing.to_string();
         let hall = hall.to_string();
         let hashes = hashes.to_vec();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -1561,7 +1675,7 @@ impl MemoryStore for SqliteStore {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>> {
         let wing = wing.to_string();
         let query_terms = query_terms.to_vec();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         let wing_cache = self.wing_cache.clone();
 
         Box::pin(async move {
@@ -1669,7 +1783,7 @@ impl MemoryStore for SqliteStore {
             })
             .collect::<Vec<_>>()
             .join(" OR ");
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         let fusion = self.fusion;
 
         Box::pin(async move {
@@ -1777,7 +1891,7 @@ impl MemoryStore for SqliteStore {
         ids: &[String],
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
         let ids = ids.to_vec();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -1970,7 +2084,7 @@ impl MemoryStore for SqliteStore {
         memory_id: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<SpectrogramRow>>> + Send + '_>> {
         let memory_id = memory_id.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -2011,7 +2125,7 @@ impl MemoryStore for SqliteStore {
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<SpectrogramRow>>> + Send + '_>> {
         let wing_filter = wing_filter.map(String::from);
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -2080,7 +2194,7 @@ impl MemoryStore for SqliteStore {
         &self,
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>> {
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -2107,7 +2221,7 @@ impl MemoryStore for SqliteStore {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
         let wing = wing.to_string();
         let since = since.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
 
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
@@ -2360,7 +2474,7 @@ impl MemoryStore for SqliteStore {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Episode>>> + Send + '_>> {
         let wing = wing.to_string();
         let since = since.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
@@ -2390,7 +2504,7 @@ impl MemoryStore for SqliteStore {
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Episode>>> + Send + '_>> {
         let wing = wing.map(|s| s.to_string());
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             fn episode_from_row(row: &rusqlite::Row) -> rusqlite::Result<Episode> {
@@ -2434,7 +2548,7 @@ impl MemoryStore for SqliteStore {
         episode_id: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
         let episode_id = episode_id.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let sql = format!(
@@ -2500,7 +2614,7 @@ impl MemoryStore for SqliteStore {
         memory_id: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryAnnotation>>> + Send + '_>> {
         let memory_id = memory_id.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
@@ -2724,7 +2838,7 @@ impl MemoryStore for SqliteStore {
     fn count_retrieval_events(
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let count: i64 =
@@ -2740,7 +2854,7 @@ impl MemoryStore for SqliteStore {
         method: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
         let method = method.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let count: i64 = conn.query_row(
@@ -2757,7 +2871,7 @@ impl MemoryStore for SqliteStore {
         id: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Memory>>> + Send + '_>> {
         let id = id.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories WHERE id = ?1");
@@ -2848,7 +2962,7 @@ impl MemoryStore for SqliteStore {
         entity_id: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<EntityField>>> + Send + '_>> {
         let entity_id = entity_id.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
@@ -2876,7 +2990,7 @@ impl MemoryStore for SqliteStore {
         &self,
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Memory>>> + Send + '_>> {
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let sql = format!(
@@ -2899,7 +3013,7 @@ impl MemoryStore for SqliteStore {
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RelatedMemory>>> + Send + '_>> {
         let memory_id = memory_id.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
@@ -2932,7 +3046,7 @@ impl MemoryStore for SqliteStore {
         min_co_count: u64,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RelatedMemory>>> + Send + '_>> {
         let memory_id = memory_id.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             // lift(seed, B) = co(seed,B) * total / (occ(seed) * occ(B)), where
@@ -3119,7 +3233,7 @@ impl MemoryStore for SqliteStore {
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RetrievalEvent>>> + Send + '_>> {
         let session_id = session_id.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
@@ -3150,7 +3264,7 @@ impl MemoryStore for SqliteStore {
         session_id: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>> {
         let session_id = session_id.to_string();
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
@@ -3369,7 +3483,7 @@ impl MemoryStore for SqliteStore {
         target_key: Option<&str>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ConsolidationEdge>>> + Send + '_>> {
         let target_key = target_key.map(|s| s.to_string());
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut edges = Vec::new();
@@ -3414,7 +3528,7 @@ impl MemoryStore for SqliteStore {
         &self,
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>> {
-        let conn = self.conn.clone();
+        let conn = self.read_conn();
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
@@ -5567,6 +5681,72 @@ mod tests {
         let store = SqliteStore::open_in_memory().unwrap();
         let count = store.rebuild_co_retrieval_index().await.unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn read_pool_sees_committed_writes_immediately() {
+        // The pool's one real hazard is stale reads: writes land on the write
+        // connection, reads on separate reader connections. WAL readers take
+        // the latest committed snapshot at read time, so a committed write must
+        // be visible to the very next read.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = SqliteStore::open(&tmp.path().join("memory.db")).unwrap();
+        assert!(
+            !store.readers.is_empty(),
+            "file-backed read-write open should build a reader pool"
+        );
+
+        for i in 0..12 {
+            let m = make_mem(&format!("m{i}"), &format!("k{i}"), "w");
+            store.write(&m, &[]).await.unwrap();
+            // Read straight back through the pool, before any other write.
+            let got = store.get_memory(&format!("m{i}")).await.unwrap();
+            assert!(
+                got.is_some(),
+                "write {i} not visible to the pooled reader immediately after commit"
+            );
+        }
+
+        // Round-robin must cover every reader, not just the first.
+        for _ in 0..(store.readers.len() * 3) {
+            assert_eq!(store.list_wing_memories("w", 0.0).await.unwrap().len(), 12);
+        }
+
+        // A delete is equally visible.
+        store.delete_memory_by_key("k0").await.unwrap();
+        assert!(store.get_memory("m0").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn read_pool_can_be_disabled_and_memory_dbs_never_pool() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let off = SqliteStore::open_with_config(
+            &tmp.path().join("off.db"),
+            &SqliteStoreConfig {
+                read_pool_size: Some(0),
+                ..SqliteStoreConfig::default()
+            },
+        )
+        .unwrap();
+        assert!(off.readers.is_empty(), "size 0 must disable pooling");
+
+        // 1 reader is pointless (nothing to interleave with) and is also off.
+        let one = SqliteStore::open_with_config(
+            &tmp.path().join("one.db"),
+            &SqliteStoreConfig {
+                read_pool_size: Some(1),
+                ..SqliteStoreConfig::default()
+            },
+        )
+        .unwrap();
+        assert!(one.readers.is_empty(), "size 1 must disable pooling");
+
+        // A second connection to ":memory:" would be a different database.
+        let mem = SqliteStore::open_in_memory().unwrap();
+        assert!(mem.readers.is_empty(), "in-memory must never pool");
+        let m = make_mem("m1", "k1", "w");
+        mem.write(&m, &[]).await.unwrap();
+        assert!(mem.get_memory("m1").await.unwrap().is_some());
     }
 
     #[tokio::test]
