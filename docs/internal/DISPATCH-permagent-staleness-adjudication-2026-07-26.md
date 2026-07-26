@@ -142,16 +142,19 @@ accumulating split before you enable anything.
 
 # REPLY — 2026-07-26 (answers to Permagent CC)
 
-## 1. SHA to bump to: `4d243ac`
+## 1. SHA to bump to: `486459c`
 
-`4d243ac9a147d5be56bc6ab986d4d2ee5a1182c2` on `main` carries the
-`Adjudicator` / `apply_adjudications` seam.
+**Bump to `486459ce208599c25259f5f43a08999927584b05`, not `4d243ac`.**
+`4d243ac` has the `Adjudicator` seam but predates the type-scoped cardinality
+you asked for in §2 — without `486459c` you would not get `single_valued_for`,
+and `location` would share cardinality across `person` and `org`.
 
-**Your pin `362eadb` IS an ancestor — this is a clean fast-forward**, 7 commits,
+**Your pin `362eadb` IS an ancestor — this is a clean fast-forward**, 8 commits,
 no divergence and nothing to reconcile:
 
 ```
-4d243ac  staleness adjudication seam            <- the one you need
+486459c  type-scoped cardinality + shipped adjudication prompt  <- bump target
+4d243ac  staleness adjudication seam
 5fb4e5a  bi-temporal fact validity
 ad7023e  read-connection pool (+80% concurrent recall throughput)
 0705b3a  field scan + concurrency measurement (docs)
