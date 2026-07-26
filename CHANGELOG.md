@@ -19,6 +19,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   association. Same-session memories immediately contribute once to the
   co-retrieval index, and index rebuilds preserve those write-time pairs.
 
+### Added (staleness adjudication seam)
+- `spectral_graph::supersession`: deterministic detection of
+  `(subject, predicate)` slots holding several live objects, plus an
+  `Adjudicator` trait with a `NoOpAdjudicator` default — the same
+  detect-deterministically / judge-pluggably split as
+  `spectral_archivist`'s consolidation pass. `apply_adjudications` enforces a
+  caller-supplied confidence threshold and returns a `SupersessionReport`.
+  Shipped default retires nothing, so there is no behaviour change and no model
+  dependency.
+- `triple.superseded_by` / `superseded_by_agent` record which assertion caused
+  a retirement and which agent decided, and `GraphStore::undo_supersession`
+  reverses one event as a swap (reinstating the old value while leaving the new
+  one live would break the functional-predicate invariant).
+- `GraphStore::retire_conflicting_objects` resolves an adjudicated slot among
+  facts already asserted. A verdict naming an object outside its candidate is
+  counted `invalid_verdicts` and skipped, so an adjudicator can choose among
+  existing facts but never introduce one or empty a slot.
+- Intended consumer is Permagent's Librarian on a local 7B; see
+  `docs/internal/DISPATCH-permagent-staleness-adjudication-2026-07-26.md`,
+  including why the model is asked a closed question about detected conflicts
+  rather than to extract triples from prose (extraction is the published
+  accuracy bottleneck at ~44% on messy multi-value sentences).
+
 ### Added (bi-temporal fact validity)
 - Predicates may now be declared `single_valued` in the ontology, turning on
   deterministic supersession: asserting a new object for an existing

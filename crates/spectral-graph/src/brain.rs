@@ -2685,6 +2685,30 @@ impl Brain {
             .any(|p| p.name == predicate && p.single_valued)
     }
 
+    /// Public view of [`Self::predicate_is_single_valued`], for the
+    /// supersession pass to skip slots a declared-functional predicate owns.
+    pub fn predicate_is_single_valued_pub(&self, predicate: &str) -> bool {
+        self.predicate_is_single_valued(predicate)
+    }
+
+    /// Retire every live assertion for `(subject, predicate)` whose object is
+    /// not `keep`, attributing the retirement to `agent`.
+    ///
+    /// The escape hatch for an adjudicated slot on a predicate the ontology
+    /// never declared functional. `keep` must already be asserted — this
+    /// chooses among existing facts and cannot introduce one.
+    pub fn retire_conflicting_objects(
+        &self,
+        subject: &spectral_core::entity_id::EntityId,
+        predicate: &str,
+        keep: &spectral_core::entity_id::EntityId,
+        agent: &str,
+    ) -> Result<usize, Error> {
+        self.ensure_writable("retire_conflicting_objects")?;
+        self.store
+            .retire_conflicting_objects(subject, predicate, keep, agent)
+    }
+
     /// Inspect bounded coverage of fields derived from primary memory rows.
     /// This is read-only and suitable for health checks.
     pub fn derivation_health(&self, limit: usize) -> Result<DerivationHealthReport, Error> {

@@ -26,6 +26,8 @@ strsim = { workspace = true }
 hostname = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Adjudicator trait errors: mirrors spectral-archivist's Consolidator signature.
+anyhow = { workspace = true }
 
 [dev-dependencies]
 anyhow.workspace = true

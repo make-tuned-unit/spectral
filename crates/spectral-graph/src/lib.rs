@@ -16,6 +16,7 @@ pub mod ontology;
 pub mod provenance;
 pub mod ranking;
 pub mod spreading;
+pub mod supersession;
 
 pub use error::Error;
 pub use spectral_cascade::RecognitionContext;

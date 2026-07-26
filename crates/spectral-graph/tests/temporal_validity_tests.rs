@@ -223,3 +223,205 @@ fn as_of_query_recovers_the_historical_value() {
         "the as-of answer must differ from the current answer"
     );
 }
+
+// ── Adjudicated supersession (the Librarian handoff) ─────────────────
+
+use spectral_graph::supersession::{
+    apply_adjudications, detect_candidates, Adjudication, Adjudicator, NoOpAdjudicator,
+    SupersessionCandidate,
+};
+
+/// Stand-in for a consumer-side model. Deterministic so the *gate*, not a
+/// model, is what these tests measure.
+struct ScriptedAdjudicator {
+    verdict: Box<dyn Fn(&SupersessionCandidate) -> Adjudication + Send + Sync>,
+}
+
+impl Adjudicator for ScriptedAdjudicator {
+    fn adjudicate(&self, c: &SupersessionCandidate) -> anyhow::Result<Adjudication> {
+        Ok((self.verdict)(c))
+    }
+}
+
+fn seed_undeclared_conflict(brain: &Brain) {
+    // `attended` is NOT declared single_valued, so both stay live and the slot
+    // becomes a candidate for adjudication.
+    for city in ["Berlin", "Lisbon"] {
+        brain
+            .assert_typed(
+                ("person", "Alice"),
+                "attended",
+                ("city", city),
+                0.9,
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn detection_is_deterministic_and_skips_declared_predicates() {
+    let dir = TempDir::new().unwrap();
+    let brain = brain(&dir);
+    seed_undeclared_conflict(&brain);
+    // A declared-functional predicate supersedes at write time, so it must
+    // never appear as a candidate.
+    brain
+        .assert_typed(
+            ("person", "Alice"),
+            "lives_in",
+            ("city", "Berlin"),
+            0.9,
+            Visibility::Private,
+        )
+        .unwrap();
+    brain
+        .assert_typed(
+            ("person", "Alice"),
+            "lives_in",
+            ("city", "Oslo"),
+            0.9,
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let candidates = detect_candidates(&brain, 100).unwrap();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "only the undeclared slot is a candidate"
+    );
+    assert_eq!(candidates[0].predicate, "attended");
+    assert_eq!(candidates[0].objects.len(), 2);
+    assert_eq!(candidates[0].subject_canonical, "alice");
+}
+
+#[test]
+fn default_adjudicator_never_retires_anything() {
+    let dir = TempDir::new().unwrap();
+    let brain = brain(&dir);
+    seed_undeclared_conflict(&brain);
+
+    let report = apply_adjudications(&brain, &NoOpAdjudicator, 100, 0.0, "test").unwrap();
+    assert_eq!(report.considered, 1);
+    assert_eq!(report.applied, 0);
+    assert_eq!(report.retired, 0);
+    assert_eq!(report.left_alone, 1);
+    assert_eq!(
+        brain
+            .store()
+            .find_triples(None, None, Some("attended"))
+            .unwrap()
+            .len(),
+        2,
+        "shipping default must not silently change data"
+    );
+}
+
+#[test]
+fn confidence_gate_blocks_low_confidence_verdicts() {
+    let dir = TempDir::new().unwrap();
+    let brain = brain(&dir);
+    seed_undeclared_conflict(&brain);
+
+    let timid = ScriptedAdjudicator {
+        verdict: Box::new(|c| Adjudication::Supersedes {
+            keep: c.objects.last().unwrap().object,
+            confidence: 0.4,
+        }),
+    };
+    let report = apply_adjudications(&brain, &timid, 100, 0.8, "librarian-7b").unwrap();
+    assert_eq!(report.below_threshold, 1);
+    assert_eq!(report.retired, 0, "below-threshold verdicts must not apply");
+    assert_eq!(
+        brain
+            .store()
+            .find_triples(None, None, Some("attended"))
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn hallucinated_object_is_rejected_not_applied() {
+    let dir = TempDir::new().unwrap();
+    let brain = brain(&dir);
+    seed_undeclared_conflict(&brain);
+
+    // Names an entity that is not among the candidate's objects.
+    let liar = ScriptedAdjudicator {
+        verdict: Box::new(|_| Adjudication::Supersedes {
+            keep: spectral_core::entity_id::entity_id("city", "atlantis"),
+            confidence: 1.0,
+        }),
+    };
+    let report = apply_adjudications(&brain, &liar, 100, 0.5, "librarian-7b").unwrap();
+    assert_eq!(report.invalid_verdicts, 1);
+    assert_eq!(report.retired, 0);
+    assert_eq!(
+        brain
+            .store()
+            .find_triples(None, None, Some("attended"))
+            .unwrap()
+            .len(),
+        2,
+        "an adjudicator must not be able to empty a slot with an invented object"
+    );
+}
+
+#[test]
+fn confident_verdict_applies_and_is_undoable() {
+    let dir = TempDir::new().unwrap();
+    let brain = brain(&dir);
+    seed_undeclared_conflict(&brain);
+    let candidates = detect_candidates(&brain, 100).unwrap();
+    let keep = candidates[0].objects.last().unwrap().object;
+
+    let confident = ScriptedAdjudicator {
+        verdict: Box::new(move |_| Adjudication::Supersedes {
+            keep,
+            confidence: 0.95,
+        }),
+    };
+    let report = apply_adjudications(&brain, &confident, 100, 0.8, "librarian-7b").unwrap();
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.retired, 1);
+
+    let live = brain
+        .store()
+        .find_triples(None, None, Some("attended"))
+        .unwrap();
+    assert_eq!(live.len(), 1, "the adjudicated slot now holds one value");
+    assert_eq!(live[0].to, keep);
+
+    // The retirement is attributed and reversible.
+    let ledger = brain
+        .store()
+        .find_triples_including_superseded(None, None, Some("attended"))
+        .unwrap();
+    assert_eq!(ledger.len(), 2, "retired, not deleted");
+
+    let survivor_rowid = brain.store().multi_valued_live_groups(100).unwrap().len();
+    assert_eq!(survivor_rowid, 0, "no live conflicts remain");
+
+    // Undo via the surviving assertion's rowid.
+    let keep_rowid = candidates[0]
+        .objects
+        .iter()
+        .find(|o| o.object == keep)
+        .unwrap()
+        .rowid;
+    let reinstated = brain.store().undo_supersession(keep_rowid).unwrap();
+    assert_eq!(reinstated, 1, "a wrong automated call must be reversible");
+    let after_undo = brain
+        .store()
+        .find_triples(None, None, Some("attended"))
+        .unwrap();
+    assert_eq!(
+        after_undo.len(),
+        1,
+        "undo swaps rather than leaving both live: {after_undo:?}"
+    );
+    assert_ne!(after_undo[0].to, keep, "the retired value is live again");
+}

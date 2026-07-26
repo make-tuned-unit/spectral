@@ -45,6 +45,13 @@ pub struct Entity {
     pub description: Option<String>,
 }
 
+/// One live object in a `(subject, predicate)` slot: its row identity, the
+/// object entity, and when it was asserted.
+pub type LiveObject = (i64, EntityId, DateTime<Utc>);
+
+/// A `(subject, predicate)` slot and every object currently live in it.
+pub type LiveSlot = (EntityId, String, Vec<LiveObject>);
+
 /// A directed edge in the knowledge graph.
 #[derive(Debug, Clone)]
 pub struct Triple {
@@ -237,6 +244,21 @@ impl GraphStore {
     /// Returns the number of assertions retired (0 or, for data that predates
     /// the invariant, more than 1).
     pub fn insert_triple_superseding(&self, triple: &Triple) -> Result<usize, Error> {
+        self.insert_triple_superseding_by(triple, None)
+    }
+
+    /// [`insert_triple_superseding`](Self::insert_triple_superseding) with an
+    /// `agent` label recorded on every assertion it retires.
+    ///
+    /// Use it to distinguish a human/deterministic assertion from an automated
+    /// proposal (e.g. `"librarian-7b"`), so a bad automated retirement can be
+    /// found and undone with [`undo_supersession`](Self::undo_supersession)
+    /// without disturbing anything a person asserted.
+    pub fn insert_triple_superseding_by(
+        &self,
+        triple: &Triple,
+        agent: Option<&str>,
+    ) -> Result<usize, Error> {
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
         let from = triple.from.as_bytes().to_vec();
@@ -255,12 +277,9 @@ impl GraphStore {
             return Ok(0);
         }
 
-        let retired = tx.execute(
-            "UPDATE triple SET valid_to = ?1
-             WHERE from_id = ?2 AND predicate = ?3 AND to_id <> ?4 AND valid_to IS NULL",
-            params![now, from, triple.predicate, to],
-        )?;
-
+        // Insert FIRST so the retirement can point at the assertion that
+        // caused it; the new row has a different object, so the UPDATE below
+        // cannot match it.
         let doc_id: Option<Vec<u8>> = triple.source_doc_id.map(|b| b.to_vec());
         tx.execute(
             "INSERT INTO triple
@@ -281,8 +300,156 @@ impl GraphStore {
                 triple.weight,
             ],
         )?;
+        let new_rowid = tx.last_insert_rowid();
+
+        let retired = tx.execute(
+            "UPDATE triple
+                SET valid_to = ?1, superseded_by = ?2, superseded_by_agent = ?3
+             WHERE from_id = ?4 AND predicate = ?5 AND to_id <> ?6 AND valid_to IS NULL",
+            params![now, new_rowid, agent, from, triple.predicate, to],
+        )?;
         tx.commit()?;
         Ok(retired)
+    }
+
+    /// Retire every live assertion for `(from, predicate)` whose object is not
+    /// `keep`, recording `agent` and pointing each retirement at the surviving
+    /// assertion.
+    ///
+    /// Unlike [`insert_triple_superseding`](Self::insert_triple_superseding)
+    /// this asserts nothing new — it resolves a conflict among facts that are
+    /// already present, which is exactly what an adjudicator is allowed to do.
+    /// Returns the number retired; 0 if `keep` is not live for that slot, so a
+    /// stale verdict cannot silently empty it.
+    pub fn retire_conflicting_objects(
+        &self,
+        from: &EntityId,
+        predicate: &str,
+        keep: &EntityId,
+        agent: &str,
+    ) -> Result<usize, Error> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let from_blob = from.as_bytes().to_vec();
+        let keep_blob = keep.as_bytes().to_vec();
+
+        let survivor: Option<i64> = tx
+            .query_row(
+                "SELECT rowid FROM triple
+                 WHERE from_id = ?1 AND predicate = ?2 AND to_id = ?3 AND valid_to IS NULL
+                 LIMIT 1",
+                params![from_blob, predicate, keep_blob],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(survivor_rowid) = survivor else {
+            tx.commit()?;
+            return Ok(0);
+        };
+
+        let retired = tx.execute(
+            "UPDATE triple
+                SET valid_to = ?1, superseded_by = ?2, superseded_by_agent = ?3
+             WHERE from_id = ?4 AND predicate = ?5 AND to_id <> ?6 AND valid_to IS NULL",
+            params![
+                Utc::now().to_rfc3339(),
+                survivor_rowid,
+                agent,
+                from_blob,
+                predicate,
+                keep_blob
+            ],
+        )?;
+        tx.commit()?;
+        Ok(retired)
+    }
+
+    /// Reverse one supersession event: reinstate everything the assertion at
+    /// `superseding_rowid` retired, and retire that assertion itself.
+    ///
+    /// This is the undo for a wrong call — an automated adjudicator retiring a
+    /// fact that was actually still true. It is a swap, not a plain
+    /// un-retirement: reinstating the old value while leaving the new one live
+    /// would put two live objects on a functional predicate, breaking the very
+    /// invariant supersession exists to hold.
+    ///
+    /// Returns the number of assertions reinstated.
+    pub fn undo_supersession(&self, superseding_rowid: i64) -> Result<usize, Error> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let reinstated = tx.execute(
+            "UPDATE triple
+                SET valid_to = NULL, superseded_by = NULL, superseded_by_agent = NULL
+             WHERE superseded_by = ?1",
+            params![superseding_rowid],
+        )?;
+        if reinstated > 0 {
+            tx.execute(
+                "UPDATE triple SET valid_to = ?1 WHERE rowid = ?2 AND valid_to IS NULL",
+                params![Utc::now().to_rfc3339(), superseding_rowid],
+            )?;
+        }
+        tx.commit()?;
+        Ok(reinstated)
+    }
+
+    /// Live `(subject, predicate)` groups holding more than one object, with
+    /// each object's rowid. Purely structural — no similarity, no model.
+    ///
+    /// On a predicate the ontology marks `single_valued` this cannot happen;
+    /// these are the *undeclared* cases, where the store genuinely does not
+    /// know whether the values accumulate ("attended") or the newer one
+    /// replaced the older ("lives_in"). That question needs judgement, so this
+    /// exists to hand an adjudicator a small, pre-filtered set instead of the
+    /// whole graph.
+    pub fn multi_valued_live_groups(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<LiveSlot>, Error> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT from_id, predicate, rowid, to_id, asserted_at
+             FROM triple
+             WHERE valid_to IS NULL
+               AND (from_id, predicate) IN (
+                   SELECT from_id, predicate FROM triple
+                   WHERE valid_to IS NULL
+                   GROUP BY from_id, predicate
+                   HAVING COUNT(*) > 1
+               )
+             ORDER BY from_id, predicate, asserted_at",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?;
+
+        let mut grouped: Vec<LiveSlot> = Vec::new();
+        for row in rows {
+            let (from, predicate, rowid, to, asserted) = row?;
+            let from_id = entity_id_from_blob(&from)?;
+            let to_id = entity_id_from_blob(&to)?;
+            let ts = DateTime::parse_from_rfc3339(&asserted)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            match grouped.last_mut() {
+                Some((f, p, objs)) if *f == from_id && *p == predicate => {
+                    objs.push((rowid, to_id, ts))
+                }
+                _ => {
+                    if grouped.len() >= limit {
+                        break;
+                    }
+                    grouped.push((from_id, predicate, vec![(rowid, to_id, ts)]));
+                }
+            }
+        }
+        Ok(grouped)
     }
 
     /// Triples that were live at `as_of`, i.e. asserted no later than it and
@@ -608,6 +775,29 @@ fn migrate_bitemporal_triple(conn: &Connection) -> Result<(), Error> {
             "ALTER TABLE triple ADD COLUMN valid_to TEXT;
              CREATE INDEX IF NOT EXISTS idx_triple_active
                  ON triple(from_id, predicate) WHERE valid_to IS NULL;",
+        )?;
+    }
+
+    // Supersession provenance. Separate check so a brain migrated by an
+    // earlier build (valid_to only) still picks these up.
+    let mut have_superseded_by = false;
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(triple)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for r in rows {
+            if r? == "superseded_by" {
+                have_superseded_by = true;
+            }
+        }
+    }
+    if !have_superseded_by {
+        // `superseded_by` is the rowid of the assertion that replaced this one,
+        // so a retirement can be traced to its cause and undone. `agent`
+        // records *who* decided — a human assertion and a 7B librarian's
+        // proposal must be distinguishable after the fact.
+        conn.execute_batch(
+            "ALTER TABLE triple ADD COLUMN superseded_by INTEGER;
+             ALTER TABLE triple ADD COLUMN superseded_by_agent TEXT;",
         )?;
     }
     Ok(())
