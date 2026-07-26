@@ -174,8 +174,30 @@ pub struct OntologyPredicate {
     ///
     /// Supersession is keyed on the entity pair alone — no embeddings, no
     /// similarity threshold, no LLM.
+    ///
+    /// Applies to every subject type in `domain`. To make a predicate
+    /// functional for only *some* of its domain, use `single_valued_for`.
     #[serde(default)]
     pub single_valued: bool,
+    /// Subject entity types for which this predicate is functional, when it is
+    /// not functional across the whole domain.
+    ///
+    /// Predicate names are unique in an ontology (they key extraction prompts
+    /// and domain/range validation), so per-type cardinality is expressed here
+    /// rather than by repeating the predicate:
+    ///
+    /// ```toml
+    /// [[predicate]]
+    /// name = "location"
+    /// domain = ["person", "org"]
+    /// range = ["city"]
+    /// single_valued_for = ["person"]   # a person lives in one city; an org may span several
+    /// ```
+    ///
+    /// A subject type is functional if `single_valued` is true or it appears
+    /// here.
+    #[serde(default)]
+    pub single_valued_for: Vec<String>,
 }
 
 impl Ontology {

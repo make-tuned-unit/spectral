@@ -50,6 +50,10 @@ pub struct CandidateObject {
 pub struct SupersessionCandidate {
     pub subject: EntityId,
     pub subject_canonical: String,
+    /// Subject's entity type. Cardinality is domain-scoped, so an adjudicator
+    /// needs this to reason about the slot (`person.location` is a different
+    /// question from `org.location`).
+    pub subject_type: String,
     pub predicate: String,
     /// Competing objects, oldest assertion first.
     pub objects: Vec<CandidateObject>,
@@ -71,6 +75,38 @@ pub enum Adjudication {
     /// Not enough information. Nothing is retired.
     Unknown,
 }
+
+/// The closed question an [`Adjudicator`] should put to its model, and the
+/// only shape [`Adjudication`] can express.
+///
+/// Shipped as a constant so both sides bind to one contract instead of the
+/// prompt drifting on the consumer side. `{subject}`, `{subject_type}`,
+/// `{predicate}` and `{objects}` are substituted from the candidate; render
+/// `{objects}` one per line as `- <canonical> (asserted <rfc3339>)`.
+///
+/// Three properties are deliberate. It is closed — the model chooses among
+/// listed values and cannot introduce one, matching the `invalid_verdicts`
+/// rejection in [`apply_adjudications`]. It never shows prose, so the model is
+/// never asked to extract facts, which is the published accuracy bottleneck.
+/// And abstention is a first-class answer, because `UNKNOWN` costs nothing
+/// while a wrong `REPLACED` retires a true fact.
+pub const ADJUDICATION_PROMPT: &str = "\
+A memory system recorded several values for the same slot and cannot tell \
+whether they accumulate or whether newer ones replaced older ones.
+
+Subject: {subject} (type: {subject_type})
+Relation: {predicate}
+Values, oldest first:
+{objects}
+
+Answer with exactly one line:
+  ALL_HOLD                      - all values are simultaneously true
+  REPLACED <value> <0.0-1.0>    - only <value> is true now; the rest are stale
+  UNKNOWN                       - cannot tell from the values alone
+
+<value> must be copied exactly from the list. Judge only whether one value \
+supersedes the others for this subject; do not infer new facts. Prefer UNKNOWN \
+over a guess.";
 
 /// Pluggable staleness judgement. Default is a no-op, matching
 /// [`spectral_archivist::traits::Consolidator`]'s shape.
@@ -120,14 +156,15 @@ pub fn detect_candidates(brain: &Brain, limit: usize) -> Result<Vec<Supersession
         // A declared-functional predicate cannot reach here: its writes
         // supersede at assert time. Skip defensively so a mid-flight ontology
         // change cannot hand an adjudicator a slot it does not own.
-        if brain.predicate_is_single_valued_pub(&predicate) {
+        let subject_entity = brain.store().get_entity(&subject)?;
+        let subject_type = subject_entity
+            .as_ref()
+            .map(|e| e.entity_type.clone())
+            .unwrap_or_default();
+        if brain.predicate_is_single_valued_pub(&predicate, &subject_type) {
             continue;
         }
-        let subject_canonical = brain
-            .store()
-            .get_entity(&subject)?
-            .map(|e| e.canonical)
-            .unwrap_or_default();
+        let subject_canonical = subject_entity.map(|e| e.canonical).unwrap_or_default();
         let mut resolved = Vec::with_capacity(objects.len());
         for (rowid, object, asserted_at) in objects {
             let object_canonical = brain
@@ -145,6 +182,7 @@ pub fn detect_candidates(brain: &Brain, limit: usize) -> Result<Vec<Supersession
         out.push(SupersessionCandidate {
             subject,
             subject_canonical,
+            subject_type,
             predicate,
             objects: resolved,
         });

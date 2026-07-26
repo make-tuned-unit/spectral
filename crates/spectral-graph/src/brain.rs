@@ -1397,7 +1397,7 @@ impl Brain {
         // instead of accumulating a second live fact. Everything else keeps the
         // append-only behaviour. Deterministic: the ontology declares it, no
         // similarity or LLM decides it.
-        let superseded = if self.predicate_is_single_valued(predicate) {
+        let superseded = if self.predicate_is_single_valued(predicate, &subject_match.entity_type) {
             self.store.insert_triple_superseding(&edge)?
         } else {
             self.store.insert_triple(&edge)?;
@@ -2678,17 +2678,30 @@ impl Brain {
     /// Whether the ontology declares this predicate as holding one object per
     /// subject at a time. Unknown predicates accumulate, matching the
     /// pre-existing behaviour.
-    fn predicate_is_single_valued(&self, predicate: &str) -> bool {
-        self.ontology
-            .predicates
-            .iter()
-            .any(|p| p.name == predicate && p.single_valued)
+    /// Whether `predicate` is functional *for a subject of this entity type*.
+    ///
+    /// Cardinality is scoped by the ontology's `domain`, so `location` can be
+    /// functional for `person` while still accumulating for `org`. A predicate
+    /// entry with an empty domain is unscoped and applies to every subject
+    /// type, preserving the behaviour of ontologies that never set one.
+    fn predicate_is_single_valued(&self, predicate: &str, subject_type: &str) -> bool {
+        self.ontology.predicates.iter().any(|p| {
+            if p.name != predicate {
+                return false;
+            }
+            // Scoped opt-in wins on its own; a blanket `single_valued` still
+            // has to respect the declared domain.
+            if p.single_valued_for.iter().any(|t| t == subject_type) {
+                return true;
+            }
+            p.single_valued && (p.domain.is_empty() || p.domain.iter().any(|d| d == subject_type))
+        })
     }
 
     /// Public view of [`Self::predicate_is_single_valued`], for the
     /// supersession pass to skip slots a declared-functional predicate owns.
-    pub fn predicate_is_single_valued_pub(&self, predicate: &str) -> bool {
-        self.predicate_is_single_valued(predicate)
+    pub fn predicate_is_single_valued_pub(&self, predicate: &str, subject_type: &str) -> bool {
+        self.predicate_is_single_valued(predicate, subject_type)
     }
 
     /// Retire every live assertion for `(subject, predicate)` whose object is

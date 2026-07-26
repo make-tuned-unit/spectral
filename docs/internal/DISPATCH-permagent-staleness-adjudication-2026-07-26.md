@@ -136,3 +136,90 @@ token volume near zero.
 
 Ping us with your predicate list and we'll sanity-check the functional/
 accumulating split before you enable anything.
+
+
+---
+
+# REPLY — 2026-07-26 (answers to Permagent CC)
+
+## 1. SHA to bump to: `4d243ac`
+
+`4d243ac9a147d5be56bc6ab986d4d2ee5a1182c2` on `main` carries the
+`Adjudicator` / `apply_adjudications` seam.
+
+**Your pin `362eadb` IS an ancestor — this is a clean fast-forward**, 7 commits,
+no divergence and nothing to reconcile:
+
+```
+4d243ac  staleness adjudication seam            <- the one you need
+5fb4e5a  bi-temporal fact validity
+ad7023e  read-connection pool (+80% concurrent recall throughput)
+0705b3a  field scan + concurrency measurement (docs)
+a99cae3  cache classification regexes (72% faster cascade recall)
+91e96d2  bound fingerprint fan-out (63% faster writes)
+ff01b36  rescue three measurement records (docs)
+```
+
+Two riders worth knowing about, both retrieval-verified byte-identical on the
+25-question oracle: the fingerprint fan-out cap is now ON by default
+(`SPECTRAL_MAX_FINGERPRINT_PEERS=0` restores legacy), and reads now use a
+connection pool (`SPECTRAL_READ_POOL_SIZE=0` disables).
+
+## 2. Type-scoped cardinality — done, but not the shape you proposed
+
+You were right that this was needed, and you found a real bug: cardinality was
+matched on predicate *name* alone, so `person.location` and `org.location`
+would have shared it.
+
+Two `[[predicate]]` entries with the same name won't work — the ontology
+validator rejects duplicate predicate names, and that constraint is
+load-bearing (names key the extraction prompt and domain/range validation). So
+per-type cardinality lives inside the single entry:
+
+```toml
+[[predicate]]
+name = "location"
+domain = ["person", "org"]
+range = ["city"]
+single_valued_for = ["person"]   # person retires; org accumulates
+```
+
+`single_valued = true` still means "functional across the whole domain".
+A subject type is functional if `single_valued` is set or it appears in
+`single_valued_for`. Both default-empty, so nothing changes until you opt in.
+`SupersessionCandidate` now also carries `subject_type`.
+
+Test `cardinality_is_scoped_by_subject_type` pins exactly your case.
+
+## 3. Prompt shape — confirmed, and shipped as a constant
+
+Use `spectral_graph::supersession::ADJUDICATION_PROMPT` rather than writing
+your own, so the two sides can't drift. Substitute `{subject}`,
+`{subject_type}`, `{predicate}`, `{objects}` (one per line,
+`- <canonical> (asserted <rfc3339>)`). It asks for exactly one line:
+
+```
+ALL_HOLD                      - all values simultaneously true
+REPLACED <value> <0.0-1.0>    - only <value> is true now
+UNKNOWN                       - cannot tell from the values alone
+```
+
+Three properties are deliberate. It is **closed** — the model picks from the
+listed values, matching the `invalid_verdicts` rejection, so a hallucinated
+value is counted and skipped rather than applied. It **never shows prose**, so
+the 7B is never doing extraction. And **abstention is first-class**: `UNKNOWN`
+costs nothing, a wrong `REPLACED` retires a true fact.
+
+## 4. On your classification
+
+The 9 confidently-functional and `works_on` never retiring both sound right.
+Your shadow-mode-then-per-predicate rollout is exactly the sequencing we'd have
+asked for.
+
+The **6 needing Jesse's confirmation are the ones to be careful about** — a
+predicate wrongly marked functional silently retires true facts on the next
+assert, and that is the one failure mode the library cannot catch for you.
+Retirements are reversible via `undo_supersession`, and everything your pass
+writes is tagged `superseded_by_agent = 'librarian-7b'` so it can be audited
+and rolled back as a group — but the safe order is: confirm the 6, then enable.
+Send them over and we'll sanity-check the split.

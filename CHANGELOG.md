@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   association. Same-session memories immediately contribute once to the
   co-retrieval index, and index rebuilds preserve those write-time pairs.
 
+### Added (type-scoped predicate cardinality)
+- `OntologyPredicate::single_valued_for` scopes functional cardinality to
+  specific subject types, so `location` can retire for `person` while
+  accumulating for `org`. Predicate names are unique in an ontology (they key
+  the extraction prompt and domain/range validation), so this lives inside the
+  single entry rather than requiring a duplicate. `single_valued` still means
+  "functional across the whole domain", and both default empty.
+  Fixes cardinality having been matched on predicate name alone, which would
+  have leaked one subject type's cardinality onto another.
+  `SupersessionCandidate` now carries `subject_type`.
+- `supersession::ADJUDICATION_PROMPT` ships the closed question an adjudicator
+  should put to its model, so library and consumer bind to one contract:
+  choose among listed values or abstain, never extract from prose.
+
 ### Added (staleness adjudication seam)
 - `spectral_graph::supersession`: deterministic detection of
   `(subject, predicate)` slots holding several live objects, plus an

@@ -402,10 +402,7 @@ impl GraphStore {
     /// replaced the older ("lives_in"). That question needs judgement, so this
     /// exists to hand an adjudicator a small, pre-filtered set instead of the
     /// whole graph.
-    pub fn multi_valued_live_groups(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<LiveSlot>, Error> {
+    pub fn multi_valued_live_groups(&self, limit: usize) -> Result<Vec<LiveSlot>, Error> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT from_id, predicate, rowid, to_id, asserted_at

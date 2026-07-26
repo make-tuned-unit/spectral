@@ -425,3 +425,111 @@ fn confident_verdict_applies_and_is_undoable() {
     );
     assert_ne!(after_undo[0].to, keep, "the retired value is live again");
 }
+
+/// Cardinality is scoped by the ontology `domain`: the same predicate name can
+/// be functional for one subject type and accumulating for another. Requested
+/// by Permagent so `person.location` can retire without touching
+/// `org.location`.
+#[test]
+fn cardinality_is_scoped_by_subject_type() {
+    const SCOPED: &str = r#"
+version = 1
+
+[[entity]]
+type = "person"
+canonical = "alice"
+aliases = ["Alice"]
+visibility = "private"
+
+[[entity]]
+type = "org"
+canonical = "acme"
+aliases = ["Acme"]
+visibility = "private"
+
+[[entity]]
+type = "city"
+canonical = "berlin"
+aliases = ["Berlin"]
+visibility = "private"
+
+[[entity]]
+type = "city"
+canonical = "lisbon"
+aliases = ["Lisbon"]
+visibility = "private"
+
+[[predicate]]
+name = "location"
+domain = ["person", "org"]
+range = ["city"]
+single_valued_for = ["person"]
+"#;
+    let dir = TempDir::new().unwrap();
+    let ontology_path = dir.path().join("ontology.toml");
+    std::fs::write(&ontology_path, SCOPED).unwrap();
+    let brain = Brain::open(BrainConfig {
+        data_dir: dir.path().to_path_buf(),
+        ontology_path,
+        memory_db_path: None,
+        llm_client: None,
+        wing_rules: None,
+        hall_rules: None,
+        device_id: None,
+        enable_spectrogram: false,
+        entity_policy: EntityPolicy::Strict,
+        sqlite_mmap_size: None,
+        fts_tokenizer: None,
+        read_only: false,
+        activity_wing: "activity".into(),
+        redaction_policy: None,
+        tact_config: None,
+    })
+    .unwrap();
+
+    // person.location IS functional — moving retires the old value.
+    for city in ["Berlin", "Lisbon"] {
+        brain
+            .assert_typed(
+                ("person", "Alice"),
+                "location",
+                ("city", city),
+                0.9,
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+    // org.location is NOT — an org may sit in several cities.
+    for city in ["Berlin", "Lisbon"] {
+        let r = brain
+            .assert_typed(
+                ("org", "Acme"),
+                "location",
+                ("city", city),
+                0.9,
+                Visibility::Private,
+            )
+            .unwrap();
+        assert_eq!(
+            r.superseded, 0,
+            "org.location must accumulate even though person.location is functional"
+        );
+    }
+
+    let live = brain
+        .store()
+        .find_triples(None, None, Some("location"))
+        .unwrap();
+    let alice = spectral_core::entity_id::entity_id("person", "alice");
+    let acme = spectral_core::entity_id::entity_id("org", "acme");
+    assert_eq!(
+        live.iter().filter(|t| t.from == alice).count(),
+        1,
+        "person.location retired the stale value"
+    );
+    assert_eq!(
+        live.iter().filter(|t| t.from == acme).count(),
+        2,
+        "org.location kept both"
+    );
+}
