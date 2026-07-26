@@ -201,6 +201,10 @@ pub struct AssertResult {
     pub subject: MatchedMention,
     pub predicate: String,
     pub object: MatchedMention,
+    /// Prior assertions retired by this write, for a `single_valued`
+    /// predicate. Always 0 for accumulating predicates. Non-zero means a fact
+    /// changed rather than a new one being added.
+    pub superseded: usize,
 }
 
 /// Result of a graph-only recall query.
@@ -1376,7 +1380,7 @@ impl Brain {
             description: None,
         })?;
 
-        self.store.insert_triple(&Triple {
+        let edge = Triple {
             from: subject_match.entity_id,
             to: object_match.entity_id,
             predicate: predicate.to_string(),
@@ -1386,13 +1390,26 @@ impl Brain {
             asserted_at: now,
             visibility,
             weight: 1.0,
-        })?;
+        };
+
+        // A predicate the ontology marks `single_valued` holds one object per
+        // subject at a time, so a new object retires the previous assertion
+        // instead of accumulating a second live fact. Everything else keeps the
+        // append-only behaviour. Deterministic: the ontology declares it, no
+        // similarity or LLM decides it.
+        let superseded = if self.predicate_is_single_valued(predicate) {
+            self.store.insert_triple_superseding(&edge)?
+        } else {
+            self.store.insert_triple(&edge)?;
+            0
+        };
 
         Ok(AssertResult {
             triple_written: true,
             subject: subject_match.clone(),
             predicate: predicate.to_string(),
             object: object_match.clone(),
+            superseded,
         })
     }
 
@@ -2656,6 +2673,16 @@ impl Brain {
         self.rt
             .block_on(self.memory_store.backfill_content_hashes())
             .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Whether the ontology declares this predicate as holding one object per
+    /// subject at a time. Unknown predicates accumulate, matching the
+    /// pre-existing behaviour.
+    fn predicate_is_single_valued(&self, predicate: &str) -> bool {
+        self.ontology
+            .predicates
+            .iter()
+            .any(|p| p.name == predicate && p.single_valued)
     }
 
     /// Inspect bounded coverage of fields derived from primary memory rows.

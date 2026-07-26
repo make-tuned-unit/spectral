@@ -19,6 +19,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   association. Same-session memories immediately contribute once to the
   co-retrieval index, and index rebuilds preserve those write-time pairs.
 
+### Added (bi-temporal fact validity)
+- Predicates may now be declared `single_valued` in the ontology, turning on
+  deterministic supersession: asserting a new object for an existing
+  `(subject, predicate)` retires the previous assertion instead of leaving two
+  live facts. The decision is made on the entity pair and predicate name alone
+  — no embeddings, no similarity threshold, no LLM. Re-asserting an unchanged
+  value is idempotent and does not churn the ledger.
+- `triple` gains a `valid_to` column (bi-temporal: `asserted_at` is when this
+  brain learned the fact, `valid_to` is when the fact stopped being true —
+  Snodgrass & Ahn, 1985). Superseded assertions are retired, never deleted.
+  `find_triples` returns only currently-valid assertions;
+  `find_triples_as_of` answers historical questions; and
+  `find_triples_including_superseded` exposes the raw ledger.
+  `AssertResult::superseded` reports how many assertions a write retired.
+- Fully backward compatible: the migration is an additive `ALTER TABLE`, rows
+  written before it have `valid_to IS NULL` and stay visible, and predicates
+  default to accumulating, so nothing changes until a predicate opts in.
+- Motivated by the field scan: memory staleness ("high-relevance facts become
+  confidently wrong over time") is a top open problem, and recent work reports
+  RAG at 0.20–0.47 accuracy on evolving knowledge versus 0.95–1.00 for a
+  deterministic supersession layer. See
+  `docs/internal/field-scan-and-open-levers-2026-07-25.md`.
+
 ### Added (read concurrency)
 - `SqliteStore` no longer serialises reads behind the write connection. A pool
   of read-only connections (`SqliteStoreConfig::read_pool_size`, default 4,

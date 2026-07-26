@@ -162,6 +162,20 @@ pub struct OntologyPredicate {
     /// Whether the predicate is symmetric.
     #[serde(default)]
     pub symmetric: bool,
+    /// Whether a subject may hold only ONE object for this predicate at a time
+    /// (a *functional* predicate). Default false — predicates accumulate.
+    ///
+    /// `true` turns on deterministic supersession: asserting a new object for
+    /// an existing `(subject, predicate)` closes the previous assertion's
+    /// validity interval instead of adding a second live fact. This is how a
+    /// changing fact ("current employer", "current city") stops returning both
+    /// the old and new value. Values that genuinely accumulate ("attended",
+    /// "mentions") must stay false.
+    ///
+    /// Supersession is keyed on the entity pair alone — no embeddings, no
+    /// similarity threshold, no LLM.
+    #[serde(default)]
+    pub single_valued: bool,
 }
 
 impl Ontology {

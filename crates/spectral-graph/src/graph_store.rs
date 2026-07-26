@@ -220,6 +220,92 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Insert a triple for a *functional* predicate, retiring any conflicting
+    /// live assertion for the same `(subject, predicate)`.
+    ///
+    /// Deterministic supersession: the decision is made on the entity pair and
+    /// predicate name alone — no embedding, no similarity threshold, no LLM
+    /// call. If a live assertion already points at the *same* object, nothing
+    /// is superseded and nothing is duplicated (idempotent re-assertion). If it
+    /// points at a different object, that row's validity interval is closed at
+    /// `asserted_at` and the new assertion becomes the live one.
+    ///
+    /// Superseded rows are retired, never deleted, so
+    /// [`find_triples_as_of`](Self::find_triples_as_of) can still answer
+    /// historical questions.
+    ///
+    /// Returns the number of assertions retired (0 or, for data that predates
+    /// the invariant, more than 1).
+    pub fn insert_triple_superseding(&self, triple: &Triple) -> Result<usize, Error> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let from = triple.from.as_bytes().to_vec();
+        let to = triple.to.as_bytes().to_vec();
+        let now = triple.asserted_at.to_rfc3339();
+
+        // Already live with this exact object → idempotent no-op.
+        let already: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM triple
+             WHERE from_id = ?1 AND predicate = ?2 AND to_id = ?3 AND valid_to IS NULL",
+            params![from, triple.predicate, to],
+            |r| r.get(0),
+        )?;
+        if already > 0 {
+            tx.commit()?;
+            return Ok(0);
+        }
+
+        let retired = tx.execute(
+            "UPDATE triple SET valid_to = ?1
+             WHERE from_id = ?2 AND predicate = ?3 AND to_id <> ?4 AND valid_to IS NULL",
+            params![now, from, triple.predicate, to],
+        )?;
+
+        let doc_id: Option<Vec<u8>> = triple.source_doc_id.map(|b| b.to_vec());
+        tx.execute(
+            "INSERT INTO triple
+                 (from_id, to_id, predicate, confidence, source_doc_id,
+                  source_brain_id, asserted_at, visibility, weight, valid_to)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL
+             WHERE EXISTS (SELECT 1 FROM entity WHERE id = ?1)
+               AND EXISTS (SELECT 1 FROM entity WHERE id = ?2)",
+            params![
+                from,
+                to,
+                triple.predicate,
+                triple.confidence,
+                doc_id,
+                triple.source_brain_id.as_bytes().to_vec(),
+                now,
+                visibility_to_str(triple.visibility),
+                triple.weight,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(retired)
+    }
+
+    /// Triples that were live at `as_of`, i.e. asserted no later than it and
+    /// not yet superseded by then. The historical counterpart to
+    /// [`find_triples`](Self::find_triples), which answers "what is true now".
+    pub fn find_triples_as_of(
+        &self,
+        from: Option<&EntityId>,
+        to: Option<&EntityId>,
+        predicate: Option<&str>,
+        as_of: DateTime<Utc>,
+    ) -> Result<Vec<Triple>, Error> {
+        let all = self.find_triples_including_superseded(from, to, predicate)?;
+        let stamp = as_of.to_rfc3339();
+        Ok(all
+            .into_iter()
+            .filter(|(t, valid_to)| {
+                t.asserted_at <= as_of && valid_to.as_deref().is_none_or(|v| v > stamp.as_str())
+            })
+            .map(|(t, _)| t)
+            .collect())
+    }
+
     /// Find triples matching a pattern. `None` values are wildcards.
     pub fn find_triples(
         &self,
@@ -242,11 +328,10 @@ impl GraphStore {
             conditions.push(format!("predicate = ?{}", vals.len() + 1));
             vals.push(p.to_string().into());
         }
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", conditions.join(" AND "))
-        };
+        // Currently-valid assertions only. Rows written before the
+        // bi-temporal migration have NULL `valid_to`, so they stay visible.
+        conditions.push("valid_to IS NULL".to_string());
+        let where_clause = format!(" WHERE {}", conditions.join(" AND "));
         let sql = format!(
             "SELECT from_id, to_id, predicate, confidence, source_doc_id,
                     source_brain_id, asserted_at, visibility, weight
@@ -257,6 +342,53 @@ impl GraphStore {
         let mut out = Vec::new();
         for r in rows {
             out.push(r??);
+        }
+        Ok(out)
+    }
+
+    /// Every assertion matching the pattern, live or retired, paired with its
+    /// `valid_to` (`None` = still live). The raw ledger behind
+    /// [`find_triples`](Self::find_triples) and
+    /// [`find_triples_as_of`](Self::find_triples_as_of).
+    pub fn find_triples_including_superseded(
+        &self,
+        from: Option<&EntityId>,
+        to: Option<&EntityId>,
+        predicate: Option<&str>,
+    ) -> Result<Vec<(Triple, Option<String>)>, Error> {
+        let conn = self.lock()?;
+        let mut conditions = Vec::new();
+        let mut vals: Vec<rusqlite::types::Value> = Vec::new();
+        if let Some(f) = from {
+            conditions.push(format!("from_id = ?{}", vals.len() + 1));
+            vals.push(f.as_bytes().to_vec().into());
+        }
+        if let Some(t) = to {
+            conditions.push(format!("to_id = ?{}", vals.len() + 1));
+            vals.push(t.as_bytes().to_vec().into());
+        }
+        if let Some(p) = predicate {
+            conditions.push(format!("predicate = ?{}", vals.len() + 1));
+            vals.push(p.to_string().into());
+        }
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        let sql = format!(
+            "SELECT from_id, to_id, predicate, confidence, source_doc_id,
+                    source_brain_id, asserted_at, visibility, weight, valid_to
+             FROM triple{where_clause}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(vals), |r| {
+            Ok((triple_from_row(r), r.get::<_, Option<String>>(9)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (t, valid_to) = r?;
+            out.push((t?, valid_to));
         }
         Ok(out)
     }
@@ -434,6 +566,7 @@ fn create_schema(conn: &Connection) -> Result<(), Error> {
          );
          CREATE INDEX IF NOT EXISTS idx_triple_from ON triple(from_id);
          CREATE INDEX IF NOT EXISTS idx_triple_to   ON triple(to_id);
+         CREATE INDEX IF NOT EXISTS idx_triple_sp   ON triple(from_id, predicate);
          CREATE TABLE IF NOT EXISTS mention (
              doc_id       BLOB NOT NULL,
              entity_id    BLOB NOT NULL,
@@ -444,6 +577,39 @@ fn create_schema(conn: &Connection) -> Result<(), Error> {
          );
          CREATE INDEX IF NOT EXISTS idx_mention_entity ON mention(entity_id);",
     )?;
+    migrate_bitemporal_triple(conn)?;
+    Ok(())
+}
+
+/// Add the bi-temporal validity columns to `triple`, idempotently.
+///
+/// `asserted_at` is *transaction* time — when this brain learned the fact.
+/// `valid_to` adds *valid* time — when the fact stopped being true. Separating
+/// them is the standard bi-temporal split (Snodgrass & Ahn, 1985) and is what
+/// lets a superseded fact be retired without being deleted, so history and
+/// as-of queries survive.
+///
+/// Existing rows get `valid_to = NULL`, i.e. still valid, so an upgraded brain
+/// behaves exactly as before until something is actually superseded.
+fn migrate_bitemporal_triple(conn: &Connection) -> Result<(), Error> {
+    let mut have_valid_to = false;
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(triple)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for r in rows {
+            if r? == "valid_to" {
+                have_valid_to = true;
+            }
+        }
+    }
+    if !have_valid_to {
+        // NULL = open interval = currently valid.
+        conn.execute_batch(
+            "ALTER TABLE triple ADD COLUMN valid_to TEXT;
+             CREATE INDEX IF NOT EXISTS idx_triple_active
+                 ON triple(from_id, predicate) WHERE valid_to IS NULL;",
+        )?;
+    }
     Ok(())
 }
 
