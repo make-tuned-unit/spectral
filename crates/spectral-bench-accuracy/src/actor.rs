@@ -189,7 +189,13 @@ impl OpenAiActor {
             api_key,
             model,
             base_url,
-            client: reqwest::blocking::Client::new(),
+            // Local models (ollama) can take 60s+ for prompt-eval on a large
+            // context; the default client timeout is too tight and registers
+            // slow-but-valid generations as transport failures.
+            client: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .build()
+                .expect("build reqwest client"),
         }
     }
 }

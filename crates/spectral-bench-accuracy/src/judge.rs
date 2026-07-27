@@ -228,7 +228,12 @@ impl OpenAiJudge {
             api_key,
             model,
             base_url,
-            client: reqwest::blocking::Client::new(),
+            // See OpenAiActor: local prompt-eval can exceed the default
+            // client timeout on large contexts.
+            client: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .build()
+                .expect("build reqwest client"),
         }
     }
 }

@@ -69,7 +69,7 @@ where
                 return CallOutcome::Success { value, retry_count };
             }
             Err(e) => {
-                let err_msg = format!("{e}");
+                let err_msg = format!("{e:#}");
                 match classify_error(&err_msg) {
                     ErrorClass::Auth => {
                         eprintln!(
