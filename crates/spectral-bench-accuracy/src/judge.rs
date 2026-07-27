@@ -67,6 +67,14 @@ fn judge_prompt(question: &str, predicted: &str, ground_truth: &str, category: C
              If this is NOT a counting question, apply the standard rubric: the answer is correct if it \
              accurately combines relevant facts from different sessions, even if worded differently."
         }
+        Category::SingleSessionPreference => {
+            "The question asks for a response that respects a stated user preference. \
+             The ground truth describes the preference(s) the response must honor. \
+             The answer is correct if it substantively incorporates or complies with those \
+             preference(s). It is incorrect if it ignores them, contradicts them, or gives \
+             generic advice that could have been written without knowing them — do NOT grade \
+             this as a fact-recall question."
+        }
         _ => {
             "An answer is correct if it conveys the same factual information as the ground truth, \
              even if worded differently. Synonyms and paraphrasing are acceptable.\n\n\
@@ -94,8 +102,34 @@ fn judge_prompt(question: &str, predicted: &str, ground_truth: &str, category: C
          Ground truth: {ground_truth}\n\
          System answer: {predicted}\n\n\
          Rubric: {rubric}\n\n\
+         ABSTENTION RULE (applies on top of the rubric, in both directions):\n\
+         - If the ground truth itself states the information was not mentioned or is \
+           not available, then a system answer that abstains (says it does not know, \
+           has no record, or that the information was not mentioned) is CORRECT, and a \
+           system answer asserting a specific value is INCORRECT.\n\
+         - Otherwise — the ground truth is a specific answer — a system answer that \
+           abstains or says it does not know is INCORRECT, no matter how reasonable \
+           the abstention sounds. Abstention is never a match for a specific fact.\n\n\
          Respond with JSON only: {{\"correct\": true|false, \"reasoning\": \"...\"}}"
     )
+}
+
+/// Fingerprint of the grading rubrics. Changing any rubric text changes this
+/// hash; it feeds the run config fingerprint and the report, so runs graded
+/// under different rubrics are never silently treated as comparable/resumable.
+pub fn rubric_fingerprint() -> String {
+    let all: String = [
+        Category::MultiSession,
+        Category::TemporalReasoning,
+        Category::KnowledgeUpdate,
+        Category::SingleSessionUser,
+        Category::SingleSessionAssistant,
+        Category::SingleSessionPreference,
+    ]
+    .iter()
+    .map(|c| judge_prompt("", "", "", *c))
+    .collect();
+    blake3::hash(all.as_bytes()).to_hex().to_string()
 }
 
 /// Extract token usage from the Anthropic API response JSON.
@@ -121,7 +155,13 @@ impl AnthropicJudge {
             api_key,
             model,
             base_url,
-            client: reqwest::blocking::Client::new(),
+            // Large grading prompts can exceed reqwest's default client
+            // timeout; a slow-but-valid response must not register as a
+            // transport failure. Matches the OpenAI-compat clients.
+            client: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .build()
+                .expect("build reqwest client"),
         }
     }
 
@@ -185,23 +225,22 @@ impl Judge for AnthropicJudge {
             )
         })?;
 
-        // Extract JSON from response (may have surrounding text)
-        let grade: GradeResult = if let Some(start) = text.find('{') {
-            if let Some(end) = text.rfind('}') {
-                serde_json::from_str(&text[start..=end]).unwrap_or(GradeResult {
-                    correct: false,
-                    reasoning: Some(format!("Failed to parse judge response: {text}")),
-                })
-            } else {
-                GradeResult {
-                    correct: false,
-                    reasoning: Some(format!("No closing brace in judge response: {text}")),
-                }
-            }
-        } else {
-            GradeResult {
-                correct: false,
-                reasoning: Some(format!("No JSON in judge response: {text}")),
+        // Extract JSON from response (may have surrounding text). A response we
+        // cannot parse is a judge FAILURE, not a wrong answer — returning Err
+        // lets the retry layer re-ask, and terminal failures are excluded from
+        // the accuracy denominator instead of silently scored incorrect.
+        let grade: GradeResult = match (text.find('{'), text.rfind('}')) {
+            (Some(s), Some(e)) if e > s => serde_json::from_str(&text[s..=e]).map_err(|err| {
+                anyhow::anyhow!(
+                    "judge parse failure: {err}: {}",
+                    text.chars().take(300).collect::<String>()
+                )
+            })?,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "judge parse failure: no JSON object in response: {}",
+                    text.chars().take(300).collect::<String>()
+                ))
             }
         };
 
@@ -279,17 +318,21 @@ impl Judge for OpenAiJudge {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("OpenAI-compat judge missing content"))?
             .to_string();
-        let grade = match (text.find('{'), text.rfind('}')) {
-            (Some(s), Some(e)) if e > s => {
-                serde_json::from_str(&text[s..=e]).unwrap_or(GradeResult {
-                    correct: false,
-                    reasoning: Some(format!("Failed to parse judge response: {text}")),
-                })
+        // See AnthropicJudge: unparseable judge output is a failure, not a
+        // wrong answer.
+        let grade: GradeResult = match (text.find('{'), text.rfind('}')) {
+            (Some(s), Some(e)) if e > s => serde_json::from_str(&text[s..=e]).map_err(|err| {
+                anyhow::anyhow!(
+                    "judge parse failure: {err}: {}",
+                    text.chars().take(300).collect::<String>()
+                )
+            })?,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "judge parse failure: no JSON object in response: {}",
+                    text.chars().take(300).collect::<String>()
+                ))
             }
-            _ => GradeResult {
-                correct: false,
-                reasoning: Some(format!("No JSON in judge response: {text}")),
-            },
         };
         Ok((grade, usage))
     }
@@ -424,7 +467,6 @@ mod tests {
         for cat in [
             Category::SingleSessionUser,
             Category::SingleSessionAssistant,
-            Category::SingleSessionPreference,
         ] {
             let p = judge_prompt("Q?", "A", "A", cat);
             assert!(
@@ -433,5 +475,35 @@ mod tests {
                 cat
             );
         }
+    }
+
+    #[test]
+    fn preference_rubric_is_not_fact_recall() {
+        let p = judge_prompt("Q?", "A", "A", Category::SingleSessionPreference);
+        assert!(p.contains("stated user preference"));
+        assert!(!p.contains("SUPERSET ANSWERS"));
+    }
+
+    #[test]
+    fn abstention_rule_present_in_every_rubric() {
+        for cat in [
+            Category::MultiSession,
+            Category::TemporalReasoning,
+            Category::KnowledgeUpdate,
+            Category::SingleSessionUser,
+            Category::SingleSessionAssistant,
+            Category::SingleSessionPreference,
+        ] {
+            let p = judge_prompt("Q?", "A", "A", cat);
+            assert!(p.contains("ABSTENTION RULE"), "missing in {cat:?}");
+        }
+    }
+
+    #[test]
+    fn rubric_fingerprint_is_stable_and_nonempty() {
+        let a = rubric_fingerprint();
+        let b = rubric_fingerprint();
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 64);
     }
 }

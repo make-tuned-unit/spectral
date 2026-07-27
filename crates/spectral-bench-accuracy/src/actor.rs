@@ -66,7 +66,13 @@ impl AnthropicActor {
             api_key,
             model,
             base_url,
-            client: reqwest::blocking::Client::new(),
+            // Large memory contexts can exceed reqwest's default client
+            // timeout; a slow-but-valid generation must not register as a
+            // transport failure. Matches the OpenAI-compat clients.
+            client: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .build()
+                .expect("build reqwest client"),
         }
     }
 
