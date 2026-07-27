@@ -417,33 +417,47 @@ impl AccuracyEval {
             let _ = crate::describe::apply_descriptions(&brain, descs);
         }
 
-        // Query expansion: augment question with synonym/domain terms for FTS
+        // Classify question shape first — it gates expansion below and routes
+        // retrieval/prompting. (Always uses the original question text.)
+        let qtype = retrieval::QuestionType::classify(&question.question);
+
+        // Query expansion: augment question with synonym/domain terms for FTS.
+        //
+        // SHAPE-GATED to counting questions only. Expansion is the measured
+        // fix for the counting lexical gap (instance turns don't rank for the
+        // count query — TIER1_PORTER_WIDEN: expansion key-recall 61.5% vs
+        // porter 54.7%, recovered the zero-evidence counting cases), while on
+        // non-counting shapes it overlaps porter for no measured accuracy
+        // gain at $0.25/1k + latency. Gating keeps the zero-LLM retrieval
+        // path for every other shape.
+        let expansion_applies = matches!(
+            qtype,
+            retrieval::QuestionType::Counting | retrieval::QuestionType::CountingCurrentState
+        );
         let (retrieval_query, expansion_usage, expansion_wall_ms) =
-            if let Some(ref exp_config) = self.expansion {
-                let t = std::time::Instant::now();
-                match crate::expansion::expand_query(&question.question, exp_config) {
-                    Ok((expanded, usage)) => {
-                        let wall = t.elapsed().as_millis() as u64;
-                        (expanded, usage, wall)
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "  [expansion] {}: expansion failed, using original: {e}",
-                            question.question_id
-                        );
-                        (
-                            question.question.clone(),
-                            None,
-                            t.elapsed().as_millis() as u64,
-                        )
+            match (&self.expansion, expansion_applies) {
+                (Some(exp_config), true) => {
+                    let t = std::time::Instant::now();
+                    match crate::expansion::expand_query(&question.question, exp_config) {
+                        Ok((expanded, usage)) => {
+                            let wall = t.elapsed().as_millis() as u64;
+                            (expanded, usage, wall)
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "  [expansion] {}: expansion failed, using original: {e}",
+                                question.question_id
+                            );
+                            (
+                                question.question.clone(),
+                                None,
+                                t.elapsed().as_millis() as u64,
+                            )
+                        }
                     }
                 }
-            } else {
-                (question.question.clone(), None, 0)
+                _ => (question.question.clone(), None, 0),
             };
-
-        // Classify question shape for routing (use original question, not expanded)
-        let qtype = retrieval::QuestionType::classify(&question.question);
 
         // Determine effective retrieval path for this question.
         //
