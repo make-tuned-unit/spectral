@@ -68,7 +68,13 @@ what happened last time?"**
   model, sub-millisecond on 1k memories, and ranked on transparent lexical
   signals (BM25, signal-score, recency) rather than an opaque vector distance.
 - **Recognition** scores *familiarity vs novelty* for a new stimulus with an
-  embedding-free engine built from three lineages: **landmark fingerprinting**
+  embedding-free engine. Its measured value is **auditable verdicts** — every
+  familiarity/novelty call carries the exact matched features that produced it —
+  not accuracy: on lexical re-encounter a ~30-line MinHash scores higher (0.998
+  vs 0.941 clean AUC), and on paraphrase/semantic re-encounter every
+  deterministic method loses to embeddings (see
+  [docs/internal/RECOGNITION_BASELINE.md](docs/internal/RECOGNITION_BASELINE.md)).
+  The engine is built from three lineages: **landmark fingerprinting**
   (a stimulus's statistically salient features — rare stems, numbers,
   identifiers — scored by IDF; the text analog of spectral peaks above the noise
   floor, and where the name *Spectral* comes from), **Shazam-style pair hashes**
@@ -76,11 +82,9 @@ what happened last time?"**
   and **winnowed k-grams** with the MOSS guarantee (any shared verbatim run of
   *w + k − 1* tokens is detected). Scoring borrows from cognitive psychology —
   REM's log-inverse-frequency weighting and MINERVA 2's echo aggregation — into a
-  familiarity scalar; **novelty = 1 − familiarity**. No embeddings, no model,
-  and every verdict carries the exact features that produced it. Recognition is
-  strong at near-duplicate and verbatim re-encounter detection (its measured
-  strength); it is **not** a paraphrase/semantic matcher — full paraphrases share
-  few landmarks. It powers deduplication and recurrence feedback.
+  familiarity scalar; **novelty = 1 − familiarity**. No embeddings, no model.
+  It is **not** a paraphrase/semantic matcher — full paraphrases share few
+  landmarks. It powers deduplication and recurrence feedback.
 
 ## A memory that adapts through use
 
@@ -159,12 +163,18 @@ synthesis, not retrieval misses.
 
 **Held-out generalization.** On **LoCoMo** — a *different* long-term-conversation
 benchmark the retrieval was never tuned on — deterministic recall holds up:
-**session-recall 92.9%** (120 questions), versus 98.6% in-sample. A ~6pp drop
+**session-recall 92.9%** (120 questions), versus 98.6% in-sample — the
+retrieval-stage number behind the **81.5% (401/492)** end-to-end accuracy
+above. A ~6pp drop
 across an entirely different dataset is strong evidence the recall isn't overfit;
 the honest weak spot is multi-hop (multi-session) questions at 78.6%. Reproduce
 it (and everything else) with [BENCHMARKING.md](BENCHMARKING.md).
 
 Full results, per-category breakdown, and limitations: [docs/RESULTS.md](docs/RESULTS.md).
+
+**Negative results are load-bearing:**
+[the full measured record →](docs/MEASURED_RECORD.md) — what we tried, what
+held, and what we rejected, with the numbers.
 
 ## Quick start
 
@@ -240,8 +250,11 @@ writes to SQLite (memories, FTS index, episodes, fingerprints).
 
 **spectral-tact** (Topic-Aware Context Triage) handles retrieval. The
 production recall path is deterministic FTS5 + BM25 with signal-score, recency,
-and episode-diversity re-ranking; TACT's fingerprint/wing tiers and associative
-co-occurrence spreading are complementary layers under active measurement.
+and episode-diversity re-ranking. TACT's fingerprint/wing tiers and associative
+co-occurrence (RERANK) spreading have been measured and do **not** improve
+accuracy: the fingerprint tier never beats plain FTS at recall, and spreading
+was a measured null in a powered weak-actor A/B (n=78, McNemar p=0.81) — see
+[docs/MEASURED_RECORD.md](docs/MEASURED_RECORD.md).
 
 **spectral-core** provides content-addressed entity IDs, Ed25519 brain
 identity, device IDs, and the four-level visibility system.
@@ -332,6 +345,7 @@ cargo bench --bench vector_comparison -p spectral  # downloads ~330 MB model on 
 | System | Embedding model | Multi-hop graph | Federation primitives | Deployment |
 |---|---|---|---|---|
 | **Spectral** | Not required | Yes (SQLite, 2-hop BFS) | Yes (identity, visibility, provenance) | Embedded, single binary |
+| MinHash + BM25 (classical) | Not required | No | No | Embedded, ~30 lines |
 | Vector DBs (Pinecone, Qdrant, Weaviate) | Required | No | No | Hosted service or self-hosted server |
 | Cognee | Required | Yes (Cognify) | No | Python, external services |
 | sqlite-vss / fastembed | Required | No | No | Embedded library |
@@ -344,6 +358,20 @@ small synthetic suite — see [benches/RESULTS.md](benches/RESULTS.md); a
 keyword-free multi-hop test is future work), and is the only option here with
 built-in federation primitives. Pick the tool that matches your query
 pattern.
+
+The honest comparison is with the free classical stack, not just vector DBs.
+Measured on a real 1,738-memory corpus
+([docs/internal/PHASE0_RESULTS.md](docs/internal/PHASE0_RESULTS.md)),
+MinHash+BM25 is also $0, offline, and deterministic — and it **wins the raw
+systems axes**: ~500× faster ingest (21,818 vs 43 events/sec) and ~40–70×
+less storage per event, with both stacks byte-identical on repeated rankings.
+Spectral's cost edge over an *embedding* stack at that corpus's real volume is
+about **$0.04/month** — real as a ratio, trivial as a dollar figure. What
+Spectral adds over the classical stack is elsewhere: full retrieval audit
+trails (matched terms, fingerprint hashes, graph edges — BM25 explains term
+scores only), verified deletion (`forget()` re-probes every substrate), the
+typed multi-hop graph, and visibility-scoped, provenance-ranked federation.
+If you need none of those, MinHash+BM25 is the rational choice.
 
 ## When to use Spectral
 
@@ -375,7 +403,7 @@ For runnable code, see `crates/spectral/examples/quickstart.rs`.
 - ✅ Crash recovery and concurrency tested ([#8](https://github.com/make-tuned-unit/spectral/pull/8))
 - ✅ Benchmarked vs TF-IDF and neural vectors ([#9](https://github.com/make-tuned-unit/spectral/pull/9), [#10](https://github.com/make-tuned-unit/spectral/pull/10))
 - ✅ Performance optimizations from production audit ([#13](https://github.com/make-tuned-unit/spectral/pull/13))
-- ✅ Cognitive Spectrogram (cross-wing matching, [#16](https://github.com/make-tuned-unit/spectral/pull/16))
+- ⚠️ Cognitive Spectrogram ([#16](https://github.com/make-tuned-unit/spectral/pull/16)) — repointed to recognition: measured not viable as a recall path (0/500 contexts changed, [ORACLE_TIER0](docs/internal/ORACLE_TIER0.md))
 - ✅ Recognition engine (landmark fingerprinting, familiarity/novelty scoring)
 - ✅ Ambient feedback loop (use-driven reinforce, disuse decay, lift-based anticipation)
 - ✅ Read-time federation (fan-out coordinator: RRF poisoning-resistance, visibility boundary, provenance, graceful degradation)

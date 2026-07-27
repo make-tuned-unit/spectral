@@ -1,10 +1,12 @@
 //! # Spectral
 //!
-//! A frequency-domain memory system for AI agents, designed for federation.
+//! Deterministic, embedding-free memory for AI agents: recall, recognition,
+//! and adaptive feedback. Local-first and federation-ready, on one SQLite
+//! file — no vector DB, no LLM on the recall path.
 //!
-//! Spectral gives your agent complementary recall, recognition, and relational
-//! memory over one embedded SQLite database, accessible through a single
-//! [`Brain`] handle.
+//! Spectral gives your agent complementary recall, recognition, relational,
+//! episodic, adaptive, and federated memory over one embedded SQLite
+//! database, accessible through a single [`Brain`] handle.
 //!
 //! ## Quick start
 //!
@@ -47,11 +49,18 @@
 //!
 //! | Crate | Role |
 //! |---|---|
-//! | `spectral-core` | Content-addressed IDs, identity, visibility |
-//! | `spectral-graph` | SQLite graph store, ontology, canonicalization, Brain API |
-//! | `spectral-ingest` | Memory ingestion: classify, score, fingerprint (Constellation) |
-//! | `spectral-tact` | TACT retrieval: fingerprint → wing → FTS search |
-//! | `spectral-spectrogram` | *(reserved)* Phase 2 cognitive cross-wing matching |
+//! | `spectral-core` | Content-addressed entity IDs, Ed25519 brain identity, device IDs, visibility levels |
+//! | `spectral-graph` | SQLite graph store, ontology, canonicalization, federation coordinator, and the `Brain` implementation |
+//! | `spectral-ingest` | Memory ingestion: classify, signal-score, fingerprint, store (memories, FTS, episodes) |
+//! | `spectral-tact` | Retrieval; the production recall path is deterministic FTS5 + BM25 with re-ranking — the fingerprint/wing tiers are measured as adding nothing over FTS |
+//! | `spectral-cascade` | Recognition context and result types for the retrieval pipeline |
+//! | `spectral-recognition` | Embedding-free recognition ("have I seen this before?") with auditable verdicts; no accuracy claim over classical baselines |
+//! | `spectral-spectrogram` | Retired as a recall path (0/500 retrieval contexts changed); retained for the recognition experiments' history |
+//! | `spectral-archivist` | Opt-in maintenance: dedup, gap detection, reclassification, decay, consolidation candidates |
+//! | `spectral-bench-accuracy`, `spectral-bench-real` | Benchmark harnesses; not part of the library API |
+//!
+//! The measured record behind these one-liners — including the negative
+//! results — is indexed in `docs/MEASURED_RECORD.md`.
 
 #[cfg(feature = "http-llm")]
 pub mod llm;
