@@ -75,6 +75,10 @@ fn stem(t: &str) -> String {
         s = format!("{b}ss");
     } else if let Some(b) = s.strip_suffix("ies") {
         s = format!("{b}i");
+    } else if s.len() > 4
+        && (s.ends_with("ches") || s.ends_with("shes") || s.ends_with("xes") || s.ends_with("zes"))
+    {
+        s.truncate(s.len() - 2);
     } else if s.ends_with('s') && !s.ends_with("ss") && s.len() > 3 {
         s.pop();
     }
@@ -283,6 +287,9 @@ mod tests {
     #[test]
     fn stemming_bridges_plural_and_gerund() {
         assert_eq!(stem("doctors"), stem("doctor"));
+        assert_eq!(stem("boxes"), stem("box"));
+        assert_eq!(stem("wishes"), stem("wish"));
+        assert_eq!(stem("churches"), stem("church"));
         assert_eq!(stem("deploying"), stem("deploy"));
         assert_eq!(stem("deployed"), stem("deploy"));
     }
