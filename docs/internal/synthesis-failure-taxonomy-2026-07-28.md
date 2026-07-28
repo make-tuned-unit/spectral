@@ -205,3 +205,35 @@ Same evidential shape as the counting sweep: mechanism-specific predicted hits,
 minimal collateral. Next validation step for the sonnet transfer: batch rules
 B/C/D into the queued Tier-1 paid replay (~$3) before any n=500 spend.
 Frozen: `~/spectral-local-bench/wa-ab/rules-{control,candidate}.json`.
+
+---
+
+## SONNET TRANSFER TEST (2026-07-28, ~$5 replay) — rules restructured
+
+Paired replay of tier1-h2h-porter (56q clean) with sonnet actor+judge,
+control vs rules-A–D binary: **control 46 vs rules 43 (net −3)** — but the
+flip inspection reallocates most of that:
+
+- **2 counting flips CANNOT be rule-caused** (counting templates identical in
+  both arms) — one is the pre-#219 judge parse-failure artifact scoring a
+  delta-1 tolerance case wrong mid-truncation. CONFOUND: these binaries stack
+  on main, not on the hardened judge. Noise/artifact, not rule regressions.
+- **Attributable: +1 rule C** (`bc8a6e93_abs` corrective abstention — works on
+  both actor strengths), **−1 temporal softening** (`fe651585`: the scaffold
+  discipline weak actors collapse under is something sonnet exploits well),
+  **−1 current-state stack** (`07741c45`, D+B+C+A un-attributable at n=1).
+
+**Disposition (shipped in this branch):**
+- **Rules B + C stay in shared templates** — validated on the weak actor
+  (3 predicted recoveries), C also on sonnet, no attributable counter-evidence.
+- **Rule A + temporal softening REMOVED from shared templates** — weak-actor-
+  specific (scaffold collapse is a small-model failure mode; forcing early
+  commitment and removing scaffold hurts or does nothing for strong actors).
+  Candidate for a future weak-actor prompt profile.
+- **Rule D REMOVED pending a clean test** — its only targets are sonnet-side
+  and the one current-state datapoint is confounded; re-test under the
+  hardened judge in the batched Tier-1 replay.
+
+Lesson recorded: prompt levers are ACTOR-STRENGTH-SPECIFIC; a weak-actor win
+is not a transfer claim. Validate per actor profile before shipping shared
+templates. Frozen: `~/spectral-local-bench/wa-ab/tier1-rules-{control,candidate}.json`.
