@@ -343,7 +343,16 @@ fn main() -> Result<()> {
             expansion_model,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
-            let question_count = max_questions.unwrap_or(ds.len());
+            // Pre-flight count must honor --question-id so the estimate (and
+            // the --confirm-cost guard) reflects the questions actually run.
+            let filtered_len = match &question_id {
+                Some(qid) => {
+                    let ids = eval::parse_question_id_filter(qid);
+                    ds.iter().filter(|q| ids.contains(&q.question_id)).count()
+                }
+                None => ds.len(),
+            };
+            let question_count = max_questions.unwrap_or(filtered_len).min(filtered_len);
             let estimated_cost =
                 eval::estimate_cost_for_models(question_count, &actor_model, &judge_model);
 

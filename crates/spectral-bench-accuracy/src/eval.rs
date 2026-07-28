@@ -743,20 +743,7 @@ candidate set, then verify against the raw sessions below) ===\n{atoms}"
         let mut questions: Vec<&Question> = questions_all.iter().collect();
 
         if let Some(ref qid) = self.config.question_id {
-            // Accepts: a single ID, a comma-separated list, or "@path" to a
-            // file with one ID per line (targeted Tier-1 replays).
-            let ids: HashSet<String> = if let Some(path) = qid.strip_prefix('@') {
-                std::fs::read_to_string(path)
-                    .map(|s| {
-                        s.lines()
-                            .map(|l| l.trim().to_string())
-                            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                qid.split(',').map(|s| s.trim().to_string()).collect()
-            };
+            let ids = parse_question_id_filter(qid);
             questions.retain(|q| ids.contains(&q.question_id));
         }
 
@@ -774,6 +761,24 @@ candidate set, then verify against the raw sessions below) ===\n{atoms}"
         }
 
         questions
+    }
+}
+
+/// Parse a `--question-id` filter value into the set of IDs it selects.
+/// Accepts: a single ID, a comma-separated list, or "@path" to a
+/// file with one ID per line (targeted Tier-1 replays).
+pub fn parse_question_id_filter(qid: &str) -> HashSet<String> {
+    if let Some(path) = qid.strip_prefix('@') {
+        std::fs::read_to_string(path)
+            .map(|s| {
+                s.lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        qid.split(',').map(|s| s.trim().to_string()).collect()
     }
 }
 
@@ -1441,5 +1446,28 @@ mod tests {
             mixed > haiku && mixed < sonnet,
             "mixed should be between haiku and sonnet"
         );
+    }
+
+    #[test]
+    fn parse_question_id_filter_forms() {
+        // Single ID.
+        let ids = parse_question_id_filter("q1");
+        assert_eq!(ids, HashSet::from(["q1".to_string()]));
+
+        // Comma-separated list, whitespace tolerated.
+        let ids = parse_question_id_filter("q1, q2 ,q3");
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains("q2"));
+
+        // @file: one ID per line, blanks and #-comments skipped.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ids.txt");
+        std::fs::write(&path, "# replay set\nq1\n\n q2 \n").unwrap();
+        let ids = parse_question_id_filter(&format!("@{}", path.display()));
+        assert_eq!(ids, HashSet::from(["q1".to_string(), "q2".to_string()]));
+
+        // Missing @file selects nothing (matches filter_questions behavior).
+        let ids = parse_question_id_filter("@/nonexistent/ids.txt");
+        assert!(ids.is_empty());
     }
 }

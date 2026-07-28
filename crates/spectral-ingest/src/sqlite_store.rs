@@ -1196,19 +1196,18 @@ impl SqliteStore {
 }
 
 /// Drop a single wing's cached entry (a mutation confined to one known wing).
+/// Recovers a poisoned lock: the cache is derived state, so clearing it after a
+/// panic is always safe — skipping would serve stale rows forever.
 fn wing_cache_pop(cache: &Arc<Mutex<LruCache<String, Vec<MemoryHit>>>>, wing: &str) {
-    if let Ok(mut c) = cache.lock() {
-        c.pop(wing);
-    }
+    cache.lock().unwrap_or_else(|e| e.into_inner()).pop(wing);
 }
 
 /// Drop every cached wing (a mutation whose affected wing(s) aren't cheaply known,
 /// or that spans many). Correctness over cache-hit rate — these paths are rare
 /// relative to reads, so the next `wing_search` simply repopulates.
 fn wing_cache_clear(cache: &Arc<Mutex<LruCache<String, Vec<MemoryHit>>>>) {
-    if let Ok(mut c) = cache.lock() {
-        c.clear();
-    }
+    // Recover a poisoned lock: clearing derived cache state is always safe.
+    cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 /// Standard column list for memory queries.
@@ -1955,11 +1954,10 @@ impl MemoryStore for SqliteStore {
                 return Ok(None);
             }
 
-            // Invalidate wing cache for the reinforced memory's wing
+            // Invalidate wing cache for the reinforced memory's wing.
+            // Recover a poisoned lock — skipping would serve the stale score.
             if let Some(ref w) = wing {
-                if let Ok(mut cache) = wing_cache.lock() {
-                    cache.pop(w);
-                }
+                wing_cache.lock().unwrap_or_else(|e| e.into_inner()).pop(w);
             }
 
             Ok(wing)
@@ -2019,11 +2017,12 @@ impl MemoryStore for SqliteStore {
                 total_updated += conn.execute(&sql, params.as_slice())?;
             }
 
-            if let Ok(mut cache) = wing_cache.lock() {
-                for w in &all_wings {
-                    cache.pop(w);
-                }
+            // Recover a poisoned lock — skipping would serve stale scores.
+            let mut cache = wing_cache.lock().unwrap_or_else(|e| e.into_inner());
+            for w in &all_wings {
+                cache.pop(w);
             }
+            drop(cache);
 
             Ok(total_updated)
         })
