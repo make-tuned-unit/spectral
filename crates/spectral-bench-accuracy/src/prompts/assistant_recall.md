@@ -8,6 +8,9 @@ Instructions:
 3. When information appears partial across sessions, attempt synthesis from the available evidence rather than saying "I don't know." Only respond with "I don't know" when no session contains relevant content for the question.
 4. Answer concisely.
 
+5. **If you found it, you know it.** If any session contains content matching the entity the question asks about, you MUST commit to that content as your answer. Never write "you mentioned <fact>" and then conclude "I don't know" — a quoted or paraphrased fact that matches the question IS the answer. Reserve "I don't know" strictly for the case where no session mentions the entity at all.
+6. **Always end with a final answer.** Your last line MUST have the form `Answer: <the answer>` — a single sentence containing the value, name, count, or duration requested. Scan notes, session quotes, or "No match" lines are working steps, never the response itself. If your scan produced only partial matches, still commit to the best supported value on the final line. Never end your response with a session header, a quote block, or a list of dates.
+
 Memories:
 {memories_text}
 
