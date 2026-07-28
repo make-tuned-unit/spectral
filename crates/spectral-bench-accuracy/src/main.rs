@@ -108,6 +108,17 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Paired A/B comparison of two saved reports: clean-intersection join,
+    /// per-arm accuracy with Wilson 95% CIs, discordant pairs, exact McNemar.
+    /// Analysis tool, not a gate — always exits 0.
+    Compare {
+        /// Report A (baseline) JSON
+        a: PathBuf,
+
+        /// Report B (candidate) JSON
+        b: PathBuf,
+    },
+
     /// Deep-inspect a single question: ingest, recall, enumerate all memories
     Inspect {
         /// Path to the LongMemEval_S dataset JSON
@@ -483,6 +494,10 @@ fn main() -> Result<()> {
         Command::Report { path } => {
             let report = report::load_report(&path)?;
             println!("{}", report.summary());
+        }
+
+        Command::Compare { a, b } => {
+            spectral_bench_accuracy::compare::run_compare(&a, &b)?;
         }
 
         Command::Inspect {

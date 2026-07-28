@@ -181,6 +181,11 @@ pub struct EvalReport {
     /// silently inheriting each other's results.
     #[serde(default)]
     pub config_fingerprint: String,
+    /// Fingerprint of the judge rubric/prompt used to grade answers.
+    /// Grades are only comparable across reports with the same rubric.
+    /// Empty string = unknown (older reports).
+    #[serde(default)]
+    pub judge_rubric_fingerprint: String,
     pub total_questions: usize,
     pub correct: usize,
     pub overall_accuracy: f64,
@@ -220,6 +225,7 @@ impl EvalReport {
             judge_name: judge_name.into(),
             retrieval_path: "tact".into(),
             config_fingerprint: String::new(),
+            judge_rubric_fingerprint: String::new(),
             total_questions: 0,
             correct: 0,
             overall_accuracy: 0.0,
