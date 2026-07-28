@@ -305,6 +305,65 @@ fn cap_content(content: &str, frac: f64) -> String {
     format!("{}…", &content[..end])
 }
 
+// ── Dated-context formatting (SPECTRAL_DATED_CONTEXT=1) ─────────────
+//
+// Pattern from the top LongMemEval scorer (Mastra OM, 84.23% official
+// gpt-4o): every piece of evidence carries an explicit date PLUS a computed
+// relative offset from the question date ("(4 months ago)"), so the actor
+// never has to derive temporal distance itself. Deterministic string
+// assembly — zero inference. Env-gated for A/B; the env lever is captured
+// by the run config fingerprint.
+
+/// Whether dated-context formatting is enabled (env-gated A/B lever).
+fn dated_context_enabled() -> bool {
+    std::env::var("SPECTRAL_DATED_CONTEXT")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+/// Extract (y, m, d) from a date string in either "2023/05/30 …" or
+/// "2023-05-30T…" form.
+fn extract_ymd(s: &str) -> Option<(i32, u32, u32)> {
+    let bytes: Vec<char> = s.chars().collect();
+    if bytes.len() < 10 {
+        return None;
+    }
+    let y: i32 = s.get(0..4)?.parse().ok()?;
+    let m: u32 = s.get(5..7)?.parse().ok()?;
+    let d: u32 = s.get(8..10)?.parse().ok()?;
+    if !matches!(bytes[4], '-' | '/') || !matches!(bytes[7], '-' | '/') {
+        return None;
+    }
+    Some((y, m, d))
+}
+
+/// Compute a human-readable offset of `date_str` relative to
+/// `question_date` ("3 days ago", "2 weeks ago", "4 months ago").
+fn relative_offset(date_str: &str, question_date: &str) -> Option<String> {
+    let (sy, sm, sd) = extract_ymd(date_str)?;
+    let (qy, qm, qd) = extract_ymd(question_date)?;
+    let session = chrono::NaiveDate::from_ymd_opt(sy, sm, sd)?;
+    let question = chrono::NaiveDate::from_ymd_opt(qy, qm, qd)?;
+    let days = (question - session).num_days();
+    Some(match days {
+        i64::MIN..=-1 => "in the future".to_string(),
+        0 => "same day".to_string(),
+        1 => "1 day ago".to_string(),
+        2..=13 => format!("{days} days ago"),
+        14..=59 => format!("{} weeks ago", days / 7),
+        60..=729 => format!("{} months ago", days / 30),
+        _ => {
+            let years = days / 365;
+            let months = (days % 365) / 30;
+            if months == 0 {
+                format!("{years} years ago")
+            } else {
+                format!("{years} years, {months} months ago")
+            }
+        }
+    })
+}
+
 // ── Session-grouped formatting (P2) ─────────────────────────────────
 
 /// Format memory hits grouped by session/episode for clearer multi-session context.
@@ -318,6 +377,18 @@ pub fn format_hits_grouped(hits: &[MemoryHit]) -> Vec<String> {
 
 /// Session-grouped formatting with an optional assistant-turn content cap.
 pub fn format_hits_grouped_capped(hits: &[MemoryHit], cap_frac: Option<f64>) -> Vec<String> {
+    format_hits_grouped_capped_dated(hits, cap_frac, None)
+}
+
+/// Session-grouped formatting with cap and optional dated-context headers.
+/// When `SPECTRAL_DATED_CONTEXT=1` and a question date is provided, session
+/// headers gain a computed relative offset: `--- Session s1 (2023/02/15, 4
+/// months ago) ---`.
+pub fn format_hits_grouped_capped_dated(
+    hits: &[MemoryHit],
+    cap_frac: Option<f64>,
+    question_date: Option<&str>,
+) -> Vec<String> {
     if hits.is_empty() {
         return Vec::new();
     }
@@ -361,7 +432,14 @@ pub fn format_hits_grouped_capped(hits: &[MemoryHit], cap_frac: Option<f64>) -> 
             .and_then(|h| h.created_at.as_deref())
             .map(|s| s.split(' ').next().unwrap_or(s))
             .unwrap_or("unknown-date");
-        lines.push(format!("--- Session {ep_id} ({date}) ---"));
+        let header = match question_date.filter(|_| dated_context_enabled()) {
+            Some(qd) => match relative_offset(date, qd) {
+                Some(offset) => format!("--- Session {ep_id} ({date}, {offset}) ---"),
+                None => format!("--- Session {ep_id} ({date}) ---"),
+            },
+            None => format!("--- Session {ep_id} ({date}) ---"),
+        };
+        lines.push(header);
 
         for hit in ep_hits {
             let role = if hit.key.contains(":user") {
@@ -390,14 +468,28 @@ pub fn format_hits_grouped_capped(hits: &[MemoryHit], cap_frac: Option<f64>) -> 
 
 /// Format a MemoryHit into the standard actor format.
 pub fn format_hit(hit: &spectral_ingest::MemoryHit) -> String {
+    format_hit_dated(hit, None)
+}
+
+/// Flat format with an optional dated-context offset: `[2023-05-20, 3 weeks
+/// ago] [wing/hall] key: content` when `SPECTRAL_DATED_CONTEXT=1` and a
+/// question date is provided.
+pub fn format_hit_dated(hit: &spectral_ingest::MemoryHit, question_date: Option<&str>) -> String {
     let date = hit
         .created_at
         .as_deref()
         .map(|s| s.split('T').next().unwrap_or(s))
         .unwrap_or("unknown-date");
+    let date_tag = match question_date.filter(|_| dated_context_enabled()) {
+        Some(qd) => match relative_offset(date, qd) {
+            Some(offset) => format!("{date}, {offset}"),
+            None => date.to_string(),
+        },
+        None => date.to_string(),
+    };
     let wing = hit.wing.as_deref().unwrap_or("?");
     let hall = hit.hall.as_deref().unwrap_or("?");
-    let line = format!("[{date}] [{wing}/{hall}] {}: {}", hit.key, hit.content);
+    let line = format!("[{date_tag}] [{wing}/{hall}] {}: {}", hit.key, hit.content);
     with_description(line, hit, actor_descriptions_enabled())
 }
 
@@ -538,9 +630,9 @@ pub fn retrieve_topk_fts(
             Some(f) if h.key.contains(":assistant") => {
                 let mut capped = h.clone();
                 capped.content = cap_content(&h.content, f);
-                format_hit(&capped)
+                format_hit_dated(&capped, question_date)
             }
-            _ => format_hit(h),
+            _ => format_hit_dated(h, question_date),
         })
         .collect();
 
@@ -682,7 +774,7 @@ pub fn retrieve_cascade(
         .collect();
     // Associative spreading on the DEFAULT (cascade) retrieval path, env-gated.
     apply_associative_spreading(brain, &mut hits);
-    let formatted = format_hits_grouped_capped(&hits, cap_for_shape(qtype));
+    let formatted = format_hits_grouped_capped_dated(&hits, cap_for_shape(qtype), question_date);
 
     Ok((formatted, hits, telemetry))
 }
@@ -1769,5 +1861,82 @@ mod tests {
         // cap_for_shape consults the env var; without it set, every shape
         // returns None. The exemption logic itself is shape-only.
         assert_eq!(cap_for_shape(QuestionType::GeneralRecall), None);
+    }
+}
+
+#[cfg(test)]
+mod dated_context_tests {
+    use super::*;
+
+    #[test]
+    fn relative_offset_buckets() {
+        let q = "2023/06/01 (Thu) 10:00";
+        assert_eq!(
+            relative_offset("2023/06/01", q).as_deref(),
+            Some("same day")
+        );
+        assert_eq!(
+            relative_offset("2023/05/31", q).as_deref(),
+            Some("1 day ago")
+        );
+        assert_eq!(
+            relative_offset("2023-05-20T08:00", q).as_deref(),
+            Some("12 days ago")
+        );
+        assert_eq!(
+            relative_offset("2023/04/20", q).as_deref(),
+            Some("6 weeks ago")
+        );
+        assert_eq!(
+            relative_offset("2023/02/01", q).as_deref(),
+            Some("4 months ago")
+        );
+        assert_eq!(
+            relative_offset("2021/05/01", q).as_deref(),
+            Some("2 years, 1 months ago")
+        );
+        assert_eq!(
+            relative_offset("2023/06/05", q).as_deref(),
+            Some("in the future")
+        );
+        assert_eq!(relative_offset("garbage", q), None);
+    }
+
+    #[test]
+    fn dated_header_is_env_gated() {
+        let mk = |id: &str, date: &str| spectral_ingest::MemoryHit {
+            id: "id".into(),
+            key: format!("{id}:turn_0:user"),
+            content: "I bought a red car last month and I love driving it".into(),
+            wing: Some("life".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.6,
+            visibility: "private".into(),
+            hits: 1,
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: Some(date.to_string()),
+            last_reinforced_at: None,
+            episode_id: Some(id.to_string()),
+            declarative_density: None,
+            description: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        let hits = vec![mk("s1", "2023/02/15 (Wed) 23:50")];
+        // Gate off: plain header regardless of question date.
+        std::env::remove_var("SPECTRAL_DATED_CONTEXT");
+        let lines = format_hits_grouped_capped_dated(&hits, None, Some("2023/06/01 (Thu) 10:00"));
+        assert!(lines[0].contains("(2023/02/15)"), "{}", lines[0]);
+        // Gate on: header carries the offset.
+        std::env::set_var("SPECTRAL_DATED_CONTEXT", "1");
+        let lines = format_hits_grouped_capped_dated(&hits, None, Some("2023/06/01 (Thu) 10:00"));
+        assert!(
+            lines[0].contains("2023/02/15, 3 months ago"),
+            "{}",
+            lines[0]
+        );
+        std::env::remove_var("SPECTRAL_DATED_CONTEXT");
     }
 }
