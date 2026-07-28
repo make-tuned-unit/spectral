@@ -12,6 +12,7 @@
 //! discoveries/problems from the same wings)? Deterministic, $0, no LLM.
 //!
 //! Run: `cargo run -p spectral-bench-real --bin spectrogram_resonance_bench`
+#![allow(deprecated)] // historical experiment: spectrogram-as-recall is retired
 
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RecallTopKConfig, RememberOpts};

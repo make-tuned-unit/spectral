@@ -1131,7 +1131,8 @@ fn recall_topk_fts_finds_multi_word_matches() {
 fn forget_hard_deletes_across_substrates_and_verifies() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(BrainConfig {
-        enable_spectrogram: true,
+        // Spectrogram substrate coverage only exists behind the legacy feature.
+        enable_spectrogram: cfg!(feature = "spectrogram-legacy"),
         ..brain_config(&tmp)
     })
     .unwrap();
@@ -1165,9 +1166,12 @@ fn forget_hard_deletes_across_substrates_and_verifies() {
     assert_eq!(report.store.fts_rows, 1, "should purge the FTS shadow");
     // (A lone memory has no constellation fingerprints — those link pairs;
     // fingerprint purging is covered by the ingest-level substrate test.)
+    // A spectrogram row only exists behind the legacy feature (spectrogram-as-
+    // recall is retired: 0/500 contexts changed, ORACLE_TIER0).
+    let expected_spectrograms = usize::from(cfg!(feature = "spectrogram-legacy"));
     assert_eq!(
-        report.store.spectrograms, 1,
-        "should purge the spectrogram row"
+        report.store.spectrograms, expected_spectrograms,
+        "should purge the spectrogram row iff the legacy feature wrote one"
     );
     assert!(
         report.recognition_removed,

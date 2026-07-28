@@ -1,5 +1,6 @@
 //! Spectrogram audit binary: produces a falsifiability report
 //! on whether memory data has the peak structure the architecture assumes.
+#![allow(deprecated)] // historical experiment: spectrogram-as-recall is retired
 
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;

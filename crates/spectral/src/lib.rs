@@ -51,7 +51,7 @@
 //! | `spectral-graph` | SQLite graph store, ontology, canonicalization, Brain API |
 //! | `spectral-ingest` | Memory ingestion: classify, score, fingerprint (Constellation) |
 //! | `spectral-tact` | TACT retrieval: fingerprint → wing → FTS search |
-//! | `spectral-spectrogram` | *(reserved)* Phase 2 cognitive cross-wing matching |
+//! | `spectral-spectrogram` | retired as a recall path (0/500); behind `spectrogram-legacy` |
 
 #[cfg(feature = "http-llm")]
 pub mod llm;
@@ -68,12 +68,17 @@ pub use spectral_graph::activity::{
     RedactionPolicy, RollupStats,
 };
 pub use spectral_graph::brain::{
-    AaakOpts, AaakResult, AssertResult, CrossWingRecallResult, DerivationHealthReport,
-    DerivationRepairReport, EntityPolicy, HybridRecallResult, IngestResult, IngestTextOpts,
-    IngestTextResult, RecallResult, RecallTopKConfig, ReinforceOpts, ReinforceResult,
-    RejectedTriple, RejectionReason, RememberOpts, RememberResult, ResonantMemoryHit,
-    VerificationStatus,
+    AaakOpts, AaakResult, AssertResult, DerivationHealthReport, DerivationRepairReport,
+    EntityPolicy, HybridRecallResult, IngestResult, IngestTextOpts, IngestTextResult, RecallResult,
+    RecallTopKConfig, ReinforceOpts, ReinforceResult, RejectedTriple, RejectionReason,
+    RememberOpts, RememberResult, VerificationStatus,
 };
+// Spectrogram-as-recall is retired: 0/500 contexts changed in the Tier-0
+// retrieval oracle (docs/internal/ORACLE_TIER0.md). The facade re-exports of
+// `CrossWingRecallResult` and `ResonantMemoryHit` were deleted outright —
+// Permagent, the only consumer, never used them. The deprecated types remain
+// in `spectral_graph::brain` behind the off-by-default `spectrogram-legacy`
+// feature for historical experiments.
 pub use spectral_graph::Error;
 pub use spectral_ingest::{DefaultSignalScorer, KeywordBooster, SignalScorer, SignalScorerConfig};
 pub use spectral_recognition::{Evidence, RecognitionResult, TraceMatch, Verdict};
@@ -132,6 +137,9 @@ pub use spectral_core as core;
 pub use spectral_graph as graph;
 pub use spectral_ingest as ingest;
 pub use spectral_recognition as recognition;
+// Retired as a recall path (0/500 contexts changed, ORACLE_TIER0); only
+// re-exported behind the off-by-default `spectrogram-legacy` feature.
+#[cfg(feature = "spectrogram-legacy")]
 pub use spectral_spectrogram as spectrogram;
 pub use spectral_tact as tact;
 
@@ -352,21 +360,12 @@ impl Brain {
         self.inner.ingest_text(text, opts)
     }
 
-    /// Find memories across wings that resonate with a query memory's cognitive fingerprint.
-    pub fn recall_cross_wing(
-        &self,
-        seed_query: &str,
-        visibility: Visibility,
-        max_results: usize,
-    ) -> Result<CrossWingRecallResult, Error> {
-        self.inner
-            .recall_cross_wing(seed_query, visibility, max_results)
-    }
-
-    /// Compute and store spectrograms for memories that don't have one.
-    pub fn backfill_spectrograms(&self) -> Result<usize, Error> {
-        self.inner.backfill_spectrograms()
-    }
+    // Note: the facade wrappers `recall_cross_wing`, `backfill_spectrograms`,
+    // and `audit_spectrogram` were deleted outright: spectrogram-as-recall is
+    // retired (0/500 contexts changed, docs/internal/ORACLE_TIER0.md) and
+    // Permagent — the only consumer — never called them. Historical
+    // experiments reach the deprecated graph-level equivalents through
+    // `spectral::graph::brain::Brain` with the `spectrogram-legacy` feature.
 
     /// Hard-delete a memory by key across every substrate and verify it is
     /// gone (right-to-be-forgotten). Returns a [`ForgetReport`] with
@@ -374,14 +373,6 @@ impl Brain {
     /// Unlike consolidation (soft hide), the content becomes unrecoverable.
     pub fn forget(&self, key: &str) -> Result<spectral_graph::brain::ForgetReport, Error> {
         self.inner.forget(key)
-    }
-
-    /// Audit a single memory's spectrogram with full dimension introspection.
-    pub fn audit_spectrogram(
-        &self,
-        memory_id: &str,
-    ) -> Result<spectral_graph::brain::AuditReport, Error> {
-        self.inner.audit_spectrogram(memory_id)
     }
 
     /// Recognition: "have I encountered this before — and what happened
@@ -807,7 +798,6 @@ pub struct BrainBuilder {
     wing_rules: Option<Vec<(String, String)>>,
     hall_rules: Option<Vec<(String, String)>>,
     device_id: Option<DeviceId>,
-    enable_spectrogram: bool,
     entity_policy: Option<EntityPolicy>,
     fts_tokenizer: Option<String>,
     read_only: bool,
@@ -877,11 +867,11 @@ impl BrainBuilder {
         self
     }
 
-    /// Enable cognitive spectrogram computation on ingest.
-    pub fn enable_spectrogram(mut self, enabled: bool) -> Self {
-        self.enable_spectrogram = enabled;
-        self
-    }
+    // Note: `enable_spectrogram` was deleted outright from the builder:
+    // spectrogram-as-recall is retired (0/500 contexts changed, ORACLE_TIER0)
+    // and Permagent — the only consumer — never called it. Historical
+    // experiments use `spectral::graph::brain::BrainConfig` directly with the
+    // `spectrogram-legacy` feature.
 
     /// Set the FTS5 tokenizer for the memories full-text index.
     ///
@@ -940,7 +930,9 @@ impl BrainBuilder {
             wing_rules: self.wing_rules,
             hall_rules: self.hall_rules,
             device_id: self.device_id,
-            enable_spectrogram: self.enable_spectrogram,
+            // Spectrogram-as-recall is retired (0/500, ORACLE_TIER0); the
+            // facade never enables it.
+            enable_spectrogram: false,
             entity_policy: self.entity_policy.unwrap_or_default(),
             sqlite_mmap_size: None,
             fts_tokenizer: self.fts_tokenizer,

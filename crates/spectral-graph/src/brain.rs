@@ -18,6 +18,7 @@ use spectral_ingest::sqlite_store::SqliteStore;
 use spectral_ingest::{MemoryHit, MemoryStore};
 use spectral_tact::{LlmClient, TactConfig, TactResult};
 
+#[cfg(feature = "spectrogram-legacy")]
 use spectral_spectrogram::{AnalysisContext, SpectrogramAnalyzer};
 
 use crate::canonicalize::{Canonicalizer, MatchedMention};
@@ -69,6 +70,12 @@ pub struct BrainConfig {
     /// Optional device identifier. `None` = derive from hostname.
     pub device_id: Option<DeviceId>,
     /// Enable cognitive spectrogram computation on ingest. Default false.
+    ///
+    /// **Retired as a recall path**: spectrogram resonance changed 0/500
+    /// contexts in the Tier-0 retrieval oracle (docs/internal/ORACLE_TIER0.md).
+    /// Setting this to `true` now requires the off-by-default
+    /// `spectrogram-legacy` cargo feature; without it, [`Brain::open`] returns
+    /// an error rather than silently ignoring the flag.
     pub enable_spectrogram: bool,
     /// Controls how assert() handles unknown entities. Default Strict.
     pub entity_policy: EntityPolicy,
@@ -162,15 +169,20 @@ pub struct DerivationHealthReport {
     pub missing_content_hash: usize,
     pub missing_declarative_density: usize,
     pub missing_signature: usize,
+    /// Only present with the `spectrogram-legacy` feature: spectrogram-as-recall
+    /// is retired (0/500 contexts changed, ORACLE_TIER0).
+    #[cfg(feature = "spectrogram-legacy")]
     pub missing_spectrogram: usize,
 }
 
 impl DerivationHealthReport {
     pub fn is_healthy(&self) -> bool {
-        self.missing_content_hash == 0
+        let healthy = self.missing_content_hash == 0
             && self.missing_declarative_density == 0
-            && self.missing_signature == 0
-            && self.missing_spectrogram == 0
+            && self.missing_signature == 0;
+        #[cfg(feature = "spectrogram-legacy")]
+        let healthy = healthy && self.missing_spectrogram == 0;
+        healthy
     }
 }
 
@@ -182,6 +194,9 @@ pub struct DerivationRepairReport {
     pub densities_repaired: usize,
     pub signatures_repaired: usize,
     pub recognition_enrollments_refreshed: usize,
+    /// Only present with the `spectrogram-legacy` feature: spectrogram-as-recall
+    /// is retired (0/500 contexts changed, ORACLE_TIER0).
+    #[cfg(feature = "spectrogram-legacy")]
     pub spectrograms_repaired: usize,
 }
 
@@ -387,6 +402,11 @@ pub enum RejectionReason {
 }
 
 /// Result of cross-wing recall.
+#[cfg(feature = "spectrogram-legacy")]
+#[deprecated(
+    note = "spectrogram-as-recall retired: 0/500 contexts changed (ORACLE_TIER0); retained for historical experiments"
+)]
+#[allow(deprecated)]
 #[derive(Debug)]
 pub struct CrossWingRecallResult {
     /// Best match for the seed query in its own wing.
@@ -396,6 +416,10 @@ pub struct CrossWingRecallResult {
 }
 
 /// A memory from another wing that resonates with the seed.
+#[cfg(feature = "spectrogram-legacy")]
+#[deprecated(
+    note = "spectrogram-as-recall retired: 0/500 contexts changed (ORACLE_TIER0); retained for historical experiments"
+)]
 #[derive(Debug)]
 pub struct ResonantMemoryHit {
     pub memory: MemoryHit,
@@ -539,6 +563,10 @@ impl Default for RecallTopKConfig {
 }
 
 /// Result of [`Brain::audit_spectrogram()`].
+#[cfg(feature = "spectrogram-legacy")]
+#[deprecated(
+    note = "spectrogram-as-recall retired: 0/500 contexts changed (ORACLE_TIER0); retained for historical experiments"
+)]
 #[derive(Debug, Clone)]
 pub struct AuditReport {
     pub memory_id: String,
@@ -657,7 +685,9 @@ pub struct Brain {
     sqlite: Arc<SqliteStore>,
     llm_client: Option<Box<dyn LlmClient>>,
     entity_policy: EntityPolicy,
+    #[cfg(feature = "spectrogram-legacy")]
     enable_spectrogram: bool,
+    #[cfg(feature = "spectrogram-legacy")]
     spectrogram_analyzer: SpectrogramAnalyzer,
     tact_config: TactConfig,
     ingest_config: spectral_ingest::ingest::IngestConfig,
@@ -877,6 +907,17 @@ impl Brain {
             spectral_recognition::RecognitionConfig::default(),
         ));
 
+        // Spectrogram-as-recall is retired (0/500 contexts changed in the
+        // Tier-0 oracle). Fail loudly rather than silently ignoring the flag.
+        #[cfg(not(feature = "spectrogram-legacy"))]
+        if config.enable_spectrogram {
+            return Err(Error::Schema(
+                "enable_spectrogram requires the off-by-default `spectrogram-legacy` cargo \
+                 feature: spectrogram-as-recall is retired (0/500 contexts changed, ORACLE_TIER0)"
+                    .into(),
+            ));
+        }
+
         Ok(Self {
             identity,
             device_id,
@@ -889,7 +930,9 @@ impl Brain {
             sqlite,
             llm_client: config.llm_client,
             entity_policy: config.entity_policy,
+            #[cfg(feature = "spectrogram-legacy")]
             enable_spectrogram: config.enable_spectrogram,
+            #[cfg(feature = "spectrogram-legacy")]
             spectrogram_analyzer: SpectrogramAnalyzer::default(),
             tact_config,
             ingest_config,
@@ -1582,7 +1625,9 @@ impl Brain {
             derivation_warnings.push("recognition enrollment: lock poisoned".into());
         }
 
-        // Compute and store spectrogram if enabled
+        // Compute and store spectrogram if enabled (legacy path: spectrogram-as-
+        // recall is retired; only reachable behind the `spectrogram-legacy` feature)
+        #[cfg(feature = "spectrogram-legacy")]
         if self.enable_spectrogram {
             let context =
                 self.spectrogram_context(result.memory.wing.as_deref(), &result.memory.id);
@@ -2729,6 +2774,7 @@ impl Brain {
             .rt
             .block_on(self.memory_store.list_memories_by_signal(0.0, limit))
             .map_err(|e| Error::Schema(e.to_string()))?;
+        #[cfg(feature = "spectrogram-legacy")]
         let missing_spectrogram = if self.enable_spectrogram {
             self.rt
                 .block_on(self.memory_store.memories_without_spectrogram(limit))
@@ -2751,6 +2797,7 @@ impl Brain {
                 .iter()
                 .filter(|memory| memory.signature.is_none())
                 .count(),
+            #[cfg(feature = "spectrogram-legacy")]
             missing_spectrogram,
         })
     }
@@ -2812,6 +2859,8 @@ impl Brain {
             report.recognition_enrollments_refreshed += 1;
         }
 
+        #[cfg(feature = "spectrogram-legacy")]
+        #[allow(deprecated)]
         if self.enable_spectrogram {
             report.spectrograms_repaired = self.backfill_spectrograms()?;
         }
@@ -2849,6 +2898,11 @@ impl Brain {
     /// Uses the default [`MatchTolerances`](spectral_spectrogram::matching::MatchTolerances);
     /// call [`recall_cross_wing_with`](Self::recall_cross_wing_with) to tune the
     /// precision/recall frontier.
+    #[cfg(feature = "spectrogram-legacy")]
+    #[deprecated(
+        note = "spectrogram-as-recall retired: 0/500 contexts changed (ORACLE_TIER0); retained for historical experiments"
+    )]
+    #[allow(deprecated)]
     pub fn recall_cross_wing(
         &self,
         seed_query: &str,
@@ -2868,6 +2922,11 @@ impl Brain {
     /// precision (only near-identical cognitive shapes resonate); looser ones
     /// raise recall. See the `spectrogram_resonance_scale` bench for the swept
     /// frontier.
+    #[cfg(feature = "spectrogram-legacy")]
+    #[deprecated(
+        note = "spectrogram-as-recall retired: 0/500 contexts changed (ORACLE_TIER0); retained for historical experiments"
+    )]
+    #[allow(deprecated)]
     pub fn recall_cross_wing_with(
         &self,
         seed_query: &str,
@@ -3003,6 +3062,10 @@ impl Brain {
 
     /// Compute and store spectrograms for memories that don't have one.
     /// Returns count of spectrograms generated. Idempotent.
+    #[cfg(feature = "spectrogram-legacy")]
+    #[deprecated(
+        note = "spectrogram-as-recall retired: 0/500 contexts changed (ORACLE_TIER0); retained for historical experiments"
+    )]
     pub fn backfill_spectrograms(&self) -> Result<usize, Error> {
         self.ensure_writable("backfill_spectrograms")?;
         let mut total = 0;
@@ -3623,6 +3686,7 @@ impl Brain {
     /// 497/497"). The corpus is capped to bound ingest cost on large wings;
     /// `list_wing_memories` returns high-signal-first, so the cap keeps the
     /// most representative content.
+    #[cfg(feature = "spectrogram-legacy")]
     fn spectrogram_context(&self, wing: Option<&str>, exclude_id: &str) -> AnalysisContext {
         const MAX_CORPUS_CHARS: usize = 65_536;
         const MAX_CORPUS_MEMORIES: usize = 256;
@@ -3656,6 +3720,11 @@ impl Brain {
     }
 
     /// Audit a single memory's spectrogram with full introspection.
+    #[cfg(feature = "spectrogram-legacy")]
+    #[deprecated(
+        note = "spectrogram-as-recall retired: 0/500 contexts changed (ORACLE_TIER0); retained for historical experiments"
+    )]
+    #[allow(deprecated)]
     pub fn audit_spectrogram(&self, memory_id: &str) -> Result<AuditReport, Error> {
         let mems = self
             .rt
@@ -4094,6 +4163,7 @@ fn infer_single_type(
 }
 
 /// Convert a SpectrogramRow to a SpectralFingerprint.
+#[cfg(feature = "spectrogram-legacy")]
 fn row_to_fingerprint(
     row: &spectral_ingest::SpectrogramRow,
 ) -> spectral_spectrogram::SpectralFingerprint {

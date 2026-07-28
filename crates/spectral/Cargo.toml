@@ -16,7 +16,7 @@ spectral-ingest = { path = "../spectral-ingest" }
 spectral-cascade = { path = "../spectral-cascade" }
 spectral-graph = { path = "../spectral-graph" }
 spectral-tact = { path = "../spectral-tact" }
-spectral-spectrogram = { path = "../spectral-spectrogram" }
+spectral-spectrogram = { path = "../spectral-spectrogram", optional = true }
 spectral-recognition = { path = "../spectral-recognition" }
 chrono = { workspace = true }
 anyhow = { workspace = true }
@@ -29,6 +29,10 @@ fastembed = { version = "5", optional = true, default-features = false, features
 default = ["http-llm"]
 http-llm = ["dep:reqwest"]
 neural-bench = ["dep:fastembed"]
+# Spectrogram-as-recall is retired: 0/500 contexts changed in the Tier-0
+# retrieval oracle (docs/internal/ORACLE_TIER0.md). This off-by-default
+# feature re-exposes the deprecated entry points for historical experiments.
+spectrogram-legacy = ["dep:spectral-spectrogram", "spectral-graph/spectrogram-legacy"]
 
 [dev-dependencies]
 chrono = { workspace = true }
