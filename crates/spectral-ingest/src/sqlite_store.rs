@@ -30,9 +30,9 @@
 
 use crate::{
     CompactionTier, ConsolidateOpts, ConsolidationEdge, ConsolidationResult, EntityField, Episode,
-    FieldSource, Fingerprint, ForgetReceipt, InvalidSourcePolicy, Memory, MemoryAnnotation,
-    MemoryHit, MemoryStore, RelatedMemory, RetrievalEvent, SkipReason, SpectrogramRow,
-    WriteOutcome,
+    FieldSource, Fingerprint, FingerprintNeighbor, ForgetReceipt, InvalidSourcePolicy, Memory,
+    MemoryAnnotation, MemoryHit, MemoryStore, RelatedMemory, RetrievalEvent, SkipReason,
+    SpectrogramRow, WriteOutcome,
 };
 use lru::LruCache;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -3031,6 +3031,40 @@ impl MemoryStore for SqliteStore {
                         co_count: row.get::<_, i64>(1)? as u64,
                         lift: 0.0,
                         memory: None,
+                    })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+    }
+
+    fn fingerprint_neighbors(
+        &self,
+        memory_id: &str,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<FingerprintNeighbor>>> + Send + '_>> {
+        let memory_id = memory_id.to_string();
+        let conn = self.read_conn();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT other_id, COUNT(*) AS edge_count FROM (
+                     SELECT target_memory_id AS other_id FROM constellation_fingerprints
+                         WHERE anchor_memory_id = ?1
+                     UNION ALL
+                     SELECT anchor_memory_id AS other_id FROM constellation_fingerprints
+                         WHERE target_memory_id = ?1
+                 )
+                 GROUP BY other_id
+                 ORDER BY edge_count DESC, other_id ASC
+                 LIMIT ?2",
+            )?;
+            let rows: Vec<FingerprintNeighbor> = stmt
+                .query_map(params![memory_id, limit as i64], |row| {
+                    Ok(FingerprintNeighbor {
+                        memory_id: row.get(0)?,
+                        edge_count: row.get::<_, i64>(1)? as u64,
                     })
                 })?
                 .filter_map(|r| r.ok())

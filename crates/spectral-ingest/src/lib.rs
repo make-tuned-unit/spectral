@@ -694,6 +694,18 @@ pub trait MemoryStore: Send + Sync {
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RelatedMemory>>> + Send + '_>>;
 
+    /// Return memories linked to `memory_id` by constellation-fingerprint
+    /// edges (write-time temporal-proximity constellations), ordered by edge
+    /// multiplicity DESC then memory_id ASC (deterministic). Returns up to
+    /// `limit` results. This is the memory↔memory adjacency substrate that
+    /// exists even in a brain with no retrieval history (co-retrieval edges
+    /// require prior recalls; fingerprint edges are written at ingest).
+    fn fingerprint_neighbors(
+        &self,
+        memory_id: &str,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<FingerprintNeighbor>>> + Send + '_>>;
+
     /// Anticipatory-recall recommendation: memories associated with the seed
     /// ranked by **lift** (`co_count · total / (occ(seed) · occ(this))`)
     /// rather than raw `co_count`. Lift is the association measure recommender
@@ -793,6 +805,15 @@ pub struct RelatedMemory {
     pub lift: f64,
     /// Full memory if cheap to join. `None` in v1 — caller fetches via `get_memory`.
     pub memory: Option<Memory>,
+}
+
+/// A memory linked to another by constellation-fingerprint edges.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FingerprintNeighbor {
+    /// The neighboring memory's ID.
+    pub memory_id: String,
+    /// Number of fingerprint edges connecting the two memories.
+    pub edge_count: u64,
 }
 
 // ── Consolidation types ────────────────────────────────────────────

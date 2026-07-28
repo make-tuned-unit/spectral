@@ -2635,6 +2635,20 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
+    /// Return memories linked to `memory_id` by constellation-fingerprint
+    /// edges, ordered by edge multiplicity DESC (deterministic). Unlike the
+    /// co-retrieval graph, these edges exist from ingest time — no retrieval
+    /// history required.
+    pub fn fingerprint_neighbors(
+        &self,
+        memory_id: &str,
+        limit: usize,
+    ) -> Result<Vec<spectral_ingest::FingerprintNeighbor>, Error> {
+        self.rt
+            .block_on(self.memory_store.fingerprint_neighbors(memory_id, limit))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// Anticipatory recall: recommend memories associated with `memory_id`,
     /// ranked by **lift** (context-specific association) rather than raw
     /// co-retrieval count. This is the ambient read-time signal — surfacing
