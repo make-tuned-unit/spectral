@@ -557,6 +557,244 @@ pub fn apply_associative_spreading(brain: &Brain, hits: &mut Vec<MemoryHit>) {
     associative_spread(brain, hits, &cfg, Visibility::Private);
 }
 
+// ── n-hop BFS graph channel (SPECTRAL_BFS_HOPS, off when unset) ─────
+
+/// Number of top hits used as BFS start nodes.
+const BFS_SEEDS: usize = 5;
+/// Neighbors fetched per node per edge substrate.
+const BFS_NEIGHBORS_PER_NODE: usize = 10;
+/// Maximum nodes carried into the next hop (bounds fan-out; fingerprint
+/// graphs are dense — ~140 edges/memory on the bench brains).
+const BFS_FRONTIER_CAP: usize = 50;
+/// Maximum BFS-discovered memories admitted into the output. Output size is
+/// preserved: admitted memories displace the weakest tail hits (mirrors the
+/// SPECTRAL_ASSOC_RERANK size-preserving pattern).
+const BFS_APPEND_CAP: usize = 10;
+
+/// Read `SPECTRAL_BFS_HOPS` (>=1). Unset/invalid = lever off.
+fn bfs_hops() -> Option<usize> {
+    std::env::var("SPECTRAL_BFS_HOPS")
+        .ok()?
+        .parse::<usize>()
+        .ok()
+        .filter(|h| *h >= 1)
+}
+
+fn bench_memory_to_hit(m: &spectral_ingest::Memory) -> MemoryHit {
+    MemoryHit {
+        id: m.id.clone(),
+        key: m.key.clone(),
+        content: m.content.clone(),
+        wing: m.wing.clone(),
+        hall: m.hall.clone(),
+        signal_score: m.signal_score,
+        visibility: m.visibility.clone(),
+        hits: 0,
+        source: m.source.clone(),
+        device_id: m.device_id,
+        confidence: m.confidence,
+        created_at: m.created_at.clone(),
+        last_reinforced_at: m.last_reinforced_at.clone(),
+        episode_id: m.episode_id.clone(),
+        declarative_density: m.declarative_density,
+        description: m.description.clone(),
+        source_brain_id: m.source_brain_id,
+        signature: m.signature.clone(),
+    }
+}
+
+/// Expand the hit set via N-hop BFS over the brain's memory↔memory edge
+/// substrates, displacing the weakest tail hits so output size is preserved.
+///
+/// Edge substrates walked (union):
+/// - constellation-fingerprint edges (written at ingest — the only populated
+///   memory↔memory edge table in fresh bench brains)
+/// - co-retrieval edges (`related_memories`) — structurally empty in the
+///   Tier-0 oracle (fresh brain, single query) but live in Permagent brains
+///
+/// Deterministic: neighbors ordered by edge weight DESC then id; discovered
+/// candidates ranked by (hop ASC, edge weight DESC, id ASC).
+pub fn apply_bfs_expansion(brain: &Brain, hits: &mut Vec<MemoryHit>, hops: usize) {
+    if hops == 0 || hits.is_empty() {
+        return;
+    }
+    let existing_ids: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
+    let mut frontier: Vec<String> = hits.iter().take(BFS_SEEDS).map(|h| h.id.clone()).collect();
+    let mut visited: HashSet<String> = frontier.iter().cloned().collect();
+    // (hop, edge_weight_at_first_visit, id)
+    let mut discovered: Vec<(usize, u64, String)> = Vec::new();
+
+    for hop in 1..=hops {
+        let mut reached: Vec<(u64, String)> = Vec::new();
+        for id in &frontier {
+            if let Ok(nbrs) = brain.fingerprint_neighbors(id, BFS_NEIGHBORS_PER_NODE) {
+                reached.extend(nbrs.into_iter().map(|n| (n.edge_count, n.memory_id)));
+            }
+            if let Ok(rels) = brain.related_memories(id, BFS_NEIGHBORS_PER_NODE) {
+                reached.extend(rels.into_iter().map(|r| (r.co_count, r.memory_id)));
+            }
+        }
+        // Strongest edges claim frontier slots first; dedup on first visit.
+        reached.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut next_frontier = Vec::new();
+        for (weight, id) in reached {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
+            if !existing_ids.contains(&id) {
+                discovered.push((hop, weight, id.clone()));
+            }
+            if next_frontier.len() < BFS_FRONTIER_CAP {
+                next_frontier.push(id);
+            }
+        }
+        frontier = next_frontier;
+        if frontier.is_empty() {
+            break;
+        }
+    }
+
+    discovered.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    let candidates: Vec<MemoryHit> = discovered
+        .into_iter()
+        .take(BFS_APPEND_CAP)
+        .filter_map(|(_, _, id)| brain.get_memory(&id).ok().flatten())
+        .map(|m| bench_memory_to_hit(&m))
+        .collect();
+    merge_displacing_tail(hits, candidates, BFS_APPEND_CAP);
+}
+
+/// Admit up to `cap` new candidates into `hits`, displacing the weakest tail
+/// entries so the output length never grows. Deduplicates by memory id.
+pub fn merge_displacing_tail(hits: &mut Vec<MemoryHit>, candidates: Vec<MemoryHit>, cap: usize) {
+    let existing: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
+    let mut admitted: Vec<MemoryHit> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for c in candidates {
+        if admitted.len() >= cap {
+            break;
+        }
+        if existing.contains(&c.id) || !seen.insert(c.id.clone()) {
+            continue;
+        }
+        admitted.push(c);
+    }
+    if admitted.is_empty() {
+        return;
+    }
+    let n = hits.len();
+    let keep = n.saturating_sub(admitted.len());
+    hits.truncate(keep);
+    hits.extend(admitted);
+    debug_assert!(hits.len() <= n);
+}
+
+// ── ACT-R base-level activation rerank (SPECTRAL_ACTR_DECAY, off when unset) ──
+
+/// Blend weight of the normalized activation prior against the pipeline's
+/// own ranking (position score). Small additive prior by design.
+const ACTR_BLEND_WEIGHT: f64 = 0.2;
+/// Floor on access ages, in days — avoids t^-d blowing up at age≈0.
+const ACTR_MIN_AGE_DAYS: f64 = 1e-3;
+/// Age assumed for hits with an unparseable/missing created_at (ranked old).
+const ACTR_UNKNOWN_AGE_DAYS: f64 = 365.0;
+/// Pool widening factor when the ACT-R lever is on: fetch wider, rerank,
+/// truncate back to the original output size (mirrors SPECTRAL_TOPK_FETCH_MULT).
+const ACTR_POOL_WIDEN: usize = 2;
+
+/// Read `SPECTRAL_ACTR_DECAY` (d > 0, ~0.5 typical). Unset/invalid = off.
+fn actr_decay() -> Option<f64> {
+    std::env::var("SPECTRAL_ACTR_DECAY")
+        .ok()?
+        .parse::<f64>()
+        .ok()
+        .filter(|d| *d > 0.0 && d.is_finite())
+}
+
+/// ACT-R base-level activation `B = ln(Σ_j t_j^-d)` over the deterministic
+/// access events the store exposes:
+/// - one encoding event at `created_at` (age `age_created_days`)
+/// - if `last_reinforced_at` is present, `max(accesses, 1)` reinforcement
+///   events collapsed at that timestamp (the store keeps only the latest
+///   reinforcement time, not the full access history)
+///
+/// In fresh Tier-0 bench brains `last_reinforced_at` is NULL everywhere, so B
+/// degenerates to `-d·ln(age_created)` — a pure power-law recency prior. The
+/// frequency component only differentiates in brains with retrieval history.
+pub fn base_level_activation(
+    age_created_days: f64,
+    age_reinforced_days: Option<f64>,
+    accesses: u64,
+    d: f64,
+) -> f64 {
+    let t0 = age_created_days.max(ACTR_MIN_AGE_DAYS);
+    let mut sum = t0.powf(-d);
+    if let Some(tr) = age_reinforced_days {
+        let tr = tr.max(ACTR_MIN_AGE_DAYS);
+        sum += accesses.max(1) as f64 * tr.powf(-d);
+    }
+    sum.ln()
+}
+
+/// Parse a memory timestamp in either store format ("%Y-%m-%d %H:%M:%S" or
+/// RFC 3339) to epoch seconds.
+fn parse_hit_ts(s: &str) -> Option<i64> {
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.and_utc().timestamp());
+    }
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.timestamp())
+}
+
+/// Rerank `hits` by blending a normalized base-level-activation prior into a
+/// position score derived from the pipeline's own ordering:
+/// `score_i = 0.8·(1 - i/(n-1)) + 0.2·norm(B_i)`. Stable and deterministic;
+/// a no-op when activations are degenerate (all equal).
+pub fn apply_actr_rerank(hits: &mut [MemoryHit], now: DateTime<Utc>, d: f64) {
+    let n = hits.len();
+    if n < 2 {
+        return;
+    }
+    let now_s = now.timestamp();
+    let age_days = |s: &str| parse_hit_ts(s).map(|t| (now_s - t) as f64 / 86_400.0);
+    let acts: Vec<f64> = hits
+        .iter()
+        .map(|h| {
+            let a_c = h
+                .created_at
+                .as_deref()
+                .and_then(age_days)
+                .unwrap_or(ACTR_UNKNOWN_AGE_DAYS);
+            let a_r = h.last_reinforced_at.as_deref().and_then(age_days);
+            base_level_activation(a_c, a_r, h.hits as u64, d)
+        })
+        .collect();
+    let min = acts.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = acts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let range = max - min;
+    if range.is_nan() || range <= 0.0 {
+        return; // degenerate (all equal) or NaN — keep pipeline order
+    }
+    let blended: Vec<f64> = acts
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let pos = 1.0 - i as f64 / (n - 1) as f64;
+            (1.0 - ACTR_BLEND_WEIGHT) * pos + ACTR_BLEND_WEIGHT * ((b - min) / range)
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        blended[b]
+            .partial_cmp(&blended[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    let reordered: Vec<MemoryHit> = order.iter().map(|&i| hits[i].clone()).collect();
+    hits.clone_from_slice(&reordered);
+}
+
 /// Retrieve via top-K FTS with additive re-ranking. No LLM cost.
 ///
 /// Configurable via env vars for ablation:
@@ -571,6 +809,10 @@ pub fn apply_associative_spreading(brain: &Brain, hits: &mut Vec<MemoryHit>) {
 ///   N=3. Set to 1 to disable widening.
 /// - `SPECTRAL_TOPK_DECLARATIVE=1` — enable the declarative-density boost in
 ///   the topk path (net-negative on temporal in Tier-0; off by default)
+/// - `SPECTRAL_BFS_HOPS=N` — n-hop BFS expansion over memory↔memory edge
+///   substrates (fingerprint + co-retrieval), size-preserving; off when unset
+/// - `SPECTRAL_ACTR_DECAY=d` — ACT-R base-level-activation rerank prior over
+///   a 2× widened pool, truncated back to output size; off when unset
 ///
 /// When `question_date` is provided (format: "2023/05/30 (Tue) 23:40"),
 /// recency decay is anchored to that date instead of `Utc::now()`.
@@ -607,10 +849,23 @@ pub fn retrieve_topk_fts(
         ..RecallTopKConfig::default()
     };
 
+    // ACT-R lever: fetch a wider pool so the activation prior can change set
+    // membership, not just order; truncated back to output_size after rerank.
+    let actr = actr_decay();
+    let pool_size = if actr.is_some() {
+        output_size * ACTR_POOL_WIDEN
+    } else {
+        output_size
+    };
+    let topk_config = RecallTopKConfig {
+        k: pool_size,
+        ..topk_config
+    };
+
     let mut hits: Vec<MemoryHit> = brain
         .recall_topk_fts(question, &topk_config, Visibility::Private)?
         .into_iter()
-        .take(output_size)
+        .take(pool_size)
         .collect();
 
     // Associative expansion (TACT's true vision): FTS finds the seeds by words;
@@ -622,6 +877,17 @@ pub fn retrieve_topk_fts(
     // 100% of missed-answer-key questions still have their answer session
     // retrieved, so this can pull the missed keys in — at a token cost tuned by M.
     apply_associative_spreading(brain, &mut hits);
+
+    // n-hop BFS graph channel (size-preserving; off when SPECTRAL_BFS_HOPS unset).
+    if let Some(hops) = bfs_hops() {
+        apply_bfs_expansion(brain, &mut hits, hops);
+    }
+    // ACT-R activation rerank over the widened pool, then restore output size.
+    if let Some(d) = actr {
+        let now = topk_config.now.unwrap_or_else(Utc::now);
+        apply_actr_rerank(&mut hits, now, d);
+        hits.truncate(output_size);
+    }
 
     let cap = cap_for_shape(QuestionType::classify(question));
     let memories: Vec<String> = hits
@@ -767,13 +1033,29 @@ pub fn retrieve_cascade(
     // Use the profile's K as the limit — the question-type routing already
     // determined the right K (60 for counting, 30 for factual, etc).
     // CLI --max-results only applies to non-cascade paths.
-    let mut hits: Vec<MemoryHit> = result
-        .merged_hits
-        .into_iter()
-        .take(pipeline_config.k)
-        .collect();
+    // ACT-R lever: take a wider slice of the merged pool so the activation
+    // prior can change set membership; truncated back to K after rerank.
+    let actr = actr_decay();
+    let pool_size = if actr.is_some() {
+        pipeline_config.k * ACTR_POOL_WIDEN
+    } else {
+        pipeline_config.k
+    };
+    let mut hits: Vec<MemoryHit> = result.merged_hits.into_iter().take(pool_size).collect();
     // Associative spreading on the DEFAULT (cascade) retrieval path, env-gated.
     apply_associative_spreading(brain, &mut hits);
+    // n-hop BFS graph channel (size-preserving; off when SPECTRAL_BFS_HOPS unset).
+    if let Some(hops) = bfs_hops() {
+        apply_bfs_expansion(brain, &mut hits, hops);
+    }
+    // ACT-R activation rerank over the widened pool, then restore output size.
+    if let Some(d) = actr {
+        let now = question_date
+            .and_then(parse_question_date)
+            .unwrap_or_else(Utc::now);
+        apply_actr_rerank(&mut hits, now, d);
+        hits.truncate(pipeline_config.k);
+    }
     let formatted = format_hits_grouped_capped_dated(&hits, cap_for_shape(qtype), question_date);
 
     Ok((formatted, hits, telemetry))
@@ -1853,6 +2135,224 @@ mod tests {
             asst_line.len() < 400,
             "assistant content must be capped to ~360, got len {}",
             asst_line.len()
+        );
+    }
+
+    // ── ACT-R activation + BFS lever tests ───────────────────────────
+
+    #[test]
+    fn activation_older_memory_has_lower_b() {
+        // Monotonicity in recency: larger age → lower base-level activation.
+        let d = 0.5;
+        let young = base_level_activation(1.0, None, 0, d);
+        let old = base_level_activation(100.0, None, 0, d);
+        assert!(
+            young > old,
+            "1-day-old activation {young} must exceed 100-day-old {old}"
+        );
+        // Strictly decreasing across a sweep.
+        let mut prev = f64::INFINITY;
+        for age in [0.5, 1.0, 5.0, 30.0, 180.0, 720.0] {
+            let b = base_level_activation(age, None, 0, d);
+            assert!(b < prev, "activation must decrease with age (age={age})");
+            prev = b;
+        }
+    }
+
+    #[test]
+    fn activation_fewer_accesses_has_lower_b() {
+        // Monotonicity in frequency: fewer reinforcement accesses → lower B.
+        let d = 0.5;
+        let few = base_level_activation(30.0, Some(2.0), 1, d);
+        let many = base_level_activation(30.0, Some(2.0), 5, d);
+        assert!(
+            few < many,
+            "1-access activation {few} must be below 5-access {many}"
+        );
+        // No reinforcement at all is the floor.
+        let none = base_level_activation(30.0, None, 0, d);
+        assert!(none < few);
+    }
+
+    #[test]
+    fn activation_age_floor_prevents_blowup() {
+        let b = base_level_activation(0.0, Some(0.0), 1_000_000, 0.5);
+        assert!(b.is_finite());
+    }
+
+    #[test]
+    fn actr_rerank_promotes_recent_memory_and_is_size_stable() {
+        // 10 old hits followed by one very recent hit at the tail. With the
+        // 0.2 blend, adjacent position gaps are 0.8/(n-1) = 0.08, so the
+        // recent hit's ~1.0 normalized activation must promote it past its
+        // older neighbors — while the pipeline's rank-1 stays rank-1
+        // (position score dominates by design: small additive prior).
+        let mut hits: Vec<MemoryHit> = (0..10)
+            .map(|i| {
+                make_test_hit(
+                    &format!("{i}"),
+                    &format!("s{i}:turn:0:user"),
+                    "old",
+                    &format!("s{i}"),
+                    "2023-01-01 12:00:00",
+                )
+            })
+            .collect();
+        hits.push(make_test_hit(
+            "new",
+            "snew:turn:0:user",
+            "new",
+            "snew",
+            "2023-05-29 12:00:00",
+        ));
+        let now = Utc.with_ymd_and_hms(2023, 5, 30, 0, 0, 0).unwrap();
+        apply_actr_rerank(&mut hits, now, 0.5);
+        assert_eq!(hits.len(), 11, "rerank must preserve size");
+        assert_eq!(hits[0].key, "s0:turn:0:user", "rank-1 must hold");
+        let new_pos = hits.iter().position(|h| h.key == "snew:turn:0:user");
+        assert!(
+            new_pos.unwrap() < 10,
+            "recent memory must be promoted from the tail, got {new_pos:?}"
+        );
+    }
+
+    #[test]
+    fn actr_rerank_is_noop_on_degenerate_activations() {
+        let mut hits = vec![
+            make_test_hit("1", "a", "x", "s1", "2023-05-20 12:00:00"),
+            make_test_hit("2", "b", "y", "s2", "2023-05-20 12:00:00"),
+        ];
+        let before: Vec<String> = hits.iter().map(|h| h.key.clone()).collect();
+        let now = Utc.with_ymd_and_hms(2023, 5, 30, 0, 0, 0).unwrap();
+        apply_actr_rerank(&mut hits, now, 0.5);
+        let after: Vec<String> = hits.iter().map(|h| h.key.clone()).collect();
+        assert_eq!(before, after, "equal activations must not reorder");
+    }
+
+    #[test]
+    fn bfs_merge_preserves_output_size_and_respects_cap() {
+        let mut hits: Vec<MemoryHit> = (0..20)
+            .map(|i| {
+                make_test_hit(
+                    &format!("id-{i}"),
+                    &format!("s{i}:turn:0:user"),
+                    "content",
+                    &format!("s{i}"),
+                    "2023-05-20 12:00:00",
+                )
+            })
+            .collect();
+        // 15 candidates, cap 10 → at most 10 admitted, size unchanged.
+        let candidates: Vec<MemoryHit> = (0..15)
+            .map(|i| {
+                make_test_hit(
+                    &format!("cand-{i}"),
+                    &format!("c{i}:turn:0:user"),
+                    "linked",
+                    &format!("c{i}"),
+                    "2023-05-21 12:00:00",
+                )
+            })
+            .collect();
+        merge_displacing_tail(&mut hits, candidates, 10);
+        assert_eq!(hits.len(), 20, "output size must be preserved");
+        let admitted = hits.iter().filter(|h| h.id.starts_with("cand-")).count();
+        assert_eq!(admitted, 10, "cap must bound admitted BFS memories");
+        // Strongest (head) original hits survive; tail was displaced.
+        assert_eq!(hits[0].id, "id-0");
+        assert_eq!(hits[9].id, "id-9");
+    }
+
+    #[test]
+    fn bfs_merge_dedups_existing_and_duplicate_candidates() {
+        let mut hits = vec![
+            make_test_hit("id-0", "a", "x", "s1", "2023-05-20 12:00:00"),
+            make_test_hit("id-1", "b", "y", "s2", "2023-05-20 12:00:00"),
+        ];
+        let candidates = vec![
+            // Already in the hit set → skipped.
+            make_test_hit("id-0", "a", "x", "s1", "2023-05-20 12:00:00"),
+            // Duplicate candidate → admitted once.
+            make_test_hit("cand-0", "c", "z", "s3", "2023-05-20 12:00:00"),
+            make_test_hit("cand-0", "c", "z", "s3", "2023-05-20 12:00:00"),
+        ];
+        merge_displacing_tail(&mut hits, candidates, 10);
+        assert_eq!(hits.len(), 2);
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, vec!["id-0", "cand-0"], "dedup by id, displace tail");
+    }
+
+    #[test]
+    fn bfs_expansion_walks_fingerprint_edges_and_preserves_size() {
+        // End-to-end over a real brain: write-time constellation fingerprints
+        // link same-day memories; BFS from a seed must pull an unretrieved
+        // linked memory into the set without growing it.
+        let dir = tempfile::tempdir().unwrap();
+        let ontology_path = dir.path().join("ontology.toml");
+        std::fs::write(&ontology_path, "version = 1\n").unwrap();
+        let brain = Brain::open(BrainConfig {
+            data_dir: dir.path().to_path_buf(),
+            ontology_path,
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::Strict,
+            sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+        })
+        .unwrap();
+
+        let ts = Utc.with_ymd_and_hms(2023, 5, 20, 12, 0, 0).unwrap();
+        for (key, content) in [
+            ("m-seed", "the seed memory about quarterly planning"),
+            ("m-linked", "an unrelated note written the same day"),
+            ("m-third", "another same-day note about lunch"),
+        ] {
+            brain
+                .remember_with(
+                    key,
+                    content,
+                    RememberOpts {
+                        created_at: Some(ts),
+                        visibility: Visibility::Private,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+
+        // Retrieve only the seed, then BFS-expand.
+        let seed = brain.recall_local("quarterly planning").unwrap();
+        let mut hits: Vec<MemoryHit> = seed
+            .memory_hits
+            .into_iter()
+            .filter(|h| h.key == "m-seed")
+            .collect();
+        assert_eq!(hits.len(), 1, "test setup: only the seed retrieved");
+        // Pad with a second hit so displacement has a tail to work with.
+        hits.push(make_test_hit(
+            "pad",
+            "pad:turn:0:user",
+            "padding",
+            "pad",
+            "2023-05-20 12:00:00",
+        ));
+
+        let before_len = hits.len();
+        apply_bfs_expansion(&brain, &mut hits, 1);
+        assert_eq!(hits.len(), before_len, "BFS must not grow the output");
+        assert!(
+            hits.iter()
+                .any(|h| h.key == "m-linked" || h.key == "m-third"),
+            "BFS over fingerprint edges should admit a same-day linked memory; got {:?}",
+            hits.iter().map(|h| &h.key).collect::<Vec<_>>()
         );
     }
 
