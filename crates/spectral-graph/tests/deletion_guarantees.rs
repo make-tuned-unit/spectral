@@ -27,22 +27,16 @@ use tempfile::TempDir;
 const SENTINEL: &str = "sentinelzq7vey4x9k";
 
 fn brain_config(tmp: &TempDir) -> BrainConfig {
+    // Spectrogram is retired (PR #227, off by default behind `spectrogram-legacy`);
+    // the deletion guarantee is proven on the DEFAULT brain. The D1 sweep is
+    // schema-derived, so it still cleans a spectrogram substrate if one exists —
+    // it just no longer requires the retired substrate to be populated.
     BrainConfig {
         data_dir: tmp.path().to_path_buf(),
         ontology_path: PathBuf::from("tests/fixtures/brain_ontology.toml"),
-        memory_db_path: None,
-        llm_client: None,
-        wing_rules: None,
-        hall_rules: None,
-        device_id: None,
-        enable_spectrogram: true,
         entity_policy: spectral_graph::brain::EntityPolicy::Strict,
-        sqlite_mmap_size: None,
-        fts_tokenizer: None,
-        read_only: false,
         activity_wing: "activity".into(),
-        redaction_policy: None,
-        tact_config: None,
+        ..Default::default()
     }
 }
 
@@ -291,7 +285,6 @@ fn d1_schema_derived_substrate_sweep_is_clean_after_forget() {
     // post-forget "zero rows" assertion would be vacuous.
     for expected in [
         "memories",
-        "memory_spectrogram",
         "memory_annotations",
         "memory_sessions",
         "consolidation_edges",
