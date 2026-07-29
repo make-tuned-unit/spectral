@@ -16,7 +16,8 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 > to run, and results that drift with the model. Spectral is the opposite — an
 > embedded Rust library that recalls (FTS + BM25), recognizes ("have I seen this
 > before?"), and adapts to use, all deterministically and embedding-free. One
-> SQLite file you own. Federation-ready, poisoning-resistant, ~99% session-recall.
+> SQLite file you own. Federation-ready, poisoning-resistant — 98.6%
+> session-recall and 81.5% end-to-end accuracy on LongMemEval-S.
 
 ## The six kinds of memory (the taxonomy)
 
@@ -35,8 +36,8 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 >
 > Spectral is an embedded Rust library that recalls, *recognizes* ("have I seen
 > this?"), and adapts to use — deterministically, embedding-free, on one SQLite
-> file. $0 per query, local-first, federation-ready. ~99% session-recall on
-> LongMemEval-S.
+> file. $0 per query, local-first, federation-ready. 98.6% session-recall and
+> 81.5% end-to-end accuracy on LongMemEval-S.
 
 ## Show HN
 
@@ -63,8 +64,8 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 > (`recognition_token_cost == 0` is structural), so the memory layer is free to
 > query and byte-reproducible, and everything lives in one SQLite file you own.
 >
-> On LongMemEval-S it reaches ~99% session-recall across all six memory-question
-> types, embedding-free. It's v0.0.1 and experimental; the retrieval numbers are
+> On LongMemEval-S it reaches 98.6% session-recall — 81.5% end-to-end accuracy
+> (401/492) — across all six memory-question types, embedding-free. It's v0.0.1 and experimental; the retrieval numbers are
 > in-sample, held-out expected lower — the repo is candid about what's measured
 > vs. not. Apache-2.0.
 
@@ -85,13 +86,16 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 > ("have I seen this before?"), it learns from use, and it federates across
 > brains with built-in poisoning resistance.
 >
-> ~99% session-recall on LongMemEval-S across every memory-question type. Local-
-> first by construction — for teams who keep control of their data.
+> 98.6% session-recall and 81.5% end-to-end accuracy on LongMemEval-S across
+> every memory-question type. Local-first by construction — for teams who keep
+> control of their data.
 >
 > v0.0.1, experimental, Apache-2.0. github.com/make-tuned-unit/spectral
 
 ## Honesty guardrails (don't cut these)
 
+- Never quote session-recall alone: pair 98.6% (retrieval stage) with 81.5%
+  end-to-end accuracy (401/492) in the same sentence. No "~99%" rounding.
 - "No LLM on the recall path" is true for the library; the benchmarked 81.5%
   accuracy uses an optional Haiku query-expansion call (≈$0.25/1k). Disclose it.
 - Retrieval numbers are **in-sample**; held-out expected lower.
