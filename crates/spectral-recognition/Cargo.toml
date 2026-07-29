@@ -13,15 +13,24 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = "0.10"
-reqwest = { workspace = true, features = ["blocking", "json"] }
+reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
 fastembed = { version = "5", optional = true, default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
 
 [features]
+# C3 (zero inference): the DEFAULT build carries no network stack and no ML
+# runtime. `reqwest` exists solely for the pay-once `paraphrase_gen` dev tool
+# and is gated off by default; CI compiles default features, so this gate is
+# load-bearing, not documentation.
 default = []
 neural-baseline = ["dep:fastembed"]
+paraphrase-gen = ["dep:reqwest"]
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "paraphrase_gen"
+required-features = ["paraphrase-gen"]
 
 [[example]]
 name = "embedding_baseline"

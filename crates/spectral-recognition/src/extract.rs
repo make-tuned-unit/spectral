@@ -135,6 +135,20 @@ fn tokenize(content: &str) -> Vec<(String, bool, bool)> {
         .collect()
 }
 
+/// The normalized token stream of a text — the exact keys the engine
+/// fingerprints over (anchors verbatim, other tokens lowercased + stemmed,
+/// stopwords retained for the gram channel).
+///
+/// Public as the **auditability seam (claim C2)**: every `Evidence` row a
+/// verdict carries cites landmark keys ("pair: a~b") or a token run
+/// ("run: '...'"); a third party can machine-verify the citation by checking
+/// that those keys literally occur in `normalized_tokens(probe)` AND
+/// `normalized_tokens(enrolled_content)`. Without this function the evidence
+/// trail was human-readable but not independently checkable.
+pub fn normalized_tokens(content: &str) -> Vec<String> {
+    tokenize(content).into_iter().map(|(k, _, _)| k).collect()
+}
+
 fn hash64(input: &str) -> u64 {
     let digest = Sha256::digest(input.as_bytes());
     u64::from_be_bytes(digest[..8].try_into().expect("8 bytes"))

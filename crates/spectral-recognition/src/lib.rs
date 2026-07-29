@@ -24,6 +24,19 @@
 //!
 //! No embeddings, no models, no LLM. Every verdict carries the exact
 //! features that produced it.
+//!
+//! # Zero-inference guarantee (claim C3)
+//!
+//! With **default features** this crate has no network stack and no ML
+//! runtime: `reqwest` is gated behind the off-by-default `paraphrase-gen`
+//! feature (used only by the `paraphrase_gen` dev binary that mints a
+//! pay-once paraphrase fixture) and `fastembed`/ONNX behind the
+//! off-by-default `neural-baseline` feature (out-of-band embedding
+//! baseline). Every recognition path — enroll, recognize, forget, stream —
+//! is pure local computation (SHA-256 fingerprints + SQLite/in-memory
+//! lookups). CI compiles default features, so the dependency gate is
+//! enforced on every build, and `cargo tree -p spectral-recognition`
+//! (default features) is the audit: no reqwest, no fastembed, no ort.
 
 pub mod eval;
 mod extract;
@@ -32,7 +45,9 @@ mod score;
 mod store;
 pub mod stream;
 
-pub use extract::{extract_landmarks, fingerprint_stimulus, Landmark, StimulusPrints};
+pub use extract::{
+    extract_landmarks, fingerprint_stimulus, normalized_tokens, Landmark, StimulusPrints,
+};
 pub use minhash::MinHashConfig;
 pub use score::{score_candidates, MinHashMatch, ScoreConfig};
 pub use store::{InMemoryRecognitionStore, RecognitionStore, SqliteRecognitionStore};
