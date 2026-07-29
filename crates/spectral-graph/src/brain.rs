@@ -81,9 +81,10 @@ pub struct BrainConfig {
     /// FTS5 tokenizer for the memories full-text index. See
     /// [`spectral_ingest::sqlite_store::SqliteStoreConfig::fts_tokenizer`].
     ///
-    /// - `None` (default): `SPECTRAL_FTS_TOKENIZER` env var if set, else
-    ///   `"porter unicode61"` — deterministic stemming that bridges
-    ///   plural/inflected queries to singular content at zero runtime cost.
+    /// - `None` (default): `"porter unicode61"` — deterministic stemming that
+    ///   bridges plural/inflected queries to singular content at zero runtime
+    ///   cost. (Formerly the `SPECTRAL_FTS_TOKENIZER` env var; env overrides
+    ///   now live only in the bench harness.)
     /// - `Some("unicode61")`: explicit no-stemming tokenizer.
     ///
     /// A brain built with a different tokenizer is migrated (one-time FTS
@@ -114,6 +115,108 @@ pub struct BrainConfig {
     /// are still derived from `BrainConfig::wing_rules`/`hall_rules`
     /// so consumers don't have to duplicate them.
     pub tact_config: Option<TactConfig>,
+    /// Number of extra read-only SQLite connections for concurrent recall.
+    /// See [`spectral_ingest::sqlite_store::SqliteStoreConfig::read_pool_size`].
+    ///
+    /// - `None` (default): the store's default pool
+    ///   ([`spectral_ingest::sqlite_store::DEFAULT_READ_POOL_SIZE`]).
+    /// - `Some(0)` / `Some(1)`: disable pooling (pre-pool single-connection
+    ///   behaviour).
+    ///
+    /// Formerly the `SPECTRAL_READ_POOL_SIZE` env var; env overrides now live
+    /// only in the bench harness (`spectral_bench_accuracy::apply_env_levers`).
+    pub read_pool_size: Option<usize>,
+    /// Enable stemmed + unstemmed RRF fusion for FTS recall. Default false.
+    /// See [`spectral_ingest::sqlite_store::SqliteStoreConfig::fts_fusion`]
+    /// for the full semantics (second unstemmed FTS index, RRF k=60, opt-in
+    /// per the measure-before-defaulting discipline).
+    ///
+    /// Formerly the `SPECTRAL_FTS_FUSION` env var; env overrides now live
+    /// only in the bench harness.
+    pub fts_fusion: bool,
+    /// Ambient recurrence feedback: when new content re-encounters an
+    /// existing memory (recognition), reinforce that prior memory. Off by
+    /// default (measure before defaulting — the co-retrieval lesson).
+    ///
+    /// Formerly the `SPECTRAL_RECURRENCE_FEEDBACK` env var; env overrides now
+    /// live only in the bench harness.
+    pub recurrence_feedback: bool,
+    /// Drop conservative stopwords from FTS queries. Off by default —
+    /// measure on the real bench before defaulting (the porter / co-retrieval
+    /// discipline). Stopword removal is a behavior change with tradeoffs, so
+    /// it is gated.
+    ///
+    /// Formerly the `SPECTRAL_FTS_STOPWORDS` env var; env overrides now live
+    /// only in the bench harness.
+    pub fts_stopwords: bool,
+    /// Append anticipatory (lift-associated) memories to `recall_topk_fts`
+    /// results. Off by default — it only helps once real co-retrieval history
+    /// exists, and it changes the result contract (a few extras beyond the
+    /// requested k), so it is opt-in per the same measure-before-defaulting
+    /// discipline as the stopword lever.
+    ///
+    /// Formerly the `SPECTRAL_ANTICIPATORY_RECALL` env var; env overrides now
+    /// live only in the bench harness.
+    pub anticipatory_recall: bool,
+    /// Bridge digit / number-word query terms (`3` ↔ `three`, cardinals 2–12
+    /// only). Off by default — measure on the real bench before defaulting.
+    /// Directly targets counting/number queries: `three dogs` and `3 dogs`
+    /// should retrieve each other.
+    ///
+    /// Formerly the `SPECTRAL_NUMBER_NORMALIZE` env var; env overrides now
+    /// live only in the bench harness.
+    pub number_normalize: bool,
+    /// Path to a consumer-curated query alias/synonym JSON file
+    /// (`{"term": ["expansion", ...], ...}`), loaded once at `Brain::open`.
+    /// `None` (default) or an unreadable/invalid file yields an empty table
+    /// (a no-op). This is the deterministic answer to the semantic-bridging
+    /// gap pure lexical matching cannot close (`CEO` ↔ `chief executive`):
+    /// a controlled vocabulary the consumer owns, not a general thesaurus.
+    ///
+    /// Formerly the `SPECTRAL_QUERY_ALIASES` env var; env overrides now live
+    /// only in the bench harness.
+    pub query_aliases_path: Option<PathBuf>,
+    /// Cap on constellation fingerprint fan-out per write. See
+    /// [`spectral_ingest::ingest::IngestConfig::max_fingerprint_peers`].
+    /// Default `Some(64)` ([`spectral_ingest::ingest::DEFAULT_MAX_FINGERPRINT_PEERS`]);
+    /// `None` = unbounded (the legacy behaviour).
+    ///
+    /// Formerly the `SPECTRAL_MAX_FINGERPRINT_PEERS` env var (`0` meant
+    /// unbounded); env overrides now live only in the bench harness.
+    pub max_fingerprint_peers: Option<usize>,
+}
+
+impl Default for BrainConfig {
+    /// Defaults matching the historical env-unset behaviour exactly.
+    /// `data_dir` and `ontology_path` default to empty paths and must be set
+    /// by the caller for `Brain::open` to succeed.
+    fn default() -> Self {
+        Self {
+            data_dir: PathBuf::new(),
+            ontology_path: PathBuf::new(),
+            memory_db_path: None,
+            llm_client: None,
+            wing_rules: None,
+            hall_rules: None,
+            device_id: None,
+            enable_spectrogram: false,
+            entity_policy: EntityPolicy::default(),
+            sqlite_mmap_size: None,
+            fts_tokenizer: None,
+            read_only: false,
+            activity_wing: "activity".into(),
+            redaction_policy: None,
+            tact_config: None,
+            read_pool_size: None,
+            fts_fusion: false,
+            recurrence_feedback: false,
+            fts_stopwords: false,
+            anticipatory_recall: false,
+            number_normalize: false,
+            query_aliases_path: None,
+            max_fingerprint_peers: Some(spectral_ingest::ingest::DEFAULT_MAX_FINGERPRINT_PEERS),
+        }
+    }
 }
 
 /// Outcome of [`Brain::forget`]: the per-substrate SQLite deletion receipt,
@@ -562,19 +665,7 @@ pub struct AuditReport {
 /// let brain = Brain::open(BrainConfig {
 ///     data_dir: PathBuf::from("/tmp/my-brain"),
 ///     ontology_path: PathBuf::from("ontology.toml"),
-///     memory_db_path: None,
-///     llm_client: None,
-///     wing_rules: None,
-///     hall_rules: None,
-///     device_id: None,
-///     enable_spectrogram: false,
-///     entity_policy: spectral_graph::brain::EntityPolicy::Strict,
-///     sqlite_mmap_size: None,
-///     fts_tokenizer: None,
-///     read_only: false,
-///     activity_wing: "activity".into(),
-///     redaction_policy: None,
-///     tact_config: None,
+///     ..Default::default()
 /// }).unwrap();
 /// println!("Brain ID: {}", brain.brain_id());
 /// ```
@@ -683,9 +774,19 @@ pub struct Brain {
     async_writeback: bool,
     /// Ambient recurrence feedback: when new content re-encounters an existing
     /// memory (recognition), reinforce that prior memory. Enabled via
-    /// `SPECTRAL_RECURRENCE_FEEDBACK=1`. Off by default (measure before
+    /// [`BrainConfig::recurrence_feedback`]. Off by default (measure before
     /// defaulting — the co-retrieval lesson).
     recurrence_feedback: bool,
+    /// Drop stopwords from FTS queries. [`BrainConfig::fts_stopwords`].
+    fts_stopwords: bool,
+    /// Append lift-associated memories to `recall_topk_fts` results.
+    /// [`BrainConfig::anticipatory_recall`].
+    anticipatory_recall: bool,
+    /// Bridge digit/number-word query terms. [`BrainConfig::number_normalize`].
+    number_normalize: bool,
+    /// Consumer-curated query alias table, loaded once at open from
+    /// [`BrainConfig::query_aliases_path`]. Empty = no-op.
+    query_aliases: std::collections::HashMap<String, Vec<String>>,
     rt: SafeRuntime,
 }
 
@@ -779,15 +880,8 @@ impl Brain {
             mmap_size: config.sqlite_mmap_size,
             fts_tokenizer: config.fts_tokenizer.clone(),
             read_only: config.read_only,
-            // Opt-in via SPECTRAL_FTS_FUSION (resolved inside the store); no
-            // BrainConfig field yet — keeps this an env-gated experimental lever
-            // like the stopword/anticipatory levers.
-            fts_fusion: false,
-            // Default pool. Override with SPECTRAL_READ_POOL_SIZE; 0 or 1
-            // restores the pre-pool single-connection behaviour.
-            read_pool_size: std::env::var("SPECTRAL_READ_POOL_SIZE")
-                .ok()
-                .and_then(|v| v.trim().parse::<usize>().ok()),
+            fts_fusion: config.fts_fusion,
+            read_pool_size: config.read_pool_size,
         };
         let sqlite = Arc::new(
             SqliteStore::open_with_config(&memory_db_path, &sqlite_config)
@@ -832,6 +926,7 @@ impl Brain {
         let ingest_config = spectral_ingest::ingest::IngestConfig {
             wing_rules: compile_rules(&wing_rules, "wing")?,
             hall_rules: compile_rules(&hall_rules, "hall")?,
+            max_fingerprint_peers: config.max_fingerprint_peers,
             ..spectral_ingest::ingest::IngestConfig::default()
         };
 
@@ -901,9 +996,18 @@ impl Brain {
             read_only: config.read_only,
             // Off by default; opt in per-brain via `set_async_writeback`.
             async_writeback: false,
-            recurrence_feedback: std::env::var("SPECTRAL_RECURRENCE_FEEDBACK")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
+            recurrence_feedback: config.recurrence_feedback,
+            fts_stopwords: config.fts_stopwords,
+            anticipatory_recall: config.anticipatory_recall,
+            number_normalize: config.number_normalize,
+            // Loaded once at open; unreadable or invalid files degrade to an
+            // empty (no-op) table, matching the historical env-var semantics.
+            query_aliases: config
+                .query_aliases_path
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
             rt,
         })
     }
@@ -1751,7 +1855,7 @@ impl Brain {
 
         // Step 2: If TACT returned fewer than K, supplement with FTS
         if hits.len() < k {
-            let words = fts_query_words(query);
+            let words = self.fts_query_words(query);
 
             if !words.is_empty() {
                 let fts_hits = self.fts_search_direct(&words, k)?;
@@ -1801,7 +1905,7 @@ impl Brain {
         visibility: Visibility,
     ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
         // Sanitize: strip possessives / FTS5 special characters / short words.
-        let words = fts_query_words(query);
+        let words = self.fts_query_words(query);
 
         if words.is_empty() {
             return Ok(Vec::new());
@@ -1872,18 +1976,33 @@ impl Brain {
             let _ = self.log_retrieval_event(&event);
         }
 
-        // Anticipatory augmentation (opt-in, `SPECTRAL_ANTICIPATORY_RECALL=1`).
+        // Anticipatory augmentation (opt-in, [`BrainConfig::anticipatory_recall`]).
         // Surface memories the query did NOT match but that the top hits are
         // specifically associated with (lift over co-retrieval history) — "what
         // you need before you ask". Appended AFTER the k query-matches (they
         // supplement, never displace) and AFTER event logging (anticipated
         // memories aren't logged as retrieved, avoiding a feedback runaway).
         // Visibility-filtered like everything else.
-        if !results.is_empty() && fts_anticipatory_enabled() {
+        if !results.is_empty() && self.anticipatory_recall {
             self.append_anticipated(&mut results, visibility);
         }
 
         Ok(results)
+    }
+
+    /// Sanitize a natural-language query into FTS search terms, applying this
+    /// brain's configured query levers: stopword dropping
+    /// ([`BrainConfig::fts_stopwords`]), digit/number-word bridging
+    /// ([`BrainConfig::number_normalize`]), and the consumer-curated alias
+    /// table ([`BrainConfig::query_aliases_path`]). See
+    /// [`fts_query_words_opts`] for the base tokenization.
+    pub(crate) fn fts_query_words(&self, query: &str) -> Vec<String> {
+        let mut words = fts_query_words_opts(query, self.fts_stopwords);
+        if self.number_normalize {
+            expand_number_words(query, &mut words);
+        }
+        expand_aliases(&mut words, &self.query_aliases);
+        words
     }
 
     /// Append lift-associated memories (anticipatory recall) to a result set,
@@ -3794,28 +3913,6 @@ fn is_fts_stopword(w: &str) -> bool {
     FTS_STOPWORDS.contains(&w)
 }
 
-/// Whether to drop stopwords from FTS queries (`SPECTRAL_FTS_STOPWORDS=1`).
-/// Off by default — measure on the real bench before defaulting (the porter /
-/// co-retrieval discipline). The possessive fix below is unconditional (a
-/// clear bug fix, no downside); stopword removal is a behavior change with
-/// tradeoffs, so it is gated.
-fn fts_stopwords_enabled() -> bool {
-    std::env::var("SPECTRAL_FTS_STOPWORDS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-/// Whether recall should append anticipatory (lift-associated) memories to its
-/// results (`SPECTRAL_ANTICIPATORY_RECALL=1`). Off by default — it only helps
-/// once real co-retrieval history exists, and it changes the result contract
-/// (a few extras beyond the requested k), so it is opt-in per the same
-/// measure-before-defaulting discipline as the stopword lever.
-fn fts_anticipatory_enabled() -> bool {
-    std::env::var("SPECTRAL_ANTICIPATORY_RECALL")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
 /// Project a stored [`Memory`] into a [`MemoryHit`] for anticipatory
 /// augmentation. `hits = 0` marks it as not query-matched (surfaced by
 /// association, not keyword overlap) so a consumer can distinguish it.
@@ -3854,38 +3951,6 @@ fn memory_to_hit(m: spectral_ingest::Memory) -> spectral_ingest::MemoryHit {
         source_brain_id: m.source_brain_id,
         signature: m.signature,
     }
-}
-
-/// Sanitize a natural-language query into FTS search terms. Reads the
-/// stopword flag; see [`fts_query_words_opts`]. Applies number-word bridging
-/// when `SPECTRAL_NUMBER_NORMALIZE` is set.
-pub(crate) fn fts_query_words(query: &str) -> Vec<String> {
-    let mut words = fts_query_words_opts(query, fts_stopwords_enabled());
-    if number_normalize_enabled() {
-        expand_number_words(query, &mut words);
-    }
-    expand_aliases(&mut words, query_aliases());
-    words
-}
-
-/// Consumer-curated query alias/synonym table, loaded once from the JSON file at
-/// `SPECTRAL_QUERY_ALIASES` (`{"term": ["expansion", ...], ...}`); empty (a
-/// no-op) if the var is unset or the file is unreadable. This is the deterministic
-/// answer to the semantic-bridging gap that pure lexical matching cannot close
-/// (`CEO`↔`chief executive`, `k8s`↔`kubernetes`): the near-duplicate literature
-/// endorses exactly ONE synonym approach — a **controlled vocabulary** the
-/// consumer owns, not a general thesaurus (which harms precision). Spectral
-/// supplies the mechanism; Permagent supplies the (bounded, domain) table.
-fn query_aliases() -> &'static std::collections::HashMap<String, Vec<String>> {
-    static QUERY_ALIASES: std::sync::OnceLock<std::collections::HashMap<String, Vec<String>>> =
-        std::sync::OnceLock::new();
-    QUERY_ALIASES.get_or_init(|| {
-        std::env::var("SPECTRAL_QUERY_ALIASES")
-            .ok()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    })
 }
 
 /// Expand query terms with consumer-curated aliases: for each term matching an
@@ -3937,16 +4002,6 @@ const NUMBER_PAIRS: &[(&str, &str)] = &[
     ("11", "eleven"),
     ("12", "twelve"),
 ];
-
-/// Whether to bridge digit/number-word query terms (`SPECTRAL_NUMBER_NORMALIZE=1`).
-/// Off by default — measure on the real bench before defaulting, per the
-/// porter/stopword discipline. Directly targets LongMemEval's counting/number
-/// category: `three dogs` and `3 dogs` should retrieve each other.
-fn number_normalize_enabled() -> bool {
-    std::env::var("SPECTRAL_NUMBER_NORMALIZE")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
 
 /// Ensure both surface forms of any number in the query are present as MATCH
 /// terms. Scans the **raw** query (not the length-filtered word list) because a
@@ -4184,12 +4239,6 @@ mod fts_query_words_tests {
     }
 
     #[test]
-    fn query_aliases_empty_by_default() {
-        // With no SPECTRAL_QUERY_ALIASES file, the table is empty (no-op).
-        assert!(query_aliases().is_empty());
-    }
-
-    #[test]
     fn number_words_bridge_both_directions_conservatively() {
         // digit -> word (single digit survives via the raw scan)
         let mut w = vec!["puppies".to_string()];
@@ -4302,6 +4351,7 @@ mod kuzu_schema_abort_repro {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         };
 
         // On Linux this never returns successfully — abort fires
@@ -4370,6 +4420,7 @@ mod kuzu_schema_abort_repro {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         };
 
         // Phase 1 — open N brains on N distinct paths, all kept alive.

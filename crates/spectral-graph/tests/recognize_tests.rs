@@ -25,6 +25,7 @@ fn test_brain() -> (Brain, tempfile::TempDir) {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap();
     (brain, dir)
@@ -99,6 +100,7 @@ fn recognition_survives_reopen() {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     };
     {
         let brain = Brain::open(config()).unwrap();

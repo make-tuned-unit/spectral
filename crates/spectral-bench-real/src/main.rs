@@ -197,7 +197,7 @@ fn open_brain(path: &std::path::Path) -> Result<Brain> {
     if !ontology_path.exists() {
         bail!("ontology.toml not found at {}", ontology_path.display());
     }
-    let brain = Brain::open(BrainConfig {
+    let mut config = BrainConfig {
         data_dir: path.to_path_buf(),
         ontology_path,
         memory_db_path: None,
@@ -213,7 +213,12 @@ fn open_brain(path: &std::path::Path) -> Result<Brain> {
         tact_config: None,
         device_id: None,
         enable_spectrogram: false,
-    })?;
+        ..Default::default()
+    };
+    // Preserve the historical `SPECTRAL_*` env-var workflow for bench runs;
+    // the library itself no longer reads env.
+    spectral_bench_accuracy::apply_env_levers(&mut config);
+    let brain = Brain::open(config)?;
     Ok(brain)
 }
 

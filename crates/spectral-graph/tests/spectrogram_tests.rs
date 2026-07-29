@@ -21,6 +21,7 @@ fn brain_with_spectrogram(tmp: &TempDir) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -42,6 +43,7 @@ fn brain_without_spectrogram(tmp: &TempDir) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }

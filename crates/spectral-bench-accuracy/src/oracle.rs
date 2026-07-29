@@ -79,7 +79,7 @@ pub struct OracleRow {
 /// `BrainConfig` used by `ingest::ingest_question` exactly.
 fn open_existing_brain(brain_dir: &Path) -> Result<Brain> {
     let ontology_path = brain_dir.join("ontology.toml");
-    Ok(Brain::open(BrainConfig {
+    let mut brain_config = BrainConfig {
         data_dir: brain_dir.to_path_buf(),
         ontology_path,
         memory_db_path: None,
@@ -98,7 +98,10 @@ fn open_existing_brain(brain_dir: &Path) -> Result<Brain> {
             max_results: 20,
             ..TactConfig::default()
         }),
-    })?)
+        ..Default::default()
+    };
+    crate::env_levers::apply_env_levers(&mut brain_config);
+    Ok(Brain::open(brain_config)?)
 }
 
 /// Return true when a key belongs to an answer session.

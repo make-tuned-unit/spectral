@@ -17,10 +17,11 @@ const TURNS: &[(&str, &str)] = &[
 ];
 const QUERY: &str = "What is Marcus's new job title?";
 
-fn open(dir: &Path) -> Brain {
+fn open(dir: &Path, fts_stopwords: bool) -> Brain {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("ontology.toml"), "version = 1\n").unwrap();
     Brain::open(BrainConfig {
+        fts_stopwords,
         data_dir: dir.to_path_buf(),
         ontology_path: dir.join("ontology.toml"),
         memory_db_path: None,
@@ -36,6 +37,7 @@ fn open(dir: &Path) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -43,7 +45,7 @@ fn open(dir: &Path) -> Brain {
 fn main() {
     let dir = std::env::temp_dir().join("spectral-recall-debug");
     let _ = std::fs::remove_dir_all(&dir);
-    let brain = open(&dir);
+    let brain = open(&dir, false);
     for (key, content) in TURNS {
         brain
             .remember_with(
@@ -140,9 +142,9 @@ fn main() {
     );
 
     // ── Stopword filtering: noise reduction without dropping the answer ──
-    println!("\n--- stopword filtering (SPECTRAL_FTS_STOPWORDS) ---");
-    let show = |label: &str| {
-        let h = brain
+    println!("\n--- stopword filtering (BrainConfig::fts_stopwords) ---");
+    let show = |b: &Brain, label: &str| {
+        let h = b
             .recall_topk_fts(
                 QUERY,
                 &RecallTopKConfig {
@@ -158,8 +160,10 @@ fn main() {
         let noise_turn1 = keys.contains(&"s2:turn:1:assistant");
         println!("  {label:<12} n={} answer_kept={answer} noise(turn1_only_'is')={noise_turn1}  {keys:?}", h.len());
     };
-    std::env::remove_var("SPECTRAL_FTS_STOPWORDS");
-    show("OFF");
-    std::env::set_var("SPECTRAL_FTS_STOPWORDS", "1");
-    show("ON");
+    show(&brain, "OFF");
+    // Reopen the same brain with the stopword lever on (the lever is a typed
+    // per-brain config field, captured at open).
+    drop(brain);
+    let brain_on = open(&dir, true);
+    show(&brain_on, "ON");
 }

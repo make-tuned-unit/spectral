@@ -789,6 +789,7 @@ mod tests {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -841,6 +842,7 @@ mod tests {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -906,6 +908,7 @@ mod tests {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -992,6 +995,7 @@ mod tests {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -1078,6 +1082,7 @@ mod tests {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -1440,6 +1445,7 @@ mod tests {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         })
         .unwrap();
 

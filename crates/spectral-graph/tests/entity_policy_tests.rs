@@ -22,6 +22,7 @@ fn strict_brain(tmp: &TempDir) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -52,6 +53,7 @@ fn auto_create_brain(tmp: &TempDir) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -77,6 +79,7 @@ fn canonicalizer_brain(tmp: &TempDir) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -338,6 +341,7 @@ fn auto_created_entities_persist_across_brain_reopen() {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -363,6 +367,7 @@ fn auto_created_entities_persist_across_brain_reopen() {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap();
 
@@ -393,6 +398,7 @@ fn auto_created_entities_are_toml_escaped_and_reopenable() {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap();
 
@@ -442,6 +448,7 @@ fn default_policy_is_strict() {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap();
 

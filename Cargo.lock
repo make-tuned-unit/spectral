@@ -2757,6 +2757,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spectral-bench-accuracy",
  "spectral-core",
  "spectral-graph",
  "spectral-ingest",

@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    let config = BrainConfig {
+    let mut config = BrainConfig {
         data_dir: brain_dir,
         ontology_path,
         memory_db_path: Some(memory_db_path),
@@ -64,7 +64,9 @@ fn main() -> anyhow::Result<()> {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     };
+    spectral_bench_accuracy::apply_env_levers(&mut config);
 
     let brain = Brain::open(config)?;
 
