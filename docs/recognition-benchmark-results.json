@@ -1,0 +1,72 @@
+{
+ "benchmark": "recognition-public-prereg-2026-07-28",
+ "r1_limit": 10000,
+ "regimes": [
+  {
+   "engine": {
+    "auc": 0.9945737671790762,
+    "enroll_ms_total": 4755.473167,
+    "neg_familiar": 962,
+    "pos_novel": 0,
+    "query_ms_avg": 13.750002484065549
+   },
+   "enrolled": 8994,
+   "label_noise_excluded": 37,
+   "minhash128": {
+    "auc": 0.9988294974459986,
+    "query_ms_avg": 0.792283917261486
+   },
+   "name": "r1",
+   "negatives": 969,
+   "positives": 8978,
+   "title": "R1 lexical (LongMemEval-S)",
+   "bge_small": {
+    "auc": 0.8497401974003188
+   }
+  },
+  {
+   "engine": {
+    "auc": 0.9787627931315639,
+    "enroll_ms_total": 383.30895799999996,
+    "neg_familiar": 455,
+    "pos_novel": 0,
+    "query_ms_avg": 0.17041147253705316
+   },
+   "enrolled": 588,
+   "label_noise_excluded": 0,
+   "minhash128": {
+    "auc": 0.9668108746181836,
+    "query_ms_avg": 0.051557323452484746
+   },
+   "name": "r2",
+   "negatives": 559,
+   "positives": 588,
+   "title": "R2 semantic (MRPC label=1)",
+   "bge_small": {
+    "auc": 0.9811738648947951
+   }
+  },
+  {
+   "engine": {
+    "auc": 0.48745579898108954,
+    "enroll_ms_total": 2132.220125,
+    "neg_familiar": 4464,
+    "pos_novel": 0,
+    "query_ms_avg": 4.67357364575
+   },
+   "enrolled": 8000,
+   "label_noise_excluded": 0,
+   "minhash128": {
+    "auc": 0.4917264523934057,
+    "query_ms_avg": 0.468823395875
+   },
+   "name": "r3",
+   "negatives": 4464,
+   "positives": 3536,
+   "title": "R3 adversarial (PAWS-Wiki)",
+   "bge_small": {
+    "auc": 0.48533482160957847
+   }
+  }
+ ]
+}
