@@ -42,13 +42,27 @@ pub struct ScoreConfig {
     /// to be `Recognized` (ACR's θ+δ margin rule; prevents flapping between
     /// two similar traces).
     pub recognize_margin: f64,
-    /// Familiarity floor for a `Familiar` verdict.
+    /// Familiarity floor for a `Familiar` verdict (coverage channel — the
+    /// normalized, scale-independent arm).
     pub familiar_floor: f64,
+    /// Similarity floor for a `Familiar` verdict via the MinHash channel.
+    /// Decoupled from `familiar_floor`: raw token overlap between
+    /// same-domain short texts trivially reaches ~0.10 by chance, so the
+    /// similarity arm needs a higher bar than normalized coverage
+    /// (measured: 99.3% false-familiar on the public R1 negatives under a
+    /// shared 0.10 floor — see recognition-verdict-calibration-prereg).
+    pub familiar_min_similarity: f64,
     /// Alternative Familiar path: best-trace rarity-weighted score at or
     /// above this triggers Familiar even at low coverage (REM: a couple of
     /// very rare matched anchors are strong evidence despite covering
     /// little of the stimulus).
     pub familiar_min_score: f64,
+    /// Minimum independent matched features (pair + gram hits) for the
+    /// Familiar-by-score path. Rarity weights grow as ln(enrolled/df), so at
+    /// large enrollment a SINGLE chance collision clears any constant score
+    /// threshold; requiring two independent features makes the path
+    /// scale-robust without touching the scalar.
+    pub familiar_min_features: usize,
     /// Winnowed-gram hits weigh this multiple of an equally-rare pair hit
     /// (verbatim runs are stronger identity evidence than co-occurrence).
     pub gram_weight: f64,
@@ -66,7 +80,9 @@ impl Default for ScoreConfig {
             recognize_min_familiarity: 0.60,
             recognize_margin: 1.5,
             familiar_floor: 0.10,
+            familiar_min_similarity: 0.20,
             familiar_min_score: 2.5,
+            familiar_min_features: 2,
             gram_weight: 2.0,
             max_evidence: 12,
             max_traces: 5,
@@ -243,12 +259,28 @@ pub fn score_candidates(
                     },
                     best.score,
                 )
-            } else if familiarity >= config.familiar_floor
-                || best.score >= config.familiar_min_score
-            {
-                (Verdict::Familiar, best.score)
             } else {
-                (Verdict::Novel, best.score)
+                // Familiar requires scale-robust evidence (see prereg
+                // recognition-verdict-calibration-2026-07-29):
+                // - coverage channel: normalized, scale-independent — floor
+                //   unchanged;
+                // - similarity channel: raw token overlap needs a higher bar
+                //   than coverage (0.10 is chance-level between same-domain
+                //   short texts);
+                // - by-score channel: rarity weights grow with ln(enrolled),
+                //   so the absolute threshold additionally requires at least
+                //   `familiar_min_features` independent matched features — a
+                //   single chance collision no longer suffices at scale.
+                let features = best.pair_hits + best.gram_hits;
+                let by_coverage = coverage_familiarity >= config.familiar_floor;
+                let by_similarity = best_similarity >= config.familiar_min_similarity;
+                let by_score = best.score >= config.familiar_min_score
+                    && features >= config.familiar_min_features;
+                if by_coverage || by_similarity || by_score {
+                    (Verdict::Familiar, best.score)
+                } else {
+                    (Verdict::Novel, best.score)
+                }
             }
         }
     };
