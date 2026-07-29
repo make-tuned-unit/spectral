@@ -187,6 +187,7 @@ pub struct EvalReport {
     pub config_fingerprint: String,
     /// Fingerprint of the judge grading rubrics in effect for this run.
     /// Reports with different rubric fingerprints are not comparable.
+    /// Empty string = unknown (older reports).
     #[serde(default)]
     pub judge_rubric_fingerprint: String,
     pub total_questions: usize,
