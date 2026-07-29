@@ -574,6 +574,14 @@ impl SqliteStore {
             CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
             CREATE INDEX IF NOT EXISTS idx_memories_wing ON memories(wing);
             CREATE INDEX IF NOT EXISTS idx_memories_signal ON memories(signal_score);
+            -- Recency-ordered wing scan for the capped fingerprint peer read
+            -- (`list_wing_memories_capped`). Expression index matches the query's
+            -- `ORDER BY datetime(created_at) DESC, id DESC` exactly, so the LIMIT
+            -- is satisfied by an index walk instead of sorting the whole wing in
+            -- a temp B-tree — removing the superlinear per-insert cost. Ordering
+            -- is byte-identical, so selected peers (and fingerprints) are unchanged.
+            CREATE INDEX IF NOT EXISTS idx_memories_wing_recency
+                ON memories(wing, datetime(created_at) DESC, id DESC);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
                 key, content, description,
