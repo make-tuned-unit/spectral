@@ -42,3 +42,30 @@ knobs ship config-only with the finding. One calibration iteration on the two
 constants is permitted and must be reported (values tried, values shipped).
 Private-brain verdict rates (1.6k scale) re-checked if the local brain DB is
 present — calibration must not regress the original scale.
+
+---
+
+## ADDENDUM — outcomes (2026-07-29, post-measurement)
+
+Shipped defaults exactly as pre-registered (`familiar_min_features: 2`,
+`familiar_min_similarity: 0.20`); the permitted calibration iteration was NOT
+used. AUCs byte-identical to PR #229 (scalar untouched, as designed).
+
+| metric | before | target | measured | outcome |
+|---|---|---|---|---|
+| R1 missed re-encounters | 0% | ≤1% hard | **0%** | ✓ held |
+| R1 false-familiar | 99.3% | ≤35% | **97.0%** | missed — diagnosed below |
+| R2 paraphrase read Novel | 0% | ≤5% hard | **0%** | ✓ held |
+| R2 false-familiar | 81.4% | ≤50% | **31.3%** | ✓ hit |
+| R3 false-familiar | 100% | report | 100% | unchanged (semantic, not calibration) |
+
+**R1 diagnosis (why the target was wrong, not the fix):** channel attribution
+shows R1's residual familiars fire all three channels simultaneously, and the
+negatives' max content-word Jaccard against the enrolled set is median 0.267
+(vs 0.143 for R2's cross-document negatives) — R1 negatives are held-out turns
+from the SAME conversations, sharing a quarter of their vocabulary with
+enrolled content. Calling them familiar is semantically defensible; the
+benchmark's binary "not enrolled ⇒ Novel" label is the strict reading. The
+meaningful cross-document false-familiar number is R2's 31.3%. The ≤35% R1
+target assumed the negatives were unrelated content; they are not. Recorded
+as a target-setting error, not silently retargeted.

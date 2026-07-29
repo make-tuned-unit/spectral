@@ -38,9 +38,15 @@ which CI cross-checks against this document.
   too.**
 - **Verdict layer: zero missed re-encounters in any regime** (`pos_novel = 0`
   across R1–R3) — the engine's conservative direction is false-familiar, never
-  false-novel. The cost is visible in R3: 100% of adversarial pairs read as
-  familiar. Downstream consumers must treat "familiar" as a lead, not a proof
-  — which is precisely why every verdict carries an auditable evidence trail.
+  false-novel. The public benchmark exposed a scale defect in the original
+  thresholds (calibrated at 1.6k memories, near-total false-familiar at 9k);
+  the scale-robust recalibration (min-features + similarity-floor,
+  pre-registered with hard never-miss constraints) cut cross-document
+  false-familiars from 81% to **31.3%** (R2) with zero missed re-encounters.
+  R1's residual high rate is negative-set construction (same-conversation
+  turns, median 0.27 Jaccard vs enrolled), and R3's 100% is the semantic
+  regime nothing distinguishes. "Familiar" remains a lead, not a proof —
+  which is precisely why every verdict carries an auditable evidence trail.
 
 ## What the claims are (and are not)
 
