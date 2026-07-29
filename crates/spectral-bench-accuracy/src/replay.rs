@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 
 use crate::actor::{Actor, AnthropicActor};
-use crate::judge::{AnthropicJudge, Judge};
+use crate::judge::{AnthropicJudge, Judge, OpenAiJudge};
 use crate::report::{EvalReport, QuestionResult};
 use crate::retrieval::QuestionType;
 
@@ -29,12 +29,22 @@ pub struct ReplayConfig {
     pub judge_model: String,
     /// Base URL for API calls.
     pub base_url: String,
+    /// Actor/judge API format: "anthropic" (cloud) or "openai" (local
+    /// OpenAI-compatible server, e.g. ollama — replays run fully on-device,
+    /// $0, against the report's frozen actor contexts).
+    pub actor_api: String,
 }
 
 /// Run the replay.
 pub fn run_replay(config: &ReplayConfig) -> Result<EvalReport> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
+    let is_openai = config.actor_api == "openai";
+    // Local OpenAI-compat servers ignore auth; cloud Anthropic requires it.
+    let api_key = if is_openai {
+        std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| "local".into())
+    } else {
+        std::env::var("ANTHROPIC_API_KEY")
+            .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?
+    };
 
     let mut report: EvalReport =
         crate::report::load_report(&config.report_path).context("loading source report")?;
@@ -64,12 +74,36 @@ pub fn run_replay(config: &ReplayConfig) -> Result<EvalReport> {
         })
         .transpose()?;
 
-    let actor = AnthropicActor::new(
-        api_key.clone(),
-        config.actor_model.clone(),
-        config.base_url.clone(),
-    );
-    let judge = AnthropicJudge::new(api_key, config.judge_model.clone(), config.base_url.clone());
+    let actor = if is_openai {
+        RawActor::OpenAi {
+            api_key: api_key.clone(),
+            model: config.actor_model.clone(),
+            base_url: config.base_url.clone(),
+            client: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .build()
+                .expect("build reqwest client"),
+        }
+    } else {
+        RawActor::Anthropic(AnthropicActor::new(
+            api_key.clone(),
+            config.actor_model.clone(),
+            config.base_url.clone(),
+        ))
+    };
+    let judge: Box<dyn Judge> = if is_openai {
+        Box::new(OpenAiJudge::new(
+            api_key,
+            config.judge_model.clone(),
+            config.base_url.clone(),
+        ))
+    } else {
+        Box::new(AnthropicJudge::new(
+            api_key,
+            config.judge_model.clone(),
+            config.base_url.clone(),
+        ))
+    };
 
     // Count questions to replay
     let replay_count = report
@@ -226,16 +260,65 @@ fn should_replay(result: &QuestionResult, id_filter: Option<&HashSet<String>>) -
     true
 }
 
-/// Call the actor with a pre-built prompt string (bypasses template selection).
-fn call_actor_raw(actor: &AnthropicActor, prompt: &str) -> Result<String> {
-    // Use the Actor trait's answer() with a dummy shape, but we need to
-    // bypass it since we already built the prompt. Use direct API call instead.
-    let body = serde_json::json!({
-        "model": actor.name(),
-        "max_tokens": 4096,
-        "messages": [{"role": "user", "content": prompt}]
-    });
+/// Actor that accepts a pre-built prompt string (bypasses template selection).
+enum RawActor {
+    Anthropic(AnthropicActor),
+    OpenAi {
+        api_key: String,
+        model: String,
+        base_url: String,
+        client: reqwest::blocking::Client,
+    },
+}
 
-    let (text, _usage) = actor.call_raw(&body)?;
-    Ok(text)
+/// Call the actor with a pre-built prompt string (bypasses template selection).
+fn call_actor_raw(actor: &RawActor, prompt: &str) -> Result<String> {
+    match actor {
+        RawActor::Anthropic(a) => {
+            // Pin temperature like the eval path — an unpinned replay adds
+            // sampling noise on top of the prompt delta under test.
+            let body = serde_json::json!({
+                "model": a.name(),
+                "max_tokens": 4096,
+                "temperature": 0,
+                "messages": [{"role": "user", "content": prompt}]
+            });
+            let (text, _usage) = a.call_raw(&body)?;
+            Ok(text)
+        }
+        RawActor::OpenAi {
+            api_key,
+            model,
+            base_url,
+            client,
+        } => {
+            let body = serde_json::json!({
+                "model": model,
+                "max_tokens": 4096,
+                "temperature": 0,
+                "stream": false,
+                "messages": [{"role": "user", "content": prompt}]
+            });
+            let resp = client
+                .post(format!("{base_url}/v1/chat/completions"))
+                .header("authorization", format!("Bearer {api_key}"))
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()?;
+            let status = resp.status();
+            if !status.is_success() {
+                let b = resp.text().unwrap_or_default();
+                return Err(anyhow::anyhow!(
+                    "OpenAI-compat actor returned {}: {}",
+                    status,
+                    b.chars().take(500).collect::<String>()
+                ));
+            }
+            let json: serde_json::Value = resp.json()?;
+            json["choices"][0]["message"]["content"]
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("OpenAI-compat replay response missing content"))
+        }
+    }
 }

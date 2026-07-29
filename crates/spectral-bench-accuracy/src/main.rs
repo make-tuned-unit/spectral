@@ -213,6 +213,12 @@ enum Command {
         /// Base URL for API calls.
         #[arg(long, default_value = "https://api.anthropic.com")]
         base_url: String,
+
+        /// Actor/judge API format: "anthropic" (cloud) or "openai" (local
+        /// OpenAI-compatible server, e.g. ollama at http://127.0.0.1:11434 —
+        /// replays run fully on-device, $0).
+        #[arg(long, default_value = "anthropic")]
+        actor_api: String,
     },
 
     /// Tier-0 retrieval oracle: retrieval-only metrics over the dataset.
@@ -672,6 +678,7 @@ fn main() -> Result<()> {
             actor_model,
             judge_model,
             base_url,
+            actor_api,
         } => {
             let config = spectral_bench_accuracy::replay::ReplayConfig {
                 report_path: report,
@@ -682,6 +689,7 @@ fn main() -> Result<()> {
                 actor_model,
                 judge_model,
                 base_url,
+                actor_api,
             };
             spectral_bench_accuracy::replay::run_replay(&config)?;
         }
