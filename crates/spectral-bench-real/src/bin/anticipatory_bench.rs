@@ -14,10 +14,11 @@ use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RecallTopKConfig};
 use std::path::Path;
 
-fn open(dir: &Path) -> Brain {
+fn open(dir: &Path, anticipatory_recall: bool) -> Brain {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("ontology.toml"), "version = 1\n").unwrap();
     Brain::open(BrainConfig {
+        anticipatory_recall,
         data_dir: dir.to_path_buf(),
         ontology_path: dir.join("ontology.toml"),
         memory_db_path: None,
@@ -33,6 +34,7 @@ fn open(dir: &Path) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -49,7 +51,7 @@ fn recall(brain: &Brain, q: &str) -> Vec<String> {
 fn main() {
     let dir = std::env::temp_dir().join("spectral-anticipatory");
     let _ = std::fs::remove_dir_all(&dir);
-    let brain = open(&dir);
+    let brain = open(&dir, false);
 
     // Memories. A and B are about the same incident but share few query terms;
     // "popular" is a generic status memory that matches many broad queries.
@@ -163,17 +165,17 @@ fn main() {
     // The same anticipation, now folded INTO recall so a consumer gets
     // miss-recovery for free (no manual recommend() composition). Flag-gated,
     // default OFF; appended after the query-matches, visibility-filtered.
-    println!("\n--- in-recall augmentation (SPECTRAL_ANTICIPATORY_RECALL) ---");
-    let show = |label: &str| {
-        let keys = recall(&brain, q);
+    println!("\n--- in-recall augmentation (BrainConfig::anticipatory_recall) ---");
+    let show = |b: &Brain, label: &str| {
+        let keys = recall(b, q);
         let outage = keys.iter().any(|k| k == "deploy-outage");
         println!("  {label:<4} recall({q:?}) => {keys:?}  outage_surfaced={outage}");
     };
-    std::env::remove_var("SPECTRAL_ANTICIPATORY_RECALL");
-    show("OFF");
-    std::env::set_var("SPECTRAL_ANTICIPATORY_RECALL", "1");
-    show("ON");
-    std::env::remove_var("SPECTRAL_ANTICIPATORY_RECALL");
+    show(&brain, "OFF");
+    // Reopen with the lever on (a typed per-brain config field, captured at open).
+    drop(brain);
+    let brain_on = open(&dir, true);
+    show(&brain_on, "ON");
     println!("\n  OFF: query alone misses the postmortem. ON: recall itself surfaces it.");
     println!("  Consumers get anticipatory miss-recovery without composing recommend().");
 }

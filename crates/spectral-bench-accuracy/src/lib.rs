@@ -25,6 +25,7 @@ pub mod compare;
 pub mod consolidate;
 pub mod dataset;
 pub mod describe;
+pub mod env_levers;
 pub mod eval;
 pub mod expansion;
 pub mod ingest;
@@ -39,6 +40,7 @@ pub mod retry;
 
 pub use actor::{Actor, AnthropicActor, MockActor};
 pub use dataset::{Category, Question};
+pub use env_levers::apply_env_levers;
 pub use eval::{AccuracyEval, EvalConfig};
 pub use judge::{AnthropicJudge, GradeResult, Judge, MockJudge};
 pub use report::{EvalReport, QuestionResult, RunStatus};

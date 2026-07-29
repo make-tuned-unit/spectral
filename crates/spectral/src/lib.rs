@@ -875,11 +875,10 @@ impl BrainBuilder {
 
     /// Set the FTS5 tokenizer for the memories full-text index.
     ///
-    /// Default (unset): the `SPECTRAL_FTS_TOKENIZER` env var if present,
-    /// otherwise `"porter unicode61"` — deterministic stemming that bridges
-    /// plural/inflected queries to singular content. Pass `"unicode61"` to
-    /// disable stemming. A brain built with a different tokenizer is
-    /// migrated (one-time FTS index rebuild) on open.
+    /// Default (unset): `"porter unicode61"` — deterministic stemming that
+    /// bridges plural/inflected queries to singular content. Pass
+    /// `"unicode61"` to disable stemming. A brain built with a different
+    /// tokenizer is migrated (one-time FTS index rebuild) on open.
     pub fn fts_tokenizer(mut self, tokenizer: impl Into<String>) -> Self {
         self.fts_tokenizer = Some(tokenizer.into());
         self
@@ -940,6 +939,7 @@ impl BrainBuilder {
             activity_wing: "activity".into(),
             redaction_policy: None,
             tact_config: None,
+            ..Default::default()
         };
 
         let inner = spectral_graph::brain::Brain::open(config)?;

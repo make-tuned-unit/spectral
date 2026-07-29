@@ -110,6 +110,7 @@ fn open(dir: &PathBuf) -> Result<Brain> {
         tact_config: None,
         device_id: None,
         enable_spectrogram: false,
+        ..Default::default()
     })
     .context("open brain")
 }

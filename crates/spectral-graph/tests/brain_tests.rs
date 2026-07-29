@@ -26,6 +26,7 @@ fn brain_config(tmp: &TempDir) -> BrainConfig {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     }
 }
 
@@ -1348,30 +1349,20 @@ fn derivation_health_detects_and_repairs_legacy_gaps() {
     assert!(brain.derivation_health(100).unwrap().is_healthy());
 }
 
-/// Serializes the `SPECTRAL_FTS_FUSION` env window against porter-brain opens.
-/// The store captures the flag from this process-global env at `Brain::open`, so
-/// under parallel tests a porter (fusion-off) brain could open while a fusion
-/// test has the var set and silently become a fusion brain. Every open whose
-/// fusion state must be deterministic holds this lock across `Brain::open`.
-static FTS_FUSION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Open a brain with stemmed+unstemmed fusion active. The store reads
-/// `SPECTRAL_FTS_FUSION` at open and captures the flag, so the env var only
-/// needs to be set across `Brain::open` — recall reads the captured flag, not
-/// the env. The lock keeps that global-env window from leaking into a concurrent
-/// porter open (see [`open_porter_brain`]).
+/// Open a brain with stemmed+unstemmed fusion active. Fusion is a typed
+/// config field ([`BrainConfig::fts_fusion`], formerly the
+/// `SPECTRAL_FTS_FUSION` env var), so parallel tests cannot leak fusion state
+/// into each other — no env window, no lock.
 fn open_fusion_brain(tmp: &TempDir) -> Brain {
-    let _guard = FTS_FUSION_ENV_LOCK.lock().unwrap();
-    std::env::set_var("SPECTRAL_FTS_FUSION", "1");
-    let brain = Brain::open(brain_config(tmp)).unwrap();
-    std::env::remove_var("SPECTRAL_FTS_FUSION");
-    brain
+    Brain::open(BrainConfig {
+        fts_fusion: true,
+        ..brain_config(tmp)
+    })
+    .unwrap()
 }
 
-/// Open a default (porter-only, fusion-off) brain, guarded against a concurrent
-/// fusion test's env window so its fusion state is deterministic.
+/// Open a default (porter-only, fusion-off) brain.
 fn open_porter_brain(tmp: &TempDir) -> Brain {
-    let _guard = FTS_FUSION_ENV_LOCK.lock().unwrap();
     Brain::open(brain_config(tmp)).unwrap()
 }
 
@@ -2205,7 +2196,7 @@ fn anticipatory_recall_augments_query_miss_when_enabled() {
     // A query that keyword-matches only one memory should, with the
     // anticipatory flag ON, also surface a lift-associated memory it MISSED —
     // and leave results unchanged when OFF. Locks the in-recall augmentation
-    // (SPECTRAL_ANTICIPATORY_RECALL) demonstrated in anticipatory_bench.
+    // (`BrainConfig::anticipatory_recall`) demonstrated in anticipatory_bench.
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
 
@@ -2249,7 +2240,6 @@ fn anticipatory_recall_augments_query_miss_when_enabled() {
         v.into_iter().map(|h| h.key).collect()
     };
 
-    std::env::remove_var("SPECTRAL_ANTICIPATORY_RECALL");
     let off = keys(
         brain
             .recall_topk_fts(q, &RecallTopKConfig::default(), Visibility::Private)
@@ -2260,16 +2250,62 @@ fn anticipatory_recall_augments_query_miss_when_enabled() {
         "OFF: query alone matches only kube-deploy, got {off:?}"
     );
 
-    std::env::set_var("SPECTRAL_ANTICIPATORY_RECALL", "1");
+    // The lever is a typed per-brain field captured at open: reopen the same
+    // data dir with it enabled. No env, no cross-test races.
+    drop(brain);
+    let brain_on = Brain::open(BrainConfig {
+        anticipatory_recall: true,
+        ..brain_config(&tmp)
+    })
+    .unwrap();
     let on = keys(
-        brain
+        brain_on
             .recall_topk_fts(q, &RecallTopKConfig::default(), Visibility::Private)
             .unwrap(),
     );
-    std::env::remove_var("SPECTRAL_ANTICIPATORY_RECALL");
     assert!(
         on.contains(&"kube-deploy".to_string()) && on.contains(&"deploy-outage".to_string()),
         "ON: recall should also surface the missed postmortem by anticipation, got {on:?}"
+    );
+}
+
+#[test]
+fn number_normalize_config_field_bridges_digit_to_word() {
+    // Representative typed-lever test: `BrainConfig::number_normalize`
+    // (formerly the SPECTRAL_NUMBER_NORMALIZE env var) must actually change
+    // recall behavior. The ONLY possible bridge between query and content is
+    // 3 -> three; default off = miss, field on = hit.
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    brain
+        .remember(
+            "numbridge",
+            "The household adopted three golden retrievers",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let hit = |b: &Brain| -> bool {
+        b.recall_topk_fts(
+            "3 puppies",
+            &RecallTopKConfig::default(),
+            Visibility::Private,
+        )
+        .unwrap()
+        .iter()
+        .any(|h| h.key == "numbridge")
+    };
+    assert!(!hit(&brain), "default config: no digit/word bridging");
+
+    drop(brain);
+    let brain_nn = Brain::open(BrainConfig {
+        number_normalize: true,
+        ..brain_config(&tmp)
+    })
+    .unwrap();
+    assert!(
+        hit(&brain_nn),
+        "number_normalize: true must bridge '3' to 'three'"
     );
 }
 

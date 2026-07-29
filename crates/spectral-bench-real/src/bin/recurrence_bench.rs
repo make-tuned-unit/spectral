@@ -23,10 +23,11 @@ use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RecallTopKConfig};
 use std::path::Path;
 
-fn open(dir: &Path) -> Brain {
+fn open(dir: &Path, recurrence_feedback: bool) -> Brain {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("ontology.toml"), "version = 1\n").unwrap();
     Brain::open(BrainConfig {
+        recurrence_feedback,
         data_dir: dir.to_path_buf(),
         ontology_path: dir.join("ontology.toml"),
         memory_db_path: None,
@@ -42,6 +43,7 @@ fn open(dir: &Path) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -69,18 +71,13 @@ fn signal_of(brain: &Brain, id: &str) -> f64 {
 }
 
 fn run(flag_on: bool) -> (Option<String>, f64, f64, f64) {
-    if flag_on {
-        std::env::set_var("SPECTRAL_RECURRENCE_FEEDBACK", "1");
-    } else {
-        std::env::remove_var("SPECTRAL_RECURRENCE_FEEDBACK");
-    }
     let dir = std::env::temp_dir().join(if flag_on {
         "spectral-recur-on"
     } else {
         "spectral-recur-off"
     });
     let _ = std::fs::remove_dir_all(&dir);
-    let brain = open(&dir);
+    let brain = open(&dir, flag_on);
 
     // Write the original important fact once, and the control once.
     let oom_id = brain

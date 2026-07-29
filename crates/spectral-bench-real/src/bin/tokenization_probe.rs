@@ -16,11 +16,12 @@ use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RecallTopKConfig};
 use std::path::Path;
 
-fn open(dir: &Path) -> Brain {
+fn open(dir: &Path, number_normalize: bool) -> Brain {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("ontology.toml"), "version = 1\n").unwrap();
     Brain::open(BrainConfig {
+        number_normalize,
         data_dir: dir.to_path_buf(),
         ontology_path: dir.join("ontology.toml"),
         memory_db_path: None,
@@ -36,6 +37,7 @@ fn open(dir: &Path) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -157,7 +159,8 @@ const CASES: &[Case] = &[
 ];
 
 fn main() {
-    let brain = open(&std::env::temp_dir().join("spectral-tokenization-probe"));
+    let dir = std::env::temp_dir().join("spectral-tokenization-probe");
+    let brain = open(&dir, false);
 
     // Distractors so retrieval isn't trivial (answer must actually match).
     for (i, d) in [
@@ -180,19 +183,18 @@ fn main() {
             .unwrap();
     }
 
-    let retrieves = |query: &str, answer_key: &str| -> bool {
-        brain
-            .recall_topk_fts(
-                query,
-                &RecallTopKConfig {
-                    k: 40,
-                    ..Default::default()
-                },
-                Visibility::Private,
-            )
-            .unwrap()
-            .iter()
-            .any(|h| h.key == answer_key)
+    let retrieves = |b: &Brain, query: &str, answer_key: &str| -> bool {
+        b.recall_topk_fts(
+            query,
+            &RecallTopKConfig {
+                k: 40,
+                ..Default::default()
+            },
+            Visibility::Private,
+        )
+        .unwrap()
+        .iter()
+        .any(|h| h.key == answer_key)
     };
 
     println!("=== Tokenization mismatch sweep (default recall path: porter, fusion off) ===");
@@ -204,7 +206,7 @@ fn main() {
         print!("{:<26} ", c.label);
         let mut marks = Vec::new();
         for q in c.queries {
-            let hit = retrieves(q, &key);
+            let hit = retrieves(&brain, q, &key);
             marks.push(format!("{:>1}{:?}", if hit { "✓" } else { "✗" }, q));
             if !hit {
                 misses.push((c.label.to_string(), (*q).to_string()));
@@ -227,19 +229,19 @@ fn main() {
         .unwrap();
     // Query noun ("puppies") is NOT in the content, so the ONLY possible bridge
     // to the answer is 3 -> three.
-    let bridge_hit = |q: &str| retrieves(q, "numbridge");
+    let bridge_hit = |b: &Brain, q: &str| retrieves(b, q, "numbridge");
     println!("\n--- number-word bridging (query '3 puppies' vs content 'three ...retrievers') ---");
-    std::env::remove_var("SPECTRAL_NUMBER_NORMALIZE");
     println!(
         "  OFF: '3 puppies' retrieves answer = {}",
-        bridge_hit("3 puppies")
+        bridge_hit(&brain, "3 puppies")
     );
-    std::env::set_var("SPECTRAL_NUMBER_NORMALIZE", "1");
+    // Reopen with the lever on (a typed per-brain config field, captured at open).
+    drop(brain);
+    let brain_nn = open(&dir, true);
     println!(
         "  ON:  '3 puppies' retrieves answer = {}",
-        bridge_hit("3 puppies")
+        bridge_hit(&brain_nn, "3 puppies")
     );
-    std::env::remove_var("SPECTRAL_NUMBER_NORMALIZE");
 
     println!("\n--- MISSES (answer absent from pool) ---");
     if misses.is_empty() {

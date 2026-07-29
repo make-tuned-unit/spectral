@@ -21,10 +21,7 @@ fn open(dir: &Path, fusion: bool) -> Brain {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("ontology.toml"), "version = 1\n").unwrap();
-    if fusion {
-        std::env::set_var("SPECTRAL_FTS_FUSION", "1");
-    }
-    let brain = Brain::open(BrainConfig {
+    Brain::open(BrainConfig {
         data_dir: dir.to_path_buf(),
         ontology_path: dir.join("ontology.toml"),
         memory_db_path: None,
@@ -40,10 +37,10 @@ fn open(dir: &Path, fusion: bool) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        fts_fusion: fusion,
+        ..Default::default()
     })
-    .unwrap();
-    std::env::remove_var("SPECTRAL_FTS_FUSION");
-    brain
+    .unwrap()
 }
 
 /// Tiny deterministic LCG (reproducible corpus, no external rand).

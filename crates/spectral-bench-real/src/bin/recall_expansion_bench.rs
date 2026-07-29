@@ -2,8 +2,8 @@
 //! putting an answer that was ABSENT from the pool INTO it (not reordering).
 //! Validates the three shipped this arc, together, with no cross-interference:
 //! (1) separator split (default) — `alice@acme.io` matches `alice@acme.io`;
-//! (2) number-word bridge (SPECTRAL_NUMBER_NORMALIZE) — `3` ⇄ `three`;
-//! (3) curated aliases (SPECTRAL_QUERY_ALIASES) — `chief executive` ⇄ `CEO`.
+//! (2) number-word bridge (`BrainConfig::number_normalize`) — `3` ⇄ `three`;
+//! (3) curated aliases (`BrainConfig::query_aliases_path`) — `chief executive` ⇄ `CEO`.
 //! Each query shares NO plain token with its answer except through the lever
 //! under test, so a hit proves the lever fired. Deterministic, $0, no LLM.
 //!
@@ -13,11 +13,13 @@ use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RecallTopKConfig};
 use std::path::Path;
 
-fn open(dir: &Path) -> Brain {
+fn open(dir: &Path, aliases: &Path) -> Brain {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("ontology.toml"), "version = 1\n").unwrap();
     Brain::open(BrainConfig {
+        number_normalize: true,
+        query_aliases_path: Some(aliases.to_path_buf()),
         data_dir: dir.to_path_buf(),
         ontology_path: dir.join("ontology.toml"),
         memory_db_path: None,
@@ -33,13 +35,14 @@ fn open(dir: &Path) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
 
 fn main() {
-    // Env MUST be set before the first recall: the alias table is loaded once
-    // and cached (OnceLock). Write the consumer alias file and point at it.
+    // The alias table is loaded once at Brain::open from
+    // `BrainConfig::query_aliases_path`. Write the consumer alias file first.
     let dir = std::env::temp_dir().join("spectral-recall-expansion");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -50,10 +53,7 @@ fn main() {
         r#"{"executive": ["ceo"], "ceo": ["chief", "executive"], "k8s": ["kubernetes"]}"#,
     )
     .unwrap();
-    std::env::set_var("SPECTRAL_QUERY_ALIASES", &alias_path);
-    std::env::set_var("SPECTRAL_NUMBER_NORMALIZE", "1");
-
-    let brain = open(&dir.join("brain"));
+    let brain = open(&dir.join("brain"), &alias_path);
 
     // Answers share NO plain token with their query except via the lever.
     brain
@@ -131,7 +131,4 @@ fn main() {
 
     println!("\n{pass}/3 expansion levers fired; each moved an answer from absent -> present.");
     println!("Deterministic, $0. These are the recall@K movers (expansion, not reordering).");
-
-    std::env::remove_var("SPECTRAL_QUERY_ALIASES");
-    std::env::remove_var("SPECTRAL_NUMBER_NORMALIZE");
 }

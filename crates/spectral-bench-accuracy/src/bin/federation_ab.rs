@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn brain(dir: &std::path::Path) -> Result<Brain> {
-    Brain::open(BrainConfig {
+    let mut config = BrainConfig {
         data_dir: dir.to_path_buf(),
         ontology_path: PathBuf::from("crates/spectral-graph/tests/fixtures/brain_ontology.toml"),
         memory_db_path: None,
@@ -54,8 +54,10 @@ fn brain(dir: &std::path::Path) -> Result<Brain> {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
-    })
-    .map_err(|e| anyhow::anyhow!("brain open: {e}"))
+        ..Default::default()
+    };
+    spectral_bench_accuracy::apply_env_levers(&mut config);
+    Brain::open(config).map_err(|e| anyhow::anyhow!("brain open: {e}"))
 }
 
 fn parse_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {

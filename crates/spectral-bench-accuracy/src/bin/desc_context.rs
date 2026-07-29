@@ -42,7 +42,7 @@ fn est_tokens(s: &str) -> usize {
 fn open(dir: &std::path::Path) -> Result<Brain> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("ontology.toml"), "version = 1\n")?;
-    Brain::open(BrainConfig {
+    let mut config = BrainConfig {
         data_dir: dir.to_path_buf(),
         ontology_path: dir.join("ontology.toml"),
         memory_db_path: None,
@@ -58,8 +58,10 @@ fn open(dir: &std::path::Path) -> Result<Brain> {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
-    })
-    .context("open brain")
+        ..Default::default()
+    };
+    spectral_bench_accuracy::apply_env_levers(&mut config);
+    Brain::open(config).context("open brain")
 }
 
 fn context_for(brain: &Brain, query: &str, show_desc: bool) -> Result<(Vec<String>, usize)> {

@@ -49,6 +49,7 @@ fn brain_with_llm(tmp: &TempDir, client: Box<dyn LlmClient>) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -70,6 +71,7 @@ fn brain_without_llm(tmp: &TempDir) -> Brain {
         activity_wing: "activity".into(),
         redaction_policy: None,
         tact_config: None,
+        ..Default::default()
     })
     .unwrap()
 }

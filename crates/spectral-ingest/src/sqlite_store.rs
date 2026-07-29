@@ -59,8 +59,8 @@ pub const DEFAULT_READ_POOL_SIZE: usize = 4;
 /// plural/inflected queries to singular content deterministically and at
 /// zero runtime cost — the recall-path complement to Spectral's no-LLM,
 /// no-embedding retrieval commitment. Override via
-/// `SqliteStoreConfig::fts_tokenizer` or the `SPECTRAL_FTS_TOKENIZER` env
-/// var (set to `"unicode61"` or an empty string to disable stemming).
+/// `SqliteStoreConfig::fts_tokenizer` (set to `"unicode61"` or an empty
+/// string to disable stemming).
 pub const DEFAULT_FTS_TOKENIZER: &str = "porter unicode61";
 
 /// Parse a timestamp string (SQLite datetime or RFC3339) to epoch seconds.
@@ -85,8 +85,9 @@ pub struct SqliteStoreConfig {
     pub mmap_size: Option<u64>,
     /// FTS5 tokenizer spec for the memories index (e.g. `"porter unicode61"`).
     ///
-    /// - `None` (default) — fall back to the `SPECTRAL_FTS_TOKENIZER` env var,
-    ///   then to [`DEFAULT_FTS_TOKENIZER`] (`"porter unicode61"`). Porter
+    /// - `None` (default) — fall back to [`DEFAULT_FTS_TOKENIZER`]
+    ///   (`"porter unicode61"`). Formerly the `SPECTRAL_FTS_TOKENIZER` env
+    ///   var; env overrides now live only in the bench harness. Porter
     ///   stemming bridges plural/inflected queries to singular content
     ///   ("doctors" → "doctor") at zero runtime cost; validated Tier-0/Tier-1
     ///   (see docs/internal/ORACLE_TIER0.md, docs/internal/TIER1_RESULTS.md).
@@ -135,7 +136,8 @@ pub struct SqliteStoreConfig {
     ///
     /// Costs a second FTS index (content only, kept in sync by triggers, purged
     /// on delete like the primary), so it is opt-in per the measure-before-
-    /// defaulting discipline. Falls back to `SPECTRAL_FTS_FUSION`. On a
+    /// defaulting discipline. Formerly the `SPECTRAL_FTS_FUSION` env var;
+    /// env overrides now live only in the bench harness. On a
     /// read-only open the fused path is used only if the raw index already
     /// exists in the file (it is never created read-only).
     pub fts_fusion: bool,
@@ -375,13 +377,11 @@ impl SqliteStore {
         })
     }
 
-    /// Whether stemmed+unstemmed fusion is requested: explicit config flag, or
-    /// the `SPECTRAL_FTS_FUSION` env var (`1`/`true`). Default false.
+    /// Whether stemmed+unstemmed fusion is requested: the explicit config
+    /// flag. Default false. (Formerly also the `SPECTRAL_FTS_FUSION` env var;
+    /// env overrides now live only in the bench harness.)
     fn fusion_enabled(config: &SqliteStoreConfig) -> bool {
         config.fts_fusion
-            || std::env::var("SPECTRAL_FTS_FUSION")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
     }
 
     /// Whether the unstemmed fusion index exists in the database file.
@@ -432,16 +432,17 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Resolve the FTS tokenizer: explicit config, then env var, then
+    /// Resolve the FTS tokenizer: explicit config, then
     /// [`DEFAULT_FTS_TOKENIZER`] (porter stemming). The spec is sanitized to
     /// bare words so it can be embedded in a `tokenize = '…'` clause. An
-    /// explicit empty value (config or env) resolves to `None` — no tokenize
-    /// clause, i.e. SQLite's unstemmed unicode61 default.
+    /// explicit empty value resolves to `None` — no tokenize clause, i.e.
+    /// SQLite's unstemmed unicode61 default. (Formerly also the
+    /// `SPECTRAL_FTS_TOKENIZER` env var; env overrides now live only in the
+    /// bench harness.)
     fn resolve_fts_tokenizer(config: &SqliteStoreConfig) -> Option<String> {
         let raw = config
             .fts_tokenizer
             .clone()
-            .or_else(|| std::env::var("SPECTRAL_FTS_TOKENIZER").ok())
             .unwrap_or_else(|| DEFAULT_FTS_TOKENIZER.to_string());
         let safe: String = raw
             .chars()

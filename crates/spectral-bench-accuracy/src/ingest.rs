@@ -44,7 +44,7 @@ pub fn ingest_question(
         std::fs::write(&ontology_path, "version = 1\n")?;
     }
 
-    let brain = Brain::open(BrainConfig {
+    let mut brain_config = BrainConfig {
         data_dir: brain_dir.to_path_buf(),
         ontology_path,
         memory_db_path: None,
@@ -67,7 +67,10 @@ pub fn ingest_question(
             max_results: 20,
             ..TactConfig::default()
         }),
-    })?;
+        ..Default::default()
+    };
+    crate::env_levers::apply_env_levers(&mut brain_config);
+    let brain = Brain::open(brain_config)?;
 
     let sessions = &question.haystack_sessions;
     let session_ids = &question.haystack_session_ids;

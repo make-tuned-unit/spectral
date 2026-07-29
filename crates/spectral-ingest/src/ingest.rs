@@ -23,22 +23,6 @@ const EPISODE_GAP_MINUTES: i64 = 30;
 /// cost flat. Not applied by default — see the field docs for why.
 pub const DEFAULT_MAX_FINGERPRINT_PEERS: usize = 64;
 
-/// Resolve the fingerprint fan-out cap, honouring the
-/// `SPECTRAL_MAX_FINGERPRINT_PEERS` ablation override. `0` restores the
-/// legacy unbounded behaviour; any other value overrides the cap. Follows the
-/// existing `SPECTRAL_*` ablation-knob convention so the default can be
-/// A/B'd without a rebuild.
-fn default_max_fingerprint_peers() -> Option<usize> {
-    match std::env::var("SPECTRAL_MAX_FINGERPRINT_PEERS") {
-        Ok(raw) => match raw.trim().parse::<usize>() {
-            Ok(0) => None,
-            Ok(n) => Some(n),
-            Err(_) => Some(DEFAULT_MAX_FINGERPRINT_PEERS),
-        },
-        Err(_) => Some(DEFAULT_MAX_FINGERPRINT_PEERS),
-    }
-}
-
 /// Configuration for the ingestion pipeline.
 #[derive(Debug, Clone)]
 pub struct IngestConfig {
@@ -49,8 +33,11 @@ pub struct IngestConfig {
     /// Minimum signal_score for fingerprint generation (default 0.5).
     pub signal_threshold: f64,
     /// Maximum number of existing wing peers a new memory is paired with when
-    /// generating constellation fingerprints. `None` (the default) = unbounded,
-    /// matching all previously measured behaviour.
+    /// generating constellation fingerprints. Default
+    /// [`DEFAULT_MAX_FINGERPRINT_PEERS`] (64); `None` = unbounded, the legacy
+    /// behaviour. Formerly the `SPECTRAL_MAX_FINGERPRINT_PEERS` env var
+    /// (`0` = unbounded); env overrides now live only in the bench harness
+    /// (`spectral_bench_accuracy::apply_env_levers`).
     ///
     /// Unbounded pairing is O(peers) per write and O(N^2) in stored rows,
     /// because ~73% of memories classify into the `general` wing and form a
@@ -73,7 +60,7 @@ impl Default for IngestConfig {
             wing_rules: classifier::default_wing_rules(),
             hall_rules: classifier::default_hall_rules(),
             signal_threshold: 0.5,
-            max_fingerprint_peers: default_max_fingerprint_peers(),
+            max_fingerprint_peers: Some(DEFAULT_MAX_FINGERPRINT_PEERS),
         }
     }
 }

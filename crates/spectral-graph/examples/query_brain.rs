@@ -40,6 +40,7 @@ fn main() -> anyhow::Result<()> {
         tact_config: None,
         device_id: None,
         enable_spectrogram: false,
+        ..Default::default()
     })?;
 
     let result = brain.recall(&query, Visibility::Private)?;

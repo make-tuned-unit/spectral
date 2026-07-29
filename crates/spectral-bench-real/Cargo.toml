@@ -41,6 +41,7 @@ path = "src/bin/anticipatory_bench.rs"
 
 [dependencies]
 chrono = { workspace = true }
+spectral-bench-accuracy = { path = "../spectral-bench-accuracy" }
 spectral-core = { path = "../spectral-core" }
 spectral-graph = { path = "../spectral-graph", features = ["spectrogram-legacy"] }
 spectral-spectrogram = { path = "../spectral-spectrogram" }
