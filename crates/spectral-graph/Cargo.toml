@@ -10,7 +10,7 @@ description = "Graph layer for Spectral: SQLite graph storage, ontology canonica
 [dependencies]
 spectral-core = { path = "../spectral-core" }
 spectral-ingest = { path = "../spectral-ingest" }
-spectral-spectrogram = { path = "../spectral-spectrogram" }
+spectral-spectrogram = { path = "../spectral-spectrogram", optional = true }
 spectral-tact = { path = "../spectral-tact" }
 spectral-cascade = { path = "../spectral-cascade" }
 spectral-recognition = { path = "../spectral-recognition" }
@@ -28,6 +28,12 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 # Adjudicator trait errors: mirrors spectral-archivist's Consolidator signature.
 anyhow = { workspace = true }
+
+[features]
+# Spectrogram-as-recall is retired: 0/500 contexts changed in the Tier-0
+# retrieval oracle (docs/internal/ORACLE_TIER0.md). The code paths are kept
+# behind this off-by-default feature for historical experiments only.
+spectrogram-legacy = ["dep:spectral-spectrogram"]
 
 [dev-dependencies]
 anyhow.workspace = true

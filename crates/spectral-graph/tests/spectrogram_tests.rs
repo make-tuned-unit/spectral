@@ -1,3 +1,8 @@
+//! Legacy spectrogram tests. Spectrogram-as-recall is retired (0/500 contexts
+//! changed, ORACLE_TIER0); these only compile with `--features spectrogram-legacy`.
+#![cfg(feature = "spectrogram-legacy")]
+#![allow(deprecated)]
+
 use std::path::PathBuf;
 
 use spectral_core::visibility::Visibility;

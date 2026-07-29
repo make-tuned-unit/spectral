@@ -42,7 +42,7 @@ path = "src/bin/anticipatory_bench.rs"
 [dependencies]
 chrono = { workspace = true }
 spectral-core = { path = "../spectral-core" }
-spectral-graph = { path = "../spectral-graph" }
+spectral-graph = { path = "../spectral-graph", features = ["spectrogram-legacy"] }
 spectral-spectrogram = { path = "../spectral-spectrogram" }
 blake3 = { workspace = true }
 spectral-ingest = { path = "../spectral-ingest", features = ["sqlite"] }

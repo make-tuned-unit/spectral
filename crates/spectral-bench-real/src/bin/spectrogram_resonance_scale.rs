@@ -7,6 +7,7 @@
 //! domains; (2) the MatchTolerances frontier (swept, not guessed); (3) the
 //! per-memory spectrogram write cost. Deterministic, $0, no LLM.
 //! Run: `cargo run -p spectral-bench-real --bin spectrogram_resonance_scale`
+#![allow(deprecated)] // historical experiment: spectrogram-as-recall is retired
 
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy, RememberOpts};
@@ -99,9 +100,9 @@ const REASONS: &[&str] = &[
 ];
 
 fn fill(rng: &mut Lcg, tmpl: &str) -> String {
-    tmpl.replace("{v}", rng.pick(VERBS))
-        .replace("{n}", rng.pick(NOUNS))
-        .replace("{r}", rng.pick(REASONS))
+    tmpl.replace("{v}", rng.pick::<&str>(VERBS))
+        .replace("{n}", rng.pick::<&str>(NOUNS))
+        .replace("{r}", rng.pick::<&str>(REASONS))
 }
 
 fn main() {

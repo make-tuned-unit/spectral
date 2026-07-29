@@ -159,7 +159,10 @@ fn build_corpus() -> Corpus {
     ];
     let mut rng2 = Lcg(0x00BA_D5EE_D999_9000);
     let near_miss: Vec<String> = (0..60)
-        .map(|_| rng2.pick(nm_templates).replace("{s}", rng2.pick(SERVICES)))
+        .map(|_| {
+            rng2.pick(nm_templates)
+                .replace("{s}", rng2.pick::<&str>(SERVICES))
+        })
         .collect();
     Corpus {
         enrolled,
