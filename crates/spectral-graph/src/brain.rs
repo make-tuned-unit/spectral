@@ -1201,7 +1201,13 @@ impl Brain {
     /// Try to resolve a mention from runtime-created entities.
     fn resolve_from_runtime(&self, mention: &str) -> Option<MatchedMention> {
         let lower = mention.to_lowercase();
-        let entities = self.runtime_entities.lock().ok()?;
+        // Recover a poisoned lock — the entity list is append-only, so a
+        // partial state is still valid to read; skipping would miss existing
+        // entities and duplicate them via auto-create.
+        let entities = self
+            .runtime_entities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         entities.iter().find_map(|e| {
             let matches = e.canonical.to_lowercase() == lower
                 || e.aliases.iter().any(|a| a.to_lowercase() == lower);
@@ -1239,15 +1245,18 @@ impl Brain {
         // Persist to ontology file
         self.append_entity_to_ontology(entity_type, canonical, &aliases, visibility)?;
 
-        // Add to runtime entity list
-        if let Ok(mut rt_entities) = self.runtime_entities.lock() {
-            rt_entities.push(crate::ontology::OntologyEntity {
+        // Add to runtime entity list. Recover a poisoned lock — the list's
+        // partial state is still valid to append to; skipping would desync it
+        // from the ontology file and re-create this entity on the next mention.
+        self.runtime_entities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(crate::ontology::OntologyEntity {
                 entity_type: entity_type.to_string(),
                 canonical: canonical.to_string(),
                 aliases: aliases.clone(),
                 visibility,
             });
-        }
 
         Ok(MatchedMention {
             mention: mention.to_string(),
@@ -1261,14 +1270,18 @@ impl Brain {
 
     /// Add an alias to an existing runtime entity.
     fn ensure_alias(&self, canonical: &str, entity_type: &str, alias: &str) -> Result<(), Error> {
-        if let Ok(mut rt_entities) = self.runtime_entities.lock() {
-            if let Some(entity) = rt_entities
-                .iter_mut()
-                .find(|e| e.canonical == canonical && e.entity_type == entity_type)
-            {
-                if !entity.aliases.iter().any(|a| a.eq_ignore_ascii_case(alias)) {
-                    entity.aliases.push(alias.to_string());
-                }
+        // Recover a poisoned lock — the entity list's partial state is still
+        // valid to update; skipping would drop the alias and misresolve it.
+        let mut rt_entities = self
+            .runtime_entities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(entity) = rt_entities
+            .iter_mut()
+            .find(|e| e.canonical == canonical && e.entity_type == entity_type)
+        {
+            if !entity.aliases.iter().any(|a| a.eq_ignore_ascii_case(alias)) {
+                entity.aliases.push(alias.to_string());
             }
         }
         Ok(())
@@ -1442,14 +1455,7 @@ impl Brain {
     ) -> Result<RememberResult, Error> {
         self.ensure_writable("remember_with")?;
         let mut derivation_warnings = Vec::new();
-        let memory_id = format!(
-            "{:016x}",
-            u64::from_be_bytes(
-                blake3::hash(key.as_bytes()).as_bytes()[..8]
-                    .try_into()
-                    .unwrap()
-            )
-        );
+        let memory_id = key_to_id(key);
 
         let vis_str = visibility_to_str(opts.visibility);
         let session_id = opts.session_id.clone();
@@ -2300,14 +2306,7 @@ impl Brain {
 
         // Capture the content before deletion so the verification probe has
         // something to search for; also gives us the id for recognition.
-        let memory_id = format!(
-            "{:016x}",
-            u64::from_be_bytes(
-                blake3::hash(key.as_bytes()).as_bytes()[..8]
-                    .try_into()
-                    .unwrap()
-            )
-        );
+        let memory_id = key_to_id(key);
         let content = self
             .get_memory(&memory_id)?
             .map(|m| m.content)
@@ -3270,16 +3269,9 @@ impl Brain {
         }
 
         // Store original text as memory
-        let memory_key = opts.memory_key.unwrap_or_else(|| {
-            format!(
-                "ingest:{:016x}",
-                u64::from_be_bytes(
-                    blake3::hash(text.as_bytes()).as_bytes()[..8]
-                        .try_into()
-                        .unwrap(),
-                )
-            )
-        });
+        let memory_key = opts
+            .memory_key
+            .unwrap_or_else(|| format!("ingest:{}", key_to_id(text)));
 
         let memory = self.remember_with(
             &memory_key,
@@ -3336,14 +3328,7 @@ impl Brain {
 
             let content = redacted.to_content();
             let signal_score = redacted.compute_signal_score();
-            let memory_id = format!(
-                "{:016x}",
-                u64::from_be_bytes(
-                    blake3::hash(redacted.id.as_bytes()).as_bytes()[..8]
-                        .try_into()
-                        .unwrap()
-                )
-            );
+            let memory_id = key_to_id(&redacted.id);
 
             let memory = spectral_ingest::Memory {
                 id: memory_id,
@@ -4108,6 +4093,29 @@ fn row_to_fingerprint(
         novelty: row.novelty,
         peak_dimensions: serde_json::from_str(&row.peak_dimensions).unwrap_or_default(),
         created_at: Utc::now(),
+    }
+}
+
+#[cfg(test)]
+mod key_to_id_tests {
+    use super::*;
+
+    #[test]
+    fn matches_documented_derivation() {
+        // The id is blake3 of the key, first 8 bytes, as 16 lowercase hex
+        // chars — remember/forget/ingest must all agree or forget orphans.
+        let key = "user:preferences/theme";
+        let expected = format!(
+            "{:016x}",
+            u64::from_be_bytes(
+                blake3::hash(key.as_bytes()).as_bytes()[..8]
+                    .try_into()
+                    .unwrap()
+            )
+        );
+        assert_eq!(key_to_id(key), expected);
+        assert_eq!(key_to_id(key).len(), 16);
+        assert_eq!(key_to_id(key), key_to_id(key), "must be deterministic");
     }
 }
 
