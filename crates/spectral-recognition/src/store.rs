@@ -229,6 +229,24 @@ impl SqliteRecognitionStore {
         Ok(Self { conn })
     }
 
+    /// Physically erase logically-deleted rows from the sidecar file — the
+    /// physical half of forgetting (deletion-guarantees claim D4). The pair /
+    /// gram tables store human-readable feature *labels* that quote verbatim
+    /// fragments of enrolled content, so `forget_memory` alone leaves those
+    /// bytes in free pages and the WAL until this runs. Truncating checkpoint
+    /// first (drops stale WAL frames), then `VACUUM` (drops free pages).
+    pub fn vacuum(&self) -> Result<()> {
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        self.conn.execute_batch("VACUUM")?;
+        // VACUUM in WAL mode writes the rebuilt image through the WAL; a
+        // final checkpoint moves it into the main file so pre-vacuum bytes
+        // do not survive there (deletion-guarantees D4 byte-scan).
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
+    }
+
     fn lookup_table(&self, table: &str, hashes: &[(u64, String)]) -> Result<Vec<FeatureMatch>> {
         if hashes.is_empty() {
             return Ok(Vec::new());

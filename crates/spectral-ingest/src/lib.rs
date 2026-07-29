@@ -158,6 +158,12 @@ pub struct ForgetReceipt {
     pub co_retrieval_pairs: usize,
     /// `retrieval_events` rows scrubbed (JSON referenced this memory id).
     pub retrieval_events: usize,
+    /// `episodes` rows touched: summary previews scrubbed because they were
+    /// derived from this memory's content (a verbatim 200-char prefix), plus
+    /// the episode row itself when this was its last memory. Found by the
+    /// deletion-guarantees D1 schema sweep — previews previously outlived
+    /// the memory they quoted.
+    pub episodes: usize,
     /// `memories_fts` rows removed (via the AFTER DELETE trigger).
     pub fts_rows: usize,
 }

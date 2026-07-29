@@ -2534,6 +2534,42 @@ impl Brain {
         })
     }
 
+    /// Physically erase logically-deleted content from every on-disk substrate
+    /// — the physical half of [`forget`](Self::forget) (deletion-guarantees
+    /// claim D4, the pre-registered API gap).
+    ///
+    /// [`forget`](Self::forget) makes a memory **logically** unreachable
+    /// immediately (no query, probe, or index returns it), but SQLite retains
+    /// the raw bytes in FTS5 segment b-trees, WAL frames, and free pages until
+    /// compaction. Call this after `forget` when erasure must be physical
+    /// (right-to-be-forgotten, disk handover): it runs FTS `'optimize'` +
+    /// truncating WAL checkpoint + `VACUUM` on `memory.db`, `recognition.db`
+    /// (whose pair/gram feature labels quote verbatim content fragments), and
+    /// `graph.sqlite`. After it returns, a byte-scan of those files must not
+    /// find deleted content — enforced by
+    /// `crates/spectral-graph/tests/deletion_guarantees.rs` (claim D4).
+    ///
+    /// Blocking and O(store size); intended for explicit deletion flows, not
+    /// the hot path.
+    pub fn vacuum(&self) -> Result<(), Error> {
+        self.ensure_writable("vacuum")?;
+        self.sqlite
+            .vacuum()
+            .map_err(|e| Error::Schema(format!("memory store vacuum: {e}")))?;
+        {
+            let engine = self
+                .recognition
+                .lock()
+                .map_err(|e| Error::Schema(format!("recognition lock poisoned: {e}")))?;
+            engine
+                .store()
+                .vacuum()
+                .map_err(|e| Error::Schema(format!("recognition vacuum: {e}")))?;
+        }
+        self.store.vacuum()?;
+        Ok(())
+    }
+
     /// List consolidation edges, optionally filtered to a specific target.
     pub fn list_consolidated(
         &self,

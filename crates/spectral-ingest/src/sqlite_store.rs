@@ -1194,6 +1194,44 @@ impl SqliteStore {
     pub(crate) fn invalidate_wing_cache(&self) {
         wing_cache_clear(&self.wing_cache);
     }
+
+    /// Physically erase logically-deleted content from the database file — the
+    /// physical half of "verified forgetting" (deletion-guarantees claim D4).
+    ///
+    /// A hard delete ([`MemoryStore::delete_memory_by_key`]) makes content
+    /// **logically** unreachable immediately, but SQLite retains the raw bytes
+    /// in three places until compaction:
+    /// 1. FTS5 segment b-trees — the `'delete'` command marks entries dead;
+    ///    the term bytes stay in older segments until a merge (`'optimize'`).
+    /// 2. The WAL file — old frames persist until a truncating checkpoint.
+    /// 3. Free pages in the main file — reclaimed only by `VACUUM`.
+    ///
+    /// This runs all three, in that order. After it returns, a byte-scan of
+    /// the `.db`/`-wal` files must not find deleted content (enforced by
+    /// `deletion_guarantees.rs`, claim D4). Blocking and O(db size); intended
+    /// for explicit right-to-be-forgotten flows, not the hot path.
+    pub fn vacuum(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        // Merge FTS5 segments so logically-deleted term entries are dropped
+        // from the index b-trees before the file is rewritten.
+        conn.execute_batch("INSERT INTO memories_fts(memories_fts) VALUES('optimize')")?;
+        if Self::fusion_index_present(&conn) {
+            conn.execute_batch(
+                "INSERT INTO memories_fts_raw(memories_fts_raw) VALUES('optimize')",
+            )?;
+        }
+        // Truncate the WAL (drops old frames containing pre-delete pages),
+        // then rebuild the main file (drops free pages). wal_checkpoint is a
+        // statement returning a row; VACUUM must run outside a transaction.
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        conn.execute_batch("VACUUM")?;
+        // In WAL mode, VACUUM writes the rebuilt image through the WAL — the
+        // main file keeps its pre-vacuum pages until a checkpoint moves the
+        // new image in and truncates. Without this final checkpoint the
+        // deleted bytes survive in the main file (caught by the D4 byte-scan).
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
+    }
 }
 
 /// Drop a single wing's cached entry (a mutation confined to one known wing).
@@ -2280,15 +2318,16 @@ impl MemoryStore for SqliteStore {
         Box::pin(async move {
             use rusqlite::OptionalExtension;
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            // Resolve the memory id (FK-CASCADE substrates key on id).
-            let id: Option<String> = conn
+            // Resolve the memory id (FK-CASCADE substrates key on id), plus the
+            // content and episode for the episode-preview scrub below.
+            let row: Option<(String, String, Option<String>)> = conn
                 .query_row(
-                    "SELECT id FROM memories WHERE key = ?1",
+                    "SELECT id, content, episode_id FROM memories WHERE key = ?1",
                     params![key],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
-            let Some(id) = id else {
+            let Some((id, content, episode_id)) = row else {
                 return Ok(ForgetReceipt::default());
             };
 
@@ -2341,11 +2380,45 @@ impl MemoryStore for SqliteStore {
                 params![id_needle],
             )?;
 
+            // Episode previews quote a verbatim 200-char prefix of a member
+            // memory's content (`ingest`), so a preview derived from this
+            // memory must not outlive it (deletion-guarantees claim D1 —
+            // this was the substrate the schema sweep caught unwired). Scrub
+            // ANY episode whose preview is a prefix of the deleted content;
+            // the preview is best-effort UX and NULL is the fail-safe value.
+            receipt.episodes = tx.execute(
+                "UPDATE episodes SET summary_preview = NULL, updated_at = datetime('now')
+                 WHERE summary_preview IS NOT NULL AND summary_preview <> ''
+                   AND instr(?1, summary_preview) = 1",
+                params![content],
+            )?;
+
             // The row delete cascades any FK substrates created before the
             // explicit scrubs above (idempotent — already emptied) and fires
             // the FTS AFTER DELETE trigger.
             receipt.memory_rows =
                 tx.execute("DELETE FROM memories WHERE key = ?1", params![key])?;
+
+            // Keep the deleted memory's episode row honest: drop it when this
+            // was its last memory, otherwise recount. (After the row delete so
+            // the remaining-member count is exact.)
+            if let Some(ep) = episode_id.as_deref() {
+                let dropped = tx.execute(
+                    "DELETE FROM episodes WHERE id = ?1
+                       AND NOT EXISTS (SELECT 1 FROM memories WHERE episode_id = ?1)",
+                    params![ep],
+                )?;
+                receipt.episodes += dropped;
+                if dropped == 0 {
+                    tx.execute(
+                        "UPDATE episodes SET
+                            memory_count = (SELECT COUNT(*) FROM memories WHERE episode_id = ?1),
+                            updated_at = datetime('now')
+                         WHERE id = ?1",
+                        params![ep],
+                    )?;
+                }
+            }
             tx.commit()?;
             drop(conn);
 
