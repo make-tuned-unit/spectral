@@ -150,6 +150,19 @@ impl GraphStore {
             .map_err(|_| Error::Schema("graph store mutex poisoned".into()))
     }
 
+    /// Physically erase logically-deleted rows from the graph database file
+    /// (deletion-guarantees claim D4): truncating WAL checkpoint, then
+    /// `VACUUM`. Part of `Brain::vacuum`.
+    pub(crate) fn vacuum(&self) -> Result<(), Error> {
+        let conn = self.lock()?;
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        conn.execute_batch("VACUUM")?;
+        // In WAL mode the vacuumed image lands in the WAL; checkpoint it
+        // into the main file (D4 byte-scan).
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
+    }
+
     /// Insert or update an entity. Idempotent on EntityId. Preserves an existing
     /// description (that is owned by `set_entity_description`).
     pub fn upsert_entity(&self, entity: &Entity) -> Result<(), Error> {

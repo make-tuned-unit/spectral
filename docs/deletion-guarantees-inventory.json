@@ -1,0 +1,26 @@
+{
+  "doc": "docs/DELETION_GUARANTEES.md",
+  "test_file": "crates/spectral-graph/tests/deletion_guarantees.rs",
+  "prereg": "docs/internal/deletion-guarantees-prereg-2026-07-29.md",
+  "claims": {
+    "D1": [
+      "d1_schema_derived_substrate_sweep_is_clean_after_forget"
+    ],
+    "D2": [
+      "d2_sabotaged_deletion_is_detected_by_probes"
+    ],
+    "D3": [
+      "d3a_fts_phrase_and_prefix_find_nothing_after_forget",
+      "d3b_recognition_rejects_verbatim_and_degraded_reencounter",
+      "d3c_graph_substrate_carries_no_memory_residue",
+      "d3d_associative_paths_from_neighbors_exclude_forgotten"
+    ],
+    "D4": [
+      "d4_physical_bytes_absent_after_forget_and_vacuum"
+    ],
+    "D5": [
+      "d5_federation_tombstone_blocks_resurrection_across_sync_rounds",
+      "d5_scope_plain_forget_is_single_brain_only"
+    ]
+  }
+}
