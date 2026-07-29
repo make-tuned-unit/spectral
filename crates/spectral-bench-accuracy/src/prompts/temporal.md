@@ -8,6 +8,7 @@ Instructions:
 3. When information appears partial across sessions, attempt synthesis from the available evidence rather than saying "I don't know." Only respond with "I don't know" when no session contains relevant content for the question.
 4. Answer concisely. State the date(s) or duration.
 
+
 Memories:
 {memories_text}
 
