@@ -92,6 +92,10 @@ pub enum OutcomeClass {
     TransportFailure,
     /// Hit a non-retryable auth/validation error (401/403/400).
     AuthFailure,
+    /// Judge returned unparseable output after retries — the answer was never
+    /// validly graded, so the question is excluded from accuracy (previously
+    /// this was silently recorded as an ordinary wrong answer).
+    JudgeParseFailure,
 }
 
 /// Whether the eval run completed or halted early.
@@ -181,6 +185,10 @@ pub struct EvalReport {
     /// silently inheriting each other's results.
     #[serde(default)]
     pub config_fingerprint: String,
+    /// Fingerprint of the judge grading rubrics in effect for this run.
+    /// Reports with different rubric fingerprints are not comparable.
+    #[serde(default)]
+    pub judge_rubric_fingerprint: String,
     pub total_questions: usize,
     pub correct: usize,
     pub overall_accuracy: f64,
@@ -196,6 +204,10 @@ pub struct EvalReport {
     /// Questions lost to auth failures (excluded from accuracy).
     #[serde(default)]
     pub auth_failures: usize,
+    /// Questions whose grading never produced parseable judge output
+    /// (excluded from accuracy).
+    #[serde(default)]
+    pub judge_parse_failures: usize,
     pub per_category: HashMap<String, CategoryStats>,
     /// Detailed per-question results.
     pub results: Vec<QuestionResult>,
@@ -220,6 +232,7 @@ impl EvalReport {
             judge_name: judge_name.into(),
             retrieval_path: "tact".into(),
             config_fingerprint: String::new(),
+            judge_rubric_fingerprint: String::new(),
             total_questions: 0,
             correct: 0,
             overall_accuracy: 0.0,
@@ -227,6 +240,7 @@ impl EvalReport {
             recovered_after_retry: 0,
             transport_failures: 0,
             auth_failures: 0,
+            judge_parse_failures: 0,
             per_category: HashMap::new(),
             results: Vec::new(),
             run_status: RunStatus::Completed,
@@ -279,6 +293,9 @@ impl EvalReport {
             }
             OutcomeClass::AuthFailure => {
                 self.auth_failures += 1;
+            }
+            OutcomeClass::JudgeParseFailure => {
+                self.judge_parse_failures += 1;
             }
         }
 
@@ -334,8 +351,11 @@ impl EvalReport {
     pub fn finalize(&mut self) {
         self.completed_at = Utc::now();
         self.duration_seconds = (self.completed_at - self.started_at).num_seconds() as u64;
-        // Accuracy denominator excludes transport/auth failures
-        let evaluated = self.total_questions - self.transport_failures - self.auth_failures;
+        // Accuracy denominator excludes transport/auth/judge-parse failures
+        let evaluated = self.total_questions
+            - self.transport_failures
+            - self.auth_failures
+            - self.judge_parse_failures;
         self.overall_accuracy = if evaluated > 0 {
             self.correct as f64 / evaluated as f64
         } else {
@@ -368,7 +388,10 @@ impl EvalReport {
             "Actor: {}  |  Judge: {}",
             self.actor_name, self.judge_name
         ));
-        let evaluated = self.total_questions - self.transport_failures - self.auth_failures;
+        let evaluated = self.total_questions
+            - self.transport_failures
+            - self.auth_failures
+            - self.judge_parse_failures;
         lines.push(format!(
             "Overall: {}/{} ({:.1}%)",
             self.correct,
@@ -376,10 +399,15 @@ impl EvalReport {
             self.overall_accuracy * 100.0
         ));
         lines.push(format!("Duration: {}s", self.duration_seconds));
-        if self.transport_failures > 0 || self.auth_failures > 0 || self.recovered_after_retry > 0 {
+        if self.transport_failures > 0
+            || self.auth_failures > 0
+            || self.recovered_after_retry > 0
+            || self.judge_parse_failures > 0
+        {
             lines.push(format!(
-                "Reliability: {} clean, {} recovered, {} transport failures, {} auth failures",
-                self.clean, self.recovered_after_retry, self.transport_failures, self.auth_failures
+                "Reliability: {} clean, {} recovered, {} transport failures, {} auth failures, {} judge parse failures",
+                self.clean, self.recovered_after_retry, self.transport_failures, self.auth_failures,
+                self.judge_parse_failures
             ));
         }
         lines.push(String::new());
@@ -558,9 +586,15 @@ fn compute_efficiency_aggregate_refs(results: &[&QuestionResult]) -> EfficiencyA
 }
 
 /// Save a report to JSON.
+///
+/// Atomic: writes to a temp file in the same directory, then renames over the
+/// target — a crash mid-write must not corrupt an existing checkpoint (the
+/// checkpoint is the only record of paid progress).
 pub fn save_report(report: &EvalReport, path: &std::path::Path) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(report)?;
-    std::fs::write(path, json)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 

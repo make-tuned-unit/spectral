@@ -170,6 +170,35 @@ impl AccuracyEval {
         self
     }
 
+    /// Config fingerprint: a checkpoint may only be resumed by a run with
+    /// the SAME configuration. Covers the FULL EvalConfig (dataset,
+    /// retrieval config, ingest strategy, question filters), the actor and
+    /// judge identities, the expansion config, the judge rubric text, and
+    /// all SPECTRAL_* env levers — two arms of an A/B comparison sharing a
+    /// work_dir must never inherit each other's results (this silently
+    /// produced identical A/B arms before the fingerprint existed).
+    fn config_fingerprint(&self) -> String {
+        let mut env_levers: Vec<String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("SPECTRAL_"))
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        env_levers.sort();
+        let config_json = serde_json::to_string(&self.config).unwrap_or_default();
+        blake3::hash(
+            format!(
+                "{config_json}|{}|{}|{:?}|{}|{}",
+                self.actor.name(),
+                self.judge.name(),
+                self.expansion,
+                crate::judge::rubric_fingerprint(),
+                env_levers.join(",")
+            )
+            .as_bytes(),
+        )
+        .to_hex()
+        .to_string()
+    }
+
     /// Run the full evaluation.
     pub fn run(&self) -> Result<EvalReport> {
         let questions_all = crate::dataset::load_dataset(&self.config.dataset_path)?;
@@ -189,37 +218,19 @@ impl AccuracyEval {
             RetrievalPath::Cascade => "cascade",
         };
         let checkpoint_path = self.config.work_dir.join("checkpoint.json");
-        // Config fingerprint: a checkpoint may only be resumed by a run with
-        // the SAME configuration. Includes the question filter, routing, and
-        // all SPECTRAL_* env levers — two arms of an A/B comparison sharing a
-        // work_dir must never inherit each other's results (this silently
-        // produced identical A/B arms before the fingerprint existed).
-        let mut env_levers: Vec<String> = std::env::vars()
-            .filter(|(k, _)| k.starts_with("SPECTRAL_"))
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-        env_levers.sort();
-        let config_fingerprint = blake3::hash(
-            format!(
-                "{:?}|{retrieval_path_label}|{}|{:?}|{}",
-                self.config.question_id,
-                self.config.use_cascade,
-                self.config.retrieval_path_override,
-                env_levers.join(",")
-            )
-            .as_bytes(),
-        )
-        .to_hex()
-        .to_string();
+        let judge_rubric_fingerprint = crate::judge::rubric_fingerprint();
+        let config_fingerprint = self.config_fingerprint();
         // Resume: if a checkpoint exists for this work-dir, continue from it
         // rather than restarting at question 0. The loaded report carries the
         // prior per-question results and counters; completed questions are
         // skipped below and remain in the final report.
         let mut report = match crate::report::load_report(&checkpoint_path) {
+            // A checkpoint with a missing or mismatched fingerprint is NOT
+            // resumable. (An empty fingerprint — pre-fingerprint legacy
+            // checkpoint — used to be allowed through; that hole let a
+            // checkpoint of unknown configuration masquerade as this run's.)
             Ok(existing)
                 if !existing.results.is_empty()
-                    // Empty fingerprint = legacy checkpoint: allow resume.
-                    && !existing.config_fingerprint.is_empty()
                     && existing.config_fingerprint != config_fingerprint =>
             {
                 eprintln!(
@@ -250,6 +261,7 @@ impl AccuracyEval {
             }
         };
         report.config_fingerprint = config_fingerprint;
+        report.judge_rubric_fingerprint = judge_rubric_fingerprint;
         let pb = ProgressBar::new(questions.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -377,7 +389,11 @@ impl AccuracyEval {
             // question in flight). Consumed by the resume path above.
             let mut cp = report.clone();
             cp.finalize();
-            let _ = crate::report::save_report(&cp, &checkpoint_path);
+            // A failed checkpoint write silently discards paid progress on a
+            // crash — never swallow it.
+            if let Err(e) = crate::report::save_report(&cp, &checkpoint_path) {
+                eprintln!("[WARN] checkpoint save failed: {e}");
+            }
         }
 
         pb.finish_with_message("done");
@@ -622,6 +638,14 @@ candidate set, then verify against the raw sessions below) ===\n{atoms}"
                 eprintln!("[TRANSPORT] {} judge: {error}", question.question_id);
                 total_retries += retry_count;
                 let _ = std::fs::remove_dir_all(&brain_dir);
+                // Unparseable judge output (after retries) is its own class:
+                // the answer exists but was never validly graded, so it must
+                // be excluded from accuracy, not scored incorrect.
+                let outcome_class = if error.contains("judge parse failure") {
+                    crate::report::OutcomeClass::JudgeParseFailure
+                } else {
+                    crate::report::OutcomeClass::TransportFailure
+                };
                 return Ok(SingleResult {
                     correct: false,
                     predicted,
@@ -633,7 +657,7 @@ candidate set, then verify against the raw sessions below) ===\n{atoms}"
                     cascade_telemetry,
                     strategy_telemetry,
                     retry_count: total_retries,
-                    outcome_class: crate::report::OutcomeClass::TransportFailure,
+                    outcome_class,
                     actor_context: actor_context.clone(),
                     efficiency: None,
                 });
@@ -1087,8 +1111,8 @@ mod tests {
             None,
         );
         pre.finalize();
-        crate::report::save_report(&pre, &work.join("checkpoint.json")).unwrap();
 
+        let checkpoint_path = work.join("checkpoint.json");
         let config = EvalConfig {
             dataset_path: ds_path,
             work_dir: work,
@@ -1100,6 +1124,10 @@ mod tests {
             Box::new(MockActor::new("freshly-run answer")),
             Box::new(MockJudge::always_pass()),
         );
+        // The checkpoint must carry this run's fingerprint to be resumable —
+        // unfingerprinted (legacy) checkpoints are refused.
+        pre.config_fingerprint = eval.config_fingerprint();
+        crate::report::save_report(&pre, &checkpoint_path).unwrap();
         let report = eval.run().unwrap();
 
         // Both questions present exactly once.
