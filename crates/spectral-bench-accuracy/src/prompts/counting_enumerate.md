@@ -11,6 +11,8 @@ Instructions:
 6. All retrieved memories are about you across multiple sessions. Different session IDs do not mean different users.
 7. When information appears partial across sessions, attempt synthesis from the available evidence rather than saying "I don't know." Only respond with "I don't know" when no session contains relevant content for the question.
 8. State the final count and list every item. If your scan found hints of additional items you cannot confirm, note this uncertainty.
+9. **Disposal boundary.** An item counts as currently owned/held UNLESS its disposal (sale, gift, loss, discard) is explicitly CONFIRMED as completed. An item merely listed for sale, considered for sale, or in the process of being sold STILL COUNTS — do not exclude it on intent alone.
+10. **Do the arithmetic.** If the question asks for a derived number (price per unit, average, total across categories) and the evidence provides the components (e.g. a total and a quantity), COMPUTE it explicitly. Never answer "cannot be determined" when the needed values are present and the arithmetic is elementary. If one component is genuinely absent, state the partial figure you can compute and name exactly what is missing.
 
 Memories:
 {memories_text}
