@@ -2959,13 +2959,24 @@ impl MemoryStore for SqliteStore {
                     d.delivered_at
                 ],
             )?;
-            for (rank, memory_id, memory_key) in &d.members {
-                tx.execute(
+            {
+                // Prepare ONCE and reuse. A `tx.execute` per member re-parses
+                // and re-plans the statement for every row; at k=40 members per
+                // turn that dominated the delivery write and doubled recall p95
+                // (measured — see docs/internal/turn-latency-gate-2026-07-31.md).
+                let mut stmt = tx.prepare_cached(
                     "INSERT OR IGNORE INTO turn_members \
                         (occurrence_id, rank, memory_id, memory_key, outcome) \
                      VALUES (?1, ?2, ?3, ?4, 'unreported')",
-                    params![d.occurrence_id, *rank as i64, memory_id, memory_key],
                 )?;
+                for (rank, memory_id, memory_key) in &d.members {
+                    stmt.execute(params![
+                        d.occurrence_id,
+                        *rank as i64,
+                        memory_id,
+                        memory_key
+                    ])?;
+                }
             }
             tx.commit()?;
             Ok(())

@@ -93,7 +93,12 @@ integration gate).
 3. **Systems kill line.** Recall-only p95 may regress by at most 5% versus the
    legacy path; combined recall+recognition p95 must not exceed today's two
    sequential calls. If exceeded, keep the APIs typed but do **not** fuse
-   execution. *(Not yet measured — see Open below.)*
+   execution.
+   **MEASURED 2026-07-31 — FAILED (+100.1% / +101.6% recall-only p95, kill line
+   +5%).** Rule honoured: `turn` is NOT recommended as the default recall path.
+   Notably p50 *improved* (-19%) — removing inline write-back made the median
+   faster; the regression is entirely the synchronous delivery-write tail. See
+   `docs/internal/turn-latency-gate-2026-07-31.md`.
 4. **No adaptive or recognition-value claim ships** until production outcomes
    include **both polarities**. A corpus of only-positive outcomes cannot
    distinguish a working feedback loop from a popularity loop, which is the
@@ -115,8 +120,11 @@ integration gate).
 
 ## Open / deferred
 
-- **Latency (rule 3) is not yet measured.** Must be run before the contract is
-  recommended to Permagent as the default path.
+- ~~**Latency (rule 3) is not yet measured.**~~ **MEASURED, FAILED** — see
+  decision rule 3 above. The contract must not be recommended to Permagent as
+  the default recall path. Making the delivery write deferrable (mirroring
+  `async_writeback`) is the candidate fix, but it trades durability for latency
+  and needs its own prereg — it was deliberately not attempted here.
 - ~~**Durable receipts deferred.**~~ **BUILT 2026-07-30 (same day).** The
   deferral reasoning — "auditability, not behavior" — was **wrong**. Without
   the ledger, `Wrong` and `Ignored` exist only in a returned `OutcomeReceipt`
@@ -231,7 +239,6 @@ content-addressed shape.
   are diluted by legacy exposure events. Independently flagged by both
   reviewers. Must be filtered before any outcome-credited co-retrieval is
   evaluated, or a null result is uninterpretable.
-- Latency kill-line (recall p95 ≤ +5%) still unmeasured.
 - Bench harness still not rewired through `spectral::Brain`.
 
 ## Anti-recommendations recorded (from the same review)

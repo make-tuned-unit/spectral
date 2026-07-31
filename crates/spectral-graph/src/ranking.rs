@@ -32,6 +32,11 @@ pub fn apply_signal_score_weight(candidates: &mut [MemoryHit], weight: f64) {
         b.signal_score
             .partial_cmp(&a.signal_score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            // Deterministic tiebreak. Without it, equal scores preserve input
+            // order, and input order comes from SQLite — which gives no
+            // guarantee for rows with equal rank. That made repeated identical
+            // runs emit the same hits in different order.
+            .then_with(|| a.id.cmp(&b.id))
     });
 }
 
@@ -61,6 +66,11 @@ pub fn apply_recency_weight(candidates: &mut [MemoryHit], half_life_days: f64, n
         b.signal_score
             .partial_cmp(&a.signal_score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            // Deterministic tiebreak. Without it, equal scores preserve input
+            // order, and input order comes from SQLite — which gives no
+            // guarantee for rows with equal rank. That made repeated identical
+            // runs emit the same hits in different order.
+            .then_with(|| a.id.cmp(&b.id))
     });
 }
 
@@ -106,6 +116,11 @@ pub fn boost_entity_clusters(candidates: &mut [MemoryHit], boost_factor: f64) {
         b.signal_score
             .partial_cmp(&a.signal_score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            // Deterministic tiebreak. Without it, equal scores preserve input
+            // order, and input order comes from SQLite — which gives no
+            // guarantee for rows with equal rank. That made repeated identical
+            // runs emit the same hits in different order.
+            .then_with(|| a.id.cmp(&b.id))
     });
 }
 
@@ -162,6 +177,11 @@ pub fn dedup_context_chains(mut candidates: Vec<MemoryHit>) -> Vec<MemoryHit> {
         b.signal_score
             .partial_cmp(&a.signal_score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            // Deterministic tiebreak. Without it, equal scores preserve input
+            // order, and input order comes from SQLite — which gives no
+            // guarantee for rows with equal rank. That made repeated identical
+            // runs emit the same hits in different order.
+            .then_with(|| a.id.cmp(&b.id))
     });
 
     let mut seen_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -427,7 +447,12 @@ pub fn apply_reranking_pipeline(
     // what the prior `(usize, f64)` sort produced — but with zero deep clones of
     // the candidate bodies (`candidates` is owned and unused after this).
     let mut indexed: Vec<(MemoryHit, f64)> = candidates.into_iter().zip(scores).collect();
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    indexed.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // Deterministic tiebreak on memory id — see the note above.
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
     let mut sorted: Vec<MemoryHit> = indexed
         .into_iter()
         .map(|(mut hit, score)| {
