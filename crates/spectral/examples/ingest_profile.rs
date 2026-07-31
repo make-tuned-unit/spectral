@@ -18,8 +18,29 @@
 //!
 //! Run: `cargo run -p spectral --release --example ingest_profile [N]`
 //!
+//! # Measure WARM, and more than once
+//!
 //! Release mode matters — debug numbers are not comparable to the Phase 0
-//! figures, which were release.
+//! figures, which were release. **So does machine state.** The first published
+//! numbers from this tool were taken immediately after a cold ~8-minute
+//! compile and were inflated ~2.8x by disk contention and thermal state
+//! (2.736 ms/write warm was reported as 7.66 ms). They were a single run with
+//! no stability check.
+//!
+//! This binary now discards a warm-up pass before timing, but that does not
+//! substitute for judgement: **run it at least twice, on an otherwise idle
+//! machine, and treat runs that disagree by more than ~15% as unusable.**
+//!
+//! Reference figures, warm, n=400 release, on an M-series mac at commit
+//! 3005186 (see `docs/internal/ingest-cost-profile-2026-07-31.md`):
+//!
+//! | layer | ms/write | ev/s |
+//! |---|---|---|
+//! | store, no fingerprints | ~0.20 | ~5,000 |
+//! | store floor | ~1.1-1.3 | ~800-920 |
+//! | full `Brain::remember` | ~2.3-2.7 | ~365-430 |
+//!
+//! Ratios travel between machines; absolute numbers do not.
 
 use std::time::{Duration, Instant};
 
@@ -71,8 +92,20 @@ fn rate(n: usize, elapsed: Duration) -> f64 {
     n as f64 / elapsed.as_secs_f64()
 }
 
+/// Writes discarded before timing starts, to absorb first-touch costs (page
+/// cache, WAL creation, allocator warm-up) that otherwise land entirely in Q1
+/// and inflate the whole run. Keyed into the same id space, so the timed
+/// writes still operate against a non-empty store.
+const WARMUP_WRITES: usize = 25;
+
 /// Time `n` writes, returning total elapsed and per-quartile elapsed.
+///
+/// Runs — and discards — [`WARMUP_WRITES`] iterations first. This does not make
+/// the measurement immune to a loaded machine: see the module docs.
 fn timed_quartiles<F: FnMut(usize)>(n: usize, mut write: F) -> (Duration, Vec<Duration>) {
+    for i in 0..WARMUP_WRITES {
+        write(usize::MAX - i);
+    }
     let q = (n / 4).max(1);
     let mut quartiles = Vec::new();
     let overall = Instant::now();
