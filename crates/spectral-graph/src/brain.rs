@@ -3412,6 +3412,83 @@ impl Brain {
         }
     }
 
+    /// Commit the outcome of a completed turn: reinforce exactly the memories
+    /// the caller reports having used, and log a retrieval event whose member
+    /// set is that same used set.
+    ///
+    /// This is the deferred counterpart to [`Self::write_back`]. `write_back`
+    /// fires at retrieval time and credits every returned hit — exposure, not
+    /// usefulness. This runs after the actor has finished and credits only what
+    /// mattered, so co-access mining and signal scores learn from outcomes.
+    ///
+    /// Synchronous and error-returning (unlike the best-effort write-back): an
+    /// outcome commit is the caller's durable record, so a failure must surface.
+    /// Reinforcement is additive and clamped, so replaying the same commit is
+    /// safe but not a no-op; callers needing exactly-once must dedupe on the
+    /// receipt id.
+    pub fn commit_outcome(
+        &self,
+        used_keys: Vec<String>,
+        event: spectral_ingest::RetrievalEvent,
+        strength: f64,
+    ) -> Result<(), Error> {
+        self.ensure_writable("commit_outcome")?;
+        let store = &self.memory_store;
+        self.rt.block_on(async move {
+            if !used_keys.is_empty() {
+                store
+                    .reinforce_batch(&used_keys, strength)
+                    .await
+                    .map_err(|e| Error::Schema(e.to_string()))?;
+            }
+            store
+                .log_retrieval_event(&event)
+                .await
+                .map_err(|e| Error::Schema(e.to_string()))
+        })
+    }
+
+    /// Record a turn delivery in the outcome ledger.
+    pub fn record_turn_delivery(
+        &self,
+        delivery: &spectral_ingest::TurnDelivery,
+    ) -> Result<(), Error> {
+        self.ensure_writable("record_turn_delivery")?;
+        self.rt
+            .block_on(self.memory_store.record_turn_delivery(delivery))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Commit turn outcomes and reinforce `Used` members atomically.
+    /// Returns the number of members whose outcome changed (0 on replay).
+    pub fn commit_turn_outcomes(
+        &self,
+        occurrence_id: &str,
+        outcomes: &[(String, spectral_ingest::LedgerOutcome)],
+        reinforce_strength: f64,
+    ) -> Result<usize, Error> {
+        self.ensure_writable("commit_turn_outcomes")?;
+        let now = Utc::now().to_rfc3339();
+        self.rt
+            .block_on(self.memory_store.commit_turn_outcomes(
+                occurrence_id,
+                outcomes,
+                reinforce_strength,
+                &now,
+            ))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Aggregated delivery/use evidence per memory, most-delivered first.
+    pub fn memory_outcome_evidence(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<spectral_ingest::MemoryOutcomeEvidence>, Error> {
+        self.rt
+            .block_on(self.memory_store.memory_outcome_evidence(limit))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// Log a retrieval event (best-effort). Failures are silently ignored.
     pub(crate) fn log_retrieval_event(
         &self,
