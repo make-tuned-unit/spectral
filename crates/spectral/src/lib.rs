@@ -539,6 +539,26 @@ impl Brain {
         self.inner.rebuild_co_retrieval_index()
     }
 
+    /// Rebuild the co-retrieval pairs index from retrieval events whose
+    /// `method` starts with one of `method_prefixes`. An empty slice means
+    /// every method — identical to [`Brain::rebuild_co_retrieval_index`].
+    ///
+    /// The event log is not homogeneous: `cascade` rows record the **full
+    /// returned set** (exposure — every hit the caller was shown), while
+    /// `turn:*` rows record only the subset the caller reported as **used**.
+    /// Rebuilding over the union blends the two, and because exposure rows are
+    /// far denser they dominate the counts — so an evaluation of
+    /// outcome-credited co-retrieval run over everything cannot be
+    /// interpreted. Pass [`spectral_ingest::TURN_EVENT_METHOD_PREFIX`] to
+    /// build from turn events alone.
+    pub fn rebuild_co_retrieval_index_for_methods(
+        &self,
+        method_prefixes: &[String],
+    ) -> Result<usize, Error> {
+        self.inner
+            .rebuild_co_retrieval_index_for_methods(method_prefixes)
+    }
+
     /// Bound constellation fingerprint fan-out per write. `None` (default) is
     /// unbounded. Setting a cap makes ingest cost flat in corpus size instead
     /// of growing with it; see the inner method for the measured trade-off.

@@ -625,6 +625,19 @@ pub trait MemoryStore: Send + Sync {
         event: &RetrievalEvent,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 
+    /// Rebuild the co-retrieval pairs index using only retrieval events whose
+    /// `method` starts with one of `method_prefixes`. An empty slice means
+    /// every method (identical to [`Self::rebuild_co_retrieval_index`]).
+    ///
+    /// Use [`TURN_EVENT_METHOD_PREFIX`] to build an outcome-credited index from
+    /// `turn:*` events alone. See the implementation note on why mixing
+    /// exposure-credited and outcome-credited rows makes the result
+    /// uninterpretable.
+    fn rebuild_co_retrieval_index_for_methods(
+        &self,
+        method_prefixes: &[String],
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
     /// Record a delivery in the turn ledger. Members start `Unreported`.
     fn record_turn_delivery(
         &self,
@@ -932,6 +945,14 @@ pub struct RetrievalEvent {
     #[serde(default)]
     pub session_id: Option<String>,
 }
+
+/// `RetrievalEvent::method` prefix used by the turn path (`turn:v1`, …).
+///
+/// Turn events carry only the memories the caller reported as **used**;
+/// `cascade` and other legacy methods carry the full returned set (exposure).
+/// Filtering on this prefix is how an outcome-credited co-retrieval index is
+/// built without dilution from exposure rows.
+pub const TURN_EVENT_METHOD_PREFIX: &str = "turn:";
 
 // ── Turn-outcome ledger ─────────────────────────────────────────────
 

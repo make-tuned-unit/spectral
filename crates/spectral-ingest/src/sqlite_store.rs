@@ -3402,17 +3402,58 @@ impl MemoryStore for SqliteStore {
     fn rebuild_co_retrieval_index(
         &self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        self.rebuild_co_retrieval_index_for_methods(&[])
+    }
+
+    fn rebuild_co_retrieval_index_for_methods(
+        &self,
+        method_prefixes: &[String],
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let method_prefixes: Vec<String> = method_prefixes.to_vec();
         let conn = self.conn.clone();
         Box::pin(async move {
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
-            // Read all retrieval events (before the transaction — read-only)
-            let mut stmt = conn.prepare("SELECT memory_ids_json FROM retrieval_events")?;
-            let events: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
-                .filter_map(|r| r.ok())
-                .collect();
-            drop(stmt);
+            // Read retrieval events (before the transaction — read-only),
+            // optionally restricted to methods whose name starts with one of
+            // the given prefixes. An empty prefix list means every method,
+            // which is the historical behavior.
+            //
+            // The filter exists because the event log is NOT homogeneous.
+            // `cascade` rows carry the full returned set (exposure — every hit
+            // the caller was shown, ~k ids per row), while `turn:*` rows carry
+            // only the subset the caller reported as USED (~a handful). Mixing
+            // them makes the resulting pair graph a blend of two different
+            // signals, so an evaluation of outcome-credited co-retrieval run
+            // over the union cannot be interpreted: the far denser exposure
+            // rows dominate the counts and dilute the effect being measured.
+            let events: Vec<String> = if method_prefixes.is_empty() {
+                let mut stmt = conn.prepare("SELECT memory_ids_json FROM retrieval_events")?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                drop(stmt);
+                rows
+            } else {
+                let clause = method_prefixes
+                    .iter()
+                    .map(|_| "method LIKE ?")
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                let sql = format!("SELECT memory_ids_json FROM retrieval_events WHERE {clause}");
+                let patterns: Vec<String> =
+                    method_prefixes.iter().map(|p| format!("{p}%")).collect();
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt
+                    .query_map(rusqlite::params_from_iter(patterns.iter()), |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                drop(stmt);
+                rows
+            };
 
             // Aggregate co-retrieval counts
             let mut pair_counts: std::collections::HashMap<(String, String), i64> =
