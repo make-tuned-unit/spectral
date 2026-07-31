@@ -625,6 +625,35 @@ pub trait MemoryStore: Send + Sync {
         event: &RetrievalEvent,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 
+    /// Record a delivery in the turn ledger. Members start `Unreported`.
+    fn record_turn_delivery(
+        &self,
+        delivery: &TurnDelivery,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Commit outcomes for a recorded turn AND reinforce the `Used` members,
+    /// in ONE transaction.
+    ///
+    /// Atomicity is the point: a partial commit that reinforced without
+    /// recording, or recorded without reinforcing, would make the ledger
+    /// disagree with the signal scores it is supposed to explain. Replaying the
+    /// same `occurrence_id` is a no-op — outcomes are already set and
+    /// reinforcement is skipped — so retries are safe. Returns the number of
+    /// members whose outcome changed (0 on replay).
+    fn commit_turn_outcomes(
+        &self,
+        occurrence_id: &str,
+        outcomes: &[(String, LedgerOutcome)],
+        reinforce_strength: f64,
+        committed_at: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
+
+    /// Aggregated delivery/use evidence per memory, most-delivered first.
+    fn memory_outcome_evidence(
+        &self,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryOutcomeEvidence>>> + Send + '_>>;
+
     /// Count total retrieval events (for testing/diagnostics).
     fn count_retrieval_events(
         &self,
@@ -902,6 +931,92 @@ pub struct RetrievalEvent {
     /// Session/conversation ID for grouping retrievals. Consumer-managed opaque string.
     #[serde(default)]
     pub session_id: Option<String>,
+}
+
+// ── Turn-outcome ledger ─────────────────────────────────────────────
+
+/// One delivered member of a turn, with the outcome the caller reported.
+///
+/// `Unreported` is a first-class state, not a gap: a turn whose outcome is
+/// never committed still recorded an *exposure*, and distinguishing "delivered
+/// and explicitly ignored" from "delivered and never adjudicated" is the whole
+/// point of persisting members rather than a flat id list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LedgerOutcome {
+    Used,
+    Wrong,
+    Ignored,
+    Unreported,
+}
+
+impl LedgerOutcome {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LedgerOutcome::Used => "used",
+            LedgerOutcome::Wrong => "wrong",
+            LedgerOutcome::Ignored => "ignored",
+            LedgerOutcome::Unreported => "unreported",
+        }
+    }
+
+    /// Parse the stored column value. Deliberately infallible and NOT
+    /// `FromStr`: an unrecognised value means an outcome we cannot attribute,
+    /// and the safe reading of that is `Unreported` — never `Used`, which is
+    /// the only variant that grants reinforcement.
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "used" => LedgerOutcome::Used,
+            "wrong" => LedgerOutcome::Wrong,
+            "ignored" => LedgerOutcome::Ignored,
+            _ => LedgerOutcome::Unreported,
+        }
+    }
+}
+
+/// A delivery to record in the ledger, before any outcome is known.
+#[derive(Debug, Clone)]
+pub struct TurnDelivery {
+    /// Identifies this real-world turn. Distinct per occurrence, even when two
+    /// turns deliver byte-identical results.
+    pub occurrence_id: String,
+    /// Content-addressed digest of what was delivered; repeat deliveries share it.
+    pub delivery_digest: String,
+    pub query_hash: Option<String>,
+    pub session_id: Option<String>,
+    pub policy: String,
+    pub delivered_at: String,
+    /// (rank, memory_id, memory_key) in delivered order.
+    pub members: Vec<(usize, String, String)>,
+}
+
+/// Aggregated outcome evidence for one memory, across every turn that
+/// delivered it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryOutcomeEvidence {
+    pub memory_id: String,
+    pub memory_key: String,
+    /// Times this memory was delivered to a caller (exposure).
+    pub delivered: u64,
+    pub used: u64,
+    pub wrong: u64,
+    pub ignored: u64,
+    /// Delivered in a turn whose outcome was never committed.
+    pub unreported: u64,
+    /// Best (lowest) rank at which it was ever delivered.
+    pub best_rank: Option<u64>,
+}
+
+impl MemoryOutcomeEvidence {
+    /// Delivered at least `min_deliveries` times and never once used.
+    ///
+    /// This is the query the flat `retrieval_events` list structurally cannot
+    /// answer, and the reason this ledger exists. It is deliberately exposed as
+    /// *evidence*, not as an action: a memory can go unused because it was
+    /// ranked 40th or duplicated elsewhere in context, so this must not be
+    /// wired to automatic decay or forgetting without separate validation.
+    pub fn delivered_never_used(&self, min_deliveries: u64) -> bool {
+        self.delivered >= min_deliveries && self.used == 0
+    }
 }
 
 /// Hash a query string for retrieval event grouping.
