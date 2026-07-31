@@ -176,8 +176,18 @@ pub struct SqliteRecognitionStore {
 impl SqliteRecognitionStore {
     pub fn open(path: &std::path::Path) -> Result<Self> {
         let conn = rusqlite::Connection::open(path)?;
+        // IO PRAGMAs match the memory store (sqlite_store.rs): in WAL mode
+        // `synchronous = NORMAL` is crash-durable (only a power/OS crash can
+        // lose the last commit) and drops the per-commit fsync; `temp_store =
+        // MEMORY` and `mmap_size` remove page-cache eviction stalls as the
+        // fingerprint tables grow. IO settings only — enrolled rows, hashes,
+        // and match results are byte-identical, so recognition output is
+        // unchanged.
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous  = NORMAL;
+             PRAGMA temp_store   = MEMORY;
+             PRAGMA mmap_size    = 268435456;
              CREATE TABLE IF NOT EXISTS recognition_enrolled (
                 memory_id TEXT PRIMARY KEY,
                 enrolled_at TEXT NOT NULL DEFAULT (datetime('now'))
