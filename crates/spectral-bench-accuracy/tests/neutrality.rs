@@ -29,6 +29,7 @@
 
 use spectral_bench_accuracy::dataset::Question;
 use spectral_bench_accuracy::ingest;
+use spectral_bench_accuracy::retrieval::QuestionPrompts;
 use spectral_bench_accuracy::retrieval::{self, QuestionType, RetrievalConfig};
 use std::path::PathBuf;
 

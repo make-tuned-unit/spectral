@@ -19,6 +19,8 @@ spectral-tact = { path = "../spectral-tact" }
 spectral-spectrogram = { path = "../spectral-spectrogram", optional = true }
 spectral-recognition = { path = "../spectral-recognition" }
 chrono = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true, optional = true }

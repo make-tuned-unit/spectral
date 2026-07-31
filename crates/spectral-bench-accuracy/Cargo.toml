@@ -20,6 +20,7 @@ name = "desc_context"
 path = "src/bin/desc_context.rs"
 
 [dependencies]
+spectral = { path = "../spectral" }
 spectral-core = { path = "../spectral-core" }
 spectral-graph = { path = "../spectral-graph", features = ["spectrogram-legacy"] }
 spectral-ingest = { path = "../spectral-ingest" }

@@ -1,6 +1,7 @@
 //! Actor LLM trait — given a question and retrieved memories, produce an answer.
 
 use crate::report::TokenUsage;
+use crate::retrieval::QuestionPrompts;
 use crate::retrieval::QuestionType;
 use anyhow::Result;
 
