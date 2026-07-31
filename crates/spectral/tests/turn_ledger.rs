@@ -250,3 +250,57 @@ fn forget_erases_ledger_rows() {
         "forget must cascade to the turn ledger"
     );
 }
+
+/// The event log is not homogeneous: `cascade` rows carry the full returned
+/// set (exposure) while `turn:*` rows carry only the used subset. Rebuilding
+/// the co-retrieval index over the union blends them, and exposure rows are
+/// far denser — so an outcome-credited evaluation over everything would be
+/// dominated by the very signal it is trying to replace.
+///
+/// This pins that the method filter actually separates them.
+#[test]
+fn co_retrieval_rebuild_can_exclude_exposure_events() {
+    use spectral_graph::cascade_layers::CascadePipelineConfig;
+    use spectral_graph::RecognitionContext;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = seeded_brain(&tmp);
+
+    // Legacy exposure path: writes a `cascade` event carrying ALL hits.
+    brain
+        .recall_cascade_scoped(
+            "staging deploy rollback",
+            &RecognitionContext::empty(),
+            &CascadePipelineConfig::default(),
+            Visibility::Private,
+        )
+        .unwrap();
+
+    // Turn path: writes a `turn:v1` event carrying only the USED subset.
+    let turn = deploy_turn(&brain);
+    brain
+        .record_turn_outcome(&turn.receipt, &[("led-1", MemoryOutcome::Used)])
+        .unwrap();
+
+    let all = brain.rebuild_co_retrieval_index().unwrap();
+    let turn_only = brain
+        .rebuild_co_retrieval_index_for_methods(&[
+            spectral_ingest::TURN_EVENT_METHOD_PREFIX.to_string()
+        ])
+        .unwrap();
+
+    assert!(
+        turn_only < all,
+        "turn-only rebuild must be sparser than the blended one \
+         (turn_only={turn_only}, all={all}); if equal, the filter is not applied \
+         and any outcome-credited evaluation would be diluted by exposure rows"
+    );
+
+    // An empty prefix list must reproduce the unfiltered behaviour exactly, so
+    // existing callers are unaffected.
+    let empty_filter = brain.rebuild_co_retrieval_index_for_methods(&[]).unwrap();
+    assert_eq!(
+        empty_filter, all,
+        "an empty prefix list must mean 'every method'"
+    );
+}

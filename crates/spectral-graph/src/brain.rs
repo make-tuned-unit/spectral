@@ -2879,6 +2879,24 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
+    /// Rebuild the co-retrieval index from retrieval events whose `method`
+    /// starts with one of `method_prefixes`. Empty slice = every method.
+    ///
+    /// Pass [`spectral_ingest::TURN_EVENT_METHOD_PREFIX`] to build an
+    /// outcome-credited index from turn events alone.
+    pub fn rebuild_co_retrieval_index_for_methods(
+        &self,
+        method_prefixes: &[String],
+    ) -> Result<usize, Error> {
+        self.ensure_writable("rebuild_co_retrieval_index_for_methods")?;
+        self.rt
+            .block_on(
+                self.memory_store
+                    .rebuild_co_retrieval_index_for_methods(method_prefixes),
+            )
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
     /// Backfill content_hash for all rows with NULL content_hash.
     /// Returns count of rows updated. Idempotent — safe to re-run.
     pub fn backfill_content_hashes(&self) -> Result<usize, Error> {
