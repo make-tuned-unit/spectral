@@ -215,6 +215,18 @@ pub struct CascadePipelineConfig {
     /// (episode / cross-session) to recover memories that share no words with the
     /// query — the vocabulary gap FTS cannot cross. See [`crate::spreading`].
     pub spread: crate::spreading::AssocSpreadConfig,
+    /// Perform the recall→feedback write-back (auto-reinforce every returned
+    /// memory + log a `RetrievalEvent`). Default **true** — the historical
+    /// behavior every `recall_*` entry point relies on.
+    ///
+    /// Set false for a strictly read-only retrieval whose reinforcement is
+    /// deferred until the caller reports what it actually used. Auto-reinforce
+    /// credits *exposure*, not usefulness: it strengthens all `k` hits before
+    /// the consumer has filtered them, which is the mechanism behind the
+    /// measured popularity bias (728/744 events returning ~the same 40
+    /// memories; see docs/internal/LAST_LOOK.md). `Brain::turn` clears this
+    /// flag and reinforces only memories reported `Used`.
+    pub write_back: bool,
 }
 
 impl Default for CascadePipelineConfig {
@@ -254,6 +266,9 @@ impl Default for CascadePipelineConfig {
             fetch_mult: 1,
             apply_declarative_boost: true,
             spread: crate::spreading::AssocSpreadConfig::default(),
+            // Preserves the historical recall behavior. Only the deferred-outcome
+            // turn path clears it.
+            write_back: true,
         }
     }
 }
@@ -430,7 +445,9 @@ pub fn run_cascade_pipeline_scoped(
     // skipped entirely on a read-only brain: federated read-time fan-out
     // must not mutate a member's ranking state (score inflation, decay
     // clock resets) or write the caller's query metadata into its store.
-    if !brain.is_read_only() {
+    // Also skipped when the caller opted out (`write_back: false`) because it
+    // will report outcomes and reinforce only what was actually used.
+    if config.write_back && !brain.is_read_only() {
         // Auto-reinforce returned memories (small strength nudge) + log the
         // retrieval event for co-access mining. Repeated retrievals accumulate;
         // this makes the Archivist's decay/boost loop functional without

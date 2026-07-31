@@ -768,6 +768,57 @@ impl SqliteStore {
                 ON retrieval_events(query_hash);",
         )?;
 
+        // ── Turn-outcome ledger ──────────────────────────────────────────
+        // `retrieval_events` records only a flat id list, and the turn path
+        // writes only the USED subset into it. That makes "delivered
+        // repeatedly and never used" unanswerable: negative and neutral
+        // evidence does not survive the call. These two tables persist the
+        // full delivery — every member, its rank, and its outcome — so
+        // exposure, use, and rejection are all durable and attributable.
+        //
+        // `occurrence_id` identifies one real-world turn. It is deliberately
+        // NOT the delivery digest: two identical deliveries are two distinct
+        // turns, and collapsing them would undercount exposure — the exact
+        // quantity this ledger exists to measure. `delivery_digest` is the
+        // content-addressed shape of what was returned, kept alongside so
+        // repeat deliveries remain detectable.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS turn_events (
+                occurrence_id   TEXT PRIMARY KEY,
+                delivery_digest TEXT NOT NULL,
+                query_hash      TEXT,
+                session_id      TEXT,
+                policy          TEXT NOT NULL,
+                delivered_at    TEXT NOT NULL,
+                committed_at    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_turn_events_digest
+                ON turn_events(delivery_digest);
+            CREATE INDEX IF NOT EXISTS idx_turn_events_delivered_at
+                ON turn_events(delivered_at);
+
+            CREATE TABLE IF NOT EXISTS turn_members (
+                occurrence_id TEXT NOT NULL,
+                rank          INTEGER NOT NULL,
+                memory_id     TEXT NOT NULL,
+                memory_key    TEXT NOT NULL,
+                outcome       TEXT NOT NULL DEFAULT 'unreported',
+                PRIMARY KEY (occurrence_id, memory_id),
+                FOREIGN KEY (occurrence_id) REFERENCES turn_events(occurrence_id)
+                    ON DELETE CASCADE,
+                -- `forget` must erase ledger rows too: this table holds the
+                -- memory's id AND key, so without this cascade a forgotten
+                -- memory would leave residue and break the D1 schema-derived
+                -- substrate sweep in the deletion-guarantees suite.
+                FOREIGN KEY (memory_id) REFERENCES memories(id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_turn_members_memory
+                ON turn_members(memory_id);
+            CREATE INDEX IF NOT EXISTS idx_turn_members_outcome
+                ON turn_members(outcome);",
+        )?;
+
         // declarative_density column
         let mut has_declarative_density = false;
         let mut stmt5 = conn.prepare("PRAGMA table_info(memories)")?;
@@ -2872,6 +2923,143 @@ impl MemoryStore for SqliteStore {
             tx.commit()?;
 
             Ok(updated)
+        })
+    }
+
+    fn record_turn_delivery(
+        &self,
+        delivery: &crate::TurnDelivery,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let d = delivery.clone();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let tx = conn.transaction()?;
+            // INSERT OR IGNORE: re-recording the same occurrence is a no-op
+            // rather than an error, so a retrying caller cannot duplicate a
+            // delivery or reset already-committed outcomes.
+            tx.execute(
+                "INSERT OR IGNORE INTO turn_events \
+                    (occurrence_id, delivery_digest, query_hash, session_id, policy, delivered_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    d.occurrence_id,
+                    d.delivery_digest,
+                    d.query_hash,
+                    d.session_id,
+                    d.policy,
+                    d.delivered_at
+                ],
+            )?;
+            for (rank, memory_id, memory_key) in &d.members {
+                tx.execute(
+                    "INSERT OR IGNORE INTO turn_members \
+                        (occurrence_id, rank, memory_id, memory_key, outcome) \
+                     VALUES (?1, ?2, ?3, ?4, 'unreported')",
+                    params![d.occurrence_id, *rank as i64, memory_id, memory_key],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    fn commit_turn_outcomes(
+        &self,
+        occurrence_id: &str,
+        outcomes: &[(String, crate::LedgerOutcome)],
+        reinforce_strength: f64,
+        committed_at: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>> {
+        let occurrence_id = occurrence_id.to_string();
+        let outcomes = outcomes.to_vec();
+        let committed_at = committed_at.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let tx = conn.transaction()?;
+
+            // Idempotence gate: if this occurrence was already committed, do
+            // nothing at all. Reinforcement is additive, so a second pass would
+            // silently double-count the same evidence.
+            let already: Option<String> = tx
+                .query_row(
+                    "SELECT committed_at FROM turn_events WHERE occurrence_id = ?1",
+                    params![occurrence_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+            if already.is_some() {
+                return Ok(0);
+            }
+
+            let mut changed = 0usize;
+            for (memory_key, outcome) in &outcomes {
+                let n = tx.execute(
+                    "UPDATE turn_members SET outcome = ?1 \
+                     WHERE occurrence_id = ?2 AND memory_key = ?3",
+                    params![outcome.as_str(), occurrence_id, memory_key],
+                )?;
+                changed += n;
+                // Reinforce ONLY Used, and only inside this same transaction so
+                // the ledger and the signal scores can never disagree.
+                if matches!(outcome, crate::LedgerOutcome::Used) && n > 0 {
+                    tx.execute(
+                        "UPDATE memories SET \
+                            signal_score = MIN(1.0, signal_score + ?1), \
+                            last_reinforced_at = datetime('now'), \
+                            updated_at = datetime('now') \
+                         WHERE key = ?2",
+                        params![reinforce_strength, memory_key],
+                    )?;
+                }
+            }
+
+            tx.execute(
+                "UPDATE turn_events SET committed_at = ?1 WHERE occurrence_id = ?2",
+                params![committed_at, occurrence_id],
+            )?;
+            tx.commit()?;
+            Ok(changed)
+        })
+    }
+
+    fn memory_outcome_evidence(
+        &self,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<crate::MemoryOutcomeEvidence>>> + Send + '_>>
+    {
+        let conn = self.read_conn();
+        Box::pin(async move {
+            let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT memory_id, memory_key, COUNT(*) delivered, \
+                        SUM(outcome='used'), SUM(outcome='wrong'), \
+                        SUM(outcome='ignored'), SUM(outcome='unreported'), \
+                        MIN(rank) \
+                 FROM turn_members \
+                 GROUP BY memory_id, memory_key \
+                 ORDER BY delivered DESC, memory_id ASC \
+                 LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |row| {
+                Ok(crate::MemoryOutcomeEvidence {
+                    memory_id: row.get(0)?,
+                    memory_key: row.get(1)?,
+                    delivered: row.get::<_, i64>(2)? as u64,
+                    used: row.get::<_, i64>(3)? as u64,
+                    wrong: row.get::<_, i64>(4)? as u64,
+                    ignored: row.get::<_, i64>(5)? as u64,
+                    unreported: row.get::<_, i64>(6)? as u64,
+                    best_rank: row.get::<_, Option<i64>>(7)?.map(|r| r as u64),
+                })
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
         })
     }
 

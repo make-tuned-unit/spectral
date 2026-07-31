@@ -39,3 +39,6 @@ paraphrase-misses.txt
 # fastembed model weights (downloaded at runtime by the embedding baseline;
 # ~127MB, exceeds GitHub's file-size limit — never commit)
 .fastembed_cache/
+
+# claude-mem plugin writes this at session start; not project source
+AGENTS.md

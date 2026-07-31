@@ -43,6 +43,39 @@
 //! # Ok::<(), spectral::Error>(())
 //! ```
 //!
+//! ## Agent turns: learning from outcomes, not exposure
+//!
+//! [`Brain::turn`] is the recommended path for an agent loop. It retrieves
+//! **read-only** and hands back a receipt; nothing is reinforced until you say
+//! what the agent actually used. The plain `recall_*` methods auto-reinforce
+//! every hit at retrieval time, which credits exposure rather than usefulness.
+//!
+//! ```no_run
+//! use spectral::{Brain, MemoryOutcome, TurnRequest, Visibility};
+//!
+//! let brain = Brain::open("./my-brain")?;
+//!
+//! // 1. Retrieve. Nothing is written; recognition runs only over observations.
+//! let turn = brain.turn(
+//!     &TurnRequest::query("what was the auth decision", Visibility::Private)
+//!         .with_observations(&["user just pasted a Clerk config file"]),
+//! )?;
+//!
+//! // 2. ... the agent answers, using some of what it got back ...
+//!
+//! // 3. Report outcomes. Only `Used` is reinforced.
+//! if let Some(hit) = turn.hits.first() {
+//!     brain.record_turn_outcome(
+//!         &turn.receipt,
+//!         &[(hit.key.as_str(), MemoryOutcome::Used)],
+//!     )?;
+//! }
+//! # Ok::<(), spectral::Error>(())
+//! ```
+//!
+//! A turn that is never committed leaves memory state completely unchanged.
+//! See the [`turn`] module for the full contract.
+//!
 //! ## Crate architecture
 //!
 //! This umbrella crate re-exports the public API. Internally:
@@ -64,6 +97,16 @@
 
 #[cfg(feature = "http-llm")]
 pub mod llm;
+pub mod turn;
+
+pub use turn::{
+    DeliveredHit, MemoryOutcome, OutcomeReceipt, TurnPolicyVersion, TurnReceipt, TurnRequest,
+    TurnResult,
+};
+
+// `TurnRequest` carries a `RecognitionContext`, so it must be reachable from
+// the crate root rather than only via `spectral::graph`.
+pub use spectral_graph::RecognitionContext;
 
 use std::path::{Path, PathBuf};
 
@@ -382,6 +425,17 @@ impl Brain {
     /// Unlike consolidation (soft hide), the content becomes unrecoverable.
     pub fn forget(&self, key: &str) -> Result<spectral_graph::brain::ForgetReport, Error> {
         self.inner.forget(key)
+    }
+
+    /// Complete physical erasure of already-`forget`-ed content: FTS
+    /// `'optimize'` + truncating WAL checkpoint + `VACUUM` + a second
+    /// checkpoint, across `memory.db`, `recognition.db`, and `graph.sqlite`.
+    ///
+    /// `forget` makes a memory logically unreachable immediately; SQLite
+    /// still retains the deleted bytes in FTS5 segment b-trees, WAL frames,
+    /// and free pages until this runs. See `docs/DELETION_GUARANTEES.md`.
+    pub fn vacuum(&self) -> Result<(), Error> {
+        self.inner.vacuum()
     }
 
     /// Recognition: "have I encountered this before — and what happened
