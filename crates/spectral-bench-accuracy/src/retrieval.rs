@@ -2,10 +2,8 @@
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use regex::Regex;
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, RecallTopKConfig};
-use spectral_graph::cascade_layers::CascadePipelineConfig;
 use spectral_ingest::MemoryHit;
 use std::collections::{BTreeMap, HashSet};
 
@@ -22,21 +20,6 @@ impl Default for RetrievalConfig {
     }
 }
 
-/// Which retrieval path to use.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RetrievalPath {
-    /// Top-K FTS with re-ranking (default — Phase 1 improvement).
-    #[default]
-    TopkFts,
-    /// TACT/FTS recall (legacy).
-    Tact,
-    /// Graph traversal.
-    Graph,
-    /// Cascade (L1→L2→L3).
-    Cascade,
-}
-
 // ── Question-type routing (P1) ──────────────────────────────────────
 
 /// Question type determined by structural analysis of the query.
@@ -49,164 +32,27 @@ pub enum RetrievalPath {
 /// Temporal intentionally has NO sub-gate. Date arithmetic is a single
 /// coherent strategy; adding TemporalCurrentState would fragment it
 /// without evidence of benefit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QuestionType {
-    /// "How many", "how much", "total" — exhaustive session scan, no recency signal.
-    Counting,
-    /// "How many ... currently/still" — current count, recency-priority.
-    CountingCurrentState,
-    /// Date arithmetic, ordering, duration. No sub-gate — single coherent strategy.
-    Temporal,
-    /// "What is", "where", "who" — single-entity retrieval.
-    Factual,
-    /// "What is my current X" — most-recent-wins factual.
-    FactualCurrentState,
-    /// "Suggest/recommend/tips/advice" — preference inference.
-    GeneralPreference,
-    /// "Remind me/going back to/we discussed" — assistant recall.
-    GeneralRecall,
-    /// Catch-all fallback.
-    General,
+/// Retrieval policy types now live in the library so a published number names
+/// an executable *product* configuration rather than a harness one. Re-exported
+/// under the historical names to keep call sites unchanged.
+pub use spectral::policy::{QuestionShape as QuestionType, RetrievalRoute as RetrievalPath};
+
+/// Harness-side extensions to the library's [`QuestionType`].
+///
+/// Actor prompt templates deliberately stay here: they describe how to talk to
+/// a model, not how memory retrieves. `retrieval_path` aliases the library's
+/// `retrieval_route` so existing call sites keep compiling.
+pub trait QuestionPrompts {
+    /// Prompt template filename for this question type.
+    fn prompt_template(&self) -> &'static str;
+    /// The prompt template content (compiled in via `include_str!`).
+    fn prompt_content(&self) -> &'static str;
+    /// Alias for the library's `retrieval_route`.
+    fn retrieval_path(&self) -> RetrievalPath;
 }
 
-impl QuestionType {
-    /// Classify a question string into a routing type.
-    ///
-    /// Level 1: existing top-level classifier (Counting/Temporal/Factual/General).
-    /// Level 2: sub-gates for Counting (recency), Factual (recency), General (preference/recall).
-    /// Temporal has no sub-gate by design.
-    pub fn classify(question: &str) -> Self {
-        let q = question.to_lowercase();
-
-        // ── Level 1: top-level shape (unchanged from original) ──
-
-        // Temporal-counting ("how many days/weeks ago", "how old") → Temporal
-        if Regex::new(r"how many (?:days|weeks|months|years) (?:ago|since|passed|before|after|between|had passed|have passed|did it take)|how old")
-            .unwrap()
-            .is_match(&q)
-        {
-            return Self::Temporal;
-        }
-
-        // General counting → Counting (with sub-gate)
-        if Regex::new(r"how many|how much|total|in total|altogether")
-            .unwrap()
-            .is_match(&q)
-        {
-            // Level 2: recency sub-gate for Counting
-            if Regex::new(r"\b(currently|right now|most recent|latest|newest|do i still|now)\b")
-                .unwrap()
-                .is_match(&q)
-            {
-                return Self::CountingCurrentState;
-            }
-            return Self::Counting;
-        }
-
-        // Location questions: "where" → Factual, even with temporal modifiers.
-        // "Where did Rachel move to after her recent relocation?" → FactualCurrentState
-        // "Where did I attend the religious activity last week?" → Factual
-        // Temporal modifiers in "where" questions provide context, not question focus.
-        if Regex::new(r"^where\b").unwrap().is_match(&q) {
-            if Regex::new(
-                r"\b(currently|right now|most recent|latest|newest|do i still|now|recent)\b",
-            )
-            .unwrap()
-            .is_match(&q)
-            {
-                return Self::FactualCurrentState;
-            }
-            return Self::Factual;
-        }
-
-        // Temporal — includes explicit ordering phrases ("order ... earliest/latest")
-        if Regex::new(r"when did|how long|(?:^|\W)first\b|(?:^|\W)last\b|before|after|ago|since|order.+(?:earliest|latest)|from earliest|chronological|(?:^|\W)order of\b")
-            .unwrap()
-            .is_match(&q)
-        {
-            return Self::Temporal;
-        }
-
-        // Factual (with sub-gate)
-        if Regex::new(r"^(?:what|where|who|which)\b")
-            .unwrap()
-            .is_match(&q)
-        {
-            // Level 2: recency sub-gate for Factual
-            if Regex::new(
-                r"\b(currently|right now|most recent|most recently|latest|newest|do i still|now)\b",
-            )
-            .unwrap()
-            .is_match(&q)
-            {
-                return Self::FactualCurrentState;
-            }
-            return Self::Factual;
-        }
-
-        // ── Level 2: General sub-gates ──
-
-        if Regex::new(r"\b(suggest|recommend|tips?|advice|recommendations?|what should i)\b")
-            .unwrap()
-            .is_match(&q)
-        {
-            return Self::GeneralPreference;
-        }
-        if Regex::new(r"\bany (tips?|advice|suggestions?|ideas?|thoughts?|recommendations?)\b")
-            .unwrap()
-            .is_match(&q)
-        {
-            return Self::GeneralPreference;
-        }
-        if Regex::new(r"\b(remind me|going back to|previous|earlier conversation|we (discussed|talked about)|can you remind me)\b")
-            .unwrap()
-            .is_match(&q)
-        {
-            return Self::GeneralRecall;
-        }
-
-        Self::General
-    }
-
-    /// Return the cascade pipeline config tuned for this question type.
-    /// Sub-shapes inherit their parent shape's profile.
-    pub fn cascade_profile(&self) -> CascadePipelineConfig {
-        match self {
-            Self::Counting | Self::CountingCurrentState => CascadePipelineConfig {
-                k: 60,
-                max_per_episode: 3,
-                recency_half_life_days: 730.0, // don't penalize any memories
-                ..CascadePipelineConfig::default()
-            },
-            Self::Temporal => CascadePipelineConfig {
-                k: 40,
-                max_per_episode: 5,
-                recency_half_life_days: 60.0, // aggressive recency
-                ..CascadePipelineConfig::default()
-            },
-            Self::Factual | Self::FactualCurrentState => CascadePipelineConfig {
-                k: 30,
-                max_per_episode: 8,
-                ..CascadePipelineConfig::default()
-            },
-            Self::GeneralPreference | Self::GeneralRecall | Self::General => {
-                CascadePipelineConfig::default()
-            }
-        }
-    }
-
-    /// Per-question retrieval path. Temporal routes to topk_fts (cascade hurts
-    /// temporal by -15pp); all other shapes use cascade.
-    pub fn retrieval_path(&self) -> RetrievalPath {
-        match self {
-            Self::Temporal => RetrievalPath::TopkFts,
-            _ => RetrievalPath::Cascade,
-        }
-    }
-
-    /// Prompt template filename for this question type.
-    pub fn prompt_template(&self) -> &'static str {
+impl QuestionPrompts for QuestionType {
+    fn prompt_template(&self) -> &'static str {
         match self {
             Self::Counting => "counting_enumerate.md",
             Self::CountingCurrentState => "counting_current_state.md",
@@ -219,8 +65,7 @@ impl QuestionType {
         }
     }
 
-    /// The prompt template content (compiled in via include_str!).
-    pub fn prompt_content(&self) -> &'static str {
+    fn prompt_content(&self) -> &'static str {
         match self {
             Self::Counting => include_str!("prompts/counting_enumerate.md"),
             Self::CountingCurrentState => include_str!("prompts/counting_current_state.md"),
@@ -231,6 +76,10 @@ impl QuestionType {
             Self::GeneralRecall => include_str!("prompts/assistant_recall.md"),
             Self::General => include_str!("prompts/generic_fallback.md"),
         }
+    }
+
+    fn retrieval_path(&self) -> RetrievalPath {
+        self.retrieval_route()
     }
 }
 

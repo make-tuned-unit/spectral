@@ -12,6 +12,7 @@
 
 use crate::dataset::{Category, Question};
 use crate::ingest::{self, IngestStrategy};
+use crate::retrieval::QuestionPrompts;
 use crate::retrieval::{self, QuestionType, RetrievalConfig, RetrievalPath};
 use anyhow::{Context, Result};
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy};

@@ -6,6 +6,7 @@ use crate::ingest::{self, IngestStrategy};
 use crate::inspect;
 use crate::judge::Judge;
 use crate::report::{EvalReport, RunStatus};
+use crate::retrieval::QuestionPrompts;
 use crate::retrieval::{self, RetrievalConfig, RetrievalPath};
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
