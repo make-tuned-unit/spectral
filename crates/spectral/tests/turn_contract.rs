@@ -318,3 +318,168 @@ fn legacy_recall_still_writes_back_by_default() {
         "default write_back must stay true so recall_* semantics are unchanged"
     );
 }
+
+// ── V2Shaped: the library executes its own published policy ─────────
+//
+// `spectral::policy` described a configuration the library never ran: only the
+// benchmark harness called `cascade_profile`, so a published number could not
+// be reproduced through the public API. These pin that V2 closes the gap and
+// that V1 is untouched.
+
+/// V1 must not classify. Whatever the query looks like, it gets the generic
+/// cascade config — so every existing caller is byte-for-byte unaffected.
+#[test]
+fn v1_does_not_classify_and_matches_generic_cascade() {
+    let tmp = TempDir::new().unwrap();
+    let brain = seeded_brain(&tmp);
+    // A counting-shaped query, which V2 would route to a k=60 profile.
+    let q = "how many staging deploys were rolled back in total";
+
+    let v1 = brain
+        .turn(&TurnRequest {
+            query: Some(q),
+            observations: &[],
+            visibility: Visibility::Private,
+            context: RecognitionContext::empty(),
+            policy: TurnPolicyVersion::V1,
+        })
+        .unwrap();
+
+    let generic = brain
+        .recall_cascade_scoped(
+            q,
+            &RecognitionContext::empty(),
+            &CascadePipelineConfig::default(),
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let a: Vec<&str> = v1.hits.iter().map(|h| h.id.as_str()).collect();
+    let b: Vec<&str> = generic.merged_hits.iter().map(|h| h.id.as_str()).collect();
+    assert_eq!(a, b, "V1 must remain the generic cascade path");
+}
+
+/// V2 must deliver exactly what the shape's own profile produces — i.e. the
+/// library now runs the policy it publishes.
+#[test]
+fn v2_executes_the_published_per_shape_profile() {
+    use spectral::policy::QuestionShape;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = seeded_brain(&tmp);
+    let q = "how many staging deploys were rolled back in total";
+
+    let shape = QuestionShape::classify(q);
+    assert_eq!(
+        shape,
+        QuestionShape::Counting,
+        "fixture query must be Counting"
+    );
+
+    let v2 = brain
+        .turn(&TurnRequest {
+            query: Some(q),
+            observations: &[],
+            visibility: Visibility::Private,
+            context: RecognitionContext::empty(),
+            policy: TurnPolicyVersion::V2Shaped,
+        })
+        .unwrap();
+
+    // Same profile the policy publishes, with write-back off (turn is read-only).
+    let profile = CascadePipelineConfig {
+        write_back: false,
+        ..shape.cascade_profile()
+    };
+    let direct = brain
+        .recall_cascade_scoped(
+            q,
+            &RecognitionContext::empty(),
+            &profile,
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let a: Vec<&str> = v2.hits.iter().map(|h| h.id.as_str()).collect();
+    let b: Vec<&str> = direct.merged_hits.iter().map(|h| h.id.as_str()).collect();
+    assert_eq!(
+        a, b,
+        "V2 must deliver exactly the published per-shape profile's result"
+    );
+    assert_eq!(v2.receipt.policy.as_str(), "v2-shaped");
+}
+
+/// Temporal shapes route OFF cascade (cascade measured ~-15pp on temporal).
+/// V2 must honour `retrieval_route`; V1 must not.
+#[test]
+fn v2_honours_the_temporal_route_and_v1_does_not() {
+    use spectral::policy::{QuestionShape, RetrievalRoute};
+
+    let tmp = TempDir::new().unwrap();
+    let brain = seeded_brain(&tmp);
+    let q = "when did the staging deploy incident happen";
+
+    assert_eq!(QuestionShape::classify(q), QuestionShape::Temporal);
+    assert_eq!(
+        QuestionShape::classify(q).retrieval_route(),
+        RetrievalRoute::TopkFts
+    );
+
+    let v2 = brain
+        .turn(&TurnRequest {
+            query: Some(q),
+            observations: &[],
+            visibility: Visibility::Private,
+            context: RecognitionContext::empty(),
+            policy: TurnPolicyVersion::V2Shaped,
+        })
+        .unwrap();
+
+    let topk = brain
+        .recall_topk_fts(
+            q,
+            &spectral_graph::brain::RecallTopKConfig {
+                k: QuestionShape::classify(q).cascade_profile().k,
+                ..Default::default()
+            },
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let a: Vec<&str> = v2.hits.iter().map(|h| h.id.as_str()).collect();
+    let b: Vec<&str> = topk.iter().map(|h| h.id.as_str()).collect();
+    assert_eq!(a, b, "V2 must route Temporal to top-k FTS, not cascade");
+
+    // V1 stays on cascade for the same query.
+    let v1 = brain
+        .turn(&TurnRequest {
+            query: Some(q),
+            observations: &[],
+            visibility: Visibility::Private,
+            context: RecognitionContext::empty(),
+            policy: TurnPolicyVersion::V1,
+        })
+        .unwrap();
+    let cascade = brain
+        .recall_cascade_scoped(
+            q,
+            &RecognitionContext::empty(),
+            &CascadePipelineConfig::default(),
+            Visibility::Private,
+        )
+        .unwrap();
+    let c: Vec<&str> = v1.hits.iter().map(|h| h.id.as_str()).collect();
+    let d: Vec<&str> = cascade.merged_hits.iter().map(|h| h.id.as_str()).collect();
+    assert_eq!(c, d, "V1 must stay on the cascade route");
+}
+
+/// The default policy must remain V1, so adding V2 changes nothing for anyone
+/// who does not opt in.
+#[test]
+fn default_policy_is_still_v1() {
+    assert_eq!(TurnPolicyVersion::default(), TurnPolicyVersion::V1);
+    assert_eq!(
+        TurnRequest::query("x", Visibility::Private).policy.as_str(),
+        "v1"
+    );
+}
