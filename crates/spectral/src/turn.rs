@@ -275,6 +275,15 @@ pub struct OutcomeReceipt {
     pub not_reinforced: Vec<String>,
 }
 
+/// Minimum `k` on the top-k FTS route.
+///
+/// Mirrors the floor the measured benchmark harness applies
+/// (`spectral-bench-accuracy/src/retrieval.rs`, `max_results.max(40)`): a
+/// smaller k cuts temporal evidence turns that only reach the top 40 after
+/// re-ranking. Pinned here so the library's route agrees with the configuration
+/// the published numbers were measured under, rather than coinciding by luck.
+const TOPK_MIN_K: usize = 40;
+
 /// Reinforcement applied to a memory the actor actually used.
 ///
 /// Ten times the retrieval-time auto-reinforce nudge (0.01), because it is
@@ -307,11 +316,17 @@ impl Brain {
                         .merged_hits
                 }
                 // Temporal shapes route off cascade: cascade measured ~-15pp on
-                // temporal. `k` carries over from the shape profile so the two
-                // routes agree on breadth.
+                // temporal.
+                //
+                // `k` is floored at TOPK_MIN_K to match the measured harness
+                // configuration, which applies the same floor deliberately — a
+                // smaller k cuts temporal evidence turns that rank at FTS
+                // positions 21–40 only after re-ranking. Without the floor this
+                // path would agree with the harness only by coincidence at the
+                // current profile values.
                 RetrievalRoute::TopkFts | RetrievalRoute::Tact | RetrievalRoute::Graph => {
                     let topk = spectral_graph::brain::RecallTopKConfig {
-                        k: config.k,
+                        k: config.k.max(TOPK_MIN_K),
                         ..Default::default()
                     };
                     self.inner

@@ -435,11 +435,14 @@ fn v2_honours_the_temporal_route_and_v1_does_not() {
         })
         .unwrap();
 
+    // k is floored at 40 to match the harness, which applies the same floor
+    // deliberately (max_results.max(40)) so temporal evidence reaching the top
+    // 40 only after re-ranking is not cut.
     let topk = brain
         .recall_topk_fts(
             q,
             &spectral_graph::brain::RecallTopKConfig {
-                k: QuestionShape::classify(q).cascade_profile().k,
+                k: QuestionShape::classify(q).cascade_profile().k.max(40),
                 ..Default::default()
             },
             Visibility::Private,
@@ -482,4 +485,51 @@ fn default_policy_is_still_v1() {
         TurnRequest::query("x", Visibility::Private).policy.as_str(),
         "v1"
     );
+}
+
+/// The top-k route floors `k` at 40, matching the harness's deliberate
+/// `max_results.max(40)`. Without the floor the library would agree with the
+/// measured configuration only by coincidence at today's profile values — so a
+/// profile change could silently break parity with the published numbers.
+#[test]
+fn topk_route_floors_k_at_the_harness_value() {
+    use spectral::policy::QuestionShape;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = seeded_brain(&tmp);
+    let q = "when did the staging deploy incident happen";
+
+    // Today the Temporal profile is exactly 40, so floor and profile coincide.
+    // Pin that, so a profile change surfaces here rather than silently
+    // diverging from the harness.
+    assert_eq!(
+        QuestionShape::classify(q).cascade_profile().k,
+        40,
+        "Temporal profile k changed — re-verify the top-k floor against \
+         spectral-bench-accuracy/src/retrieval.rs before updating this test"
+    );
+
+    let v2 = brain
+        .turn(&TurnRequest {
+            query: Some(q),
+            observations: &[],
+            visibility: Visibility::Private,
+            context: RecognitionContext::empty(),
+            policy: TurnPolicyVersion::V2Shaped,
+        })
+        .unwrap();
+    let floored = brain
+        .recall_topk_fts(
+            q,
+            &spectral_graph::brain::RecallTopKConfig {
+                k: 40,
+                ..Default::default()
+            },
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let a: Vec<&str> = v2.hits.iter().map(|h| h.id.as_str()).collect();
+    let b: Vec<&str> = floored.iter().map(|h| h.id.as_str()).collect();
+    assert_eq!(a, b, "top-k route must use the floored k");
 }
