@@ -98,9 +98,11 @@
 #[cfg(feature = "http-llm")]
 pub mod llm;
 pub mod policy;
+pub mod temporal;
 pub mod turn;
 
 pub use policy::{QuestionShape, RetrievalPolicyVersion, RetrievalRoute};
+pub use temporal::{resolve_relative_dates, Certainty, ResolvedDate};
 
 pub use turn::{
     DeliveredHit, MemoryOutcome, OutcomeReceipt, TurnPolicyVersion, TurnReceipt, TurnRequest,
