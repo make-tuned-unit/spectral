@@ -236,6 +236,16 @@ struct Cli {
     /// Write JSON report here.
     #[arg(long)]
     out: Option<String>,
+    /// Skip constellation fingerprint generation at ingest.
+    ///
+    /// The 2026-07-03 Phase 0 run measured Spectral WITH fingerprints, which
+    /// cost ~39% of a write and ~57% of store bytes for a reader (TACT tier 1)
+    /// reachable on 3.2% of benchmark questions. Re-run with this flag for the
+    /// honest current comparison — retrieval is byte-identical either way
+    /// (0 diffs over 361 questions, two datasets). See
+    /// docs/internal/fingerprint-retirement-2026-08-03.md.
+    #[arg(long)]
+    no_fingerprints: bool,
 }
 
 #[tokio::main]
@@ -259,7 +269,14 @@ async fn main() -> Result<()> {
     let tmp = std::env::temp_dir().join(format!("phase0_spectral_{}.db", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     let store = SqliteStore::open(&tmp)?;
-    let cfg = IngestConfig::default();
+    let cfg = IngestConfig {
+        fingerprints: !cli.no_fingerprints,
+        ..IngestConfig::default()
+    };
+    eprintln!(
+        "spectral ingest config: fingerprints={}",
+        !cli.no_fingerprints
+    );
     let t = Instant::now();
     for d in &docs {
         ingest_with(

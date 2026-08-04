@@ -387,6 +387,44 @@ pub trait MemoryStore: Send + Sync {
 
     // ── Read side ──
 
+    /// The latest `created_at` across the corpus, as stored.
+    ///
+    /// A **deterministic time anchor** for recency decay.
+    ///
+    /// Recall *ordering* is already time-invariant (measured — see
+    /// `docs/internal/decay-time-invariance-2026-08-03.md`), but the decayed
+    /// `signal_score` values callers receive are not: they shrink as the clock
+    /// advances. Anchoring to the corpus's own newest memory makes those
+    /// scores reproducible too, and pins the ordering property against future
+    /// changes to the decay function.
+    ///
+    /// Returns `None` for an empty corpus or when no memory carries a
+    /// timestamp, in which case callers fall back to wall-clock.
+    ///
+    /// Default implementation returns `None` so alternative stores are not
+    /// forced to implement it; they simply do not offer the anchor.
+    fn latest_created_at(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Reassign a memory's wing. Returns `true` if a row changed.
+    ///
+    /// Exists for taxonomy repair: brains ingested while the library shipped
+    /// demo-fixture wing rules carry memories filed into fictional topic areas
+    /// (`alice`, `apollo`, `acme`, ...). See
+    /// `docs/internal/wing-taxonomy-2026-08-03.md`.
+    ///
+    /// Default implementation is a no-op returning `false`.
+    fn set_wing<'a>(
+        &'a self,
+        _key: &'a str,
+        _wing: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
     /// Search by fingerprint hashes within a wing.
     fn fingerprint_search(
         &self,

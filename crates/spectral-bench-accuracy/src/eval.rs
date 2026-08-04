@@ -420,7 +420,7 @@ impl AccuracyEval {
 
         // Classify question shape first — it gates expansion below and routes
         // retrieval/prompting. (Always uses the original question text.)
-        let qtype = retrieval::QuestionType::classify(&question.question);
+        let qtype = retrieval::classify_question(&question.question);
 
         // Query expansion: augment question with synonym/domain terms for FTS.
         //

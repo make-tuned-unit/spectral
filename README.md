@@ -208,6 +208,33 @@ brain.assert("Alice", "knows", "Bob", 1.0, Visibility::Private)?;
 # Ok::<(), spectral::Error>(())
 ```
 
+### Reproducing the benchmarked configuration
+
+The accuracy number below comes from a specific retrieval **and rendering**
+configuration. `spectral::retrieve` executes exactly that configuration in one
+call, so what you run is what was measured:
+
+```rust
+use spectral::retrieve::{retrieve, RetrievePlan};
+use spectral::{Brain, Visibility};
+
+let brain = Brain::open("./my-brain")?;
+let question = "what did I decide about auth";
+
+// The published LongMemEval-S configuration: question-shape classification,
+// per-shape route and profile, and session-grouped dated rendering.
+let plan = RetrievePlan::v1(question, Visibility::Private);
+let result = retrieve(&brain, question, &plan)?;
+
+println!("{}", result.context_block());
+# Ok::<(), spectral::Error>(())
+```
+
+`RetrievePlan` is the whole configuration surface — route, per-shape profile,
+visibility, time anchor, and rendering — so a published result can name the
+exact plan that produced it. A test pins that this plan enables no unproven
+lever.
+
 See [`examples/quickstart.rs`](crates/spectral/examples/quickstart.rs) for a
 complete runnable example.
 

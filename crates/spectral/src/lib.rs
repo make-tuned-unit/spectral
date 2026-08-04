@@ -95,13 +95,21 @@
 //! The measured record behind these one-liners — including the negative
 //! results — is indexed in `docs/MEASURED_RECORD.md`.
 
+pub mod answerability;
 #[cfg(feature = "http-llm")]
 pub mod llm;
 pub mod policy;
+pub mod render;
+pub mod retrieve;
+pub mod supersession;
 pub mod temporal;
 pub mod turn;
 
+pub use answerability::{AnswerType, AnswerabilityConfig};
 pub use policy::{QuestionShape, RetrievalPolicyVersion, RetrievalRoute};
+pub use render::{RenderOptions, SessionOrder};
+pub use retrieve::{retrieve, RetrievePlan, Retrieved};
+pub use supersession::{SupersessionConfig, SupersessionReport};
 pub use temporal::{resolve_relative_dates, Certainty, ResolvedDate};
 
 pub use turn::{
@@ -128,7 +136,7 @@ pub use spectral_graph::brain::{
     AaakOpts, AaakResult, AssertResult, DerivationHealthReport, DerivationRepairReport,
     EntityPolicy, HybridRecallResult, IngestResult, IngestTextOpts, IngestTextResult, RecallResult,
     RecallTopKConfig, ReinforceOpts, ReinforceResult, RejectedTriple, RejectionReason,
-    RememberOpts, RememberResult, VerificationStatus,
+    RememberOpts, RememberResult, VerificationStatus, WingReclassifyReport,
 };
 // Spectrogram-as-recall is retired: 0/500 contexts changed in the Tier-0
 // retrieval oracle (docs/internal/ORACLE_TIER0.md). The facade re-exports of
@@ -363,6 +371,36 @@ impl Brain {
     ///
     /// **Time anchor defaults to `Utc::now()`** — use
     /// [`recall_local_at()`](Self::recall_local_at) for historical queries.
+    /// The latest `created_at` in this brain — a deterministic time anchor for
+    /// recency decay. See
+    /// [`spectral_graph::brain::Brain::latest_interaction_time`].
+    ///
+    /// Pass it to [`retrieve::RetrievePlan::with_time_anchor`] (or use
+    /// [`retrieve::RetrievePlan::reproducible`]) so the decayed scores a
+    /// caller reads depend on what the brain contains rather than on when the
+    /// query ran. Ordering is already time-invariant — measured, see
+    /// `docs/internal/decay-time-invariance-2026-08-03.md`.
+    pub fn latest_interaction_time(&self) -> Result<Option<DateTime<Utc>>, Error> {
+        self.inner.latest_interaction_time()
+    }
+
+    /// Re-run wing classification with the current rules. `apply = false` is a
+    /// dry run. See [`spectral_graph::brain::Brain::reclassify_wings`].
+    pub fn reclassify_wings(&self, apply: bool) -> Result<WingReclassifyReport, Error> {
+        self.inner.reclassify_wings(apply)
+    }
+
+    /// Reclassify only memories currently in `only_wings` — the safe form of
+    /// taxonomy repair. See
+    /// [`spectral_graph::brain::Brain::reclassify_wings_in`].
+    pub fn reclassify_wings_in(
+        &self,
+        only_wings: &[&str],
+        apply: bool,
+    ) -> Result<WingReclassifyReport, Error> {
+        self.inner.reclassify_wings_in(only_wings, apply)
+    }
+
     pub fn recall_local(&self, query: &str) -> Result<HybridRecallResult, Error> {
         self.inner.recall_local(query)
     }

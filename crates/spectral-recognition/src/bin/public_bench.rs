@@ -42,7 +42,7 @@ use spectral_recognition::eval::{
     degrade, hash_id, max_jaccard, roc_auc, split_9010, token_set, LABEL_NOISE_JACCARD,
 };
 use spectral_recognition::{
-    InMemoryRecognitionStore, RecognitionConfig, RecognitionEngine, Verdict,
+    InMemoryRecognitionStore, MapIdf, RecognitionConfig, RecognitionEngine, Verdict,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -266,11 +266,18 @@ struct EngineResult {
     query_ms: f64,
 }
 
-fn run_engine(rd: &RegimeData) -> Result<EngineResult> {
+/// `idf: true` runs the R9 IDF arm: `MapIdf::from_corpus` over the regime's
+/// enrolled texts (probe text never enters the map), supplied to both
+/// enroll-time and probe-time extraction. `false` is the shipped length proxy.
+fn run_engine(rd: &RegimeData, idf: bool) -> Result<EngineResult> {
     let mut engine = RecognitionEngine::new(
         InMemoryRecognitionStore::default(),
         RecognitionConfig::default(),
     );
+    if idf {
+        let map = MapIdf::from_corpus(rd.enroll.iter().map(|(_, c)| c.as_str()));
+        engine.set_term_idf(Some(Box::new(map)));
+    }
     let t = std::time::Instant::now();
     for (id, content) in &rd.enroll {
         engine.enroll(id, content)?;
@@ -394,10 +401,14 @@ fn main() -> Result<()> {
         .unwrap_or(10_000);
     let json_out = arg_value(&args, "--json").map(PathBuf::from);
     let export_dir = arg_value(&args, "--export-splits").map(PathBuf::from);
+    // R9 arm: also run the engine with MapIdf::from_corpus(enrolled) landmark
+    // ranking. Prereg: docs/internal/r9-idf-prereg-2026-08-04.md.
+    let idf_arm = args.iter().any(|a| a == "--idf-arm");
     if longmemeval.is_none() && mrpc.is_none() && paws.is_none() {
         bail!(
             "usage: public_bench [--longmemeval <longmemeval_s.json>] [--mrpc <mrpc.jsonl>] \
-             [--paws <paws.jsonl>] [--r1-limit N] [--json <out.json>] [--export-splits <dir>]"
+             [--paws <paws.jsonl>] [--r1-limit N] [--json <out.json>] [--export-splits <dir>] \
+             [--idf-arm]"
         );
     }
 
@@ -441,7 +452,12 @@ fn main() -> Result<()> {
             neg_n,
             rd.label_noise_excluded
         );
-        let eng = run_engine(rd)?;
+        let eng = run_engine(rd, false)?;
+        let eng_idf = if idf_arm {
+            Some(run_engine(rd, true)?)
+        } else {
+            None
+        };
         let (mh_auc, mh_query_ms) = run_minhash(rd);
         println!(
             "{:28} {:>7} {:>7} {:>7}   {:>10.4}   {:>14.4}",
@@ -463,13 +479,24 @@ fn main() -> Result<()> {
             "  cost: engine enroll {:.0}ms total, query {:.3}ms/probe; minhash query {:.3}ms/probe",
             eng.enroll_ms, eng.query_ms, mh_query_ms
         );
+        if let Some(ei) = &eng_idf {
+            println!(
+                "  IDF arm (MapIdf over enrolled): AUC {:.4} (delta {:+.4}); positives Novel {}/{pos_n}, negatives non-Novel {}/{neg_n}; enroll {:.0}ms, query {:.3}ms/probe",
+                ei.auc,
+                ei.auc - eng.auc,
+                ei.pos_novel,
+                ei.neg_familiar,
+                ei.enroll_ms,
+                ei.query_ms
+            );
+        }
         if rd.label_noise_excluded > 0 {
             println!(
                 "  label-noise mask: {} held-out negatives excluded at split construction (Jaccard >= {LABEL_NOISE_JACCARD})",
                 rd.label_noise_excluded
             );
         }
-        json_regimes.push(serde_json::json!({
+        let mut regime_json = serde_json::json!({
             "name": rd.name,
             "title": rd.title,
             "enrolled": rd.enroll.len(),
@@ -487,7 +514,17 @@ fn main() -> Result<()> {
                 "auc": mh_auc,
                 "query_ms_avg": mh_query_ms,
             },
-        }));
+        });
+        if let Some(ei) = &eng_idf {
+            regime_json["engine_idf"] = serde_json::json!({
+                "auc": ei.auc,
+                "pos_novel": ei.pos_novel,
+                "neg_familiar": ei.neg_familiar,
+                "enroll_ms_total": ei.enroll_ms,
+                "query_ms_avg": ei.query_ms,
+            });
+        }
+        json_regimes.push(regime_json);
     }
     println!();
     println!(

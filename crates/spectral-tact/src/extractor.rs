@@ -30,10 +30,35 @@ pub async fn search(
 ) -> anyhow::Result<(Vec<MemoryHit>, RetrievalMethod)> {
     let max = config.max_results;
 
-    // Tier 1: Fingerprint search (requires both wing and hall).
-    if let (Some(w), Some(h)) = (wing, hall) {
-        let hashes = generate_query_hashes(h, w);
-        let results = store.fingerprint_search(w, h, &hashes, max).await?;
+    // Tier 1: Fingerprint search.
+    //
+    // Gated on wing AND hall by default. `tier1_requires_hall = false` fires on
+    // wing alone and enumerates every anchor hall, because a *question* rarely
+    // declares the memory type that answers it — the conjunction suppressed
+    // this tier to 0.9% of real queries.
+    let tier1_wing = match (wing, hall, config.tier1_requires_hall) {
+        (Some(w), Some(_), _) => Some(w),
+        (Some(w), None, false) => Some(w),
+        _ => None,
+    };
+    if let Some(w) = tier1_wing {
+        // Anchor hall: the query's own when known, otherwise every hall.
+        let anchors: Vec<&str> = match hall {
+            Some(h) => vec![h.as_str()],
+            None => ALL_HALLS.to_vec(),
+        };
+        let mut hashes: Vec<String> = anchors
+            .iter()
+            .flat_map(|a| generate_query_hashes(a, w))
+            .collect();
+        hashes.sort();
+        hashes.dedup();
+        // `fingerprint_search`'s hall argument scopes the anchor; with no hall
+        // on the query the hashes already span every anchor, so pass the first.
+        let probe_hall = anchors[0];
+        let results = store
+            .fingerprint_search(w, probe_hall, &hashes, max)
+            .await?;
 
         if !results.is_empty() {
             let query_words = extract_fts_words(user_msg);
@@ -62,6 +87,11 @@ pub async fn search(
     }
 
     Ok((Vec::new(), RetrievalMethod::Empty))
+}
+
+/// Public for diagnostics: the hash set a (anchor_hall, wing) pair probes.
+pub fn query_hashes_for(hall: &str, wing: &str) -> Vec<String> {
+    generate_query_hashes(hall, wing)
 }
 
 fn generate_query_hashes(hall: &str, wing: &str) -> Vec<String> {

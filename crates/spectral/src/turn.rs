@@ -516,4 +516,25 @@ impl Brain {
     ) -> Result<Vec<spectral_ingest::MemoryOutcomeEvidence>, Error> {
         self.inner.memory_outcome_evidence(limit)
     }
+
+    /// Defer the turn-delivery ledger write off the read path. Default off.
+    ///
+    /// When on, [`turn`](Self::turn) returns without waiting for the delivery
+    /// transaction; [`record_turn_outcome`](Self::record_turn_outcome) awaits
+    /// its own turn's pending write before committing, so an outcome can never
+    /// land ahead of (or without) its delivery. The trade: a process crash
+    /// before the spawned write lands loses that turn's exposure row — never an
+    /// adjudicated outcome. Callers needing every exposure durable before the
+    /// next action leave this off.
+    /// Prereg: `docs/internal/deferred-delivery-prereg-2026-08-04.md`.
+    pub fn set_async_turn_delivery(&mut self, on: bool) {
+        self.inner.set_async_turn_delivery(on);
+    }
+
+    /// Await all in-flight deferred delivery writes (see
+    /// [`set_async_turn_delivery`](Self::set_async_turn_delivery)). Call before
+    /// shutdown; a no-op when the mode is off.
+    pub fn flush_turn_deliveries(&self) -> Result<(), Error> {
+        self.inner.flush_turn_deliveries()
+    }
 }

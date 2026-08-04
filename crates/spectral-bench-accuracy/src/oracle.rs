@@ -13,7 +13,7 @@
 use crate::dataset::{Category, Question};
 use crate::ingest::{self, IngestStrategy};
 use crate::retrieval::QuestionPrompts;
-use crate::retrieval::{self, QuestionType, RetrievalConfig, RetrievalPath};
+use crate::retrieval::{self, RetrievalConfig, RetrievalPath};
 use anyhow::{Context, Result};
 use spectral_graph::brain::{Brain, BrainConfig, EntityPolicy};
 use spectral_tact::TactConfig;
@@ -88,6 +88,9 @@ fn open_existing_brain(brain_dir: &Path) -> Result<Brain> {
         wing_rules: None,
         hall_rules: None,
         device_id: None,
+        // Ablation: `SPECTRAL_NO_FINGERPRINTS=1` skips constellation
+        // fingerprint generation at ingest. Requires --fresh-brains.
+        fingerprints: Some(std::env::var("SPECTRAL_NO_FINGERPRINTS").is_err()),
         enable_spectrogram: std::env::var("SPECTRAL_BENCH_SPECTROGRAM").is_ok(),
         entity_policy: EntityPolicy::Strict,
         sqlite_mmap_size: None,
@@ -217,7 +220,7 @@ pub fn run_oracle(config: &OracleConfig) -> Result<Vec<OracleRow>> {
             .unwrap_or_else(|| question.question.clone());
 
         // Mirror eval_single routing exactly: classify on the ORIGINAL question.
-        let qtype = QuestionType::classify(&question.question);
+        let qtype = retrieval::classify_question(&question.question);
         let effective_path = config
             .retrieval_path_override
             .unwrap_or_else(|| qtype.retrieval_path());

@@ -25,7 +25,9 @@
 
 use std::time::{Duration, Instant};
 
-use spectral::{Brain, MemoryOutcome, RecognitionContext, TurnRequest, Visibility};
+use spectral::{
+    Brain, MemoryOutcome, RecognitionContext, TurnPolicyVersion, TurnRequest, Visibility,
+};
 use spectral_graph::cascade_layers::CascadePipelineConfig;
 use tempfile::TempDir;
 
@@ -120,6 +122,55 @@ fn main() {
         turn_only.push(t.elapsed());
     }
 
+    // ── Arm 2b: turn under V2Shaped (the published retrieval policy) ───
+    //
+    // V1 ignores the query entirely, so arm 2 never runs question-shape
+    // classification. V2Shaped classifies twice per turn (once for the cascade
+    // profile, once for the route), which is the configuration a consumer runs
+    // if they want the policy behind the published accuracy number. Measured
+    // separately so the classifier's cost is attributed to the arm that pays it.
+    fn v2_request<'q>(q: &'q str) -> TurnRequest<'q> {
+        let mut r = TurnRequest::query(q, Visibility::Private);
+        r.policy = TurnPolicyVersion::V2Shaped;
+        r
+    }
+    for i in 0..WARMUP {
+        let q = query_for(i);
+        let _ = brain.turn(&v2_request(&q));
+    }
+    let mut turn_v2 = Vec::with_capacity(iters);
+    for i in 0..iters {
+        let q = query_for(i);
+        let req = v2_request(&q);
+        let t = Instant::now();
+        brain.turn(&req).unwrap();
+        turn_v2.push(t.elapsed());
+    }
+
+    // ── Arm 2c: turn with deferred delivery write (R8 candidate) ───────
+    //
+    // The failed gate's diagnosis: the whole regression is the synchronous
+    // delivery-write commit. This arm measures the preregistered fix —
+    // `set_async_turn_delivery(true)` spawns that write off the read path
+    // with per-occurrence ordering (see deferred-delivery-prereg-2026-08-04).
+    // A separate Brain over the same corpus dir so the mode flag cannot leak
+    // into the other arms.
+    let mut deferred_brain = Brain::open(tmp.path()).unwrap();
+    deferred_brain.set_async_turn_delivery(true);
+    for i in 0..WARMUP {
+        let _ = deferred_brain.turn(&TurnRequest::query(&query_for(i), Visibility::Private));
+    }
+    let mut turn_deferred = Vec::with_capacity(iters);
+    for i in 0..iters {
+        let q = query_for(i);
+        let req = TurnRequest::query(&q, Visibility::Private);
+        let t = Instant::now();
+        deferred_brain.turn(&req).unwrap();
+        turn_deferred.push(t.elapsed());
+    }
+    deferred_brain.flush_turn_deliveries().unwrap();
+    drop(deferred_brain);
+
     // ── Arm 3: turn + outcome commit (full cycle) ──────────────────────
     let mut turn_full = Vec::with_capacity(iters);
     for i in 0..iters {
@@ -138,6 +189,8 @@ fn main() {
 
     let (lp50, lp95) = percentiles(legacy);
     let (tp50, tp95) = percentiles(turn_only);
+    let (v2p50, v2p95) = percentiles(turn_v2);
+    let (dp50, dp95) = percentiles(turn_deferred);
     let (fp50, fp95) = percentiles(turn_full);
 
     println!("turn latency — corpus={CORPUS}, iters={iters}\n");
@@ -147,20 +200,42 @@ fn main() {
         "{:<34} {:>9.3} {:>9.3}",
         "legacy recall_cascade_scoped", lp50, lp95
     );
-    println!("{:<34} {:>9.3} {:>9.3}", "turn (uncommitted)", tp50, tp95);
+    println!(
+        "{:<34} {:>9.3} {:>9.3}",
+        "turn (uncommitted, V1)", tp50, tp95
+    );
+    println!(
+        "{:<34} {:>9.3} {:>9.3}",
+        "turn (uncommitted, V2Shaped)", v2p50, v2p95
+    );
+    println!(
+        "{:<34} {:>9.3} {:>9.3}",
+        "turn (uncommitted, deferred write)", dp50, dp95
+    );
     println!(
         "{:<34} {:>9.3} {:>9.3}",
         "turn + outcome commit", fp50, fp95
     );
 
     let delta = (tp95 - lp95) / lp95 * 100.0;
-    println!("\nrecall-only p95 delta: {delta:+.1}%  (kill line: +5.0%)");
+    println!("\nrecall-only p95 delta (sync): {delta:+.1}%  (kill line: +5.0%)");
     println!(
-        "VERDICT: {}",
+        "VERDICT (sync): {}",
         if delta <= 5.0 {
             "PASS — turn may be recommended as the default recall path"
         } else {
             "FAIL — keep the APIs typed but do NOT fuse execution"
+        }
+    );
+
+    let ddelta = (dp95 - lp95) / lp95 * 100.0;
+    println!("\nrecall-only p95 delta (deferred): {ddelta:+.1}%  (kill line: +5.0%)");
+    println!(
+        "VERDICT (deferred): {}",
+        if ddelta <= 5.0 {
+            "PASS — deferred mode meets the gate; see deferred-delivery-prereg-2026-08-04"
+        } else {
+            "FAIL — deferred mode misses the gate; turn stays non-default"
         }
     );
     println!(

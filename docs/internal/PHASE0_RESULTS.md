@@ -1,3 +1,11 @@
+> **SUPERSEDED (throughput + storage figures only), 2026-08-03.** The 43 ev/s
+> and ~87 KB/event numbers below are stale — the `max_fingerprint_peers` cap
+> landed after this run and was never re-measured. Current: **428 ev/s**
+> unmodified, **3,148 ev/s / 5.07 KB/event** with fingerprints retired, closing
+> the gap to MinHash+BM25 from ~500x/40–70x to **7.2x/2.4x**. See
+> `phase0-rerun-2026-08-03.md`. The **cost-moat conclusion below is unchanged
+> and still stands.**
+
 # Permagent benchmark — Phase 0 results (T1 ingest + T5 determinism)
 
 **Date:** 2026-07-03
