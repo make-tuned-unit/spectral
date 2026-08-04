@@ -55,28 +55,35 @@ pub fn default_hall_rule_strings() -> Vec<(String, String)> {
 }
 
 fn default_wing_rule_pairs() -> Vec<(&'static str, &'static str)> {
-    vec![
-        (
-            r"alice|coffee|anniversary|colou?r|favourit|favorit|sons|noah|leo|carol-doe",
-            "alice",
-        ),
-        (
-            r"apollo|polymarket|strategy|weather|prediction|wager|trade",
-            "apollo",
-        ),
-        (r"acme|widget|bob|recipe|cook|feast", "acme"),
-        (r"charity|advocacy|grant|nonprofit|fundrais", "charity"),
-        (r"vega|sales|purchase|commerce", "vega"),
-        (r"travel|immigration|visa|permit", "travel"),
-        (
-            r"polaris|volunteer|plogging|litter|marathon|summit",
-            "polaris",
-        ),
-        (
-            r"task.runner|litellm|infrastructure|ollama|gemma|model.ladder",
-            "infra",
-        ),
-    ]
+    // DELIBERATELY EMPTY.
+    //
+    // A wing is a *topic area* — a deployment's own projects and life areas.
+    // That is consumer domain knowledge, and the library has no way to know it.
+    //
+    // This list previously shipped example-scenario fixtures as the default:
+    //
+    //     alice|coffee|anniversary|favourit|noah|leo|carol-doe  -> alice
+    //     apollo|polymarket|strategy|weather|wager|trade        -> apollo
+    //     acme|widget|bob|recipe|cook|feast                     -> acme
+    //     charity, vega, travel, polaris, infra                 -> ...
+    //
+    // Those are not a taxonomy. They are demo data, and they did real harm:
+    // in a live 1,738-memory brain they had captured **46 memories into
+    // `apollo`, 18 into `alice`, 17 into `acme`, 16 into `polaris`** by keyword
+    // collision — genuine content filed into fictional topic areas, sitting
+    // beside the consumer's real wings (`henry-infra`, `permagent`, `getladle`,
+    // `grocery-savings-planner`, ...).
+    //
+    // With no rules, `classify_wing` returns `"general"`: no taxonomy supplied,
+    // no taxonomy invented. Consumers declare their own via
+    // `BrainConfig::wing_rules`, which is the supported path and demonstrably
+    // works — 46.5% of real queries name a real wing when the taxonomy is real,
+    // versus 11.4% under the fixtures.
+    //
+    // Wings are NOT auto-derivable from corpus statistics: measured, coverage
+    // and discrimination trade off with no workable point. See
+    // `docs/internal/wing-taxonomy-2026-08-03.md`.
+    Vec::new()
 }
 
 fn default_hall_rule_pairs() -> Vec<(&'static str, &'static str)> {
@@ -155,18 +162,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wing_personal() {
+    fn no_default_wing_taxonomy_is_invented() {
+        // The library ships NO wing rules. A wing is deployment knowledge, and
+        // inventing one filed real content into fictional topic areas — 46
+        // memories into `apollo`, 18 into `alice` in a live brain.
         let rules = default_wing_rules();
-        assert_eq!(classify_wing("", "Alice likes coffee", "", &rules), "alice");
+        assert!(
+            rules.is_empty(),
+            "the library must not ship a wing taxonomy"
+        );
+        for content in [
+            "Alice likes coffee",
+            "apollo weather prediction",
+            "acme widget recipe",
+            "polaris volunteer marathon",
+        ] {
+            assert_eq!(
+                classify_wing("", content, "", &rules),
+                "general",
+                "fixture wing leaked back in for {content:?}"
+            );
+        }
     }
 
     #[test]
-    fn wing_apollo() {
-        let rules = default_wing_rules();
+    fn consumer_supplied_wings_are_the_supported_path() {
+        // What a real deployment does: declare its own project areas. Measured
+        // on the real Permagent brain, 46.5% of real queries name a real wing
+        // under a real taxonomy (vs 11.4% under the fixtures).
+        let rules = compile(&[
+            (r"henry-infra|task runner|deploy", "henry-infra"),
+            (r"getladle|ladle", "getladle"),
+        ]);
         assert_eq!(
-            classify_wing("", "apollo weather prediction", "", &rules),
-            "apollo"
+            classify_wing("", "the task runner deploy failed", "", &rules),
+            "henry-infra"
         );
+        assert_eq!(
+            classify_wing("", "ladle onboarding", "", &rules),
+            "getladle"
+        );
+        // Unmatched content still falls back honestly.
+        assert_eq!(
+            classify_wing("", "unrelated content", "", &rules),
+            "general"
+        );
+    }
+
+    /// Helper mirroring how `BrainConfig::wing_rules` are compiled.
+    fn compile(pairs: &[(&str, &str)]) -> Vec<(Regex, String)> {
+        pairs
+            .iter()
+            .map(|(p, w)| (Regex::new(p).unwrap(), w.to_string()))
+            .collect()
     }
 
     #[test]
@@ -179,11 +227,17 @@ mod tests {
     }
 
     #[test]
-    fn wing_uses_key_and_category() {
-        let rules = default_wing_rules();
+    fn wing_matching_still_considers_key_and_category() {
+        // The key and category are part of the match blob — a consumer rule can
+        // route on them, not only on content.
+        let rules = compile(&[(r"permagent", "permagent")]);
         assert_eq!(
-            classify_wing("alice_pref", "something", "core", &rules),
-            "alice"
+            classify_wing("permagent_pref", "something", "core", &rules),
+            "permagent"
+        );
+        assert_eq!(
+            classify_wing("k", "something", "permagent", &rules),
+            "permagent"
         );
     }
 

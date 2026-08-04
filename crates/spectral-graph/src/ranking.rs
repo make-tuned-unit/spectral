@@ -321,7 +321,7 @@ const RECENCY_BOOST_WEIGHT: f64 = 0.1;
 /// recency ranking was silently inert for every imported memory. Shared by all
 /// `created_at`/`last_reinforced_at` parse sites so the whole crate reads the
 /// timestamp formats the ingest layer writes.
-pub(crate) fn parse_created_at(s: &str) -> Option<DateTime<Utc>> {
+pub fn parse_created_at(s: &str) -> Option<DateTime<Utc>> {
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
         return Some(dt.and_utc());
     }

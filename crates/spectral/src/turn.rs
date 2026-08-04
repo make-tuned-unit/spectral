@@ -61,6 +61,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use spectral_graph::cascade_layers::CascadePipelineConfig;
+
+use crate::policy::{QuestionShape, RetrievalRoute};
 use spectral_graph::RecognitionContext;
 use spectral_ingest::MemoryHit;
 use spectral_recognition::RecognitionResult;
@@ -75,8 +77,22 @@ use crate::{Brain, Error, Visibility};
 pub enum TurnPolicyVersion {
     /// Today's cascade pipeline defaults, with retrieval-time write-back
     /// disabled and reinforcement deferred to the outcome commit.
+    ///
+    /// Applies **no** question-shape classification: every query gets the
+    /// generic cascade config.
     #[default]
     V1,
+    /// V1 plus the versioned retrieval policy: the query is classified into a
+    /// [`QuestionShape`], and that shape's per-shape cascade profile and
+    /// retrieval route are applied.
+    ///
+    /// This exists because [`crate::policy`] previously described a
+    /// configuration the library never executed — only the benchmark harness
+    /// applied `cascade_profile`, so a published number could not be
+    /// reproduced through the public API. V2 closes that gap.
+    ///
+    /// Opt-in. V1 remains the default so no existing caller changes behaviour.
+    V2Shaped,
 }
 
 impl TurnPolicyVersion {
@@ -84,16 +100,40 @@ impl TurnPolicyVersion {
     pub fn as_str(&self) -> &'static str {
         match self {
             TurnPolicyVersion::V1 => "v1",
+            TurnPolicyVersion::V2Shaped => "v2-shaped",
         }
     }
 
-    fn retrieval_config(&self) -> CascadePipelineConfig {
+    /// Cascade config for this policy, given the query.
+    ///
+    /// V1 ignores the query entirely. V2 classifies it and applies the
+    /// per-shape profile from [`crate::policy`].
+    fn retrieval_config(&self, query: Option<&str>) -> CascadePipelineConfig {
         match self {
             TurnPolicyVersion::V1 => CascadePipelineConfig {
                 // The whole point: no reinforcement, no event log, at read time.
                 write_back: false,
                 ..Default::default()
             },
+            TurnPolicyVersion::V2Shaped => {
+                let base = match query {
+                    Some(q) => QuestionShape::classify(q).cascade_profile(),
+                    // No query means no retrieval, so the profile is moot.
+                    None => CascadePipelineConfig::default(),
+                };
+                CascadePipelineConfig {
+                    write_back: false,
+                    ..base
+                }
+            }
+        }
+    }
+
+    /// Retrieval route for this policy, given the query. V1 always cascades.
+    fn route(&self, query: Option<&str>) -> RetrievalRoute {
+        match (self, query) {
+            (TurnPolicyVersion::V1, _) | (_, None) => RetrievalRoute::Cascade,
+            (TurnPolicyVersion::V2Shaped, Some(q)) => QuestionShape::classify(q).retrieval_route(),
         }
     }
 }
@@ -235,6 +275,15 @@ pub struct OutcomeReceipt {
     pub not_reinforced: Vec<String>,
 }
 
+/// Minimum `k` on the top-k FTS route.
+///
+/// Mirrors the floor the measured benchmark harness applies
+/// (`spectral-bench-accuracy/src/retrieval.rs`, `max_results.max(40)`): a
+/// smaller k cuts temporal evidence turns that only reach the top 40 after
+/// re-ranking. Pinned here so the library's route agrees with the configuration
+/// the published numbers were measured under, rather than coinciding by luck.
+const TOPK_MIN_K: usize = 40;
+
 /// Reinforcement applied to a memory the actor actually used.
 ///
 /// Ten times the retrieval-time auto-reinforce nudge (0.01), because it is
@@ -251,14 +300,39 @@ impl Brain {
     /// what was actually used. A turn that is never committed leaves memory
     /// state completely unchanged.
     pub fn turn(&self, request: &TurnRequest<'_>) -> Result<TurnResult, Error> {
-        let config = request.policy.retrieval_config();
+        let config = request.policy.retrieval_config(request.query);
+        let route = request.policy.route(request.query);
 
         let hits = match request.query {
-            Some(query) => {
-                self.inner
-                    .recall_cascade_scoped(query, &request.context, &config, request.visibility)?
-                    .merged_hits
-            }
+            Some(query) => match route {
+                RetrievalRoute::Cascade => {
+                    self.inner
+                        .recall_cascade_scoped(
+                            query,
+                            &request.context,
+                            &config,
+                            request.visibility,
+                        )?
+                        .merged_hits
+                }
+                // Temporal shapes route off cascade: cascade measured ~-15pp on
+                // temporal.
+                //
+                // `k` is floored at TOPK_MIN_K to match the measured harness
+                // configuration, which applies the same floor deliberately — a
+                // smaller k cuts temporal evidence turns that rank at FTS
+                // positions 21–40 only after re-ranking. Without the floor this
+                // path would agree with the harness only by coincidence at the
+                // current profile values.
+                RetrievalRoute::TopkFts | RetrievalRoute::Tact | RetrievalRoute::Graph => {
+                    let topk = spectral_graph::brain::RecallTopKConfig {
+                        k: config.k.max(TOPK_MIN_K),
+                        ..Default::default()
+                    };
+                    self.inner
+                        .recall_topk_fts(query, &topk, request.visibility)?
+                }
+            },
             None => Vec::new(),
         };
 
@@ -441,5 +515,26 @@ impl Brain {
         limit: usize,
     ) -> Result<Vec<spectral_ingest::MemoryOutcomeEvidence>, Error> {
         self.inner.memory_outcome_evidence(limit)
+    }
+
+    /// Defer the turn-delivery ledger write off the read path. Default off.
+    ///
+    /// When on, [`turn`](Self::turn) returns without waiting for the delivery
+    /// transaction; [`record_turn_outcome`](Self::record_turn_outcome) awaits
+    /// its own turn's pending write before committing, so an outcome can never
+    /// land ahead of (or without) its delivery. The trade: a process crash
+    /// before the spawned write lands loses that turn's exposure row — never an
+    /// adjudicated outcome. Callers needing every exposure durable before the
+    /// next action leave this off.
+    /// Prereg: `docs/internal/deferred-delivery-prereg-2026-08-04.md`.
+    pub fn set_async_turn_delivery(&mut self, on: bool) {
+        self.inner.set_async_turn_delivery(on);
+    }
+
+    /// Await all in-flight deferred delivery writes (see
+    /// [`set_async_turn_delivery`](Self::set_async_turn_delivery)). Call before
+    /// shutdown; a no-op when the mode is off.
+    pub fn flush_turn_deliveries(&self) -> Result<(), Error> {
+        self.inner.flush_turn_deliveries()
     }
 }

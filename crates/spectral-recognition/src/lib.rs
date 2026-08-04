@@ -46,7 +46,8 @@ mod store;
 pub mod stream;
 
 pub use extract::{
-    extract_landmarks, fingerprint_stimulus, normalized_tokens, Landmark, StimulusPrints,
+    extract_landmarks, extract_landmarks_with, fingerprint_stimulus, fingerprint_stimulus_with,
+    normalized_tokens, Landmark, MapIdf, StimulusPrints, TermIdf,
 };
 pub use minhash::MinHashConfig;
 pub use score::{score_candidates, MinHashMatch, ScoreConfig};
@@ -156,11 +157,29 @@ pub struct RecognitionResult {
 pub struct RecognitionEngine<S: RecognitionStore> {
     store: S,
     config: RecognitionConfig,
+    /// Optional corpus rarity source for landmark selection (R9 seam).
+    /// `None` — the default — is byte-identical to the length-proxy ranking.
+    term_idf: Option<Box<dyn TermIdf + Send + Sync>>,
 }
 
 impl<S: RecognitionStore> RecognitionEngine<S> {
     pub fn new(store: S, config: RecognitionConfig) -> Self {
-        Self { store, config }
+        Self {
+            store,
+            config,
+            term_idf: None,
+        }
+    }
+
+    /// Supply (or clear) a corpus rarity source. Affects landmark selection at
+    /// both enroll and recognize time; enrolled fingerprints are NOT
+    /// re-derived, so set this before enrolling for consistent extraction.
+    pub fn set_term_idf(&mut self, idf: Option<Box<dyn TermIdf + Send + Sync>>) {
+        self.term_idf = idf;
+    }
+
+    fn term_idf(&self) -> Option<&dyn TermIdf> {
+        self.term_idf.as_deref().map(|i| i as &dyn TermIdf)
     }
 
     pub fn store(&self) -> &S {
@@ -174,7 +193,7 @@ impl<S: RecognitionStore> RecognitionEngine<S> {
         if self.store.is_enrolled(memory_id)? {
             return Ok(());
         }
-        let prints = fingerprint_stimulus(content, &self.config);
+        let prints = fingerprint_stimulus_with(content, &self.config, self.term_idf());
         self.store.index_memory(memory_id, &prints)?;
         // Shingle-set channel (best-effort — a store without MinHash support
         // or an older read-only index must not break enrollment). Inverted
@@ -200,7 +219,7 @@ impl<S: RecognitionStore> RecognitionEngine<S> {
 
     /// Recognize a stimulus against everything enrolled.
     pub fn recognize(&self, stimulus: &str) -> Result<RecognitionResult> {
-        let prints = fingerprint_stimulus(stimulus, &self.config);
+        let prints = fingerprint_stimulus_with(stimulus, &self.config, self.term_idf());
         let pair_matches = self.store.lookup_pairs(&prints.pair_hashes)?;
         let gram_matches = self.store.lookup_grams(&prints.gram_hashes)?;
         let enrolled = self.store.enrolled_count()?;

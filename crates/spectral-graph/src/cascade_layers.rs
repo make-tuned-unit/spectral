@@ -374,8 +374,12 @@ pub fn run_cascade_pipeline_scoped(
     // buried below FTS rank k; the output is truncated back to k below, so
     // context size tracks k, not the pool.
     let fetch_k = config.k.saturating_mul(config.fetch_mult.max(1));
+    // Ambient scope reaches TACT's tier selection here. Without it a wing is
+    // detected from query text alone, which covers 12.4% of real agent queries
+    // — only the ones that name a project. `None` reproduces prior behaviour
+    // exactly, so an empty context changes nothing.
     let mut candidates = brain
-        .cascade_retrieve(query, fetch_k)
+        .cascade_retrieve_scoped(query, fetch_k, context.focus_wing.as_deref())
         .map_err(|e| crate::Error::Schema(e.to_string()))?;
 
     // Visibility boundary: keep only hits whose own label admits this context

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::dataset::Question;
 use crate::ingest;
-use crate::retrieval::{QuestionType, RetrievalConfig};
+use crate::retrieval::RetrievalConfig;
 
 /// A single scored-memory record for the JSONL dump (Tool 1).
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,7 +109,7 @@ pub fn inspect_question(
     let hits: Vec<spectral_ingest::MemoryHit> = match retrieval_path {
         InspectRetrievalPath::Cascade => {
             // Match bench's cascade invocation: question-type routing → pipeline config
-            let qtype = QuestionType::classify(&question.question);
+            let qtype = crate::retrieval::classify_question(&question.question);
             let pipeline_config = qtype.cascade_profile();
             let context = question
                 .question_date

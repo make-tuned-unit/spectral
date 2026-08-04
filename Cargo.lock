@@ -2756,6 +2756,7 @@ dependencies = [
  "blake3",
  "chrono",
  "clap",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

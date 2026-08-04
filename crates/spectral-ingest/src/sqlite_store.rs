@@ -288,6 +288,14 @@ impl SqliteStore {
         // Enable FK enforcement AFTER all migrations complete (migrate_fk_cascade
         // turns FK OFF for table rebuilds). This is per-connection in SQLite and
         // must be set on every connection before any DML runs.
+        // Migration: drop the two redundant indexes on pre-existing brains.
+        // `idx_memories_key` duplicates the UNIQUE constraint's implicit index;
+        // `idx_memories_wing` is a prefix of `idx_memories_wing_recency`.
+        // Both are write-path cost with no read-path benefit.
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_memories_key;
+             DROP INDEX IF EXISTS idx_memories_wing;",
+        )?;
         conn.execute_batch("PRAGMA foreign_keys = ON")?;
         // Stemmed + unstemmed RRF fusion: build/refresh the content-only
         // unstemmed index when requested (idempotent). Write-mode only.
@@ -571,8 +579,17 @@ impl SqliteStore {
                 device_id     BLOB DEFAULT NULL,
                 confidence    REAL NOT NULL DEFAULT 1.0
             );
-            CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
-            CREATE INDEX IF NOT EXISTS idx_memories_wing ON memories(wing);
+            -- NOTE: no index on `key` — the column is `TEXT NOT NULL UNIQUE`,
+            -- so SQLite already maintains an implicit unique index for it. An
+            -- explicit one is a pure duplicate paid on every write.
+            --
+            -- NOTE: no standalone index on `wing` either — it is the leading
+            -- column of `idx_memories_wing_recency`, which serves `WHERE wing =
+            -- ?` equally well.
+            --
+            -- Measured: dropping these two takes per-row insert from ~0.19 to
+            -- ~0.13 ms (28-35% faster). Index maintenance is ~50% of ingest
+            -- cost; see docs/internal/ingest-gap-decomposition-2026-08-03.md.
             CREATE INDEX IF NOT EXISTS idx_memories_signal ON memories(signal_score);
             -- Recency-ordered wing scan for the capped fingerprint peer read
             -- (`list_wing_memories_capped`). Expression index matches the query's
@@ -1384,6 +1401,38 @@ fn memory_hit_from_row(row: &rusqlite::Row, hits: usize) -> rusqlite::Result<Mem
 }
 
 impl MemoryStore for SqliteStore {
+    fn set_wing<'a>(
+        &'a self,
+        key: &'a str,
+        wing: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let n = conn.execute(
+                "UPDATE memories SET wing = ?1 WHERE key = ?2",
+                rusqlite::params![wing, key],
+            )?;
+            // The wing cache keys off wing values; a reassignment invalidates it.
+            self.wing_cache.lock().map(|mut c| c.clear()).ok();
+            Ok(n > 0)
+        })
+    }
+
+    /// Uses `idx_memories_wing_recency` where the planner picks it up; a plain
+    /// `MAX` over a few hundred thousand rows is sub-millisecond regardless.
+    fn latest_created_at(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + '_>> {
+        Box::pin(async move {
+            let conn = self.conn.lock().unwrap();
+            let latest: Option<String> = conn
+                .query_row("SELECT MAX(created_at) FROM memories", [], |r| r.get(0))
+                .optional()?
+                .flatten();
+            Ok(latest)
+        })
+    }
+
     fn write(
         &self,
         memory: &Memory,
@@ -1407,12 +1456,16 @@ impl MemoryStore for SqliteStore {
             // keeps the row's existing wing, but the incoming `memory.wing` may
             // differ (classification is content-driven), so cache invalidation
             // must target the stored wing, not just the incoming one.
+            // `prepare_cached`, not `query_row`: this probe runs on EVERY write,
+            // and `query_row` re-parses the SQL each time. Same fix as the
+            // per-member insert in the turn delivery path.
             let existing: Option<(Option<String>, String, Option<String>)> = tx
-                .query_row(
-                    "SELECT content_hash, content, wing FROM memories WHERE key = ?1",
-                    params![memory.key],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
+                .prepare_cached("SELECT content_hash, content, wing FROM memories WHERE key = ?1")
+                .and_then(|mut stmt| {
+                    stmt.query_row(params![memory.key], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })
+                })
                 .ok();
             let stored_wing: Option<String> = existing.as_ref().and_then(|(_, _, w)| w.clone());
 
@@ -1420,11 +1473,13 @@ impl MemoryStore for SqliteStore {
                 None => {
                     // Case 1: No existing row — insert.
                     if memory.created_at.is_some() {
-                        tx.execute(
+                        tx.prepare_cached(
                             "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
                                                    source, device_id, confidence, created_at, content_hash,
                                                    source_brain_id, signature)
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                        )?
+                        .execute(
                             params![
                                 memory.id,
                                 memory.key,
@@ -1443,11 +1498,13 @@ impl MemoryStore for SqliteStore {
                             ],
                         )?;
                     } else {
-                        tx.execute(
+                        tx.prepare_cached(
                             "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
                                                    source, device_id, confidence, content_hash,
                                                    source_brain_id, signature)
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                        )?
+                        .execute(
                             params![
                                 memory.id,
                                 memory.key,

@@ -10,7 +10,6 @@ use crate::actor::{Actor, AnthropicActor};
 use crate::judge::{AnthropicJudge, Judge, OpenAiJudge};
 use crate::report::{EvalReport, QuestionResult};
 use crate::retrieval::QuestionPrompts;
-use crate::retrieval::QuestionType;
 
 /// Configuration for a replay run.
 pub struct ReplayConfig {
@@ -179,7 +178,7 @@ pub fn run_replay(config: &ReplayConfig) -> Result<EvalReport> {
             let template = match &custom_template {
                 Some(t) => t.clone(),
                 None => {
-                    let qtype = QuestionType::classify(&result.question);
+                    let qtype = crate::retrieval::classify_question(&result.question);
                     qtype.prompt_content().to_string()
                 }
             };

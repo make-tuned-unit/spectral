@@ -40,6 +40,20 @@ pub struct TactConfig {
     pub wing_rules: Vec<(String, String)>,
     /// Hall detection rules: (regex_pattern, hall_name).
     pub hall_rules: Vec<(String, String)>,
+    /// Require a hall on the QUERY before tier 1 (fingerprint search) may run.
+    ///
+    /// Default `true` — the historical behaviour.
+    ///
+    /// A hall is a *memory type*, and the hall rules match a speaker asserting
+    /// one (`decided|chose|remember|prefers`). A question rarely announces what
+    /// kind of memory would answer it, so this conjunction suppresses tier 1
+    /// almost entirely: measured on 217 real queries against a real taxonomy,
+    /// wing fires 46.5%, hall 5.5%, **both 0.9%**.
+    ///
+    /// Setting this `false` fires tier 1 on wing alone, searching the wing's
+    /// fingerprints across all anchor halls. See
+    /// `docs/internal/tier1-ungating-prereg-2026-08-03.md`.
+    pub tier1_requires_hall: bool,
 }
 
 impl Default for TactConfig {
@@ -49,6 +63,7 @@ impl Default for TactConfig {
             max_results: 5,
             max_context_chars: 24000,
             wing_rules: Vec::new(),
+            tier1_requires_hall: true,
             hall_rules: vec![
                 (
                     r"decided|chose|switching to|using|will use|agreed|locked in|decision|auth"
@@ -120,7 +135,28 @@ pub async fn retrieve_memories(
     config: &TactConfig,
     store: &dyn MemoryStore,
 ) -> anyhow::Result<TactResult> {
-    retrieve_inner(user_msg, config, store, false).await
+    retrieve_inner(user_msg, None, config, store, false).await
+}
+
+/// [`retrieve_memories`] with an **ambient wing hint**.
+///
+/// A wing is detected from the query text today, which requires the user to
+/// *name* the project — measured at **12.4%** of real agent queries ("Give me a
+/// tour of the app" names nothing). The remaining 87.6% is scope the agent
+/// already has and the library never receives.
+///
+/// `wing_hint` supplies it. The query's own wing still wins when present, so an
+/// explicit mention overrides ambient context rather than the reverse.
+///
+/// `None` reproduces [`retrieve_memories`] exactly.
+/// See `docs/internal/tier1-ungating-result-2026-08-03.md`.
+pub async fn retrieve_memories_scoped(
+    user_msg: &str,
+    wing_hint: Option<&str>,
+    config: &TactConfig,
+    store: &dyn MemoryStore,
+) -> anyhow::Result<TactResult> {
+    retrieve_inner(user_msg, wing_hint, config, store, false).await
 }
 
 pub async fn retrieve(
@@ -128,11 +164,12 @@ pub async fn retrieve(
     config: &TactConfig,
     store: &dyn MemoryStore,
 ) -> anyhow::Result<TactResult> {
-    retrieve_inner(user_msg, config, store, true).await
+    retrieve_inner(user_msg, None, config, store, true).await
 }
 
 async fn retrieve_inner(
     user_msg: &str,
+    wing_hint: Option<&str>,
     config: &TactConfig,
     store: &dyn MemoryStore,
     build_context_block: bool,
@@ -147,7 +184,10 @@ async fn retrieve_inner(
         });
     }
 
-    let wing = classifier::detect_wing(user_msg, &config.wing_rules);
+    // Query-named wing wins; ambient scope fills the gap when the user did not
+    // name a project.
+    let wing = classifier::detect_wing(user_msg, &config.wing_rules)
+        .or_else(|| wing_hint.map(|w| w.to_string()));
     let hall = classifier::detect_hall(user_msg, &config.hall_rules);
 
     let (memories, method) = extractor::search(user_msg, &wing, &hall, config, store).await?;

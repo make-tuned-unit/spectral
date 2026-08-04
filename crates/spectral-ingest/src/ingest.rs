@@ -52,6 +52,22 @@ pub struct IngestConfig {
     /// your own workload — the affected reader is the TACT tier-1 path, which
     /// this repo has separately measured at no retrieval effect.
     pub max_fingerprint_peers: Option<usize>,
+    /// Generate constellation fingerprints at all. Default `true`
+    /// (behaviour-preserving).
+    ///
+    /// Fingerprints cost **~39% of a write** and **~57% of store-layer bytes**
+    /// (26.4 -> 11.6 KB/event), and their only production reader is TACT
+    /// tier 1, which:
+    ///
+    /// - requires BOTH a wing and a hall to be detected on the *query*, which
+    ///   holds for **3.2%** of LongMemEval-S questions (16/500), and only via
+    ///   coincidental overlap with the demo-derived default wing keywords; and
+    /// - has been separately measured at **0 wins, 2 losses, 9 ties** against
+    ///   plain FTS when it does fire.
+    ///
+    /// Setting this to `false` trades that tier for a large ingest and storage
+    /// win. See `docs/internal/fingerprint-retirement-2026-08-03.md`.
+    pub fingerprints: bool,
 }
 
 impl Default for IngestConfig {
@@ -61,6 +77,7 @@ impl Default for IngestConfig {
             hall_rules: classifier::default_hall_rules(),
             signal_threshold: 0.5,
             max_fingerprint_peers: Some(DEFAULT_MAX_FINGERPRINT_PEERS),
+            fingerprints: true,
         }
     }
 }
@@ -284,6 +301,9 @@ async fn generate_fingerprints(
     config: &IngestConfig,
     store: &dyn MemoryStore,
 ) -> anyhow::Result<Vec<Fingerprint>> {
+    if !config.fingerprints {
+        return Ok(Vec::new());
+    }
     let wing = new_memory.wing.as_deref().unwrap_or("general");
     let new_hall = new_memory.hall.as_deref().unwrap_or("none");
 

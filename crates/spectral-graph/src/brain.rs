@@ -4,7 +4,7 @@
 //! graph, remembering free-text observations via TACT ingestion, and
 //! recalling relevant context from both stores.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -191,6 +191,12 @@ pub struct BrainConfig {
     /// Formerly the `SPECTRAL_MAX_FINGERPRINT_PEERS` env var (`0` meant
     /// unbounded); env overrides now live only in the bench harness.
     pub max_fingerprint_peers: Option<usize>,
+    /// Generate constellation fingerprints at ingest. Default `true`
+    /// (behaviour-preserving). See
+    /// [`spectral_ingest::ingest::IngestConfig::fingerprints`] — measured
+    /// 7x faster ingest and 14.7x smaller storage when off, against a tier-1
+    /// reader reachable on 3.2% of benchmark questions.
+    pub fingerprints: Option<bool>,
 }
 
 impl Default for BrainConfig {
@@ -206,6 +212,7 @@ impl Default for BrainConfig {
             wing_rules: None,
             hall_rules: None,
             device_id: None,
+            fingerprints: None,
             enable_spectrogram: false,
             entity_policy: EntityPolicy::default(),
             sqlite_mmap_size: None,
@@ -331,6 +338,34 @@ pub struct RecallResult {
     pub seed_entities: Vec<EntityId>,
     pub triples: Vec<Triple>,
     pub neighborhood: Neighborhood,
+}
+
+/// What [`Brain::reclassify_wings`] found (and, if applied, changed).
+#[derive(Debug, Clone)]
+pub struct WingReclassifyReport {
+    /// Memories examined.
+    pub scanned: usize,
+    /// `(key, from_wing, to_wing)` for each memory whose wing differs from what
+    /// the current rules produce. Sorted, so reports are reproducible.
+    pub changes: Vec<(String, String, String)>,
+    /// Whether the changes were written.
+    pub applied: bool,
+}
+
+impl WingReclassifyReport {
+    /// Memories whose wing would change.
+    pub fn changed(&self) -> usize {
+        self.changes.len()
+    }
+
+    /// Count of memories moving *out of* each wing — the fixture-pollution view.
+    pub fn departures_by_wing(&self) -> std::collections::BTreeMap<String, usize> {
+        let mut m = std::collections::BTreeMap::new();
+        for (_, from, _) in &self.changes {
+            *m.entry(from.clone()).or_insert(0) += 1;
+        }
+        m
+    }
 }
 
 /// Result of hybrid recall (memory + graph).
@@ -802,6 +837,19 @@ pub struct Brain {
     /// nudge, which is already best-effort, but callers needing the strengthen/
     /// log durably committed before the next action should leave it off.
     async_writeback: bool,
+    /// When true, `record_turn_delivery` spawns the ledger write on the runtime
+    /// instead of blocking on it, so `turn` returns at its retrieval floor.
+    /// Unlike `async_writeback` this is NOT fire-and-forget: each spawned write
+    /// is tracked per occurrence, and `commit_turn_outcomes` awaits its own
+    /// delivery before committing — an outcome racing ahead of its delivery
+    /// would UPDATE zero `turn_members` rows and silently drop every outcome.
+    /// Opt-in via [`set_async_turn_delivery`](Self::set_async_turn_delivery);
+    /// default off. Trade: a crash before the spawned write lands loses that
+    /// turn's exposure row (never an adjudicated outcome).
+    /// Prereg: `docs/internal/deferred-delivery-prereg-2026-08-04.md`.
+    async_turn_delivery: bool,
+    /// In-flight deferred delivery writes, keyed by occurrence id.
+    pending_turn_deliveries: Mutex<HashMap<String, tokio::task::JoinHandle<anyhow::Result<()>>>>,
     /// Ambient recurrence feedback: when new content re-encounters an existing
     /// memory (recognition), reinforce that prior memory. Enabled via
     /// [`BrainConfig::recurrence_feedback`]. Off by default (measure before
@@ -957,6 +1005,7 @@ impl Brain {
             wing_rules: compile_rules(&wing_rules, "wing")?,
             hall_rules: compile_rules(&hall_rules, "hall")?,
             max_fingerprint_peers: config.max_fingerprint_peers,
+            fingerprints: config.fingerprints.unwrap_or(true),
             ..spectral_ingest::ingest::IngestConfig::default()
         };
 
@@ -1039,6 +1088,9 @@ impl Brain {
             read_only: config.read_only,
             // Off by default; opt in per-brain via `set_async_writeback`.
             async_writeback: false,
+            // Off by default; opt in per-brain via `set_async_turn_delivery`.
+            async_turn_delivery: false,
+            pending_turn_deliveries: Mutex::new(HashMap::new()),
             recurrence_feedback: config.recurrence_feedback,
             fts_stopwords: config.fts_stopwords,
             anticipatory_recall: config.anticipatory_recall,
@@ -1857,6 +1909,30 @@ impl Brain {
     ///
     /// **Time anchor defaults to `Utc::now()`** — see [`recall()`](Self::recall).
     /// Use [`recall_local_at()`](Self::recall_local_at) for historical queries.
+    /// The latest `created_at` across this brain — a **deterministic time
+    /// anchor** for recency decay.
+    ///
+    /// Recency decay measures distance from `Utc::now()` by default. Measured
+    /// result: this does **not** move recall ordering on either path — the
+    /// top-k/cascade decay is multiplicative, so a clock shift scales every
+    /// score by a common factor, and `recall_at` never re-sorts after decaying.
+    /// What does move is the decayed `signal_score` a caller reads.
+    ///
+    /// Passing this anchor to [`recall_at`](Self::recall_at) or
+    /// `RetrievePlan::with_time_anchor` makes those scores reproducible and
+    /// pins the ordering property against future changes to the decay
+    /// function. See `docs/internal/decay-time-invariance-2026-08-03.md`.
+    ///
+    /// Returns `None` for an empty corpus; callers then fall back to
+    /// wall-clock.
+    pub fn latest_interaction_time(&self) -> Result<Option<DateTime<Utc>>, Error> {
+        let raw = self
+            .rt
+            .block_on(self.memory_store.latest_created_at())
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        Ok(raw.as_deref().and_then(crate::ranking::parse_created_at))
+    }
+
     pub fn recall_local(&self, query: &str) -> Result<HybridRecallResult, Error> {
         self.recall(query, Visibility::Private)
     }
@@ -1873,6 +1949,60 @@ impl Brain {
     /// Run TACT retrieval with a custom max_results (overriding the Brain's
     /// default TactConfig). Used by cascade to get K=40 through TACT's tiered
     /// search (fingerprint → wing → FTS) instead of bypassing it.
+    /// [`tact_retrieve_with_k`](Self::tact_retrieve_with_k) with an ambient
+    /// wing hint, normally `RecognitionContext::focus_wing`.
+    ///
+    /// Wing scope reaches the TACT tier selection only if something supplies
+    /// it. Detection from query text covers 12.4% of real agent queries — the
+    /// ones that name a project. The agent usually knows its project anyway;
+    /// this is how it says so.
+    pub fn tact_retrieve_with_k_scoped(
+        &self,
+        query: &str,
+        max_results: usize,
+        wing_hint: Option<&str>,
+    ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
+        let mut config = self.tact_config.clone();
+        config.max_results = max_results;
+        let result = self
+            .rt
+            .block_on(spectral_tact::retrieve_memories_scoped(
+                query,
+                wing_hint,
+                &config,
+                self.memory_store.as_ref(),
+            ))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        Ok(result.memories)
+    }
+
+    /// [`cascade_retrieve`](Self::cascade_retrieve) with an ambient wing hint.
+    pub fn cascade_retrieve_scoped(
+        &self,
+        query: &str,
+        k: usize,
+        wing_hint: Option<&str>,
+    ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
+        let mut hits = self.tact_retrieve_with_k_scoped(query, k, wing_hint)?;
+        if hits.len() < k {
+            let words = self.fts_query_words(query);
+            if !words.is_empty() {
+                let fts_hits = self.fts_search_direct(&words, k)?;
+                let existing: std::collections::HashSet<String> =
+                    hits.iter().map(|h| h.key.clone()).collect();
+                for fts_hit in fts_hits {
+                    if hits.len() >= k {
+                        break;
+                    }
+                    if !existing.contains(&fts_hit.key) {
+                        hits.push(fts_hit);
+                    }
+                }
+            }
+        }
+        Ok(hits)
+    }
+
     pub fn tact_retrieve_with_k(
         &self,
         query: &str,
@@ -3467,14 +3597,68 @@ impl Brain {
     }
 
     /// Record a turn delivery in the outcome ledger.
+    ///
+    /// Synchronous by default. With [`set_async_turn_delivery`](Self::set_async_turn_delivery)
+    /// on, the write is spawned on the runtime and tracked per occurrence;
+    /// [`commit_turn_outcomes`](Self::commit_turn_outcomes) awaits its own
+    /// delivery before committing, and [`flush_turn_deliveries`](Self::flush_turn_deliveries)
+    /// drains everything in flight.
     pub fn record_turn_delivery(
         &self,
         delivery: &spectral_ingest::TurnDelivery,
     ) -> Result<(), Error> {
         self.ensure_writable("record_turn_delivery")?;
+        if self.async_turn_delivery {
+            let store = Arc::clone(&self.memory_store);
+            let d = delivery.clone();
+            let handle = self
+                .rt
+                .spawn(async move { store.record_turn_delivery(&d).await });
+            let mut pending = self
+                .pending_turn_deliveries
+                .lock()
+                .map_err(|e| Error::Schema(format!("pending-deliveries lock: {e}")))?;
+            pending.retain(|_, h| !h.is_finished());
+            pending.insert(delivery.occurrence_id.clone(), handle);
+            return Ok(());
+        }
         self.rt
             .block_on(self.memory_store.record_turn_delivery(delivery))
             .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Defer turn-delivery writes off the read path. Default off (synchronous).
+    /// See the `async_turn_delivery` field docs for the ordering and durability
+    /// contract. Prereg: `docs/internal/deferred-delivery-prereg-2026-08-04.md`.
+    pub fn set_async_turn_delivery(&mut self, on: bool) {
+        self.async_turn_delivery = on;
+    }
+
+    /// Await every in-flight deferred delivery write. Call before shutdown when
+    /// async turn delivery is enabled; a no-op otherwise. Surfaces the first
+    /// write error encountered.
+    pub fn flush_turn_deliveries(&self) -> Result<(), Error> {
+        let handles: Vec<_> = {
+            let mut pending = self
+                .pending_turn_deliveries
+                .lock()
+                .map_err(|e| Error::Schema(format!("pending-deliveries lock: {e}")))?;
+            pending.drain().collect()
+        };
+        let mut first_err = None;
+        for (occurrence_id, handle) in handles {
+            let joined = self
+                .rt
+                .block_on(handle)
+                .map_err(|e| Error::Schema(format!("delivery write task {occurrence_id}: {e}")))
+                .and_then(|r| {
+                    r.map_err(|e| Error::Schema(format!("delivery write {occurrence_id}: {e}")))
+                });
+            if let (Err(e), None) = (joined, &first_err) {
+                first_err = Some(e);
+            }
+        }
+        first_err.map_or(Ok(()), Err)
     }
 
     /// Commit turn outcomes and reinforce `Used` members atomically.
@@ -3486,6 +3670,24 @@ impl Brain {
         reinforce_strength: f64,
     ) -> Result<usize, Error> {
         self.ensure_writable("commit_turn_outcomes")?;
+        // Ordering guarantee for deferred delivery: an outcome commit racing
+        // ahead of its own delivery write UPDATEs zero `turn_members` rows and
+        // silently drops every outcome, so await THIS occurrence's pending
+        // write first. A failed delivery write surfaces here — committing on
+        // top of it would produce exactly that silent loss.
+        let pending = {
+            let mut map = self
+                .pending_turn_deliveries
+                .lock()
+                .map_err(|e| Error::Schema(format!("pending-deliveries lock: {e}")))?;
+            map.remove(occurrence_id)
+        };
+        if let Some(handle) = pending {
+            self.rt
+                .block_on(handle)
+                .map_err(|e| Error::Schema(format!("delivery write task: {e}")))?
+                .map_err(|e| Error::Schema(format!("delivery write: {e}")))?;
+        }
         let now = Utc::now().to_rfc3339();
         self.rt
             .block_on(self.memory_store.commit_turn_outcomes(
@@ -3911,6 +4113,92 @@ impl Brain {
     }
 
     /// List all memories sorted by signal_score descending, up to `limit`.
+    /// Re-run wing classification over the whole brain with the **current**
+    /// rules, reporting (and optionally applying) every change.
+    ///
+    /// # Why this exists
+    ///
+    /// The library used to ship example-scenario wing rules as the default
+    /// (`alice|coffee|noah`, `apollo|polymarket`, `acme|widget|recipe`, ...).
+    /// Brains ingested under those defaults carry real content filed into
+    /// fictional topic areas — measured in a live 1,738-memory brain: 46
+    /// memories in `apollo`, 18 in `alice`, 17 in `acme`, 16 in `polaris`,
+    /// beside the consumer's genuine wings.
+    ///
+    /// The default rule set is now empty, so new writes are unaffected, but
+    /// existing rows keep whatever the fixtures assigned. This repairs them.
+    ///
+    /// It is also the right tool whenever a consumer *adds* or edits
+    /// `BrainConfig::wing_rules` and wants the backlog reclassified.
+    ///
+    /// # Safety
+    ///
+    /// `apply = false` (a dry run) changes nothing and returns exactly what
+    /// would change. Callers should look before applying — this rewrites a
+    /// column that retrieval routes on.
+    pub fn reclassify_wings(&self, apply: bool) -> Result<WingReclassifyReport, Error> {
+        self.reclassify_wings_in(&[], apply)
+    }
+
+    /// Reclassify **only** memories currently sitting in `only_wings`.
+    ///
+    /// This is the safe form of taxonomy repair, and the one to use for
+    /// removing the retired demo fixtures. Running the unrestricted
+    /// [`reclassify_wings`](Self::reclassify_wings) against a brain whose real
+    /// wings were assigned by a *previous* rule set will reclassify **all** of
+    /// them — measured on a live brain: 1,053 of 1,979 memories, including the
+    /// consumer's genuine `permagent`, `polybot` and `atlasatlantic-site`
+    /// wings. That is destruction, not repair.
+    ///
+    /// Passing the retired fixture names (`alice`, `apollo`, `acme`, `charity`,
+    /// `vega`, `travel`, `polaris`, `infra`) touches only content the library
+    /// mis-filed, and leaves consumer wings alone.
+    ///
+    /// An empty `only_wings` means "no restriction" — every memory is a
+    /// candidate.
+    pub fn reclassify_wings_in(
+        &self,
+        only_wings: &[&str],
+        apply: bool,
+    ) -> Result<WingReclassifyReport, Error> {
+        let memories = self
+            .rt
+            .block_on(self.memory_store.list_memories_by_signal(0.0, usize::MAX))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+
+        let mut report = WingReclassifyReport {
+            scanned: memories.len(),
+            changes: Vec::new(),
+            applied: apply,
+        };
+
+        for m in &memories {
+            let have_wing = m.wing.clone().unwrap_or_else(|| "general".to_string());
+            if !only_wings.is_empty() && !only_wings.contains(&have_wing.as_str()) {
+                continue;
+            }
+            let want = spectral_ingest::classifier::classify_wing(
+                &m.key,
+                &m.content,
+                "",
+                &self.ingest_config.wing_rules,
+            );
+            let have = have_wing;
+            if have == want {
+                continue;
+            }
+            if apply {
+                self.rt
+                    .block_on(self.memory_store.set_wing(&m.key, &want))
+                    .map_err(|e| Error::Schema(e.to_string()))?;
+            }
+            report.changes.push((m.key.clone(), have, want));
+        }
+        // Deterministic ordering for reproducible reports.
+        report.changes.sort();
+        Ok(report)
+    }
+
     pub fn list_all_memories(&self, limit: usize) -> Result<Vec<spectral_ingest::Memory>, Error> {
         self.rt
             .block_on(self.memory_store.list_memories_by_signal(0.0, limit))

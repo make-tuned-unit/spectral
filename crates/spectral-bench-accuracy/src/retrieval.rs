@@ -5,7 +5,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use spectral_core::visibility::Visibility;
 use spectral_graph::brain::{Brain, RecallTopKConfig};
 use spectral_ingest::MemoryHit;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 /// Configuration for retrieval.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -114,18 +114,6 @@ fn actor_descriptions_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Append the Librarian description as a labeled note when the flag is on and
-/// the description is non-empty. Kept short and clearly provenanced so the
-/// actor never confuses the gloss with the user's own words.
-fn with_description(line: String, hit: &MemoryHit, show: bool) -> String {
-    match (show, hit.description.as_deref()) {
-        (true, Some(desc)) if !desc.trim().is_empty() => {
-            format!("{line} [librarian: {}]", desc.trim())
-        }
-        _ => line,
-    }
-}
-
 /// Effective cap for a question shape: GeneralRecall is exempt.
 fn cap_for_shape(qtype: QuestionType) -> Option<f64> {
     match qtype {
@@ -134,24 +122,100 @@ fn cap_for_shape(qtype: QuestionType) -> Option<f64> {
     }
 }
 
-/// Truncate content to `frac` of its byte length at a char boundary.
-/// Content at or below `CAP_MIN_LEN` is left alone — truncating short turns
-/// saves nothing and loses information.
-const CAP_MIN_LEN: usize = 120;
+// Content truncation and date arithmetic now live in the library
+// (`spectral::render`) so a consumer renders context the same way the
+// benchmark does. Re-exported here under their historical names so the
+// harness's own tests keep exercising the shipped implementation.
+pub use spectral::render::{
+    cap_content, extract_ymd, relative_offset, with_description, CAP_MIN_LEN,
+};
 
-fn cap_content(content: &str, frac: f64) -> String {
-    if content.len() <= CAP_MIN_LEN {
-        return content.to_string();
+/// Retrieval policy version from env (`SPECTRAL_POLICY=v2`). Defaults to V1,
+/// the version behind the published number.
+pub fn policy_version() -> spectral::RetrievalPolicyVersion {
+    match std::env::var("SPECTRAL_POLICY").as_deref() {
+        Ok("v2") | Ok("V2") => spectral::RetrievalPolicyVersion::V2Fixed,
+        _ => spectral::RetrievalPolicyVersion::V1,
     }
-    let cap = (((content.len() as f64) * frac) as usize).max(CAP_MIN_LEN);
-    if content.len() <= cap {
-        return content.to_string();
+}
+
+/// Classify under the configured policy version. Single entry point so an
+/// ablation cannot accidentally mix versions across call sites.
+pub fn classify_question(question: &str) -> QuestionType {
+    QuestionType::classify_with(question, policy_version())
+}
+
+/// Answerability rerank config from env (`SPECTRAL_ANSWERABILITY=1`).
+///
+/// Off unless set, so this is a pure ablation lever. Individual weights are
+/// overridable so the oracle can sweep them without a rebuild; the algorithm
+/// itself lives in the library (`spectral::answerability`).
+fn answerability_config() -> spectral::AnswerabilityConfig {
+    let enabled = std::env::var("SPECTRAL_ANSWERABILITY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let mut cfg = spectral::AnswerabilityConfig {
+        enabled,
+        ..spectral::AnswerabilityConfig::default()
+    };
+    let f = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
+    if let Some(v) = f("SPECTRAL_ANSW_TYPE_W") {
+        cfg.answer_type_weight = v;
     }
-    let mut end = cap.max(1).min(content.len());
-    while end > 0 && !content.is_char_boundary(end) {
-        end -= 1;
+    if let Some(v) = f("SPECTRAL_ANSW_COVERAGE_W") {
+        cfg.coverage_weight = v;
     }
-    format!("{}…", &content[..end])
+    if let Some(v) = f("SPECTRAL_ANSW_ACK_PENALTY") {
+        cfg.ack_penalty = v;
+    }
+    if let Some(v) = f("SPECTRAL_ANSW_TOPIC_PENALTY") {
+        cfg.topic_only_penalty = v;
+    }
+    if let Some(v) = f("SPECTRAL_ANSW_RANK_STEP") {
+        cfg.rank_step = v;
+    }
+    cfg
+}
+
+/// Supersession config from env (`SPECTRAL_SUPERSESSION=1`). Off unless set.
+fn supersession_config() -> spectral::SupersessionConfig {
+    let enabled = std::env::var("SPECTRAL_SUPERSESSION")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    spectral::SupersessionConfig {
+        enabled,
+        // `SPECTRAL_SUPERSESSION_ANY_SESSION=1` relaxes the cross-session
+        // guard, for an ablation of how much of the effect that guard costs.
+        cross_session_only: std::env::var("SPECTRAL_SUPERSESSION_ANY_SESSION").is_err(),
+    }
+}
+
+/// Build the library render options from this harness's env levers.
+///
+/// This is the seam the migration establishes: the **library** owns the
+/// rendering algorithm, the **harness** owns the environment levers that
+/// select a configuration. `spectral::render` never reads the environment, so
+/// a consumer's output depends only on the options they pass.
+fn render_options(
+    question_date: Option<&str>,
+    cap_frac: Option<f64>,
+) -> spectral::RenderOptions<'_> {
+    let mut opts = spectral::RenderOptions::published();
+    opts.cap_frac = cap_frac;
+    opts.question_date = question_date;
+    opts.relative_offsets = dated_context_enabled();
+    opts.show_descriptions = actor_descriptions_enabled();
+    // Rank-preserving session order (`SPECTRAL_RENDER_BY_RANK=1`). Off by
+    // default. Without it, session-grouped rendering discards rank entirely,
+    // so a rerank cannot reach the actor on the cascade route — measured,
+    // 0/84 contexts changed. See answerability-result-run1-2026-08-02.md.
+    if std::env::var("SPECTRAL_RENDER_BY_RANK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        opts.session_order = spectral::SessionOrder::ByRank;
+    }
+    opts
 }
 
 // ── Dated-context formatting (SPECTRAL_DATED_CONTEXT=1) ─────────────
@@ -168,49 +232,6 @@ fn dated_context_enabled() -> bool {
     std::env::var("SPECTRAL_DATED_CONTEXT")
         .map(|v| v == "1")
         .unwrap_or(false)
-}
-
-/// Extract (y, m, d) from a date string in either "2023/05/30 …" or
-/// "2023-05-30T…" form.
-fn extract_ymd(s: &str) -> Option<(i32, u32, u32)> {
-    let bytes: Vec<char> = s.chars().collect();
-    if bytes.len() < 10 {
-        return None;
-    }
-    let y: i32 = s.get(0..4)?.parse().ok()?;
-    let m: u32 = s.get(5..7)?.parse().ok()?;
-    let d: u32 = s.get(8..10)?.parse().ok()?;
-    if !matches!(bytes[4], '-' | '/') || !matches!(bytes[7], '-' | '/') {
-        return None;
-    }
-    Some((y, m, d))
-}
-
-/// Compute a human-readable offset of `date_str` relative to
-/// `question_date` ("3 days ago", "2 weeks ago", "4 months ago").
-fn relative_offset(date_str: &str, question_date: &str) -> Option<String> {
-    let (sy, sm, sd) = extract_ymd(date_str)?;
-    let (qy, qm, qd) = extract_ymd(question_date)?;
-    let session = chrono::NaiveDate::from_ymd_opt(sy, sm, sd)?;
-    let question = chrono::NaiveDate::from_ymd_opt(qy, qm, qd)?;
-    let days = (question - session).num_days();
-    Some(match days {
-        i64::MIN..=-1 => "in the future".to_string(),
-        0 => "same day".to_string(),
-        1 => "1 day ago".to_string(),
-        2..=13 => format!("{days} days ago"),
-        14..=59 => format!("{} weeks ago", days / 7),
-        60..=729 => format!("{} months ago", days / 30),
-        _ => {
-            let years = days / 365;
-            let months = (days % 365) / 30;
-            if months == 0 {
-                format!("{years} years ago")
-            } else {
-                format!("{years} years, {months} months ago")
-            }
-        }
-    })
 }
 
 // ── Session-grouped formatting (P2) ─────────────────────────────────
@@ -238,79 +259,7 @@ pub fn format_hits_grouped_capped_dated(
     cap_frac: Option<f64>,
     question_date: Option<&str>,
 ) -> Vec<String> {
-    if hits.is_empty() {
-        return Vec::new();
-    }
-
-    // Group hits by episode
-    let mut by_episode: BTreeMap<String, Vec<&MemoryHit>> = BTreeMap::new();
-    for hit in hits {
-        let ep_key = hit
-            .episode_id
-            .clone()
-            .or_else(|| hit.key.split(':').next().map(|s| s.to_string()))
-            .unwrap_or_else(|| "unknown".to_string());
-        by_episode.entry(ep_key).or_default().push(hit);
-    }
-
-    // Sort each episode's hits by key (which encodes turn order)
-    for hits_in_ep in by_episode.values_mut() {
-        hits_in_ep.sort_by(|a, b| a.key.cmp(&b.key));
-    }
-
-    // Sort episodes by their earliest created_at
-    let mut episodes: Vec<(String, Vec<&MemoryHit>)> = by_episode.into_iter().collect();
-    episodes.sort_by(|a, b| {
-        let date_a =
-            a.1.first()
-                .and_then(|h| h.created_at.as_deref())
-                .unwrap_or("");
-        let date_b =
-            b.1.first()
-                .and_then(|h| h.created_at.as_deref())
-                .unwrap_or("");
-        date_a.cmp(date_b)
-    });
-
-    // Build output lines
-    let show_desc = actor_descriptions_enabled();
-    let mut lines = Vec::new();
-    for (ep_id, ep_hits) in &episodes {
-        let date = ep_hits
-            .first()
-            .and_then(|h| h.created_at.as_deref())
-            .map(|s| s.split(' ').next().unwrap_or(s))
-            .unwrap_or("unknown-date");
-        let header = match question_date.filter(|_| dated_context_enabled()) {
-            Some(qd) => match relative_offset(date, qd) {
-                Some(offset) => format!("--- Session {ep_id} ({date}, {offset}) ---"),
-                None => format!("--- Session {ep_id} ({date}) ---"),
-            },
-            None => format!("--- Session {ep_id} ({date}) ---"),
-        };
-        lines.push(header);
-
-        for hit in ep_hits {
-            let role = if hit.key.contains(":user") {
-                "user"
-            } else if hit.key.contains(":assistant") {
-                "asst"
-            } else {
-                "turn"
-            };
-            // Skip short assistant filler ("Hi!", "Sure!", "That's great!")
-            if role == "asst" && hit.content.len() < 40 {
-                continue;
-            }
-            let line = match (role, cap_frac) {
-                ("asst", Some(f)) => format!("[{role}] {}", cap_content(&hit.content, f)),
-                _ => format!("[{role}] {}", hit.content),
-            };
-            lines.push(with_description(line, hit, show_desc));
-        }
-    }
-
-    lines
+    spectral::render::session_grouped(hits, &render_options(question_date, cap_frac))
 }
 
 // ── Legacy flat format ──────────────────────────────────────────────
@@ -324,22 +273,7 @@ pub fn format_hit(hit: &spectral_ingest::MemoryHit) -> String {
 /// ago] [wing/hall] key: content` when `SPECTRAL_DATED_CONTEXT=1` and a
 /// question date is provided.
 pub fn format_hit_dated(hit: &spectral_ingest::MemoryHit, question_date: Option<&str>) -> String {
-    let date = hit
-        .created_at
-        .as_deref()
-        .map(|s| s.split('T').next().unwrap_or(s))
-        .unwrap_or("unknown-date");
-    let date_tag = match question_date.filter(|_| dated_context_enabled()) {
-        Some(qd) => match relative_offset(date, qd) {
-            Some(offset) => format!("{date}, {offset}"),
-            None => date.to_string(),
-        },
-        None => date.to_string(),
-    };
-    let wing = hit.wing.as_deref().unwrap_or("?");
-    let hall = hit.hall.as_deref().unwrap_or("?");
-    let line = format!("[{date_tag}] [{wing}/{hall}] {}: {}", hit.key, hit.content);
-    with_description(line, hit, actor_descriptions_enabled())
+    spectral::render::flat_hit(hit, &render_options(question_date, None))
 }
 
 /// Retrieve memories relevant to a question from a brain.
@@ -551,6 +485,20 @@ const ACTR_UNKNOWN_AGE_DAYS: f64 = 365.0;
 /// truncate back to the original output size (mirrors SPECTRAL_TOPK_FETCH_MULT).
 const ACTR_POOL_WIDEN: usize = 2;
 
+/// Candidate-pool widening for the answerability rerank.
+///
+/// Run 1 measured a null and, more importantly, showed the rerank was
+/// structurally inert on the cascade route: membership is frozen by
+/// `take(pool_size)` and the renderer then regroups by session, discarding
+/// rank order entirely. A reorder inside a fixed set therefore reaches the
+/// actor on the TopkFts route only.
+///
+/// Widening the pool before reranking is what lets answerability change
+/// *membership* — the only thing that survives session-grouped rendering. Same
+/// pattern ACT-R already uses. See
+/// `docs/internal/answerability-result-run1-2026-08-02.md`.
+const ANSW_POOL_WIDEN: usize = 2;
+
 /// Read `SPECTRAL_ACTR_DECAY` (d > 0, ~0.5 typical). Unset/invalid = off.
 fn actr_decay() -> Option<f64> {
     std::env::var("SPECTRAL_ACTR_DECAY")
@@ -701,11 +649,17 @@ pub fn retrieve_topk_fts(
     // ACT-R lever: fetch a wider pool so the activation prior can change set
     // membership, not just order; truncated back to output_size after rerank.
     let actr = actr_decay();
-    let pool_size = if actr.is_some() {
-        output_size * ACTR_POOL_WIDEN
-    } else {
-        output_size
+    let answ_cfg = answerability_config();
+    let widen = match (
+        actr.is_some(),
+        answ_cfg.enabled || supersession_config().enabled,
+    ) {
+        (true, true) => ACTR_POOL_WIDEN.max(ANSW_POOL_WIDEN),
+        (true, false) => ACTR_POOL_WIDEN,
+        (false, true) => ANSW_POOL_WIDEN,
+        (false, false) => 1,
     };
+    let pool_size = output_size * widen;
     let topk_config = RecallTopKConfig {
         k: pool_size,
         ..topk_config
@@ -738,7 +692,19 @@ pub fn retrieve_topk_fts(
         hits.truncate(output_size);
     }
 
-    let cap = cap_for_shape(QuestionType::classify(question));
+    let shape = classify_question(question);
+    // Answerability rerank over the widened pool, then restore output size.
+    if answ_cfg.enabled {
+        spectral::answerability::rerank(&mut hits, question, shape, &answ_cfg);
+    }
+    let sup_cfg = supersession_config();
+    if sup_cfg.enabled {
+        hits = spectral::supersession::partition(&hits, &sup_cfg).kept;
+    }
+    if answ_cfg.enabled || sup_cfg.enabled {
+        hits.truncate(output_size);
+    }
+    let cap = cap_for_shape(shape);
     let memories: Vec<String> = hits
         .iter()
         .map(|h| match cap {
@@ -830,7 +796,7 @@ pub fn retrieve_cascade(
     question_date: Option<&str>,
 ) -> Result<(Vec<String>, Vec<MemoryHit>, CascadeTelemetry)> {
     // P1: Question-type routing
-    let qtype = QuestionType::classify(question);
+    let qtype = classify_question(question);
     let mut pipeline_config = qtype.cascade_profile();
     // Ablation overrides (multi-session answer-KEY completeness sweep). The
     // Counting profile caps max_per_episode=3 to force session diversity; when
@@ -868,6 +834,39 @@ pub fn retrieve_cascade(
         Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
         None => spectral_cascade::RecognitionContext::empty(),
     };
+
+    // Output size the actor sees. Widening below changes only the *candidate*
+    // pool the rerank levers choose from; the result is truncated back here.
+    let output_k = pipeline_config.k;
+
+    // Candidate-pool widening for the rerank levers.
+    //
+    // This MUST widen `pipeline_config.k`, not slice a wider window off
+    // `merged_hits` afterwards: `run_cascade_pipeline_scoped` ends with
+    // `results.truncate(config.k)` (cascade_layers.rs:441), so the pipeline
+    // never returns more than `k` and a post-hoc `take(k * widen)` is a no-op.
+    // That defect made both ACT-R's and the answerability lever's widening
+    // inert on the cascade route — measured, 0/84 sets changed. See
+    // docs/internal/answerability-result-run2-2026-08-02.md.
+    //
+    // Widening `k` also widens what `max_per_episode` diversity operates over,
+    // which is a real behaviour change — hence widen=1 when every lever is
+    // off, keeping the default path byte-identical.
+    let actr = actr_decay();
+    let answ_cfg = answerability_config();
+    let widen = match (
+        actr.is_some(),
+        answ_cfg.enabled || supersession_config().enabled,
+    ) {
+        (true, true) => ACTR_POOL_WIDEN.max(ANSW_POOL_WIDEN),
+        (true, false) => ACTR_POOL_WIDEN,
+        (false, true) => ANSW_POOL_WIDEN,
+        (false, false) => 1,
+    };
+    if widen > 1 {
+        pipeline_config.k = output_k * widen;
+    }
+
     let result = brain.recall_cascade_with_pipeline(question, &context, &pipeline_config)?;
 
     // Capture telemetry before consuming merged_hits
@@ -878,19 +877,10 @@ pub fn retrieve_cascade(
         question_type: Some(format!("{qtype:?}")),
     };
 
-    // P2: Session-grouped formatting
-    // Use the profile's K as the limit — the question-type routing already
-    // determined the right K (60 for counting, 30 for factual, etc).
+    // P2: Session-grouped formatting. The question-type routing already
+    // determined the right output K (60 counting, 30 factual, ...);
     // CLI --max-results only applies to non-cascade paths.
-    // ACT-R lever: take a wider slice of the merged pool so the activation
-    // prior can change set membership; truncated back to K after rerank.
-    let actr = actr_decay();
-    let pool_size = if actr.is_some() {
-        pipeline_config.k * ACTR_POOL_WIDEN
-    } else {
-        pipeline_config.k
-    };
-    let mut hits: Vec<MemoryHit> = result.merged_hits.into_iter().take(pool_size).collect();
+    let mut hits: Vec<MemoryHit> = result.merged_hits;
     // Associative spreading on the DEFAULT (cascade) retrieval path, env-gated.
     apply_associative_spreading(brain, &mut hits);
     // n-hop BFS graph channel (size-preserving; off when SPECTRAL_BFS_HOPS unset).
@@ -903,8 +893,20 @@ pub fn retrieve_cascade(
             .and_then(parse_question_date)
             .unwrap_or_else(Utc::now);
         apply_actr_rerank(&mut hits, now, d);
-        hits.truncate(pipeline_config.k);
     }
+    // Query-conditioned answerability rerank over the widened pool, so it can
+    // change set membership and not only order.
+    if answ_cfg.enabled {
+        spectral::answerability::rerank(&mut hits, question, qtype, &answ_cfg);
+    }
+    // Read-time supersession suppression (library-owned, off unless
+    // SPECTRAL_SUPERSESSION=1). Before truncation so freed slots backfill.
+    let sup_cfg = supersession_config();
+    if sup_cfg.enabled {
+        hits = spectral::supersession::partition(&hits, &sup_cfg).kept;
+    }
+    // Restore the output size the shape profile asked for.
+    hits.truncate(output_k);
     let formatted = format_hits_grouped_capped_dated(&hits, cap_for_shape(qtype), question_date);
 
     Ok((formatted, hits, telemetry))
