@@ -7712,7 +7712,14 @@ mod tests {
             id: format!("r7-id-{i}"),
             key: format!("r7-key-{i}"),
             content: content.to_string(),
-            wing: Some(if i.is_multiple_of(2) { "wing-a" } else { "wing-b" }.to_string()),
+            wing: Some(
+                if i.is_multiple_of(2) {
+                    "wing-a"
+                } else {
+                    "wing-b"
+                }
+                .to_string(),
+            ),
             hall: Some("fact".to_string()),
             signal_score: 0.7,
             visibility: "private".to_string(),
