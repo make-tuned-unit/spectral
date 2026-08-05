@@ -59,6 +59,11 @@ enum Command {
         #[arg(long)]
         use_cascade: bool,
 
+        /// Rendering the actor sees: harness (default), tact-block, or
+        /// session-grouped. R11 A/B (r11-render-ab-prereg-2026-08-05.md).
+        #[arg(long, default_value = "harness")]
+        render: String,
+
         /// Actor model name
         #[arg(long, default_value = "claude-sonnet-4-6")]
         actor_model: String,
@@ -358,6 +363,7 @@ fn main() -> Result<()> {
             question_id,
             no_expand_queries,
             expansion_model,
+            render,
         } => {
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             // Pre-flight count must honor --question-id so the estimate (and
@@ -434,6 +440,12 @@ fn main() -> Result<()> {
                 dump_scores_path: dump_scores,
                 retrieval_path_override,
                 question_id,
+                render_mode: match render.as_str() {
+                    "harness" => eval::RenderMode::Harness,
+                    "tact-block" => eval::RenderMode::TactBlock,
+                    "session-grouped" => eval::RenderMode::SessionGrouped,
+                    other => anyhow::bail!("unknown --render mode: {other}"),
+                },
                 ..Default::default()
             };
 
