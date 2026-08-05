@@ -125,7 +125,18 @@ Ref: `fingerprint-retirement-2026-08-03.md`, `wing-taxonomy-2026-08-03.md`.
 
 ---
 
-## R7 — No batched write API · READY
+## R7 — No batched write API · DONE (2026-08-05, 4.8–5.1× at the store layer)
+
+**Shipped:** `MemoryStore::write_batch` (default sequential impl; SQLite
+override = one transaction, shared `write_memory_in_tx` body so paths cannot
+drift) + `ingest::ingest_batch_with` (shared `prepare_ingest`). Explicit API,
+never a default — a crash loses the batch, not one event. Measured on the
+shipped API, disk-backed: sequential 7.8k ev/s → batched 37–39k ev/s
+(**4.77×/5.05×**, two passes). One documented+pinned divergence: no
+intra-batch fingerprint pairing. No `Brain::remember_batch` (deliberate —
+see result doc). Ref: `batched-write-api-result-2026-08-05.md`.
+
+Original row:
 
 `SqliteStore::write` opens a transaction per memory. Per-event commit is **21%**
 of ingest cost; batched raw SQLite runs **60,489 ev/s vs MinHash+BM25's

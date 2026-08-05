@@ -180,6 +180,30 @@ pub async fn ingest_with(
     store: &dyn MemoryStore,
     opts: IngestOpts,
 ) -> anyhow::Result<IngestResult> {
+    let (memory, fingerprints) =
+        prepare_ingest(id, key, content, category, visibility, config, store, opts).await?;
+    let write_outcome = store.write(&memory, &fingerprints).await?;
+    Ok(IngestResult {
+        memory,
+        fingerprints,
+        write_outcome,
+    })
+}
+
+/// Everything `ingest_with` does before the memory write: cleaning,
+/// classification, episode bookkeeping, and fingerprint generation. Shared
+/// verbatim by the per-event and batched paths so they cannot drift.
+#[allow(clippy::too_many_arguments)]
+async fn prepare_ingest(
+    id: &str,
+    key: &str,
+    content: &str,
+    category: &str,
+    visibility: &str,
+    config: &IngestConfig,
+    store: &dyn MemoryStore,
+    opts: IngestOpts,
+) -> anyhow::Result<(Memory, Vec<Fingerprint>)> {
     let content = clean_memory_context_prefixes(content);
     let content = content.as_str();
     let wing = opts
@@ -287,13 +311,63 @@ pub async fn ingest_with(
         Vec::new()
     };
 
-    let write_outcome = store.write(&memory, &fingerprints).await?;
+    Ok((memory, fingerprints))
+}
 
-    Ok(IngestResult {
-        memory,
-        fingerprints,
-        write_outcome,
-    })
+/// One item of a batched ingest: the same inputs `ingest_with` takes per call.
+pub struct IngestItem {
+    pub id: String,
+    pub key: String,
+    pub content: String,
+    pub category: String,
+    pub visibility: String,
+    pub opts: IngestOpts,
+}
+
+/// Batched ingestion: per-item preparation identical to [`ingest_with`]
+/// (classification, episode bookkeeping, fingerprint generation), then ONE
+/// [`MemoryStore::write_batch`] for every memory row (register row R7).
+///
+/// **Explicit durability trade:** the memory writes commit as a single
+/// transaction — a crash loses the whole batch, not one event. Episode
+/// bookkeeping still commits per item (episodes mutate shared rows and stay
+/// on the per-event path deliberately).
+///
+/// **Fingerprint scope:** peers are read from the store as items are
+/// prepared, and batch members are only written at the end — so items in the
+/// same batch do NOT fingerprint-pair with each other. Sequential
+/// `ingest_with` calls would pair them. Bulk imports where intra-batch
+/// pairing matters should batch per session or accept the difference.
+pub async fn ingest_batch_with(
+    items: Vec<IngestItem>,
+    config: &IngestConfig,
+    store: &dyn MemoryStore,
+) -> anyhow::Result<Vec<IngestResult>> {
+    let mut prepared: Vec<(Memory, Vec<Fingerprint>)> = Vec::with_capacity(items.len());
+    for item in items {
+        let (memory, fingerprints) = prepare_ingest(
+            &item.id,
+            &item.key,
+            &item.content,
+            &item.category,
+            &item.visibility,
+            config,
+            store,
+            item.opts,
+        )
+        .await?;
+        prepared.push((memory, fingerprints));
+    }
+    let outcomes = store.write_batch(&prepared).await?;
+    Ok(prepared
+        .into_iter()
+        .zip(outcomes)
+        .map(|((memory, fingerprints), write_outcome)| IngestResult {
+            memory,
+            fingerprints,
+            write_outcome,
+        })
+        .collect())
 }
 
 async fn generate_fingerprints(

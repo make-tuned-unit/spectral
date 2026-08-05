@@ -1400,6 +1400,194 @@ fn memory_hit_from_row(row: &rusqlite::Row, hits: usize) -> rusqlite::Result<Mem
     })
 }
 
+/// The per-memory transactional write body shared by [`MemoryStore::write`]
+/// (its own transaction) and the batched override (one transaction per
+/// batch). Returns the outcome and the STORED wing, so the caller can
+/// invalidate the wing cache after its commit.
+fn write_memory_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    memory: &Memory,
+    fingerprints: &[Fingerprint],
+) -> anyhow::Result<(WriteOutcome, Option<String>)> {
+    // Compute content hash of incoming content.
+    let incoming_hash = blake3::hash(memory.content.as_bytes()).to_hex().to_string();
+
+    // Probe for existing row. Also read the STORED wing: a content update
+    // keeps the row's existing wing, but the incoming `memory.wing` may
+    // differ (classification is content-driven), so cache invalidation
+    // must target the stored wing, not just the incoming one.
+    // `prepare_cached`, not `query_row`: this probe runs on EVERY write,
+    // and `query_row` re-parses the SQL each time. Same fix as the
+    // per-member insert in the turn delivery path.
+    let existing: Option<(Option<String>, String, Option<String>)> = tx
+        .prepare_cached("SELECT content_hash, content, wing FROM memories WHERE key = ?1")
+        .and_then(|mut stmt| {
+            stmt.query_row(params![memory.key], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+        })
+        .ok();
+    let stored_wing: Option<String> = existing.as_ref().and_then(|(_, _, w)| w.clone());
+
+    let outcome = match existing {
+        None => {
+            // Case 1: No existing row — insert.
+            if memory.created_at.is_some() {
+                tx.prepare_cached(
+                            "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
+                                                   source, device_id, confidence, created_at, content_hash,
+                                                   source_brain_id, signature)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                        )?
+                        .execute(
+                            params![
+                                memory.id,
+                                memory.key,
+                                memory.content,
+                                memory.wing,
+                                memory.hall,
+                                memory.signal_score,
+                                memory.visibility,
+                                memory.source,
+                                memory.device_id.as_ref().map(|b| b.as_slice()),
+                                memory.confidence,
+                                memory.created_at,
+                                incoming_hash,
+                                memory.source_brain_id.as_ref().map(|b| b.as_slice()),
+                                memory.signature.as_deref(),
+                            ],
+                        )?;
+            } else {
+                tx.prepare_cached(
+                    "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
+                                                   source, device_id, confidence, content_hash,
+                                                   source_brain_id, signature)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                )?
+                .execute(params![
+                    memory.id,
+                    memory.key,
+                    memory.content,
+                    memory.wing,
+                    memory.hall,
+                    memory.signal_score,
+                    memory.visibility,
+                    memory.source,
+                    memory.device_id.as_ref().map(|b| b.as_slice()),
+                    memory.confidence,
+                    incoming_hash,
+                    memory.source_brain_id.as_ref().map(|b| b.as_slice()),
+                    memory.signature.as_deref(),
+                ])?;
+            }
+
+            // Set episode_id if provided
+            if let Some(ref ep_id) = memory.episode_id {
+                tx.execute(
+                    "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
+                    params![ep_id, memory.id],
+                )?;
+            }
+            // Set compaction_tier if provided
+            if let Some(tier) = memory.compaction_tier {
+                tx.execute(
+                    "UPDATE memories SET compaction_tier = ?1 WHERE id = ?2",
+                    params![tier.as_str(), memory.id],
+                )?;
+            }
+            // Set declarative_density if provided
+            if let Some(dd) = memory.declarative_density {
+                tx.execute(
+                    "UPDATE memories SET declarative_density = ?1 WHERE id = ?2",
+                    params![dd, memory.id],
+                )?;
+            }
+
+            // Write fingerprints for new memory.
+            for fp in fingerprints {
+                tx.execute(
+                    "INSERT OR IGNORE INTO constellation_fingerprints
+                             (id, fingerprint_hash, anchor_memory_id, target_memory_id,
+                              wing, anchor_hall, target_hall, time_delta_bucket, created_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+                    params![
+                        fp.id,
+                        fp.hash,
+                        fp.anchor_memory_id,
+                        fp.target_memory_id,
+                        fp.wing,
+                        fp.anchor_hall,
+                        fp.target_hall,
+                        fp.time_delta_bucket,
+                    ],
+                )?;
+            }
+
+            WriteOutcome::Inserted
+        }
+        Some((existing_hash, existing_content, _)) => {
+            // Resolve effective hash: use stored hash, or compute from existing content if NULL.
+            let effective_existing_hash = existing_hash.unwrap_or_else(|| {
+                blake3::hash(existing_content.as_bytes())
+                    .to_hex()
+                    .to_string()
+            });
+
+            if effective_existing_hash == incoming_hash {
+                // Case 2: Same content — true no-op. Preserve all fields.
+                // Backfill content_hash if it was NULL.
+                tx.execute(
+                    "UPDATE memories SET content_hash = ?1 WHERE key = ?2 AND content_hash IS NULL",
+                    params![incoming_hash, memory.key],
+                )?;
+                // Skip fingerprint rewrites entirely.
+                WriteOutcome::NoOp
+            } else {
+                // Case 3: Content differs — update content only, preserve everything else.
+                tx.execute(
+                            "UPDATE memories SET content = ?1, content_hash = ?2, updated_at = datetime('now') WHERE key = ?3",
+                            params![memory.content, incoming_hash, memory.key],
+                        )?;
+
+                // Rewrite fingerprints (content changed, so fingerprints may differ).
+                // Get the memory id for the existing row.
+                let mem_id: String = tx.query_row(
+                    "SELECT id FROM memories WHERE key = ?1",
+                    params![memory.key],
+                    |row| row.get(0),
+                )?;
+                // Delete old fingerprints for this memory.
+                tx.execute(
+                            "DELETE FROM constellation_fingerprints WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
+                            params![mem_id],
+                        )?;
+                // Write new fingerprints.
+                for fp in fingerprints {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO constellation_fingerprints
+                                 (id, fingerprint_hash, anchor_memory_id, target_memory_id,
+                                  wing, anchor_hall, target_hall, time_delta_bucket, created_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+                        params![
+                            fp.id,
+                            fp.hash,
+                            fp.anchor_memory_id,
+                            fp.target_memory_id,
+                            fp.wing,
+                            fp.anchor_hall,
+                            fp.target_hall,
+                            fp.time_delta_bucket,
+                        ],
+                    )?;
+                }
+
+                WriteOutcome::ContentUpdated
+            }
+        }
+    };
+    Ok((outcome, stored_wing))
+}
+
 impl MemoryStore for SqliteStore {
     fn set_wing<'a>(
         &'a self,
@@ -1446,188 +1634,8 @@ impl MemoryStore for SqliteStore {
         Box::pin(async move {
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
-            // Compute content hash of incoming content.
-            let incoming_hash = blake3::hash(memory.content.as_bytes()).to_hex().to_string();
-
-            // Wrap in a single transaction for atomicity.
             let tx = conn.transaction()?;
-
-            // Probe for existing row. Also read the STORED wing: a content update
-            // keeps the row's existing wing, but the incoming `memory.wing` may
-            // differ (classification is content-driven), so cache invalidation
-            // must target the stored wing, not just the incoming one.
-            // `prepare_cached`, not `query_row`: this probe runs on EVERY write,
-            // and `query_row` re-parses the SQL each time. Same fix as the
-            // per-member insert in the turn delivery path.
-            let existing: Option<(Option<String>, String, Option<String>)> = tx
-                .prepare_cached("SELECT content_hash, content, wing FROM memories WHERE key = ?1")
-                .and_then(|mut stmt| {
-                    stmt.query_row(params![memory.key], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                    })
-                })
-                .ok();
-            let stored_wing: Option<String> = existing.as_ref().and_then(|(_, _, w)| w.clone());
-
-            let outcome = match existing {
-                None => {
-                    // Case 1: No existing row — insert.
-                    if memory.created_at.is_some() {
-                        tx.prepare_cached(
-                            "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
-                                                   source, device_id, confidence, created_at, content_hash,
-                                                   source_brain_id, signature)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                        )?
-                        .execute(
-                            params![
-                                memory.id,
-                                memory.key,
-                                memory.content,
-                                memory.wing,
-                                memory.hall,
-                                memory.signal_score,
-                                memory.visibility,
-                                memory.source,
-                                memory.device_id.as_ref().map(|b| b.as_slice()),
-                                memory.confidence,
-                                memory.created_at,
-                                incoming_hash,
-                                memory.source_brain_id.as_ref().map(|b| b.as_slice()),
-                                memory.signature.as_deref(),
-                            ],
-                        )?;
-                    } else {
-                        tx.prepare_cached(
-                            "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
-                                                   source, device_id, confidence, content_hash,
-                                                   source_brain_id, signature)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                        )?
-                        .execute(
-                            params![
-                                memory.id,
-                                memory.key,
-                                memory.content,
-                                memory.wing,
-                                memory.hall,
-                                memory.signal_score,
-                                memory.visibility,
-                                memory.source,
-                                memory.device_id.as_ref().map(|b| b.as_slice()),
-                                memory.confidence,
-                                incoming_hash,
-                                memory.source_brain_id.as_ref().map(|b| b.as_slice()),
-                                memory.signature.as_deref(),
-                            ],
-                        )?;
-                    }
-
-                    // Set episode_id if provided
-                    if let Some(ref ep_id) = memory.episode_id {
-                        tx.execute(
-                            "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
-                            params![ep_id, memory.id],
-                        )?;
-                    }
-                    // Set compaction_tier if provided
-                    if let Some(tier) = memory.compaction_tier {
-                        tx.execute(
-                            "UPDATE memories SET compaction_tier = ?1 WHERE id = ?2",
-                            params![tier.as_str(), memory.id],
-                        )?;
-                    }
-                    // Set declarative_density if provided
-                    if let Some(dd) = memory.declarative_density {
-                        tx.execute(
-                            "UPDATE memories SET declarative_density = ?1 WHERE id = ?2",
-                            params![dd, memory.id],
-                        )?;
-                    }
-
-                    // Write fingerprints for new memory.
-                    for fp in &fingerprints {
-                        tx.execute(
-                            "INSERT OR IGNORE INTO constellation_fingerprints
-                             (id, fingerprint_hash, anchor_memory_id, target_memory_id,
-                              wing, anchor_hall, target_hall, time_delta_bucket, created_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
-                            params![
-                                fp.id,
-                                fp.hash,
-                                fp.anchor_memory_id,
-                                fp.target_memory_id,
-                                fp.wing,
-                                fp.anchor_hall,
-                                fp.target_hall,
-                                fp.time_delta_bucket,
-                            ],
-                        )?;
-                    }
-
-                    WriteOutcome::Inserted
-                }
-                Some((existing_hash, existing_content, _)) => {
-                    // Resolve effective hash: use stored hash, or compute from existing content if NULL.
-                    let effective_existing_hash = existing_hash.unwrap_or_else(|| {
-                        blake3::hash(existing_content.as_bytes())
-                            .to_hex()
-                            .to_string()
-                    });
-
-                    if effective_existing_hash == incoming_hash {
-                        // Case 2: Same content — true no-op. Preserve all fields.
-                        // Backfill content_hash if it was NULL.
-                        tx.execute(
-                            "UPDATE memories SET content_hash = ?1 WHERE key = ?2 AND content_hash IS NULL",
-                            params![incoming_hash, memory.key],
-                        )?;
-                        // Skip fingerprint rewrites entirely.
-                        WriteOutcome::NoOp
-                    } else {
-                        // Case 3: Content differs — update content only, preserve everything else.
-                        tx.execute(
-                            "UPDATE memories SET content = ?1, content_hash = ?2, updated_at = datetime('now') WHERE key = ?3",
-                            params![memory.content, incoming_hash, memory.key],
-                        )?;
-
-                        // Rewrite fingerprints (content changed, so fingerprints may differ).
-                        // Get the memory id for the existing row.
-                        let mem_id: String = tx.query_row(
-                            "SELECT id FROM memories WHERE key = ?1",
-                            params![memory.key],
-                            |row| row.get(0),
-                        )?;
-                        // Delete old fingerprints for this memory.
-                        tx.execute(
-                            "DELETE FROM constellation_fingerprints WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
-                            params![mem_id],
-                        )?;
-                        // Write new fingerprints.
-                        for fp in &fingerprints {
-                            tx.execute(
-                                "INSERT OR IGNORE INTO constellation_fingerprints
-                                 (id, fingerprint_hash, anchor_memory_id, target_memory_id,
-                                  wing, anchor_hall, target_hall, time_delta_bucket, created_at)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
-                                params![
-                                    fp.id,
-                                    fp.hash,
-                                    fp.anchor_memory_id,
-                                    fp.target_memory_id,
-                                    fp.wing,
-                                    fp.anchor_hall,
-                                    fp.target_hall,
-                                    fp.time_delta_bucket,
-                                ],
-                            )?;
-                        }
-
-                        WriteOutcome::ContentUpdated
-                    }
-                }
-            };
-
+            let (outcome, stored_wing) = write_memory_in_tx(&tx, &memory, &fingerprints)?;
             tx.commit()?;
 
             // Invalidate the wing cache for BOTH the incoming wing and the stored
@@ -1644,6 +1652,44 @@ impl MemoryStore for SqliteStore {
             }
 
             Ok(outcome)
+        })
+    }
+
+    fn write_batch<'a>(
+        &'a self,
+        items: &'a [(Memory, Vec<Fingerprint>)],
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<WriteOutcome>>> + Send + 'a>> {
+        let items = items.to_vec();
+        let conn = self.conn.clone();
+        let wing_cache = self.wing_cache.clone();
+        Box::pin(async move {
+            let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            // ONE transaction for the whole batch — the R7 trade, explicit at
+            // the call site: a crash loses the batch, not one event. Probes
+            // inside the transaction see earlier writes of the same batch, so
+            // intra-batch duplicate keys behave exactly as sequential writes.
+            let tx = conn.transaction()?;
+            let mut outcomes = Vec::with_capacity(items.len());
+            let mut wings_to_pop: Vec<String> = Vec::new();
+            for (memory, fingerprints) in &items {
+                let (outcome, stored_wing) = write_memory_in_tx(&tx, memory, fingerprints)?;
+                if outcome != WriteOutcome::NoOp {
+                    if let Some(ref wing) = memory.wing {
+                        wings_to_pop.push(wing.clone());
+                    }
+                    if let Some(wing) = stored_wing {
+                        wings_to_pop.push(wing);
+                    }
+                }
+                outcomes.push(outcome);
+            }
+            tx.commit()?;
+            wings_to_pop.sort();
+            wings_to_pop.dedup();
+            for wing in &wings_to_pop {
+                wing_cache_pop(&wing_cache, wing);
+            }
+            Ok(outcomes)
         })
     }
 
@@ -7659,5 +7705,179 @@ mod tests {
         for (desc, count) in &results {
             assert_eq!(*count, 0, "orphans remain on: {desc}");
         }
+    }
+
+    fn r7_mem(i: usize, content: &str) -> Memory {
+        Memory {
+            id: format!("r7-id-{i}"),
+            key: format!("r7-key-{i}"),
+            content: content.to_string(),
+            wing: Some(if i.is_multiple_of(2) { "wing-a" } else { "wing-b" }.to_string()),
+            hall: Some("fact".to_string()),
+            signal_score: 0.7,
+            visibility: "private".to_string(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        }
+    }
+
+    /// R7 parity pin: one batched transaction produces byte-identical rows and
+    /// identical outcomes to sequential per-event writes.
+    #[tokio::test]
+    async fn write_batch_matches_sequential_writes() {
+        let seq = SqliteStore::open_in_memory().unwrap();
+        let bat = SqliteStore::open_in_memory().unwrap();
+
+        let items: Vec<(Memory, Vec<Fingerprint>)> = (0..25)
+            .map(|i| {
+                let m = r7_mem(i, &format!("the deploy pipeline record {i} was reviewed"));
+                let fps = if i % 5 == 0 {
+                    vec![Fingerprint {
+                        id: format!("fp-{i}"),
+                        hash: format!("hash-{i}"),
+                        anchor_memory_id: format!("r7-id-{i}"),
+                        target_memory_id: "r7-id-0".to_string(),
+                        wing: "wing-a".to_string(),
+                        anchor_hall: "fact".to_string(),
+                        target_hall: "fact".to_string(),
+                        time_delta_bucket: "same_day".to_string(),
+                    }]
+                } else {
+                    Vec::new()
+                };
+                (m, fps)
+            })
+            .collect();
+
+        let mut seq_outcomes = Vec::new();
+        for (m, f) in &items {
+            seq_outcomes.push(seq.write(m, f).await.unwrap());
+        }
+        let bat_outcomes = bat.write_batch(&items).await.unwrap();
+        assert_eq!(seq_outcomes, bat_outcomes);
+
+        let ids: Vec<String> = items.iter().map(|(m, _)| m.id.clone()).collect();
+        let seq_rows = seq.fetch_by_ids(&ids).await.unwrap();
+        let bat_rows = bat.fetch_by_ids(&ids).await.unwrap();
+        assert_eq!(seq_rows.len(), 25);
+        assert_eq!(bat_rows.len(), 25);
+        for (a, b) in seq_rows.iter().zip(&bat_rows) {
+            assert_eq!(a.id, b.id);
+            assert_eq!(a.key, b.key);
+            assert_eq!(a.content, b.content);
+            assert_eq!(a.wing, b.wing);
+            assert_eq!(a.hall, b.hall);
+            assert_eq!(a.content_hash, b.content_hash);
+            assert_eq!(a.signal_score, b.signal_score);
+            assert_eq!(a.visibility, b.visibility);
+        }
+    }
+
+    /// Probes inside the batch transaction see earlier writes of the same
+    /// batch, so intra-batch duplicate keys behave exactly as sequential
+    /// writes: insert, then no-op on same content, then content-update.
+    #[tokio::test]
+    async fn write_batch_intra_batch_duplicates_behave_sequentially() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let a = r7_mem(1, "the incident retrospective covered rollback steps");
+        let mut same = a.clone();
+        same.id = "r7-id-1b".to_string();
+        let mut changed = a.clone();
+        changed.id = "r7-id-1c".to_string();
+        changed.content = "the incident retrospective was rescheduled".to_string();
+
+        let out = store
+            .write_batch(&[(a, Vec::new()), (same, Vec::new()), (changed, Vec::new())])
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            vec![
+                WriteOutcome::Inserted,
+                WriteOutcome::NoOp,
+                WriteOutcome::ContentUpdated
+            ]
+        );
+    }
+
+    /// End-to-end parity: `ingest_batch_with` produces the same rows and
+    /// outcomes as a loop of `ingest_with` over the same inputs.
+    #[tokio::test]
+    async fn ingest_batch_matches_sequential_ingest() {
+        use crate::ingest::{ingest_batch_with, ingest_with, IngestConfig, IngestItem, IngestOpts};
+
+        let config = IngestConfig::default();
+        let seq = SqliteStore::open_in_memory().unwrap();
+        let bat = SqliteStore::open_in_memory().unwrap();
+
+        let contents: Vec<String> = (0..12)
+            .map(|i| {
+                format!("the capacity forecast for sprint {i} was approved by the platform team")
+            })
+            .collect();
+
+        let mut seq_results = Vec::new();
+        for (i, c) in contents.iter().enumerate() {
+            seq_results.push(
+                ingest_with(
+                    &format!("ing-id-{i}"),
+                    &format!("ing-key-{i}"),
+                    c,
+                    "core",
+                    0.0,
+                    "private",
+                    &config,
+                    &seq,
+                    IngestOpts::default(),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+
+        let items = contents
+            .iter()
+            .enumerate()
+            .map(|(i, c)| IngestItem {
+                id: format!("ing-id-{i}"),
+                key: format!("ing-key-{i}"),
+                content: c.clone(),
+                category: "core".to_string(),
+                visibility: "private".to_string(),
+                opts: IngestOpts::default(),
+            })
+            .collect();
+        let bat_results = ingest_batch_with(items, &config, &bat).await.unwrap();
+
+        assert_eq!(seq_results.len(), bat_results.len());
+        for (a, b) in seq_results.iter().zip(&bat_results) {
+            assert_eq!(a.write_outcome, b.write_outcome);
+            assert_eq!(a.memory.key, b.memory.key);
+            assert_eq!(a.memory.wing, b.memory.wing);
+            assert_eq!(a.memory.hall, b.memory.hall);
+            assert_eq!(a.memory.signal_score, b.memory.signal_score);
+            assert_eq!(a.memory.episode_id, b.memory.episode_id);
+        }
+
+        // The ONE documented divergence, pinned: batch members do not
+        // fingerprint-pair with each other (peers are read before any member
+        // is written), while sequential ingest pairs item N against items
+        // 1..N-1. On an empty store all pairing is intra-batch, so batch
+        // yields zero fingerprints and sequential yields at least one.
+        let seq_fps: usize = seq_results.iter().map(|r| r.fingerprints.len()).sum();
+        let bat_fps: usize = bat_results.iter().map(|r| r.fingerprints.len()).sum();
+        assert!(seq_fps > 0, "sequential must pair against earlier items");
+        assert_eq!(bat_fps, 0, "intra-batch pairing must not happen");
     }
 }
