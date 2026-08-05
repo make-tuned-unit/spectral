@@ -41,7 +41,7 @@ jobs:
           cargo test -p spectral-graph -- --ignored --nocapture \
             n_brains_coresident_recall_varied_drop_order 2>&1 \
             | tee /tmp/spectral-nbrain-abort.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: spectral-diagnostic-logs
