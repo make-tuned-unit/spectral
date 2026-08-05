@@ -371,6 +371,31 @@ pub trait MemoryStore: Send + Sync {
         fingerprints: &[Fingerprint],
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<WriteOutcome>> + Send + '_>>;
 
+    /// Write a batch of memories, amortizing the per-write commit where the
+    /// backend supports it (register row R7: per-event commit measured at 21%
+    /// of ingest cost).
+    ///
+    /// **Explicit API, never a default:** batching changes durability
+    /// semantics — a crash mid-batch loses the whole batch, not one event.
+    /// Callers choose it knowingly for bulk paths (imports, replays, brain
+    /// builds); the per-event `write` remains the default everywhere else.
+    ///
+    /// The default implementation is a sequential loop of [`write`](Self::write)
+    /// with per-event durability — backends without native batching keep
+    /// their existing semantics unchanged.
+    fn write_batch<'a>(
+        &'a self,
+        items: &'a [(Memory, Vec<Fingerprint>)],
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<WriteOutcome>>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut outcomes = Vec::with_capacity(items.len());
+            for (memory, fingerprints) in items {
+                outcomes.push(self.write(memory, fingerprints).await?);
+            }
+            Ok(outcomes)
+        })
+    }
+
     /// List memories in the given wing with signal_score >= threshold.
     fn list_wing_memories(
         &self,
