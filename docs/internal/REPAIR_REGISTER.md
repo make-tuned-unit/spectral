@@ -305,3 +305,19 @@ on the next pin bump after merge.
 results cannot be measured without outcome labels — which Permagent's sampled
 turn corpus is now accumulating. First real unblock in the register's history.
 Ref: `tier1-ungating-result-2026-08-03.md`.
+
+---
+
+## R14 — Eval-path query expansion is nondeterministic across paid runs · READY (fix known)
+
+Found 2026-08-05 by R11's identity gate: with expansion on (the default),
+the pre-retrieval LLM expansion samples differently across runs — 3/120
+LoCoMo questions retrieved different SETS in two same-day runs of identical
+code on brains proven byte-identical. Every prior paid A/B that left
+expansion on carries this (unmeasured, probably small) noise floor; the
+#238 "retrieval is deterministic" result is true only GIVEN the query.
+
+**Fix options:** freeze expansion via a cache input on the eval path (the
+oracle already supports `--expansion-cache`), or run paired comparisons
+with `--no-expand-queries` (what R11 does now, prereg amendment 5).
+Ref: `r11-render-ab-stage1-void-2026-08-05.md`.
