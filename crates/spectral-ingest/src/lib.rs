@@ -724,6 +724,19 @@ pub trait MemoryStore: Send + Sync {
         committed_at: &str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + '_>>;
 
+    /// Void a turn that aborted before adjudication (cancelled reply, voice
+    /// early-exit, crash mid-turn). A voided turn keeps its rows for audit
+    /// but is EXCLUDED from outcome evidence — its memories were neither
+    /// used nor ignored; the turn never finished. Errors if the turn was
+    /// already committed (adjudicated evidence must not be erased);
+    /// idempotent on an already-voided turn (returns `false`). Committing a
+    /// voided turn likewise errors.
+    fn void_turn(
+        &self,
+        occurrence_id: &str,
+        voided_at: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + '_>>;
+
     /// Aggregated delivery/use evidence per memory, most-delivered first.
     fn memory_outcome_evidence(
         &self,

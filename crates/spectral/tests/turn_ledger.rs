@@ -304,3 +304,83 @@ fn co_retrieval_rebuild_can_exclude_exposure_events() {
         "an empty prefix list must mean 'every method'"
     );
 }
+
+/// Void verb (dispatch 2026-08-06n): an aborted turn is retracted from
+/// evidence without fabricating outcomes, and the adjudicated/retracted
+/// states are mutually exclusive and final.
+#[test]
+fn voided_turn_is_excluded_from_evidence_and_states_are_final() {
+    let tmp = TempDir::new().unwrap();
+    let brain = seeded_brain(&tmp);
+
+    // Turn 1 completes normally; turn 2 aborts and is voided.
+    let done = deploy_turn(&brain);
+    let key = done.receipt.delivered[0].key.clone();
+    brain
+        .record_turn_outcome(&done.receipt, &[(key.as_str(), MemoryOutcome::Used)])
+        .unwrap();
+    let aborted = deploy_turn(&brain);
+    assert!(
+        brain.void_turn(&aborted.receipt).unwrap(),
+        "first void applies"
+    );
+    assert!(
+        !brain.void_turn(&aborted.receipt).unwrap(),
+        "re-void is a no-op"
+    );
+
+    // Evidence counts only the completed turn: delivered 1, not 2.
+    let ev = evidence_for(&brain, &key).expect("evidence for completed turn");
+    assert_eq!(
+        (ev.delivered, ev.used, ev.unreported),
+        (1, 1, 0),
+        "voided turn must not appear as exposure or non-use"
+    );
+
+    // Finality both ways.
+    let err = brain
+        .record_turn_outcome(&aborted.receipt, &[(key.as_str(), MemoryOutcome::Used)])
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("voided"),
+        "commit-after-void must refuse: {err}"
+    );
+    let err = brain.void_turn(&done.receipt).unwrap_err();
+    assert!(
+        err.to_string().contains("committed"),
+        "void-after-commit must refuse: {err}"
+    );
+}
+
+/// Void under deferred delivery: voiding immediately after a deferred turn
+/// must await the in-flight delivery write (else it errors on an unknown
+/// turn) — the same race class the commit path closes.
+#[test]
+fn void_awaits_its_own_deferred_delivery() {
+    let tmp = TempDir::new().unwrap();
+    let mut brain = Brain::open(tmp.path()).unwrap();
+    brain.set_async_turn_delivery(true);
+    brain
+        .remember(
+            "v-1",
+            "the staging deploy runbook lists the rollback steps",
+            Visibility::Private,
+        )
+        .unwrap();
+
+    let r = brain
+        .turn(&TurnRequest::query(
+            "staging deploy rollback",
+            Visibility::Private,
+        ))
+        .unwrap();
+    // Void IMMEDIATELY — maximum race pressure against the spawned write.
+    assert!(brain.void_turn(&r.receipt).unwrap());
+
+    let reopened = Brain::open(tmp.path()).unwrap();
+    let ev = reopened.memory_outcome_evidence(100).unwrap();
+    assert!(
+        ev.iter().all(|e| e.memory_key != "v-1" || e.delivered == 0),
+        "voided deferred turn leaked into evidence after reopen"
+    );
+}

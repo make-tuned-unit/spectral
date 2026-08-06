@@ -3663,18 +3663,11 @@ impl Brain {
 
     /// Commit turn outcomes and reinforce `Used` members atomically.
     /// Returns the number of members whose outcome changed (0 on replay).
-    pub fn commit_turn_outcomes(
-        &self,
-        occurrence_id: &str,
-        outcomes: &[(String, spectral_ingest::LedgerOutcome)],
-        reinforce_strength: f64,
-    ) -> Result<usize, Error> {
-        self.ensure_writable("commit_turn_outcomes")?;
-        // Ordering guarantee for deferred delivery: an outcome commit racing
-        // ahead of its own delivery write UPDATEs zero `turn_members` rows and
-        // silently drops every outcome, so await THIS occurrence's pending
-        // write first. A failed delivery write surfaces here — committing on
-        // top of it would produce exactly that silent loss.
+    /// Ordering guarantee for deferred delivery: a commit or void racing
+    /// ahead of its own delivery write hits zero rows (silent loss for
+    /// commits, unknown-turn error for voids), so await THIS occurrence's
+    /// pending write first. A failed delivery write surfaces here.
+    fn await_pending_delivery(&self, occurrence_id: &str) -> Result<(), Error> {
         let pending = {
             let mut map = self
                 .pending_turn_deliveries
@@ -3688,6 +3681,29 @@ impl Brain {
                 .map_err(|e| Error::Schema(format!("delivery write task: {e}")))?
                 .map_err(|e| Error::Schema(format!("delivery write: {e}")))?;
         }
+        Ok(())
+    }
+
+    /// Void a turn abandoned before adjudication. See
+    /// [`MemoryStore::void_turn`] for semantics (audit rows kept, evidence
+    /// excluded, committed turns refuse, idempotent on re-void).
+    pub fn void_turn(&self, occurrence_id: &str) -> Result<bool, Error> {
+        self.ensure_writable("void_turn")?;
+        self.await_pending_delivery(occurrence_id)?;
+        let now = Utc::now().to_rfc3339();
+        self.rt
+            .block_on(self.memory_store.void_turn(occurrence_id, &now))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    pub fn commit_turn_outcomes(
+        &self,
+        occurrence_id: &str,
+        outcomes: &[(String, spectral_ingest::LedgerOutcome)],
+        reinforce_strength: f64,
+    ) -> Result<usize, Error> {
+        self.ensure_writable("commit_turn_outcomes")?;
+        self.await_pending_delivery(occurrence_id)?;
         let now = Utc::now().to_rfc3339();
         self.rt
             .block_on(self.memory_store.commit_turn_outcomes(

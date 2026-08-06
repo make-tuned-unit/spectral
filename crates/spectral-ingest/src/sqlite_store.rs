@@ -844,6 +844,22 @@ impl SqliteStore {
                 ON turn_members(outcome);",
         )?;
 
+        // voided_at column (turn-void verb, dispatch 2026-08-06n): marks a
+        // turn abandoned before adjudication. Additive; NULL for every turn
+        // that predates the verb.
+        let mut has_voided_at = false;
+        let mut stmt_v = conn.prepare("PRAGMA table_info(turn_events)")?;
+        let rows_v = stmt_v.query_map([], |row| row.get::<_, String>(1))?;
+        for name in rows_v {
+            if name?.as_str() == "voided_at" {
+                has_voided_at = true;
+            }
+        }
+        drop(stmt_v);
+        if !has_voided_at {
+            conn.execute_batch("ALTER TABLE turn_events ADD COLUMN voided_at TEXT DEFAULT NULL")?;
+        }
+
         // declarative_density column
         let mut has_declarative_density = false;
         let mut stmt5 = conn.prepare("PRAGMA table_info(memories)")?;
@@ -3104,16 +3120,23 @@ impl MemoryStore for SqliteStore {
             // Idempotence gate: if this occurrence was already committed, do
             // nothing at all. Reinforcement is additive, so a second pass would
             // silently double-count the same evidence.
-            let already: Option<String> = tx
+            let row: Option<(Option<String>, Option<String>)> = tx
                 .query_row(
-                    "SELECT committed_at FROM turn_events WHERE occurrence_id = ?1",
+                    "SELECT committed_at, voided_at FROM turn_events WHERE occurrence_id = ?1",
                     params![occurrence_id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-                .optional()?
-                .flatten();
-            if already.is_some() {
-                return Ok(0);
+                .optional()?;
+            if let Some((committed, voided)) = &row {
+                if voided.is_some() {
+                    anyhow::bail!(
+                        "turn {occurrence_id} was voided (aborted before adjudication); \
+                         committing outcomes for it would fabricate evidence"
+                    );
+                }
+                if committed.is_some() {
+                    return Ok(0);
+                }
             }
 
             let mut changed = 0usize;
@@ -3147,6 +3170,45 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    fn void_turn(
+        &self,
+        occurrence_id: &str,
+        voided_at: &str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + '_>> {
+        let occurrence_id = occurrence_id.to_string();
+        let voided_at = voided_at.to_string();
+        let conn = self.conn.clone();
+        Box::pin(async move {
+            let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let tx = conn.transaction()?;
+            let row: Option<(Option<String>, Option<String>)> = tx
+                .query_row(
+                    "SELECT committed_at, voided_at FROM turn_events WHERE occurrence_id = ?1",
+                    params![occurrence_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((committed, already_voided)) = row else {
+                anyhow::bail!("void for unknown turn {occurrence_id}");
+            };
+            if committed.is_some() {
+                anyhow::bail!(
+                    "turn {occurrence_id} is already committed; adjudicated \
+                     evidence must not be voided"
+                );
+            }
+            if already_voided.is_some() {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE turn_events SET voided_at = ?1 WHERE occurrence_id = ?2",
+                params![voided_at, occurrence_id],
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
     fn memory_outcome_evidence(
         &self,
         limit: usize,
@@ -3156,13 +3218,17 @@ impl MemoryStore for SqliteStore {
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let mut stmt = conn.prepare(
-                "SELECT memory_id, memory_key, COUNT(*) delivered, \
-                        SUM(outcome='used'), SUM(outcome='wrong'), \
-                        SUM(outcome='ignored'), SUM(outcome='unreported'), \
-                        MIN(rank) \
-                 FROM turn_members \
-                 GROUP BY memory_id, memory_key \
-                 ORDER BY delivered DESC, memory_id ASC \
+                // Voided turns are excluded wholesale: an aborted turn is
+                // neither exposure evidence nor non-use evidence.
+                "SELECT m.memory_id, m.memory_key, COUNT(*) delivered, \
+                        SUM(m.outcome='used'), SUM(m.outcome='wrong'), \
+                        SUM(m.outcome='ignored'), SUM(m.outcome='unreported'), \
+                        MIN(m.rank) \
+                 FROM turn_members m \
+                 JOIN turn_events e ON e.occurrence_id = m.occurrence_id \
+                 WHERE e.voided_at IS NULL \
+                 GROUP BY m.memory_id, m.memory_key \
+                 ORDER BY delivered DESC, m.memory_id ASC \
                  LIMIT ?1",
             )?;
             let rows = stmt.query_map(params![limit as i64], |row| {

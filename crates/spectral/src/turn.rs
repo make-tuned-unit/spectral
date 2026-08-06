@@ -537,4 +537,20 @@ impl Brain {
     pub fn flush_turn_deliveries(&self) -> Result<(), Error> {
         self.inner.flush_turn_deliveries()
     }
+
+    /// Void a turn that aborted before adjudication — cancelled reply, voice
+    /// early-exit, park-and-never-resume, crash mid-turn. Wire this into the
+    /// error/cancel/Drop paths that abandon a receipt.
+    ///
+    /// Semantics: the turn's rows are KEPT for audit but excluded from
+    /// [`memory_outcome_evidence`](Self::memory_outcome_evidence) — an
+    /// aborted turn is neither exposure evidence nor non-use evidence, and
+    /// committing all-`Ignored` for one would fabricate false negatives
+    /// (dispatch 2026-08-06n, the case this verb exists for). A committed
+    /// turn refuses to void and a voided turn refuses to commit — evidence,
+    /// once adjudicated or retracted, stays that way. Idempotent: re-voiding
+    /// returns `Ok(false)`.
+    pub fn void_turn(&self, receipt: &TurnReceipt) -> Result<bool, Error> {
+        self.inner.void_turn(&receipt.id)
+    }
 }
