@@ -78,3 +78,10 @@ $3.02 total, sequential stages, abort-early. No other paid runs ride along.
    `claude-sonnet-4-6`, no env levers, defaults otherwise. A ~$0.10 smoke
    run (2 questions/arm) validates plumbing first and counts inside the
    ceiling.
+5. **(post-void, before any rerun) `--no-expand-queries` on BOTH arms.**
+   The first stage-1 attempt was VOIDED by its own identity precondition:
+   default-on LLM query expansion sampled differently across arms on 3/120
+   questions, changing retrieved sets. Diagnosis and the honesty note on
+   observed-but-void toplines: `r11-render-ab-stage1-void-2026-08-05.md`.
+   Expansion is removed from both arms equally; the rerun (~$3.02, on top
+   of the ~$3.02 consumed by the void run) requires fresh budget sign-off.
