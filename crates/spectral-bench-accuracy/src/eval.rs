@@ -62,6 +62,13 @@ pub struct EvalConfig {
     /// Rendering the actor sees (R11 A/B). Default: the harness format.
     #[serde(default)]
     pub render_mode: RenderMode,
+    /// Frozen expansion cache path (R14): `{question_id: expanded_query}`.
+    /// Makes the expansion-ON configuration replayable — without it, paired
+    /// runs diverge when the expansion LLM samples differently (measured:
+    /// 3/120 retrieval sets differed across two same-day runs). Enters the
+    /// config fingerprint via serde.
+    #[serde(default)]
+    pub expansion_cache: Option<PathBuf>,
 }
 
 impl Default for EvalConfig {
@@ -70,6 +77,7 @@ impl Default for EvalConfig {
             dataset_path: PathBuf::from("longmemeval_s.json"),
             work_dir: PathBuf::from("eval-work"),
             render_mode: RenderMode::Harness,
+            expansion_cache: None,
             max_questions: None,
             categories: None,
             seed: 42,
@@ -146,6 +154,12 @@ pub struct AccuracyEval {
     descriptions: Option<crate::describe::DescriptionMap>,
     /// Optional query expansion config.
     expansion: Option<crate::expansion::ExpansionConfig>,
+    /// Frozen expansion replay (R14): {question_id: expanded_query}, loaded
+    /// from `EvalConfig::expansion_cache` at the top of `run`. When present,
+    /// expansion-eligible questions MUST hit the cache — a miss fails the
+    /// question rather than silently falling back to live (nondeterministic)
+    /// expansion.
+    expansion_cache_map: std::sync::OnceLock<std::collections::HashMap<String, String>>,
 }
 
 /// Result of evaluating a single question.
@@ -180,7 +194,22 @@ impl AccuracyEval {
             judge,
             descriptions: None,
             expansion: None,
+            expansion_cache_map: std::sync::OnceLock::new(),
         }
+    }
+
+    /// R14: load the frozen expansion cache. Called at the top of [`run`] so a
+    /// bad path or unparsable file fails BEFORE any brain is built or any
+    /// paid call is made.
+    fn load_expansion_cache(&self) -> Result<()> {
+        if let Some(path) = &self.config.expansion_cache {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("expansion cache {}: {e}", path.display()))?;
+            let map: std::collections::HashMap<String, String> = serde_json::from_str(&text)
+                .map_err(|e| anyhow::anyhow!("expansion cache {}: parse: {e}", path.display()))?;
+            let _ = self.expansion_cache_map.set(map);
+        }
+        Ok(())
     }
 
     pub fn with_expansion(mut self, config: crate::expansion::ExpansionConfig) -> Self {
@@ -225,6 +254,7 @@ impl AccuracyEval {
 
     /// Run the full evaluation.
     pub fn run(&self) -> Result<EvalReport> {
+        self.load_expansion_cache()?;
         let questions_all = crate::dataset::load_dataset(&self.config.dataset_path)?;
         let questions = self.filter_questions(&questions_all);
 
@@ -460,6 +490,21 @@ impl AccuracyEval {
         );
         let (retrieval_query, expansion_usage, expansion_wall_ms) =
             match (&self.expansion, expansion_applies) {
+                // R14: frozen replay takes precedence over live expansion.
+                // A miss FAILS the question — silently falling back to live
+                // (or unexpanded) would reintroduce exactly the cross-run
+                // divergence the cache exists to remove.
+                _ if expansion_applies && self.expansion_cache_map.get().is_some() => {
+                    let cache = self.expansion_cache_map.get().unwrap();
+                    let expanded = cache.get(&question.question_id).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "expansion cache has no entry for {} — regenerate the cache \
+                             for this dataset (expansion_cache bin) or drop --expansion-cache",
+                            question.question_id
+                        )
+                    })?;
+                    (expanded.clone(), None, 0)
+                }
                 (Some(exp_config), true) => {
                     let t = std::time::Instant::now();
                     match crate::expansion::expand_query(&question.question, exp_config) {
@@ -1558,5 +1603,87 @@ mod tests {
         // Missing @file selects nothing (matches filter_questions behavior).
         let ids = parse_question_id_filter("@/nonexistent/ids.txt");
         assert!(ids.is_empty());
+    }
+
+    /// R14 pins: a frozen expansion cache (a) replaces the retrieval query
+    /// for expansion-eligible (Counting-shaped) questions with the cached
+    /// text and never calls the expansion API, and (b) FAILS on a cache miss
+    /// instead of silently expanding live or falling back to the raw query.
+    #[test]
+    fn frozen_expansion_cache_replays_and_fails_loud_on_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds_path = dir.path().join("dataset.json");
+        let questions = vec![Question {
+            question_id: "q-count".into(),
+            question_type: "multi-session".into(),
+            question: "How many times did I mention the car?".into(),
+            answer: serde_json::Value::String("2".into()),
+            question_date: Some("2023/06/01 (Thu) 10:00".into()),
+            haystack_sessions: vec![vec![Turn {
+                role: "user".into(),
+                content: "My car is red and I drive the car daily.".into(),
+            }]],
+            haystack_session_ids: vec!["s1".into()],
+            haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
+        }];
+        std::fs::write(&ds_path, serde_json::to_string(&questions).unwrap()).unwrap();
+        assert!(
+            matches!(
+                retrieval::classify_question("How many times did I mention the car?"),
+                retrieval::QuestionType::Counting | retrieval::QuestionType::CountingCurrentState
+            ),
+            "fixture must be Counting-shaped or the cache path is not exercised"
+        );
+
+        // (a) Cache hit: the cached expansion reaches retrieval verbatim.
+        let cache_path = dir.path().join("cache.json");
+        std::fs::write(
+            &cache_path,
+            r#"{"q-count": "car mention count times automobile vehicle"}"#,
+        )
+        .unwrap();
+        let config = EvalConfig {
+            dataset_path: ds_path.clone(),
+            work_dir: dir.path().join("work-hit"),
+            max_questions: Some(1),
+            checkpoint_interval: 100,
+            expansion_cache: Some(cache_path),
+            ..Default::default()
+        };
+        let judge = Box::new(RecordingJudge {
+            seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        });
+        let eval = AccuracyEval::new(config, Box::new(MockActor::new("2")), judge);
+        let report = eval.run().unwrap();
+        assert_eq!(report.results.len(), 1, "cache hit must evaluate normally");
+
+        // (b) Cache miss: the run must fail, not silently degrade.
+        let empty_cache = dir.path().join("empty-cache.json");
+        std::fs::write(&empty_cache, "{}").unwrap();
+        let config = EvalConfig {
+            dataset_path: ds_path,
+            work_dir: dir.path().join("work-miss"),
+            max_questions: Some(1),
+            checkpoint_interval: 100,
+            expansion_cache: Some(empty_cache),
+            ..Default::default()
+        };
+        let judge = Box::new(RecordingJudge {
+            seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        });
+        let eval = AccuracyEval::new(config, Box::new(MockActor::new("2")), judge);
+        let err = eval.run();
+        match err {
+            Ok(report) => assert!(
+                report.results.is_empty()
+                    || report.results.iter().all(|r| !r.predicted.contains('2')
+                        || r.outcome_class != crate::report::OutcomeClass::Ok),
+                "cache miss must not produce a normally-graded result"
+            ),
+            Err(e) => assert!(
+                e.to_string().contains("expansion cache"),
+                "error should name the cache: {e}"
+            ),
+        }
     }
 }

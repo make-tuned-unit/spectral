@@ -64,6 +64,14 @@ enum Command {
         #[arg(long, default_value = "harness")]
         render: String,
 
+        /// Frozen expansion cache JSON {question_id: expanded_query} (R14).
+        /// Replays the expansion-ON configuration deterministically at $0;
+        /// a cache miss fails the question rather than silently expanding
+        /// live. Generate with the expansion_cache bin. Incompatible with
+        /// --no-expand-queries.
+        #[arg(long)]
+        expansion_cache: Option<PathBuf>,
+
         /// Actor model name
         #[arg(long, default_value = "claude-sonnet-4-6")]
         actor_model: String,
@@ -364,7 +372,14 @@ fn main() -> Result<()> {
             no_expand_queries,
             expansion_model,
             render,
+            expansion_cache,
         } => {
+            if expansion_cache.is_some() && no_expand_queries {
+                anyhow::bail!(
+                    "--expansion-cache replays expansion ON; combining it with \
+                     --no-expand-queries is contradictory — pick one"
+                );
+            }
             let ds = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
             // Pre-flight count must honor --question-id so the estimate (and
             // the --confirm-cost guard) reflects the questions actually run.
@@ -446,6 +461,7 @@ fn main() -> Result<()> {
                     "session-grouped" => eval::RenderMode::SessionGrouped,
                     other => anyhow::bail!("unknown --render mode: {other}"),
                 },
+                expansion_cache,
                 ..Default::default()
             };
 
