@@ -279,7 +279,16 @@ published format. Redirecting changes output for existing consumers.
 
 ---
 
-## R12 — ACT-R's recorded behaviour is untrustworthy · READY (re-run)
+## R12 — ACT-R's recorded behaviour is untrustworthy · DONE (re-run 2026-08-06: active but metric-neutral)
+
+**Re-measured post-F1/F2, $0, 500-question paired oracle A/B (single
+variable `SPECTRAL_ACTR_DECAY=0.5`, reused brains):** the lever now changes
+**389/500 contexts** (the old inert record confirmed stale) and moves no
+oracle metric — session-recall +2/−1, zero-evidence 0/0, keys +14 (noise),
+tokens +107. Citable form: reshuffles context composition, no measured
+retrieval benefit; stays off by default. Any accuracy claim needs a paid
+replay of the 389 changed contexts — unjustified by this signal.
+Ref: `r12-actr-rerun-note-2026-08-06.md`. Original row:
 
 `ACTR_POOL_WIDEN` used the same post-hoc `take()` that made widening a no-op on
 the cascade route, so ACT-R there was doubly inert (couldn't change membership;
