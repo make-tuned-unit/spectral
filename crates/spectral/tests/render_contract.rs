@@ -157,3 +157,48 @@ fn library_render_does_not_read_the_environment() {
 
     assert_eq!(before, after, "library rendering read an env var");
 }
+
+/// R11 contract pin: the facade recall surfaces publish `session_grouped` as
+/// `context_block` — byte-equal to rendering the same hits directly. Measured
+/// reason (held-out LoCoMo, identical retrieval): +14.2pp validation,
+/// entirely temporal-reasoning — the old undated block starved temporal
+/// questions of dates. If this pin breaks, the shipped context regressed to
+/// an unmeasured format.
+#[test]
+fn recall_context_block_is_session_grouped() {
+    let (_tmp, brain) = brain_with_two_sessions();
+
+    let result = brain
+        .recall("framework laptop", Visibility::Private)
+        .unwrap();
+    let direct =
+        render::session_grouped(&result.tact.memories, &RenderOptions::published()).join("\n");
+    assert_eq!(
+        result.tact.context_block, direct,
+        "recall context_block is not the published session_grouped rendering"
+    );
+    if !result.tact.memories.is_empty() {
+        assert!(
+            result.tact.context_block.contains("--- Session "),
+            "grouped header missing"
+        );
+        assert!(
+            !result
+                .tact
+                .context_block
+                .contains("MEMORY CONTEXT (via TACT)"),
+            "old undated TACT bundle leaked back in"
+        );
+    }
+
+    // The dated variant: recall_at threads its time anchor into the renderer.
+    let now = chrono::Utc::now();
+    let at = brain
+        .recall_at("framework laptop", Visibility::Private, now)
+        .unwrap();
+    let now_str = now.to_rfc3339();
+    let mut opts = RenderOptions::published();
+    opts.question_date = Some(&now_str);
+    let direct_at = render::session_grouped(&at.tact.memories, &opts).join("\n");
+    assert_eq!(at.tact.context_block, direct_at);
+}

@@ -111,13 +111,34 @@ def main():
     ap.add_argument("out_json")
     ap.add_argument("--per-cat", type=int, default=40, help="questions sampled per category")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="prior sample JSON whose question_ids must not reappear "
+        "(repeatable); guarantees a disjoint validation sample",
+    )
     args = ap.parse_args()
+
+    burned = set()
+    for path in args.exclude:
+        burned |= {q["question_id"] for q in json.load(open(path))}
 
     random.seed(args.seed)
     everything = convert(json.load(open(args.locomo_json)))
+    if burned:
+        before = len(everything)
+        everything = [q for q in everything if q["question_id"] not in burned]
+        print(f"excluded {before - len(everything)} burned questions "
+              f"({len(burned)} ids supplied)")
     by_cat = {}
     for q in everything:
         by_cat.setdefault(q["question_type"], []).append(q)
+    for cat, qs in sorted(by_cat.items()):
+        if len(qs) < args.per_cat:
+            raise SystemExit(
+                f"pool exhausted: {cat} has {len(qs)} < {args.per_cat} after exclusion"
+            )
     sample = []
     for qs in by_cat.values():
         random.shuffle(qs)

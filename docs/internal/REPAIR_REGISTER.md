@@ -257,7 +257,21 @@ See `permagent-dispatch-2026-08-03/04.md` and their two responses.
 
 ---
 
-## R11 — `format_context_block` is still the undated format · NEEDS-PREREG
+## R11 — `format_context_block` is still the undated format · DONE (validated +14.2pp, SHIPPED 2026-08-06)
+
+**The first prereg-validated accuracy lever in the project's history.**
+Two-stage held-out LoCoMo A/B, identical retrieval by construction and
+verification (identity gate; first attempt VOIDED itself — see R14): dev
++19.2pp (p=1.6e-6), disjoint validation **+14.2pp (B-fixed 20/broke 3,
+McNemar p=4.9e-4)**. The entire effect is temporal-reasoning (validation
+20.0%→62.5%); other categories bit-flat — the undated block starved
+temporal questions of dates. Facade recall surfaces now publish
+`session_grouped` as `context_block` (BREAKING for old-block parsers; hits
+untouched; pinned by test). Refs: `r11-render-ab-prereg-2026-08-05.md`,
+`-stage1-void-`, `-stage1-result-2026-08-05.md`,
+`-stage2-result-2026-08-06.md`.
+
+Original row:
 
 `recall_at` puts `spectral_tact::format_context_block` in `tact.context_block` —
 ungrouped, undated, no role tags. `spectral::render::session_grouped` is the
@@ -305,3 +319,19 @@ on the next pin bump after merge.
 results cannot be measured without outcome labels — which Permagent's sampled
 turn corpus is now accumulating. First real unblock in the register's history.
 Ref: `tier1-ungating-result-2026-08-03.md`.
+
+---
+
+## R14 — Eval-path query expansion is nondeterministic across paid runs · READY (fix known)
+
+Found 2026-08-05 by R11's identity gate: with expansion on (the default),
+the pre-retrieval LLM expansion samples differently across runs — 3/120
+LoCoMo questions retrieved different SETS in two same-day runs of identical
+code on brains proven byte-identical. Every prior paid A/B that left
+expansion on carries this (unmeasured, probably small) noise floor; the
+#238 "retrieval is deterministic" result is true only GIVEN the query.
+
+**Fix options:** freeze expansion via a cache input on the eval path (the
+oracle already supports `--expansion-cache`), or run paired comparisons
+with `--no-expand-queries` (what R11 does now, prereg amendment 5).
+Ref: `r11-render-ab-stage1-void-2026-08-05.md`.

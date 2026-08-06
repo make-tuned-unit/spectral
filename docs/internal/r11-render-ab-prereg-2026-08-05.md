@@ -53,3 +53,35 @@ ships: nothing on the default path; the register row records the verdict.
 ## Cost ceiling
 
 $3.02 total, sequential stages, abort-early. No other paid runs ride along.
+
+## Amendments 2026-08-05, committed BEFORE any measurement
+
+1. **Budget arithmetic corrected.** The original text implied $1.51/stage;
+   a stage is TWO fresh arms (~$1.51 each), so stage 1 ≈ **$3.02** — the
+   full approved ceiling. Stage 2 therefore requires a separate budget
+   sign-off if stage 1 passes. Reusing the burned 2026-08-01 run as arm A
+   was rejected: retrieval code has changed since (temporal rewrite, policy
+   V2), which would break the identical-retrieval construction.
+2. **Arm A runs UNCAPPED.** `format_context_block`'s shipped default caps at
+   24,000 chars; a binding cap would confound format with budget. At LoCoMo
+   k=30 (mean ~1.6k tokens) the cap essentially never binds, but it is
+   disabled outright so rendering is provably the only variable. The cap is
+   a separate lever with its own history (0.36 cap REJECTED, −15pp).
+3. **Mechanics.** `spectral-bench-accuracy run --render {tact-block|
+   session-grouped}` re-renders the identical raw cascade hits through the
+   library surface; a non-Harness mode with no raw hits FAILS the question
+   rather than silently falling back. Cross-arm identity is verified
+   post-hoc: `retrieved_memory_keys` must be equal per question across
+   arms; any mismatch voids the run before grading is read.
+4. **Config:** dataset `locomo_heldout.json` (the burned dev 120 — stage 1
+   is dev by design), cascade retrieval with shape routing, actor+judge
+   `claude-sonnet-4-6`, no env levers, defaults otherwise. A ~$0.10 smoke
+   run (2 questions/arm) validates plumbing first and counts inside the
+   ceiling.
+5. **(post-void, before any rerun) `--no-expand-queries` on BOTH arms.**
+   The first stage-1 attempt was VOIDED by its own identity precondition:
+   default-on LLM query expansion sampled differently across arms on 3/120
+   questions, changing retrieved sets. Diagnosis and the honesty note on
+   observed-but-void toplines: `r11-render-ab-stage1-void-2026-08-05.md`.
+   Expansion is removed from both arms equally; the rerun (~$3.02, on top
+   of the ~$3.02 consumed by the void run) requires fresh budget sign-off.

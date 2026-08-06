@@ -13,6 +13,25 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// Which rendering the actor sees (R11 A/B — `r11-render-ab-prereg-2026-08-05.md`).
+///
+/// `Harness` is the bench's own historical format, unchanged. The other two
+/// re-render the IDENTICAL raw hits through the library's surfaces, so the
+/// retrieved set is byte-identical across arms by construction (and verified
+/// post-hoc via `retrieved_memory_keys`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RenderMode {
+    #[default]
+    Harness,
+    /// `spectral_tact::format_context_block` — what `recall_at` ships today.
+    /// Run UNCAPPED (the shipped 24k-char default would truncate and
+    /// confound format with budget; the cap is a separate lever).
+    TactBlock,
+    /// `spectral::render::session_grouped` — the published format.
+    SessionGrouped,
+}
+
 /// Evaluation configuration.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvalConfig {
@@ -40,6 +59,9 @@ pub struct EvalConfig {
     /// Filter to a single question by ID (for targeted pre-validation).
     #[serde(default)]
     pub question_id: Option<String>,
+    /// Rendering the actor sees (R11 A/B). Default: the harness format.
+    #[serde(default)]
+    pub render_mode: RenderMode,
 }
 
 impl Default for EvalConfig {
@@ -47,6 +69,7 @@ impl Default for EvalConfig {
         Self {
             dataset_path: PathBuf::from("longmemeval_s.json"),
             work_dir: PathBuf::from("eval-work"),
+            render_mode: RenderMode::Harness,
             max_questions: None,
             categories: None,
             seed: 42,
@@ -549,6 +572,29 @@ impl AccuracyEval {
                 })
                 .collect()
         };
+
+        // R11 A/B: re-render the identical raw hits through a library surface.
+        // Fails loud rather than silently falling back — a silent fallback
+        // would grade the wrong arm.
+        if self.config.render_mode != RenderMode::Harness {
+            anyhow::ensure!(
+                !raw_hits.is_empty(),
+                "--render override requires a retrieval path that returns raw hits \
+                 (question {})",
+                question.question_id
+            );
+            memories = match self.config.render_mode {
+                RenderMode::TactBlock => {
+                    vec![spectral_tact::format_context_block(&raw_hits, usize::MAX)]
+                }
+                RenderMode::SessionGrouped => {
+                    let mut opts = spectral::render::RenderOptions::published();
+                    opts.question_date = question.question_date.as_deref();
+                    spectral::render::session_grouped(&raw_hits, &opts)
+                }
+                RenderMode::Harness => unreachable!(),
+            };
+        }
 
         // Optional read-time consolidation pre-pass (SPECTRAL_CONSOLIDATE_CONTEXT=1):
         // one sparse haiku call dedups cross-session mentions into an entity-keyed

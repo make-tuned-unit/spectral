@@ -351,7 +351,9 @@ impl Brain {
         query: &str,
         context_visibility: Visibility,
     ) -> Result<HybridRecallResult, Error> {
-        self.inner.recall(query, context_visibility)
+        self.inner
+            .recall(query, context_visibility)
+            .map(|r| Self::regroup_context_block(r, None))
     }
 
     /// Hybrid recall with an explicit time anchor for recency decay.
@@ -364,7 +366,29 @@ impl Brain {
         context_visibility: Visibility,
         now: DateTime<Utc>,
     ) -> Result<HybridRecallResult, Error> {
-        self.inner.recall_at(query, context_visibility, now)
+        self.inner
+            .recall_at(query, context_visibility, now)
+            .map(|r| Self::regroup_context_block(r, Some(now)))
+    }
+
+    /// R11 (BREAKING for consumers parsing the old block): `context_block` is
+    /// now [`render::session_grouped`] — dated, session-grouped, role-tagged —
+    /// instead of the undated TACT bundle. Measured on held-out LoCoMo with
+    /// byte-identical retrieval: +19.2pp (dev) / **+14.2pp (disjoint
+    /// validation, McNemar p=4.9e-4)**, the entire effect temporal-reasoning
+    /// (a temporal question over an undated context is guesswork). The hits
+    /// themselves are untouched; only the rendering changes.
+    /// See `docs/internal/r11-render-ab-stage2-result-2026-08-06.md`.
+    fn regroup_context_block(
+        mut result: HybridRecallResult,
+        now: Option<DateTime<Utc>>,
+    ) -> HybridRecallResult {
+        let now_str = now.map(|n| n.to_rfc3339());
+        let mut opts = render::RenderOptions::published();
+        opts.question_date = now_str.as_deref();
+        result.tact.context_block =
+            render::session_grouped(&result.tact.memories, &opts).join("\n");
+        result
     }
 
     /// Convenience: recall with maximally-permissive context (returns everything).
@@ -402,7 +426,9 @@ impl Brain {
     }
 
     pub fn recall_local(&self, query: &str) -> Result<HybridRecallResult, Error> {
-        self.inner.recall_local(query)
+        self.inner
+            .recall_local(query)
+            .map(|r| Self::regroup_context_block(r, None))
     }
 
     /// Convenience: [`recall_at()`](Self::recall_at) with `Visibility::Private`.
@@ -411,7 +437,9 @@ impl Brain {
         query: &str,
         now: DateTime<Utc>,
     ) -> Result<HybridRecallResult, Error> {
-        self.inner.recall_local_at(query, now)
+        self.inner
+            .recall_local_at(query, now)
+            .map(|r| Self::regroup_context_block(r, Some(now)))
     }
 
     /// Canonical integrated recall path. Unlike the legacy [`recall`](Self::recall)
