@@ -322,7 +322,15 @@ Ref: `tier1-ungating-result-2026-08-03.md`.
 
 ---
 
-## R14 — Eval-path query expansion is nondeterministic across paid runs · READY (fix known)
+## R14 — Eval-path query expansion is nondeterministic across paid runs · DONE (2026-08-06)
+
+**Shipped:** `run --expansion-cache` replays frozen expansion (fail-loud on
+miss, contradictory-flag guard, enters the config fingerprint; pinned by
+test). Caches generated for all three LoCoMo samples (~$0.075). Verified
+live on locomo_5_46 — one of the three questions that voided R11 stage 1 —
+two full eval runs, retrieved keys byte-identical. The silent
+expansion-failure fallback is also bypassed in cache mode.
+Ref: `r14-frozen-expansion-result-2026-08-06.md`. Original row:
 
 Found 2026-08-05 by R11's identity gate: with expansion on (the default),
 the pre-retrieval LLM expansion samples differently across runs — 3/120
