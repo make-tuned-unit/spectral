@@ -2009,13 +2009,19 @@ impl MemoryStore for SqliteStore {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
             if !fusion {
+                // `, m.id` is a total order on top of bm25: without it the row
+                // that survives `LIMIT` among equally-scored documents is
+                // whatever SQLite's plan happens to emit first. `id` is
+                // `key_to_id(key)` — a fixed-width hash of the memory key, so
+                // the order reproduces across independently-built brains, and
+                // it is the same key the fusion path already tiebreaks on.
                 let sql = format!(
                     "SELECT m.{cols}
                      FROM memories_fts fts
                      JOIN memories m ON m.rowid = fts.rowid
                      WHERE memories_fts MATCH ?1
                        AND m.key NOT IN (SELECT source_key FROM consolidation_edges)
-                     ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5) LIMIT ?2",
+                     ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5), m.id LIMIT ?2",
                     cols = MEMORY_COLUMNS.replace(", ", ", m."),
                 );
                 let mut stmt = conn.prepare(&sql)?;
@@ -2034,6 +2040,10 @@ impl MemoryStore for SqliteStore {
             // channel-specific winner that sits just past `max_results` in the
             // other channel, then fuse by rank and take the top `max_results`.
             let depth = (max_results.saturating_mul(2)).max(50) as i64;
+            // Each channel's RESULT POSITION is the RRF input, so an
+            // untiebroken channel ORDER BY perturbs the fused score for every
+            // tied document — the `.then(a.0.cmp(&b.0))` below only breaks
+            // ties in the fused score, one layer too late. Same `m.id` key.
             let ranked_ids =
                 |table: &str, weights: &str, mq: &str| -> anyhow::Result<Vec<String>> {
                     let sql = format!(
@@ -2042,7 +2052,7 @@ impl MemoryStore for SqliteStore {
                      JOIN memories m ON m.rowid = f.rowid
                      WHERE {table} MATCH ?1
                        AND m.key NOT IN (SELECT source_key FROM consolidation_edges)
-                     ORDER BY bm25({table}{weights}) LIMIT ?2"
+                     ORDER BY bm25({table}{weights}), m.id LIMIT ?2"
                     );
                     let mut stmt = conn.prepare(&sql)?;
                     let rows = stmt.query_map(params![mq, depth], |r| r.get::<_, String>(0))?;
@@ -7952,5 +7962,92 @@ mod tests {
         let bat_fps: usize = bat_results.iter().map(|r| r.fingerprints.len()).sum();
         assert!(seq_fps > 0, "sequential must pair against earlier items");
         assert_eq!(bat_fps, 0, "intra-batch pairing must not happen");
+    }
+
+    // ── R16: SQL-level bm25 tiebreak ───────────────────────────────
+    //
+    // Both tests construct a GENUINE bm25 tie (byte-identical content,
+    // single-token keys ⇒ identical doclen and identical term frequencies)
+    // and assert which row survives `LIMIT 1`. The two ids are literals
+    // chosen at authoring time so that the LEXICOGRAPHICALLY LARGER id is
+    // inserted FIRST: a plan that emits scan (rowid) order returns
+    // `ffffffffffffff01`, and only the `, m.id` tiebreak returns
+    // `0000000000000001`. Nothing is computed at runtime, so the assertion
+    // cannot pass under both orderings.
+
+    /// Insert a row straight into `memories` (fires the FTS sync triggers)
+    /// with a caller-chosen literal id.
+    fn insert_tie_row(store: &SqliteStore, id: &str, key: &str, content: &str) {
+        let conn = store.conn();
+        conn.execute(
+            "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility)
+             VALUES (?1, ?2, ?3, 'w', 'fact', 0.5, 'private')",
+            params![id, key, content],
+        )
+        .unwrap();
+    }
+
+    const TIE_ID_HIGH: &str = "ffffffffffffff01";
+    const TIE_ID_LOW: &str = "0000000000000001";
+
+    #[tokio::test]
+    async fn fts_tie_is_broken_by_memory_id_default_path() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        assert!(!store.fusion, "this test must cover the non-fusion default");
+
+        // High id first, so insertion/rowid order disagrees with id order.
+        insert_tie_row(&store, TIE_ID_HIGH, "zulu", "shared tie content");
+        insert_tie_row(&store, TIE_ID_LOW, "alfa", "shared tie content");
+        insert_tie_row(&store, "8888888888888888", "mike", "unrelated filler text");
+
+        let words = vec!["shared".to_string(), "tie".to_string()];
+
+        // The tie is real: both rows match and both are returned at k=2.
+        let both = store.fts_search(&words, 2).await.unwrap();
+        assert_eq!(both.len(), 2, "both tied rows must match the query");
+        let mut ids: Vec<&str> = both.iter().map(|h| h.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![TIE_ID_LOW, TIE_ID_HIGH]);
+
+        // The LIMIT boundary is decided by our SQL, not by the query plan.
+        let top = store.fts_search(&words, 1).await.unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(
+            top[0].id, TIE_ID_LOW,
+            "LIMIT-1 winner of a bm25 tie must be the lexicographically \
+             smallest memory id, not whatever the query plan emits first"
+        );
+    }
+
+    #[tokio::test]
+    async fn fts_tie_is_broken_by_memory_id_fusion_path() {
+        // Fusion needs a real file: `ensure_fusion_index` builds
+        // `memories_fts_raw` and its sync triggers at open.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = SqliteStoreConfig {
+            fts_fusion: true,
+            ..Default::default()
+        };
+        let store = SqliteStore::open_with_config(&dir.path().join("memory.db"), &cfg).unwrap();
+        assert!(store.fusion, "this test must cover the fusion path");
+
+        insert_tie_row(&store, TIE_ID_HIGH, "zulu", "shared tie content");
+        insert_tie_row(&store, TIE_ID_LOW, "alfa", "shared tie content");
+        insert_tie_row(&store, "8888888888888888", "mike", "unrelated filler text");
+
+        let words = vec!["shared".to_string(), "tie".to_string()];
+
+        let both = store.fts_search(&words, 2).await.unwrap();
+        assert_eq!(both.len(), 2, "both tied rows must match the query");
+
+        // Each fusion channel's ORDER BY produces the rank that feeds RRF, so
+        // an untiebroken channel silently perturbs the fused score. Pin the
+        // fused winner.
+        let top = store.fts_search(&words, 1).await.unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(
+            top[0].id, TIE_ID_LOW,
+            "fusion channel ranks must be tiebroken by memory id before RRF"
+        );
     }
 }

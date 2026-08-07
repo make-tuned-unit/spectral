@@ -6,6 +6,20 @@ Rule 2 it needs no prereg (instrument/determinism fix); under Rule 6 it is
 recorded here as a baseline shift with an oracle diff, not as a null and
 not as a win.
 
+> **UNBLOCKED 2026-08-07 (later same day) — merged.** The blocker below asked
+> whether the tiebreak *exposes* a pre-existing order-invariance violation or
+> *introduces* one. Answered by experiment **on `main`, with no R16 change
+> present**: the same 24 memories with the same timestamps, inserted in a
+> shuffled rather than chronological order, drift across the same 5-year clock
+> shift (`s22`/`s1` and `s21`/`s12` swap). The violation is R20's and predates
+> R16; the old test passed only because chronological insertion made rowid
+> order agree with age order. Re-baselined under R20's interim requirement —
+> `recency_decay_is_order_invariant_in_the_topk_path` replaced by
+> `topk_additive_recency_reorders_under_a_clock_shift` and
+> `topk_ranking_is_independent_of_insertion_order`, both of which fail on
+> `main` and pass here. Workspace suite: zero failures. R20 remains open.
+> **Historical blocker text follows.**
+>
 > **MERGE BLOCKED 2026-08-07.** The implementation report claimed
 > `suite_passed: true`. It is **false**:
 > `crates/spectral/tests/deterministic_anchor.rs:83`

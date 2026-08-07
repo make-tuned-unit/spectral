@@ -477,7 +477,35 @@ Ref: `r15-evidence-metric-2026-08-07.md`.
 
 ---
 
-## R16 — Default FTS path has no SQL tiebreak · IMPLEMENTED, **NOT MERGEABLE** (red test)
+## R16 — Default FTS path has no SQL tiebreak · **UNBLOCKED, MERGED**
+
+> **BLOCKER RESOLVED 2026-08-07 (later same day).** The question the quarantine
+> posed — does the tiebreak *expose* a pre-existing order-invariance violation
+> or *introduce* one? — is answered **exposes**, by experiment on `main` with
+> **no R16 change present**:
+>
+> - `aged_brain()` inserts chronologically, so rowid order (= untiebroken FTS
+>   order) agrees with age order, and no pair exists for the shrinking additive
+>   freshness term to swap. The test passed for that reason, not for the reason
+>   its docstring gave.
+> - Re-run on `main` with the **same 24 memories and the same timestamps**
+>   inserted in a fixed shuffled order, the ranking drifts across the same
+>   5-year clock shift: positions 8/9 (`s22`/`s1`) and 13/14 (`s21`/`s12`) swap.
+>   No SQL change involved. The violation is R20's, it predates R16, and R16
+>   merely removed the accidental alignment that hid it.
+>
+> Resolved under R20's own **interim requirement (Rule 5)**: the test is
+> re-baselined to assert what the path actually guarantees, not silently
+> relaxed. `recency_decay_is_order_invariant_in_the_topk_path` is replaced by
+> two tests, both of which **fail on `main` and pass with R16**:
+> `topk_additive_recency_reorders_under_a_clock_shift` (pins the real
+> behaviour — and pins stability at a *fixed* anchor in the same test) and
+> `topk_ranking_is_independent_of_insertion_order` (two brains, same content,
+> different write order, identical ranking — the property R16 buys and the one
+> the README claims). Workspace suite: **zero failures**. R20 stays open and
+> still needs its prereg; nothing below it was fixed.
+>
+> **Historical blocker text follows.**
 
 > **STATUS CORRECTION 2026-08-07.** This row previously read `DONE`. The
 > implementation report claimed `suite_passed: true`; that is **false**.
@@ -660,4 +688,22 @@ the path actually guarantees — determinism at a fixed `now`, not order
 invariance across clocks — **only** with that justification recorded in the
 test itself and this row cited. It may not be deleted, weakened silently, or
 `#[ignore]`d.
-Ref: `research-alignment-2026-08-07.md` §2.
+
+**Interim requirement SATISFIED 2026-08-07** (with R16). The justification is
+recorded in the test file's docstring and cites this row.
+`recency_decay_is_order_invariant_in_the_topk_path` →
+`topk_additive_recency_reorders_under_a_clock_shift`, which **asserts the drift
+rather than tolerating it** (`assert_ne!`) and asserts stability at a fixed
+anchor in the same body. If a fix below ever lands, that assertion goes red and
+forces this row to be closed deliberately.
+
+**Strengthened evidence that this predates R16.** The disease was originally
+inferred from a red test on the R16 branch. It is now demonstrated directly on
+`main`, no SQL change present: the same 24 memories with the same timestamps,
+inserted shuffled instead of chronologically, reorder across the same 5-year
+shift (`s22`/`s1`, `s21`/`s12`). The old test's fixture inserted in
+chronological order, which — with an untiebroken `ORDER BY` — made FTS rank
+order agree with age order, the one arrangement in which an additive freshness
+term provably cannot reorder anything. The property was never held; it was
+never tested.
+Ref: `research-alignment-2026-08-07.md` §2, `r16-baseline-shift-2026-08-07.md`.
