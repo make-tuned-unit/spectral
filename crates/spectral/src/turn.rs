@@ -553,4 +553,25 @@ impl Brain {
     pub fn void_turn(&self, receipt: &TurnReceipt) -> Result<bool, Error> {
         self.inner.void_turn(&receipt.id)
     }
+
+    /// [`void_turn`](Self::void_turn) for `Drop` guards: enqueues and returns.
+    ///
+    /// **Never blocks, never fails, never panics.** Returns `()` rather than
+    /// `Result` deliberately — a fallible enqueue invites error handling at
+    /// `Drop` time, and a panic while unwinding aborts the process under
+    /// `panic = "abort"`. Failures surface at the drain instead.
+    ///
+    /// The work happens in [`drain_pending_voids`](Self::drain_pending_voids),
+    /// which [`flush_turn_deliveries`](Self::flush_turn_deliveries) also
+    /// calls. Drain from your own task if you want voids adjudicated promptly
+    /// rather than at shutdown. Idempotent and order-independent.
+    pub fn void_turn_deferred(&self, receipt: &TurnReceipt) {
+        self.inner.void_turn_deferred(&receipt.id);
+    }
+
+    /// Adjudicate every enqueued void. Returns how many were newly voided and
+    /// any per-item errors (one bad id cannot strand the queue).
+    pub fn drain_pending_voids(&self) -> (usize, Vec<Error>) {
+        self.inner.drain_pending_voids()
+    }
 }

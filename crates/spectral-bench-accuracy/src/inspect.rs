@@ -195,10 +195,12 @@ mod tests {
             session.push(Turn {
                 role: "user".into(),
                 content: format!("User message {i} about project milestone {i} progress"),
+                has_answer: None,
             });
             session.push(Turn {
                 role: "assistant".into(),
                 content: format!("Assistant response {i} about project milestone {i}"),
+                has_answer: None,
             });
         }
         sessions.push(session);

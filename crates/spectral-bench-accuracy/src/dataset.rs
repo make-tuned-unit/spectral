@@ -34,10 +34,20 @@ impl Question {
 }
 
 /// A single conversation turn.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Turn {
     pub role: String,
     pub content: String,
+    /// LongMemEval's per-turn evidence label, documented in the dataset as
+    /// "used for turn-level memory recall accuracy evaluation".
+    ///
+    /// `None` = the dataset carries no label for this turn (it is NOT a
+    /// statement that the turn is non-evidence); `Some(false)` occurs
+    /// explicitly in `longmemeval_s.json` and is not evidence. Skipped on
+    /// serialization when absent so datasets the harness writes stay
+    /// byte-identical to what it read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_answer: Option<bool>,
 }
 
 /// LongMemEval_S question category.

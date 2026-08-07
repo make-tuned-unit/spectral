@@ -355,7 +355,7 @@ Ref: `r11-render-ab-stage1-void-2026-08-05.md`.
 
 ---
 
-## R15 — The oracle's `answer_keys_*` metric is diluted 12× · READY
+## R15 — The oracle's `answer_keys_*` metric is diluted 12× · DONE
 
 LongMemEval ships per-turn `has_answer: true` flags, documented for
 turn-level recall evaluation. `oracle::is_answer_key` instead counts
@@ -375,25 +375,289 @@ no document may cite "key-recall" as evidence about retrieval quality.
 metric that could not see this defect.
 Ref: `turn-level-evidence-recall-2026-08-07.md`.
 
+**SHIPPED 2026-08-07** (instrument only — no gate, no paid run, retrieval
+byte-identical). What landed:
+
+* `dataset::Turn.has_answer: Option<bool>` — the label is no longer discarded
+  at load. Skipped on serialize when absent, so datasets round-trip unchanged.
+* `ingest::memory_key()` — one authority for the key format, used by both the
+  write path and evidence scoring, frozen by `memory_key_format_is_frozen`.
+  Byte-identical to the previous inline `format!`s, so archived bench brains
+  stay reusable.
+* `OracleRow`: `answer_keys_{total,retrieved}` / `rank_first_answer_key`
+  renamed to `answer_session_turns_{total,retrieved}` /
+  `rank_first_answer_session_turn`, each carrying `#[serde(alias = …)]` so the
+  entire JSONL archive still loads. Added `evidence_turns_{total,retrieved}`,
+  `rank_first_evidence_turn`, `evidence_keys_missed`.
+* `OracleSummary`: micro/macro evidence recall, zero/full-evidence counts,
+  labelled/unlabelled counts. Unlabelled rows are excluded from every mean —
+  counting them as 0 would fabricate a 90.5%→86.7% regression.
+* `oracle-evidence` subcommand: rescores archived rows offline for $0, never
+  rewrites its input, optional `--baseline` for a paired evidence diff.
+* `stratified_ab.rs` renamed its second copy of the diluted computation.
+
+**Refusals, not zeroes.** The metric emits `None` when the dataset carries no
+label, when ingest is `PerSession` (the field would count sessions while its
+name says turns), and — the read-side guard — when the retrieved key set is
+not turn-shaped, which is what the `Graph` path produces (no raw hits →
+`extract_keys` falls back to `--- Session <id>` parsing). Without that guard
+the Graph path would silently report a fabricated 0/N.
+
+**Backfilled evidence numbers** (`oracle-evidence`, all $0, all from rows
+already on disk; these are re-descriptions of existing runs, not results):
+
+| archived run | evidence-turn recall (micro) | zero-evidence |
+|---|---|---|
+| `r12-baseline` (shipped config) | 793/896 = 88.5% | 27/479 |
+| `r12-actr` | 794/896 = 88.6% | 27 |
+| `oracle-baseline` | 749/896 = 83.6% | 35 |
+| `oracle-porter` | 783/896 = 87.4% | 34 |
+| `oracle-cap` | 749/896 = 83.6% | 35 |
+| `oracle-bfs-actr/bfs2` | 774/896 = 86.4% (base 789/896) | 34 |
+| `oracle-bfs-actr/actr05` | 788/896 = 87.9% (base 789/896) | 29 |
+| `r16-pre` → `r16-post` | 793/896 = 88.5% → 88.5% (unchanged) | 27 → 27 |
+
+**Where the delta is UNKNOWN, and stays unknown.** The answerability preregs
+(run 1/2/3) and the supersession prereg used key-recall as a gate criterion,
+and their per-arm oracle row files were not retained on this machine — so the
+evidence-turn delta for those experiments cannot be recomputed and is not
+asserted in either direction. The LoCoMo k-lever prereg's rows *are* retained
+but LoCoMo carries no `has_answer` labels, so `oracle-evidence` reports `n/a`
+there: also unknown, not zero. The published verdicts are left exactly as
+written; only the framing of the metric is corrected.
+
+**The ban is now structural.** "key-recall" no longer exists as a field or a
+column name, so citing it requires deliberately reaching for
+`answer_session_turn_coverage`, whose name says what it is.
+
+**Follow-ups deliberately NOT done here:**
+* Per-turn `has_answer` labels for LoCoMo (`scripts/locomo_to_oracle.py`) —
+  see R19. Regenerating the samples risks moving the R11 held-out set.
+* Metric-caveat banners on the ~15 archived result/prereg docs that cite
+  key-recall. The banner text and the file list are in
+  `r15-evidence-metric-2026-08-07.md`; the historical numbers in those docs
+  must not be rewritten.
+* **Three stale in-code vocabulary sites, not one** (the result doc says one,
+  and gives a false reason — `spectral-bench-accuracy/src/retrieval.rs` is
+  **not** modified in the working tree): `retrieval.rs:804`,
+  `cascade_layers.rs:186`, `cascade_layers.rs:247`. Comment text only, no
+  behaviour.
+* **The ban is structural in code but not yet in this register.** The R16 row
+  below, written in the same tree, reintroduces "key-recall" and
+  "zero-answer-key" in prose. Historical numbers stay; the label needs the
+  R15 qualifier wherever it appears.
+
+**Verified independently 2026-08-07** (`research-alignment-2026-08-07.md` §1):
+every backfilled figure recomputed from the labels in independent Python and
+reproduces to the digit; all 45 rows of the committed CI fixture are verbatim
+archive lines and its evidence-key set is identical to the full dataset's for
+all 45 questions. **READY TO MERGE.**
+Result: `r15-evidence-metric-2026-08-07.md`.
+
 ---
 
-## R16 — Default FTS path has no SQL tiebreak · READY
+## R19 — LoCoMo converter emits no per-turn evidence labels · READY
 
-`sqlite_store.rs:2018` (non-fusion, the default): `ORDER BY
-bm25(memories_fts, 1.0, 1.0, 0.5) LIMIT ?2` — no secondary key. The
-fusion path *does* tiebreak by id (`:2069`). FTS5 clamps non-positive IDF
-to `1e-6`, so common-term matches collapse into large tie blocks; which
-of them survive the LIMIT is decided by SQLite's query plan.
+`scripts/locomo_to_oracle.py` marks whole sessions `answer_`, so every
+LoCoMo-converted set (including the R11 held-out and validation samples)
+scores `n/a` on evidence-turn recall while LongMemEval scores a real number.
+That asymmetry is worse than the old uniform wrongness: the held-out set is
+still only measurable on the diluted metric.
 
-**Latent, not active** — determinism tests pass because the plan is
-stable for fixed schema+data+version. But #238 added tiebreaks to all
-five `ranking.rs` sorts and missed the SQL beneath them, so the
-byte-identical invariant rests on an external guarantee a schema change
-or SQLite upgrade can move.
+The labels are recoverable — LoCoMo turns carry `dia_id` (`"D1:3"`) and each
+QA carries `evidence: ["D1:3"]` — but must be matched **by dia_id, never by
+index**, because the converter drops empty-text turns so positions do not
+correspond. Sessions must be deep-copied per QA since evidence differs.
 
-**Fix:** `ORDER BY bm25(...), m.id`. Changes current output, so it lands
-behind an oracle diff and is recorded as a baseline shift, not a null.
-**Related:** `ORDER BY bm25(...)` forces a temp B-tree (full sort before
-LIMIT); `ORDER BY rank` with rank-config weights gets FTS5's ordered scan
-— identical scores, pure latency win.
-Ref: `landscape-research-2026-08-07.md` §G0.
+**Mandatory gate before any use:** regenerate the existing samples with the
+same seed and exclusions, strip `has_answer`, and assert **byte-equality**
+with the current files. If sample membership moves, the R11 validation set
+stops being the set that was measured.
+Ref: `r15-evidence-metric-2026-08-07.md`.
+
+---
+
+## R16 — Default FTS path has no SQL tiebreak · IMPLEMENTED, **NOT MERGEABLE** (red test)
+
+> **STATUS CORRECTION 2026-08-07.** This row previously read `DONE`. The
+> implementation report claimed `suite_passed: true`; that is **false**.
+> `crates/spectral/tests/deterministic_anchor.rs:83`
+> `recency_decay_is_order_invariant_in_the_topk_path` **FAILS** with the change
+> present. Bisected and round-tripped independently (file restored
+> byte-identical, sha256 `df52dc90…` before and after): reverting only the two
+> `, m.id` clauses makes the suite 6/6 green; restoring them makes it 5/6.
+> Workspace total: **297 passed, 1 failed, 1 ignored.**
+>
+> **The tiebreak is not the defect — it exposed one.** `recall_topk_fts` does
+> not call the multiplicative `apply_recency_weight` the test's docstring
+> describes; it calls `apply_reranking_pipeline`, where (a) the base score *is*
+> the FTS rank position (`ranking.rs:345-347`, `1.0 - i/n`), so reordering a
+> bm25-tied pool is **not** score-neutral, and (b) recency is **additive**
+> (`ranking.rs:411`), so ranking is a function of the wall clock. Truncation to
+> `k` happens after reranking (`brain.rs:2147`) on a pool of `k × fetch_mult`,
+> so a boundary flip changes the retrieved **set**. Opened as **R20**.
+>
+> Byte-identical repeat runs at a fixed `now` are **not** broken
+> (`reproducible_retrieval_is_stable_across_repeated_calls` passes; the pre-arm
+> reproduced itself 0/500). R16's own determinism claim stands.
+>
+> **Merge is blocked until the test is fixed or explicitly re-baselined with a
+> recorded justification, and R20 is opened either way.** Re-baselining is
+> defensible — the test asserts a property of a function the path does not call
+> — but silently relaxing the assertion is not.
+>
+> Two further corrections to the report: "9 of 10 are pure reorder" is measured
+> and correct but must **not** be read as "harmless" — with a rank-position base
+> score, reordering a tied pool feeds different numbers into every downstream
+> boost (the empirical "no metric moved" result is unaffected). And the "six
+> remaining untiebroken sites" scoping claim understates the exposure by ~2× —
+> see the corrected R18 table.
+> Ref: `research-alignment-2026-08-07.md` §2, §8.
+
+Original row (measurement independently re-derived and confirmed exact):
+
+**Shipped:** `, m.id` added at **two** sites — the non-fusion default
+`fts_search` ORDER BY, and the two fusion channel subqueries in
+`ranked_ids` whose *rank positions* feed RRF (the register originally
+named only the first; the existing `.then(a.0.cmp(&b.0))` breaks ties in
+the **fused** score, one layer too late). Pinned by two unit tests that
+build a genuine bm25 tie, insert the larger id first, and assert a
+literal smaller id wins at `LIMIT 1` — both fail if the clause is
+reverted.
+
+**Measured, $0, on the merge commit in a clean detached worktree**
+(pre-arm reproduced `r12-baseline.jsonl` at 0/500 and itself at 0/500
+first): **10/500 contexts changed (2.0%)**, all on `TopkFts`, **0/333 on
+`Cascade`**. 9 are pure reordering of an identical retrieved set; 1
+(`b9cfe692`) swaps one document within one session. **Every metric is
+unmoved** — session-recall 98.03% macro / 97.78% micro,
+answer-session turn coverage 55.51% macro / 53.02% micro (the ~12×-diluted
+legacy metric published as "key-recall" until R15 — **not** evidence recall),
+zero-answer-session-turn 2, mean tokens 14212.8, and R15's
+evidence-turn recall 793/896 = 88.50% with **zero** per-question change.
+Recorded as a baseline shift; **no accuracy claim**.
+
+**The original rationale in this row was wrong and is deleted, not
+repeated.** The claim that FTS5's `1e-6` IDF clamp makes common-term
+documents "collapse into one large tie block" is empirically false on
+this corpus: the tf/doclen factor still varies, so a pure-`"the"` query
+yields ~2585 *distinct* near-zero scores, and 0/40 brains have the LIMIT
+boundary inside a tie block. Real ties are rare and small — 0/120
+full-question queries straddle; single-term queries straddle in 24% with
+median block 2, max 5. The justification that survives is the one that
+does not depend on tie size: **the byte-identical invariant must not rest
+on SQLite's plan choice.**
+
+**The `ORDER BY rank` "pure latency win" is REJECTED**, and that sentence
+is struck here and in §G0. Scores are bit-identical, but `ORDER BY rank,
+m.id` reintroduces the temp B-tree (5.29 ms vs 5.06 ms for today's form),
+so the latency win and the determinism fix are mutually exclusive; and
+untiebroken it moves the LIMIT boundary into FTS5's *undocumented
+internal* ordering — a Rule 3 regression for ~1.3 ms. The persistent
+rank-config form is rejected separately (writes `memories_fts_config`;
+fails read-only, and silently falls back to unweighted `bm25(1,1,1)` on
+existing brains). Shipped cost: ~0.4 ms p50, directional only.
+
+Ref: `r16-baseline-shift-2026-08-07.md`, `landscape-research-2026-08-07.md`
+§G0 (corrected). **Follow-ons: R17, R18 — deliberately NOT folded in here.**
+
+---
+
+## R17 — `list_memories_by_signal` has no tiebreak, on a guaranteed tie key · READY
+
+`sqlite_store.rs:1779`: `ORDER BY signal_score DESC LIMIT ?2`.
+`signal_score` **defaults to 0.5**, so unlike R16 the LIMIT boundary sits
+inside a large tie block *by construction*, and which memories survive is
+decided by SQLite's plan. Reached from `brain.rs:4341` (`aaak`).
+
+**Very likely a larger determinism exposure than R16 itself.** Not
+quantified — it needs its own paired oracle run and must not be folded
+into R16's clean 10/500 attribution.
+**Fix:** same shape, `, m.id`.
+
+---
+
+## R18 — **Twelve** more untiebroken product `ORDER BY … LIMIT` sites · READY
+
+> **CORRECTED 2026-08-07.** This row and `r16-baseline-shift-2026-08-07.md`
+> § Scope both said "five more" / "six further sites, verified by grep". That
+> is materially incomplete — a re-grep of the post-change file finds **twelve**
+> untiebroken `ORDER BY … LIMIT` product sites across **eleven** functions.
+> The omission that matters most is `:2686`, a **DELETE**.
+> Ref: `research-alignment-2026-08-07.md` §8.
+
+Same defect class, each needing its own paired run:
+
+| site | fn | key | note |
+|---|---|---|---|
+| **`:2686`** | **`prune_wing_keeping_recent_per_source`** | `datetime(created_at) DESC LIMIT ?3` inside `DELETE … WHERE id NOT IN (…)` | **DO THIS FIRST.** Which rows are *destroyed* is decided by SQLite's plan. Arguably higher severity than R17: every other site picks what you see, this one picks what survives. Append-only discipline (Rule 4) makes an unpinned delete boundary the worst member of the class. |
+| `:1843`, `:1849` | `fingerprint_search` | `hits DESC` — small integer `COUNT(*)`, plus a second untiebroken outer `ms.hits DESC` | large ties structurally guaranteed |
+| `:2462` | `list_wing_memories_since` | `datetime(created_at) DESC` | low-resolution timestamp |
+| `:2744` | `find_recent_episode` | `ended_at DESC LIMIT 1` | `LIMIT 1` on a tie = arbitrary single pick |
+| `:2785`, `:2795` | `list_episodes` (wing-filtered and unfiltered branches) | `ended_at DESC` | low-resolution timestamp |
+| `:3458` | `list_undescribed` | `created_at DESC` | low-resolution timestamp |
+| `:3484` | `related_memories` | `co_count DESC` | small integer |
+| `:3569` | `recommend_by_lift` | `lift DESC, n.co_count DESC` | two-key sort, **still no unique final key** |
+| `:3776` | `events_for_session` | `timestamp ASC` | low-resolution timestamp |
+| `:4073` | `list_unconsolidated` | `m.created_at DESC` | low-resolution timestamp |
+
+(Line numbers are post-R16.) Already tiebroken and correctly excluded:
+`:1756` (`id DESC`), `:2024`/`:2055` (R16, `m.id`), `:3241`
+(`m.memory_id ASC`), `:3519` (`other_id ASC`). Lower severity and **not**
+counted above — untiebroken `ORDER BY` with **no** `LIMIT`, so the set is
+complete and only the caller-visible order is unpinned: `:1724`, `:1913`,
+`:3806`, `:4028`, `:4044`.
+
+Bench binaries carry the same clause and are deliberately excluded:
+`stmt_cache_probe.rs:56`, `bm25_weights_experiment.rs:245,280`,
+`fts_fusion_experiment.rs:119`.
+Ref: `r16-baseline-shift-2026-08-07.md` § Scope (corrected),
+`research-alignment-2026-08-07.md` §8.
+
+---
+
+## R20 — Top-k ranking is a function of the wall clock · NEEDS-PREREG
+
+**Found 2026-08-07 by R16 turning `deterministic_anchor` red.** The failing
+test is the symptom; this row is the disease, and it predates R16.
+
+`recall_topk_fts` does **not** use the multiplicative `apply_recency_weight`
+that `deterministic_anchor.rs:60-70` describes. It uses
+`apply_reranking_pipeline`, where three properties compound:
+
+1. **The base score is the FTS rank *position*** — `ranking.rs:345-347`,
+   `scores[i] = 1.0 - (i as f64 / n)`. A pure reorder of a bm25-tied pool is
+   therefore **not** score-neutral; it changes every downstream number.
+2. **Recency is ADDITIVE** — `ranking.rs:411`,
+   `scores[i] += RECENCY_BOOST_WEIGHT * freshness`, with the multiplicative
+   form deliberately removed (the comment above it explains why: a
+   multiplicative decay annihilated old-but-relevant answers). An additive term
+   does **not** preserve order under a clock shift — at +5y the freshness term
+   shrinks ~32× at the default 365-day half-life and stops being able to
+   override rank-position differences.
+3. **Truncation happens after reranking** — `brain.rs:2101` fetches
+   `k × fetch_mult`, `brain.rs:2147` truncates to `k`. So a boundary flip
+   changes the retrieved **set**, not merely its order.
+
+Demonstrated: same brain, same query, `now` advanced 5 years → the k=20 result
+set gains `s4` and loses `s22`.
+
+**What is NOT broken:** byte-identical repeat runs at a fixed `now`
+(`reproducible_retrieval_is_stable_across_repeated_calls` passes), and the
+`recall_*` path, which `recall_at`'s corpus anchor already pins.
+
+**Blocked on:** every candidate fix is a default-path ranking change.
+(a) Restore a multiplicative decay — reverts the deliberate fix the comment
+documents. (b) Replace the rank-position base with the raw bm25 score —
+changes ranking everywhere. (c) Anchor `now` to the corpus on the top-k path
+too, as `recall_at` already does — the cheapest and most consistent option,
+and the one that matches the README's byte-reproducibility claim, but it
+changes output for every caller that passes `now`. All three need a prereg and
+an oracle A/B.
+
+**Interim requirement (Rule 5):** the test may be re-baselined to assert what
+the path actually guarantees — determinism at a fixed `now`, not order
+invariance across clocks — **only** with that justification recorded in the
+test itself and this row cited. It may not be deleted, weakened silently, or
+`#[ignore]`d.
+Ref: `research-alignment-2026-08-07.md` §2.

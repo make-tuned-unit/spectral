@@ -58,10 +58,31 @@ comparison. Full results: [benches/RESULTS.md](benches/RESULTS.md).
 
 The Tier-0 oracle measures retrieval only (no LLM, no API key). Metrics:
 
+- **evidence-turn recall (`ev-rec` / `ev-mic`)** — of the turns LongMemEval
+  itself labels `has_answer: true`, the fraction retrieved. **This is the real
+  retrieval-quality metric.** It is only defined where the dataset ships those
+  labels: 479 of the 500 LongMemEval-S questions (the 21 `_abs` abstention
+  questions carry no label, and the metric is *undefined* for them, not zero),
+  and no LoCoMo-converted set at all, where the columns read `n/a`.
 - **session-recall** — of the sessions that contain the answer, the fraction
-  whose memories the retrieval surfaced. The comparable headline metric.
-- **key-recall** — of the answer session's turns (each an "answer key"), the
-  fraction retrieved. Stricter, and dataset-dependent (see §4).
+  whose memories the retrieval surfaced. Coarse: a 40-turn session counts as
+  recalled even when the one evidence turn is missing.
+- **answer-session turn coverage (`as-cov`)** — of *every* turn in an
+  `answer_`-prefixed session, the fraction retrieved. **Published as
+  "key-recall" until 2026-08-07; that name was wrong.** Its denominator is
+  10,960 turns against 896 real evidence turns — **12.2× diluted** — so it is
+  evidence-*session* turn coverage, not evidence recall, and it must not be
+  cited as evidence about retrieval quality. Retained only so archived runs
+  stay comparable with the numbers they were published with. See
+  `docs/internal/turn-level-evidence-recall-2026-08-07.md` (R15).
+
+Backfill the evidence metric onto any archived oracle row file for $0:
+
+```bash
+cargo run -p spectral-bench-accuracy --release -- oracle-evidence \
+  --dataset path/to/longmemeval_s.json --rows archived-rows.jsonl \
+  [--baseline other-arm.jsonl] [--out sidecar.jsonl]
+```
 
 ```bash
 # LongMemEval-S — retrieval was DEVELOPED against this, so results are IN-SAMPLE.
@@ -73,7 +94,7 @@ cargo run -p spectral-bench-accuracy --release -- oracle \
 
 **In-sample result (LongMemEval-S, all six memory types, published routing):**
 
-| memory type | session-recall | key-recall |
+| memory type | session-recall | as-cov (NOT evidence recall, R15) |
 |---|:-:|:-:|
 | single-session-user | 100.0% | 46.3% |
 | single-session-assistant | 100.0% | 68.6% |
@@ -82,6 +103,21 @@ cargo run -p spectral-bench-accuracy --release -- oracle \
 | multi-session | 98.3% | 51.8% |
 | temporal-reasoning | 100.0% | 51.4% |
 | **overall** | **98.6%** | **51.1%** |
+
+**Instrument correction (R15, 2026-08-07).** The second column above is
+answer-session turn *coverage*, not evidence recall — its denominator counts
+every turn of every evidence session. The row file behind this particular
+table was not retained, so its evidence-turn number is **unknown**. For the
+shipped-config run that *is* retained (`r12-baseline`, cascade + shape
+routing, porter), rescoring the same retrieved keys against LongMemEval's own
+`has_answer` labels gives **evidence-turn recall 793/896 = 88.5% micro,
+90.5% macro over the 479 labelled questions, with 27 of them retrieving zero
+evidence**. That is **not an improvement on any coverage figure on this page**
+— no gate, no actor, no comparison was run. It is the same retrieval measured
+against a denominator 12.2× smaller and correctly chosen. The actionable part
+is the spread: `single-session-preference` sits at **29/44 = 65.9%** with
+**9 of 30 questions retrieving zero evidence**, a defect invisible at session
+level.
 
 *In-sample — the retrieval config was tuned against this dataset. It shows the
 ceiling, not generalization. For generalization, see §4.*
@@ -105,14 +141,24 @@ cargo run -p spectral-bench-accuracy --release -- oracle \
 
 The converter (`scripts/locomo_to_oracle.py`) marks the sessions holding each
 question's `evidence` turns with the oracle's `answer_` prefix, excludes
-adversarial and open-domain questions, and samples deterministically. **Caveat:**
-LoCoMo evidence sessions are long (15–30 turns) and every turn counts as an
-answer key, so **key-recall is a stricter measure here than on LongMemEval** —
-compare **session-recall** across the two.
+adversarial and open-domain questions, and samples deterministically.
+
+**Caveat (corrected 2026-08-07, R15):** the converter labels whole sessions,
+never turns, so LoCoMo-converted sets carry **no `has_answer` labels and the
+evidence-turn metric is unavailable on them** — `oracle-evidence` prints
+`n/a`, which means *undefined*, not 0%. The only per-turn number available
+here is answer-session turn coverage, and because LoCoMo evidence sessions run
+15–30 turns it is diluted by roughly the same 12× factor as on LongMemEval.
+It was previously described as merely "a stricter measure"; it is the same
+defect. **Compare `session-recall` across the two datasets, and read the
+coverage figures below as coverage, not recall.** Recovering true per-turn
+labels here is possible (LoCoMo turns carry `dia_id` and each QA carries
+`evidence: ["D1:3"]`) but is deliberately deferred — regenerating the samples
+risks moving the held-out set that was actually measured.
 
 **Held-out result (LoCoMo, 120 questions, same code & routing, deterministic seed):**
 
-| memory type | session-recall | key-recall (stricter — see caveat) |
+| memory type | session-recall | answer-session turn coverage (NOT recall — see caveat) |
 |---|:-:|:-:|
 | single-session-user | 100.0% | 17.4% |
 | temporal-reasoning | 100.0% | 14.7% |
@@ -126,9 +172,10 @@ LongMemEval. The honest weak spot is **multi-session (78.6%)** — multi-hop
 questions whose evidence spans several sessions, where recovering *every* answer
 session is harder (all 4 zero-recall cases are multi-session).
 
-Key-recall is *not* comparable to §3: LoCoMo's evidence sessions are long and
-every turn counts as an answer key, so surfacing the right session recovers only
-a fraction of its turns. Read session-recall for the cross-benchmark comparison.
+The coverage column is *not* comparable to §3 and is not evidence recall in
+either place: LoCoMo's evidence sessions are long and every turn of them counts
+toward the denominator, so surfacing the right session recovers only a fraction
+of it. Read session-recall for the cross-benchmark comparison.
 
 ## 5. End-to-end accuracy (needs an actor API key)
 
@@ -205,7 +252,7 @@ stratification) improve multi-session recall? Harness:
 — three arms over the same corpus and context budget (K=40), LoCoMo
 multi-session slice (n=40):
 
-| arm | session-recall | key-recall | zero-recall | accuracy |
+| arm | session-recall | as-cov (NOT evidence recall, R15) | zero-recall | accuracy |
 |---|:-:|:-:|:-:|:-:|
 | monolith (today) | 85.2% | 11.8% | 2 | **35%** |
 | sharded (one brain/session + fan-out) | **100.0%** | 7.0% | 0 | — |
@@ -221,7 +268,8 @@ Two findings, one honest verdict:
   broke 5). The decomposition is clean: both fixes are exactly the
   coverage-deficient questions (session-recall 0.60/0.00 → 1.00); all five
   breaks had *full* monolith coverage already, and thinner per-session depth
-  (11.8%→7.8% key-recall) removed supporting detail the actor needed.
+  (11.8%→7.8% answer-session turn coverage) removed supporting detail the
+  actor needed.
 
 Coverage and depth trade against each other at fixed K. The implied lever —
 capture the coverage gain without the depth cost — was pre-registered as
@@ -229,7 +277,7 @@ capture the coverage gain without the depth cost — was pre-registered as
 coverage into the back half) and validated on a **fresh split** of 40 unseen
 multi-session questions:
 
-| arm (fresh split) | session-recall | key-recall | accuracy |
+| arm (fresh split) | session-recall | as-cov (NOT evidence recall, R15) | accuracy |
 |---|:-:|:-:|:-:|
 | monolith | 92.6% | 11.9% | **40%** |
 | stratified (blanket) | 100.0% | 8.2% | — |
