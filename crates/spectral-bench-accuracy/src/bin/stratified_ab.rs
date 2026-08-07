@@ -90,7 +90,14 @@ fn session_of(key: &str) -> &str {
     key.split(":turn:").next().unwrap_or(key)
 }
 
-/// (session_recall, key_recall, zero) for a retrieved key list.
+/// (session_recall, answer_session_turn_coverage, zero) for a retrieved key
+/// list.
+///
+/// **`answer_session_turn_coverage` is NOT evidence recall (R15).** Its
+/// denominator is every turn of every `answer_`-prefixed session — ~12x the
+/// turns LongMemEval labels `has_answer: true`. It is kept here only so this
+/// binary's output stays comparable with what it printed before; use
+/// `oracle::evidence_keys` / `oracle-evidence` for the real metric.
 fn score(q: &Question, keys: &[String]) -> (f64, f64, bool) {
     let answer_sessions: HashSet<&str> = q
         .haystack_session_ids
@@ -115,8 +122,8 @@ fn score(q: &Question, keys: &[String]) -> (f64, f64, bool) {
         .filter(|k| answer_sessions.contains(session_of(k)))
         .count();
     let sr = hit_sessions.len() as f64 / answer_sessions.len().max(1) as f64;
-    let kr = hit_keys as f64 / total_keys.max(1) as f64;
-    (sr, kr, hit_keys == 0)
+    let answer_session_turn_coverage = hit_keys as f64 / total_keys.max(1) as f64;
+    (sr, answer_session_turn_coverage, hit_keys == 0)
 }
 
 /// Round-robin per-session stratification of a ranked pool: sessions ordered by
@@ -365,7 +372,7 @@ fn main() -> Result<()> {
     );
     println!(
         "{:<14}{:>12}{:>10}{:>7}",
-        "arm", "sess-recall", "key-rec", "zero"
+        "arm", "sess-recall", "as-cov", "zero"
     );
     for ai in 0..4 {
         if no_shard && ai == 1 {

@@ -479,8 +479,11 @@ impl AccuracyEval {
         //
         // SHAPE-GATED to counting questions only. Expansion is the measured
         // fix for the counting lexical gap (instance turns don't rank for the
-        // count query — TIER1_PORTER_WIDEN: expansion key-recall 61.5% vs
-        // porter 54.7%, recovered the zero-evidence counting cases), while on
+        // count query — TIER1_PORTER_WIDEN: expansion answer-session turn
+        // coverage 61.5% vs porter 54.7% — the ~12x-diluted legacy metric,
+        // NOT evidence recall (R15); those arms' rows were not retained, so
+        // the evidence-turn delta is unknown. It recovered the
+        // zero-coverage counting cases), while on
         // non-counting shapes it overlaps porter for no measured accuracy
         // gain at $0.25/1k + latency. Gating keeps the zero-LLM retrieval
         // path for every other shape.
@@ -1009,10 +1012,12 @@ mod tests {
                     Turn {
                         role: "user".into(),
                         content: "Hello there.".into(),
+                        has_answer: None,
                     },
                     Turn {
                         role: "assistant".into(),
                         content: "Hi!".into(),
+                        has_answer: None,
                     },
                 ]],
                 haystack_session_ids: vec!["s1".into()],
@@ -1028,10 +1033,12 @@ mod tests {
                     Turn {
                         role: "user".into(),
                         content: "My car is red.".into(),
+                        has_answer: None,
                     },
                     Turn {
                         role: "assistant".into(),
                         content: "Nice car!".into(),
+                        has_answer: None,
                     },
                 ]],
                 haystack_session_ids: vec!["s2".into()],
@@ -1132,6 +1139,7 @@ mod tests {
             haystack_sessions: vec![vec![Turn {
                 role: "user".into(),
                 content: "My car is red and I drive it daily.".into(),
+                has_answer: None,
             }]],
             haystack_session_ids: vec!["s1".into()],
             haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
@@ -1185,10 +1193,12 @@ mod tests {
                 Turn {
                     role: "user".into(),
                     content: "My car is red and I drive it every day".into(),
+                    has_answer: None,
                 },
                 Turn {
                     role: "assistant".into(),
                     content: "Red cars are very visible on the road.".into(),
+                    has_answer: None,
                 },
             ]],
             haystack_session_ids: vec!["s1".into()],
@@ -1282,10 +1292,12 @@ mod tests {
                 Turn {
                     role: "user".into(),
                     content: "My car is red and I love driving it every day".into(),
+                    has_answer: None,
                 },
                 Turn {
                     role: "assistant".into(),
                     content: "That sounds great! Red cars are very visible on the road.".into(),
+                    has_answer: None,
                 },
             ]],
             haystack_session_ids: vec!["s1".into()],
@@ -1375,6 +1387,7 @@ mod tests {
             haystack_sessions: vec![vec![Turn {
                 role: "user".into(),
                 content: "Hello.".into(),
+                has_answer: None,
             }]],
             haystack_session_ids: vec!["s1".into()],
             haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
@@ -1408,6 +1421,7 @@ mod tests {
                 haystack_sessions: vec![vec![Turn {
                     role: "user".into(),
                     content: format!("Content for question {i} about topic {i}."),
+                    has_answer: None,
                 }]],
                 haystack_session_ids: vec![format!("s{i}")],
                 haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
@@ -1622,6 +1636,7 @@ mod tests {
             haystack_sessions: vec![vec![Turn {
                 role: "user".into(),
                 content: "My car is red and I drive the car daily.".into(),
+                has_answer: None,
             }]],
             haystack_session_ids: vec!["s1".into()],
             haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],

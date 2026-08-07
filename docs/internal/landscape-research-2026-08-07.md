@@ -45,7 +45,14 @@ preference evidence never reaches the actor.**
 
 ## 2. Ranked gaps worth acting on
 
-### G0 — A determinism gap under the ranking layer · VERIFIED HERE
+### G0 — A determinism gap under the ranking layer · VERIFIED HERE · FIXED + CORRECTED 2026-08-07
+
+> **Correction notice (2026-08-07).** The gap was real and is now fixed
+> (R16 · `r16-baseline-shift-2026-08-07.md`), but **two claims in this
+> section were wrong and are struck below**: the "one large tie block"
+> story from the IDF clamp, and "identical scores, removes a full sort"
+> as a free latency win. Read the strikethroughs, not the original text.
+
 The default FTS path has **no tiebreak**
 (`sqlite_store.rs:2018`, `fusion` defaults false):
 
@@ -59,12 +66,32 @@ disagree on tie handling, and on the default path *which memories enter
 the candidate pool at the LIMIT boundary* is decided by SQLite's chosen
 query plan rather than by our code.
 
-Ties are not rare: FTS5 clamps non-positive IDF to `1e-6`
+~~Ties are not rare: FTS5 clamps non-positive IDF to `1e-6`
 (`fts5_aux.c`), so any term in >~40% of documents contributes almost
 nothing and documents matching only common terms collapse into one large
-tie block — and our query is a pure OR bag of up to 64 terms.
+tie block — and our query is a pure OR bag of up to 64 terms.~~
 
-**Honest status: latent, not active.** Our determinism tests pass, which
+**STRUCK — measured false (2026-08-07).** The clamp is real; the
+conclusion is not. The tf/doclen factor still varies, so a pure-`"the"`
+query returns ~2585 near-zero but **distinct** scores (-2.105206e-06,
+-2.105152e-06, -2.103540e-06, …). Across 150 LongMemEval brains, the
+LIMIT boundary sits inside a tie block for **0/120** full-question
+queries and **0/40** common-term-only queries; single-term queries
+straddle in 36/150 (24%) with median block 2, max 5. **Ties are rare and
+small.** The measured shift when the tiebreak landed — 10/500 contexts,
+9 of them reordering only — is consistent with that, not with large tie
+blocks. Do not cite the IDF-clamp story; it will otherwise propagate as
+fact. The fix is justified by the paragraph below instead.
+
+**Status 2026-08-07: FIXED.** `, m.id` landed at this site *and* at the
+two fusion channel subqueries this section missed (their rank positions
+feed RRF). Measured on the merge commit, $0: **10/500 contexts changed**,
+all `TopkFts`, 0/333 `Cascade`; 9 reorder-only, 1 one-document swap; every
+metric unmoved including R15's evidence-turn recall (793/896 = 88.50%,
+zero per-question change). Recorded as a baseline shift, no accuracy
+claim. Ref: `r16-baseline-shift-2026-08-07.md`.
+
+**Original honest status: latent, not active.** Our determinism tests pass, which
 means SQLite's plan is stable for fixed schema + data + version. But
 #238 added memory-id tiebreaks to all five sorts in `ranking.rs` and
 **missed the SQL layer beneath them** — so the byte-identical invariant
@@ -73,10 +100,24 @@ change, one `ANALYZE`, or one SQLite upgrade can move. Fix is one clause
 (`, m.id`); it will shift the current baseline, so it lands behind an
 oracle diff and is recorded as a baseline shift, not a null.
 
-**Bonus, same check:** `ORDER BY bm25(...)` forces `USE TEMP B-TREE FOR
+~~**Bonus, same check:** `ORDER BY bm25(...)` forces `USE TEMP B-TREE FOR
 ORDER BY` — every matching row is scored and sorted before `LIMIT`.
 `ORDER BY rank` with weights set via the table's rank config gets FTS5's
-internal ordered scan instead. Identical scores, removes a full sort.
+internal ordered scan instead. Identical scores, removes a full sort.~~
+
+**STRUCK — REJECTED 2026-08-07.** The scores *are* bit-identical
+(verified: `-9.62855697443987` on both forms, equal on every sampled
+row). It is not a free win. (i) `ORDER BY rank, m.id` **reintroduces**
+the temp B-tree — measured p50 5.29 ms vs 5.06 ms for today's form — so
+the latency win and the determinism fix are **mutually exclusive**.
+(ii) Untiebroken, `ORDER BY rank` moves the LIMIT boundary into FTS5's
+*undocumented internal* result ordering, which is strictly weaker than
+SQLite's temp B-tree: a Rule 3 regression sold as a latency win.
+(iii) The prize is ~1.3 ms against ~9 ms/question end-to-end. The
+persistent rank-config variant is separately unusable: it writes
+`memories_fts_config`, so it fails on `read_only` brains and silently
+falls back to unweighted `bm25(1,1,1)` on every already-built brain that
+lacks the config row.
 
 ### G1 — Bi-temporal validity on `memories` (convergent, 3 sources)
 Zep/Graphiti, TOKI (arXiv 2606.06240, with soundness theorems), and our

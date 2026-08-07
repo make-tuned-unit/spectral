@@ -19,10 +19,31 @@ spectral-bench-accuracy oracle \
 spectral-bench-accuracy oracle-diff --baseline a.jsonl --candidate b.jsonl
 ```
 
-Per question it records: answer-key recall (keys `{sid}:turn:{i}:{role}` in
-sessions whose id starts with `answer_`), answer-session recall, 1-based rank
-of the first answer key, retrieved-context token estimate (chars/4), and a
-blake3 hash of the exact actor context. **Equal context hashes between two
+Per question it records:
+
+- **evidence-turn recall** — the turns LongMemEval labels `has_answer: true`,
+  keyed `{sid}:turn:{i}:{role}` through `ingest::memory_key`, intersected with
+  `retrieved_keys`. The real metric. `None`/`n/a` where the dataset carries no
+  label (the 21 `_abs` questions, all LoCoMo-converted sets) — **undefined,
+  not zero**.
+- **answer-session turn coverage** (`as-cov`) — every turn of every session
+  whose id starts with `answer_`. Recorded as `answer_keys_*` and printed as
+  "key-recall" until 2026-08-07: a **12.2× diluted** proxy (10,960 turns vs
+  896 evidence turns) that is *not* evidence recall. Kept for continuity with
+  archived runs only. See `turn-level-evidence-recall-2026-08-07.md` (R15).
+- answer-session recall, 1-based rank of the first evidence turn and of the
+  first answer-session turn, retrieved-context token estimate (chars/4), and a
+  blake3 hash of the exact actor context.
+
+Backfill the evidence metric onto archived rows offline, for $0:
+
+```bash
+spectral-bench-accuracy oracle-evidence \
+  --dataset ~/spectral-local-bench/longmemeval/longmemeval_s.json \
+  --rows archived.jsonl [--baseline other-arm.jsonl] [--out sidecar.jsonl]
+```
+
+The input file is never rewritten. **Equal context hashes between two
 configs mean the actor outcome distribution is identical** — such questions
 need no paid replay. The Tier-1 replay set is exactly the changed-context
 questions (further narrowed to recall-changed + a control sample).
@@ -36,7 +57,7 @@ when budget allows.
 
 ## Baseline (label=baseline, expansion-OFF, published routing)
 
-| category | n | sess-rec | key-rec | zero-evidence | rank1 | tok mean | tok p95 |
+| category | n | sess-rec | as-cov | as-zero | rank1 | tok mean | tok p95 |
 |---|---|---|---|---|---|---|---|
 | knowledge-update | 78 | 99.4% | 54.3% | 0 | 1.4 | 13,485 | 21,934 |
 | multi-session | 133 | 96.9% | 50.5% | 1 | 2.2 | 17,928 | 25,654 |
@@ -46,9 +67,17 @@ when budget allows.
 | temporal-reasoning | 133 | 94.8% | 48.4% | 3 | 2.2 | 12,729 | 17,557 |
 | **TOTAL** | **500** | **96.9%** | **51.8%** | **8** | **2.2** | **13,675** | **23,111** |
 
-Sanity: 96.9% session recall replicates the published 93–97% claim; the 8
-zero-evidence questions align with the documented retrieval-starved floor;
-SSP shows the worst rank exactly where the published run failed hardest.
+Sanity: 96.9% session recall replicates the published 93–97% claim; SSP shows
+the worst rank exactly where the published run failed hardest.
+
+The `as-cov`/`as-zero` columns are answer-SESSION turn coverage, ~12× diluted
+(R15) — the "8" above is 8 questions that retrieved no turn of any evidence
+session, which is a much weaker statement than retrieving no evidence.
+Rescored on the real metric with `oracle-evidence` ($0, same rows): this run
+is **evidence-turn recall 749/896 = 83.6% micro, 86.5% macro, with 35 of the
+479 labelled questions retrieving zero evidence.** No accuracy claim attaches
+to that: it is the same retrieval, re-described against the denominator the
+dataset actually labels.
 
 Frozen artifacts: `~/spectral-local-bench/oracle-{baseline,porter,spectrogram,cap}.jsonl`.
 
@@ -64,7 +93,11 @@ requires re-ingest (`--fresh-brains`).
   gpt4_e061b84g, gpt4_1e4a8aec; introduced: none). Includes documented
   vocabulary-wall case ba358f49 among the 12 session-recall improvements.
 - Session recall 96.9% → 97.6% (multi-session 96.9% → 98.9%).
-- Net +388 answer keys; key recall 51.8% → 54.7%.
+- Net +388 answer-session turns; answer-session turn coverage 51.8% → 54.7%.
+  Rescored on the real metric (R15, `oracle-evidence`, $0): **evidence-turn
+  recall 749/896 = 83.6% → 783/896 = 87.4%**, 5 zero-evidence questions fixed
+  (58bf7951, 25e5aa4f, 80ec1f4f, 0edc2aef, 71017277) against 4 introduced
+  (gpt4_194be4b3, 32260d93, gpt4_b5700ca0, gpt4_2f56ae70).
 - 12 improved vs 5 regressed. All 5 regressions are temporal-reasoning and
   mild (lost one marginal session of several, first-evidence rank held at 1–2)
   except 9a707b82 (rank 9 → 16). Mechanism: broader matching displaces
@@ -155,7 +188,7 @@ session traces. Neither is built yet.
 
 One batched replay: porter recall-changed set + cap sample + overlap controls
 ≈ 70–80 actor+judge calls × n=3 ≈ **$15**. Pre-registered expectations:
-porter flips 2–4 of the 4 zero-evidence-fixed questions to correct with no
+porter flips 2–4 of the 4 zero-coverage-fixed questions to correct with no
 temporal losses; cap holds category accuracy within the ±2pp noise band.
 If both hold, ship porter default-on (with FTS rebuild migration), cap as an
 opt-in cost profile, and re-run the full n=500 bench once (~$28) with both.

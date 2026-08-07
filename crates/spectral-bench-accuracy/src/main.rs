@@ -304,6 +304,36 @@ enum Command {
         expansion_cache: Option<PathBuf>,
     },
 
+    /// Backfill R15 evidence-turn recall onto ARCHIVED oracle rows, offline.
+    ///
+    /// Rescores `retrieved_keys` against the dataset's `has_answer` labels.
+    /// No retrieval, no ingest, no LLM — $0. The input file is never
+    /// rewritten; pass `--out` to write a sidecar alongside it.
+    OracleEvidence {
+        /// Path to the LongMemEval_S dataset JSON (the label source)
+        #[arg(long)]
+        dataset: PathBuf,
+
+        /// Archived oracle rows (JSONL) to rescore
+        #[arg(long)]
+        rows: PathBuf,
+
+        /// Optional second archived row file to treat as the baseline arm.
+        /// Both arms are backfilled, then diffed on the evidence metric —
+        /// this is how an archived prereg gets a real evidence delta.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        /// Ingestion strategy the archived run used: per_turn or per_session.
+        /// Evidence recall is only defined for per_turn.
+        #[arg(long, default_value = "per_turn")]
+        ingest_strategy: String,
+
+        /// Optional sidecar JSONL to write (never overwrites --rows)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
     /// Paired diff of two oracle JSONL files (candidate vs baseline).
     OracleDiff {
         /// Baseline oracle rows (JSONL)
@@ -807,6 +837,58 @@ fn main() -> Result<()> {
             let rows = spectral_bench_accuracy::oracle::run_oracle(&config)?;
             spectral_bench_accuracy::oracle::print_summary(&rows);
             eprintln!("\nRows written to {}", output.display());
+        }
+
+        Command::OracleEvidence {
+            dataset,
+            rows,
+            baseline,
+            ingest_strategy,
+            out,
+        } => {
+            let strategy = match ingest_strategy.as_str() {
+                "per_session" => ingest::IngestStrategy::PerSession,
+                _ => ingest::IngestStrategy::PerTurn,
+            };
+            let questions = spectral_bench_accuracy::dataset::load_dataset(&dataset)?;
+            let archived = spectral_bench_accuracy::oracle::load_rows(&rows)?;
+            eprintln!(
+                "rescoring {} archived rows from {} against has_answer labels in {}",
+                archived.len(),
+                rows.display(),
+                dataset.display()
+            );
+            let backfilled =
+                spectral_bench_accuracy::oracle::backfill_evidence(&questions, &archived, strategy);
+            spectral_bench_accuracy::oracle::print_summary(&backfilled);
+
+            if let Some(base_path) = baseline {
+                let base_rows = spectral_bench_accuracy::oracle::load_rows(&base_path)?;
+                let base_backfilled = spectral_bench_accuracy::oracle::backfill_evidence(
+                    &questions, &base_rows, strategy,
+                );
+                eprintln!(
+                    "\nbaseline arm: {} ({} rows)",
+                    base_path.display(),
+                    base_backfilled.len()
+                );
+                spectral_bench_accuracy::oracle::print_diff(&base_backfilled, &backfilled);
+            }
+
+            if let Some(path) = out {
+                if path == rows {
+                    anyhow::bail!(
+                        "--out must not be --rows: archived evidence is append-only, never rewritten"
+                    );
+                }
+                let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
+                for row in spectral_bench_accuracy::oracle::evidence_sidecar(&backfilled) {
+                    serde_json::to_writer(&mut f, &row)?;
+                    std::io::Write::write_all(&mut f, b"\n")?;
+                }
+                std::io::Write::flush(&mut f)?;
+                eprintln!("\nsidecar written to {}", path.display());
+            }
         }
 
         Command::OracleDiff {

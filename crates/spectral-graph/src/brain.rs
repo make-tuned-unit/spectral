@@ -850,6 +850,11 @@ pub struct Brain {
     async_turn_delivery: bool,
     /// In-flight deferred delivery writes, keyed by occurrence id.
     pending_turn_deliveries: Mutex<HashMap<String, tokio::task::JoinHandle<anyhow::Result<()>>>>,
+    /// Occurrence ids enqueued by [`Brain::void_turn_deferred`], awaiting a
+    /// drain. Deliberately a plain queue rather than spawned tasks: a void
+    /// must await its own delivery write first, and doing that inside a
+    /// spawned task would need the pending-delivery map across an await.
+    pending_voids: Mutex<Vec<String>>,
     /// Ambient recurrence feedback: when new content re-encounters an existing
     /// memory (recognition), reinforce that prior memory. Enabled via
     /// [`BrainConfig::recurrence_feedback`]. Off by default (measure before
@@ -1091,6 +1096,7 @@ impl Brain {
             // Off by default; opt in per-brain via `set_async_turn_delivery`.
             async_turn_delivery: false,
             pending_turn_deliveries: Mutex::new(HashMap::new()),
+            pending_voids: Mutex::new(Vec::new()),
             recurrence_feedback: config.recurrence_feedback,
             fts_stopwords: config.fts_stopwords,
             anticipatory_recall: config.anticipatory_recall,
@@ -3638,6 +3644,9 @@ impl Brain {
     /// async turn delivery is enabled; a no-op otherwise. Surfaces the first
     /// write error encountered.
     pub fn flush_turn_deliveries(&self) -> Result<(), Error> {
+        // Voids first: each awaits its own delivery write, and draining them
+        // here means shutdown ordering stays one problem with one answer.
+        let (_, void_errs) = self.drain_pending_voids();
         let handles: Vec<_> = {
             let mut pending = self
                 .pending_turn_deliveries
@@ -3645,7 +3654,7 @@ impl Brain {
                 .map_err(|e| Error::Schema(format!("pending-deliveries lock: {e}")))?;
             pending.drain().collect()
         };
-        let mut first_err = None;
+        let mut first_err = void_errs.into_iter().next();
         for (occurrence_id, handle) in handles {
             let joined = self
                 .rt
@@ -3682,6 +3691,45 @@ impl Brain {
                 .map_err(|e| Error::Schema(format!("delivery write: {e}")))?;
         }
         Ok(())
+    }
+
+    /// Enqueue a void without touching the database. **Never blocks, never
+    /// fails, never panics** — safe to call from a `Drop` guard, which is
+    /// what it exists for (a panic in `Drop` during unwinding aborts the
+    /// process under `panic = "abort"`).
+    ///
+    /// The work happens in [`drain_pending_voids`](Self::drain_pending_voids),
+    /// which [`flush_turn_deliveries`](Self::flush_turn_deliveries) also
+    /// calls. Callers wanting promptness rather than shutdown-time
+    /// adjudication should drain from their own task. Voids are idempotent
+    /// and order-independent, so enqueueing twice is harmless.
+    ///
+    /// A poisoned queue lock is swallowed: losing a void mis-scores one turn,
+    /// whereas propagating from a `Drop` costs the process.
+    pub fn void_turn_deferred(&self, occurrence_id: &str) {
+        if let Ok(mut q) = self.pending_voids.lock() {
+            q.push(occurrence_id.to_string());
+        }
+    }
+
+    /// Adjudicate every enqueued void. Returns the number newly voided
+    /// (already-voided and already-committed turns do not count). Errors are
+    /// swallowed per-item so one bad id cannot strand the queue; the count
+    /// plus the returned errors let a caller log what happened.
+    pub fn drain_pending_voids(&self) -> (usize, Vec<Error>) {
+        let ids: Vec<String> = match self.pending_voids.lock() {
+            Ok(mut q) => q.drain(..).collect(),
+            Err(_) => return (0, Vec::new()),
+        };
+        let (mut voided, mut errs) = (0usize, Vec::new());
+        for id in ids {
+            match self.void_turn(&id) {
+                Ok(true) => voided += 1,
+                Ok(false) => {}
+                Err(e) => errs.push(e),
+            }
+        }
+        (voided, errs)
     }
 
     /// Void a turn abandoned before adjudication. See

@@ -96,12 +96,17 @@ rendering: for those 11, rendering cannot help — the evidence isn't there.
 
 ## Reproduce
 
+Folded into the oracle as a first-class metric (R15, shipped 2026-08-07). $0,
+offline, no retrieval re-run — it only reads `retrieved_keys` from the
+archived rows:
+
+```bash
+cargo run -p spectral-bench-accuracy --release -- oracle-evidence \
+  --dataset ~/spectral-local-bench/longmemeval/longmemeval_s.json \
+  --rows    ~/spectral-local-bench/r12-baseline.jsonl
 ```
-python3 - <<'EOF'   # against ~/spectral-local-bench/
-# build {question_id: {f"{sid}:turn:{i}:{role}"}} from has_answer flags in
-# longmemeval/longmemeval_s.json, intersect with retrieved_keys in
-# r12-baseline.jsonl
-EOF
-```
-Full script in this session's transcript; to be folded into the oracle as
-a first-class metric.
+
+Every figure in this note is pinned as a test —
+`oracle::tests::evidence_recall_reproduces_r15_note` (machine-local,
+`--ignored`), with a committed 45-question fixture running the same code in
+CI. Implementation and scope: `r15-evidence-metric-2026-08-07.md`.

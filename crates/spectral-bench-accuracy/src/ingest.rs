@@ -19,6 +19,26 @@ pub enum IngestStrategy {
     PerSession,
 }
 
+/// The memory key an ingested turn receives.
+///
+/// THE authority for the bench key format. The oracle's evidence scoring
+/// builds its expected-key set through this same function, so the two can
+/// never drift; if they did, evidence recall would silently read 0% and look
+/// like a catastrophic retrieval regression. Frozen by
+/// `memory_key_format_is_frozen` — changing the output invalidates every
+/// archived bench brain and every archived `retrieved_keys` list.
+pub fn memory_key(
+    strategy: IngestStrategy,
+    session_id: &str,
+    turn_idx: usize,
+    role: &str,
+) -> String {
+    match strategy {
+        IngestStrategy::PerTurn => format!("{session_id}:turn:{turn_idx}:{role}"),
+        IngestStrategy::PerSession => format!("{session_id}:session"),
+    }
+}
+
 /// Parse a LongMemEval date string like `"2023/02/15 (Wed) 23:50"` into `DateTime<Utc>`.
 fn parse_haystack_date(s: &str) -> Option<DateTime<Utc>> {
     match NaiveDateTime::parse_from_str(s, "%Y/%m/%d (%a) %H:%M") {
@@ -87,7 +107,7 @@ pub fn ingest_question(
         match strategy {
             IngestStrategy::PerTurn => {
                 for (turn_idx, turn) in session.iter().enumerate() {
-                    let key = format!("{session_id}:turn:{turn_idx}:{}", turn.role);
+                    let key = memory_key(strategy, session_id, turn_idx, &turn.role);
                     brain.remember_with(
                         &key,
                         &turn.content,
@@ -106,7 +126,7 @@ pub fn ingest_question(
                     .map(|t| format!("{}: {}", t.role, t.content))
                     .collect::<Vec<_>>()
                     .join("\n");
-                let key = format!("{session_id}:session");
+                let key = memory_key(strategy, session_id, 0, "");
                 brain.remember_with(
                     &key,
                     &content,
@@ -140,14 +160,51 @@ mod tests {
                 Turn {
                     role: "user".into(),
                     content: "The sky is blue today.".into(),
+                    has_answer: None,
                 },
                 Turn {
                     role: "assistant".into(),
                     content: "That sounds lovely!".into(),
+                    has_answer: None,
                 },
             ]],
             haystack_session_ids: vec!["s1".into()],
             haystack_dates: vec!["2023/02/15 (Wed) 23:50".into()],
+        }
+    }
+
+    #[test]
+    fn memory_key_format_is_frozen() {
+        // These literals ARE the archive: every bench brain on disk and every
+        // `retrieved_keys` list in every archived oracle JSONL uses them.
+        // Changing either string invalidates all of it.
+        assert_eq!(
+            memory_key(IngestStrategy::PerTurn, "answer_abc_1", 7, "assistant"),
+            "answer_abc_1:turn:7:assistant"
+        );
+        assert_eq!(
+            memory_key(IngestStrategy::PerSession, "answer_abc_1", 7, "assistant"),
+            "answer_abc_1:session"
+        );
+    }
+
+    #[test]
+    fn ingested_keys_match_memory_key_helper() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = test_question();
+        let brain = ingest_question(&q, dir.path(), IngestStrategy::PerTurn).unwrap();
+        let stored: std::collections::HashSet<String> = brain
+            .list_all_memories(1000)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.key)
+            .collect();
+        for (turn_idx, turn) in q.haystack_sessions[0].iter().enumerate() {
+            let key = memory_key(IngestStrategy::PerTurn, "s1", turn_idx, &turn.role);
+            assert!(
+                stored.contains(&key),
+                "ingest wrote a key the helper does not reproduce: {key}; stored {stored:?}"
+            );
         }
     }
 
@@ -196,6 +253,7 @@ mod tests {
             haystack_sessions: vec![vec![Turn {
                 role: "user".into(),
                 content: "Malformed date memory about project status".into(),
+                has_answer: None,
             }]],
             haystack_session_ids: vec!["s-bad".into()],
             haystack_dates: vec!["not a date".into()],
@@ -244,20 +302,24 @@ mod tests {
                     Turn {
                         role: "user".into(),
                         content: "Session one content about project alpha".into(),
+                        has_answer: None,
                     },
                     Turn {
                         role: "assistant".into(),
                         content: "I see, project alpha looks good".into(),
+                        has_answer: None,
                     },
                 ],
                 vec![
                     Turn {
                         role: "user".into(),
                         content: "Session two content about project beta".into(),
+                        has_answer: None,
                     },
                     Turn {
                         role: "assistant".into(),
                         content: "Project beta is interesting".into(),
+                        has_answer: None,
                     },
                 ],
             ],

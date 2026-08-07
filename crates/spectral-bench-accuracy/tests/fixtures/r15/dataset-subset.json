@@ -1,0 +1,5214 @@
+[
+{
+"question_id": "e47becba",
+"question_type": "single-session-user",
+"question": "What degree did I graduate with?",
+"answer": "Business Administration",
+"question_date": "2023/05/30 (Tue) 23:40",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm trying to organize my life a",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Making the leap from a planner t",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try out Todoist and",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Todoist and Trello are both exce",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I graduated with a degree in Bus",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on your degree i",
+"has_answer": true
+},
+{
+"role": "user",
+"content": "I'm thinking of implementing a s",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Tracking personal expenses can h",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try out Mint and Pe",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Mint and Personal Capital are bo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try out some of tho",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Meal prep is a fantastic way to ",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_280352e9"
+],
+"haystack_dates": [
+"2023/05/30 (Tue) 17:27"
+]
+},
+{
+"question_id": "c960da58",
+"question_type": "single-session-user",
+"question": "How many playlists do I have on Spotify?",
+"answer": "20",
+"question_date": "2023/05/30 (Tue) 18:45",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm trying to find more music si",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Tameca Jones is an amazing artis",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been listening to a mix of ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'm glad you're looking to creat",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out those ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's a great approach! Organiz",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's a great idea about using ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Using emojis and keywords in pla",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's a great list of resources",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's amazing! Seeing Tameca Jo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "By the way, I've been meaning to",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Vinyl record collecting is a won",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_e05e4612"
+],
+"haystack_dates": [
+"2023/05/20 (Sat) 09:02"
+]
+},
+{
+"question_id": "21436231",
+"question_type": "single-session-user",
+"question": "How many largemouth bass did I catch on my fishing trip to Lake Michigan?",
+"answer": "12",
+"question_date": "2023/05/30 (Tue) 19:25",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm planning a fishing trip to L",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Lake Michigan is an excellent sp",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "By the way, I've had some experi",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Great to hear that you have expe",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually thinking of organiz",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What an exciting adventure you'r",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually thinking of taking ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Learning to t",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of restocking my ta",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Size 2 hooks and chartreuse plas",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of taking my S",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm happy to help you with that!",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_1e6d4567"
+],
+"haystack_dates": [
+"2023/05/21 (Sun) 06:28"
+]
+},
+{
+"question_id": "3f1e9474",
+"question_type": "single-session-user",
+"question": "Who did I have a conversation with about destiny?",
+"answer": "Sarah",
+"question_date": "2023/05/30 (Tue) 22:08",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I've been trying to focus on the",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm happy to help you with tips ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I like the idea of reframing neg",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Reframing negative thoughts and ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about my valu",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Wonderful! Pursuing a career in ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm considering a career in the ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a fascinating and introspec",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'm starting to get a be",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "What a fascinating topic!\n\nThe c",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'm starting to get a be",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a beautiful connection you'",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_57fc1954"
+],
+"haystack_dates": [
+"2023/05/22 (Mon) 05:54"
+]
+},
+{
+"question_id": "545bd2b5",
+"question_type": "single-session-user",
+"question": "How much screen time have I been averaging on Instagram per day?",
+"answer": "2 hours",
+"question_date": "2023/05/30 (Tue) 23:30",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "Hey, I've been trying to cut dow",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The eternal conundrum! I complet",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I like the idea of designating s",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Setting a time limit for social ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been averaging around 2 hou",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Wow, 2 hours a day is a signific",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "What are some alternative activi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "There are many wonderful activit",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try doodling or dra",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's a fantastic choice! Doodl",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try to doodle durin",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's a great idea! Doodling du",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_47ffab4c"
+],
+"haystack_dates": [
+"2023/05/27 (Sat) 04:20"
+]
+},
+{
+"question_id": "c14c00dd",
+"question_type": "single-session-user",
+"question": "What brand of shampoo do I currently use?",
+"answer": "Trader Joe's",
+"question_date": "2023/05/30 (Tue) 19:01",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm trying to get more organized",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Getting organized with bathroom ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I might try Habitica, I've heard",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Habitica is a fantastic choice f",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been using a lavender scent",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Lavender shampoo, that's a great",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been trying to develop a ha",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Excellent habit to develop! Drin",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about trying ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Fixing a leaky faucet can be a g",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try to fix the leak",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's the right attitude! DIY p",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_304511ce"
+],
+"haystack_dates": [
+"2023/05/22 (Mon) 08:57"
+]
+},
+{
+"question_id": "0862e8bf_abs",
+"question_type": "single-session-user",
+"question": "What is the name of my hamster?",
+"answer": "You did not mention this information. You mentio",
+"question_date": "2023/05/30 (Tue) 21:39",
+"haystack_sessions": [],
+"haystack_session_ids": [],
+"haystack_dates": []
+},
+{
+"question_id": "gpt4_59c863d7",
+"question_type": "multi-session",
+"question": "How many model kits have I worked on or bought?",
+"answer": "I have worked on or bought five model kits. The ",
+"question_date": "2023/05/30 (Tue) 20:57",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some tips on pho",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Nice scores! Congratulations on ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm planning to use Vallejo acry",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Vallejo acrylics are a popular c",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "What's the best way to attach th",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Super glue (cyanoacrylate) can b",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've also been thinking about tr",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Adding wire details can elevate ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about adding ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Adding wire details to your 1/24",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm planning to start working on",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Creating a realistic wire bundle",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking for some tips on wea",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Welcome back to the world of mod",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been experimenting with Val",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're already working with some",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually thinking of working",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A 1/72 scale B-29 bomber is a gr",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm still trying to figure out t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Weathering a 1/72 scale B-29 bom",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of adding some extr",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Adding antennas and aerials can ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm looking forward to adding so",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're welcome! I'm glad I could",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking for some tips on wea",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Weathering and terrain making ar",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks fo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Creating realistic tree foliage ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm planning to incorporate a sm",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Creating realistic water effects",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of adding some vege",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Adding vegetation to the riverba",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of adding some rock",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Adding rocks and gravel to the r",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of adding some fall",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Adding fallen trees or branches ",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking for some advice on p",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Painting metal surfaces on a mod",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I didn't think to use a wet pale",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "**Applying a metallic sheen**\n\nU",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been experimenting with Val",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "**Enamel vs. Acrylic Washes: A W",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm curious to know more about u",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "**Enamel Washes vs. Acrylic Wash",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of trying out ename",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "**Enamel Washes for Acrylic Pain",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_593bdffd_4",
+"answer_593bdffd_1",
+"answer_593bdffd_3",
+"answer_593bdffd_2"
+],
+"haystack_dates": [
+"2023/05/20 (Sat) 14:38",
+"2023/05/27 (Sat) 14:40",
+"2023/05/29 (Mon) 18:19",
+"2023/05/30 (Tue) 03:22"
+]
+},
+{
+"question_id": "36b9f61e",
+"question_type": "multi-session",
+"question": "What is the total amount I spent on luxury items in the past few months?",
+"answer": "$2,500",
+"question_date": "2023/05/30 (Tue) 22:52",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm trying to get a better under",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you track y",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try using a spreads",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Using a spreadsheet is a great w",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think it's a good idea to reas",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm glad you're willing to reass",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think this framework is a good",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm glad you're excited to work ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think the allocation strategie",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm glad you're willing to reass",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "These ideas are great! I'm espec",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm thrilled to hear that you're",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to get a better handl",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you track y",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'd love to get that expense tra",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Here's a simple expense tracker ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "What kind of fashion items do yo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "As a digital AI assistant, I don",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I tend to splurge on hig",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "It's great that you're acknowled",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I like the idea of setting a \"tr",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Setting a \"treat yourself\" budge",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That makes sense. I think I can ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You can definitely roll over any",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to get a better under",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you track y",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about my shop",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "It sounds like you have a mix of",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm trying to understand my shop",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Finding affordable alternatives ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm interested in exploring more",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Everlane is a fantastic example ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm interested in learning more ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "J.Crew Factory is an excellent e",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I've got a good understa",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Madewell is an excellent choice!",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_ef74281f_2",
+"answer_ef74281f_1",
+"answer_ef74281f_3"
+],
+"haystack_dates": [
+"2023/05/24 (Wed) 20:23",
+"2023/05/25 (Thu) 00:39",
+"2023/05/28 (Sun) 16:24"
+]
+},
+{
+"question_id": "gpt4_2ba83207",
+"question_type": "multi-session",
+"question": "Which grocery store did I spend the most money at in the past month?",
+"answer": "Thrive Market",
+"question_date": "2023/05/30 (Tue) 22:59",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm trying to plan my meals for ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Great job on taking steps toward",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's a great list of recipes, ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Excellent choices on the recipes",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm planning to start meal prepp",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Meal prepping is a game-changer ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of planning my",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you with th",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm planning to shop at Publix t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Publix is a great store to shop ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm planning to buy some organic",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "It sounds like you're making a c",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to plan my meals for ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you with so",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm open to trying out different",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "With your preferences, I'll sugg",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "These meal ideas sound great, th",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Chicken breast is a versatile pr",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That sounds like a great recipe,",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Combining chicken breast with gr",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try the Chicken and",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're welcome! I'm glad I could",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "One more thing, I was thinking o",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Organizing your pantry and fridg",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to plan my meals for ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you with so",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's a great list, thanks! I t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you generat",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you help me find some recipe",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Cauliflower gnocchi is a great f",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you give me some tips on how",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Storing reusable containers and ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks! I",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's a great approach! Buying ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm excited to explore more bulk",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Thrive Market is a great resourc",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to plan my meals for ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you with me",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm open to any cuisine, but I'v",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Let's plan 5 delicious and waste",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That sounds great! I really like",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you with th",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm glad you helped me with the ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'm happy to help you estimate t",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thank you",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Substituting ingredients can be ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I can make some adjustme",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Using pantry staples you already",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_6a3b5c13_3",
+"answer_6a3b5c13_1",
+"answer_6a3b5c13_2",
+"answer_6a3b5c13_4"
+],
+"haystack_dates": [
+"2023/05/26 (Fri) 10:17",
+"2023/05/26 (Fri) 14:05",
+"2023/05/29 (Mon) 15:17",
+"2023/05/30 (Tue) 03:44"
+]
+},
+{
+"question_id": "60472f9c",
+"question_type": "multi-session",
+"question": "How many projects have I been working on simultaneously, excluding my thesis?",
+"answer": "2",
+"question_date": "2023/05/30 (Tue) 23:41",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm struggling to find relevant ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'm happy to help!\n\nFirstly, con",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's quite a list. I'll defini",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The UCI Machine Learning Reposit",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I see what you mean. I think I'l",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Bike Sharing dataset is a po",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks! I",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Medical imaging is a fascinating",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll start by looking in",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "CNNs and U-Net are excellent cho",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll start by exploring ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Keras and TensorFlow are both ex",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to find some relevant",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I totally understand the feeling",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you also suggest some popula",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Here are some popular open-sourc",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you recommend some popular d",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Here are some popular deep learn",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm interested in exploring the ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Transfer learning is a great way",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I want to ask about the specific",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Preprocessing and image enhancem",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll experiment with different t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're welcome! It was my pleasu",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_e7fe8c8b_2",
+"answer_e7fe8c8b_3"
+],
+"haystack_dates": [
+"2023/05/26 (Fri) 15:03",
+"2023/05/28 (Sun) 03:58"
+]
+},
+{
+"question_id": "1a8a66a6",
+"question_type": "multi-session",
+"question": "How many magazine subscriptions do I currently have?",
+"answer": "2",
+"question_date": "2023/04/01 (Sat) 23:49",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I've been trying to reduce my ca",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Great to hear that you're taking",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm looking for a bottle that ca",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Both Hydro Flask and S'well are ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of getting a 32 oz ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A 32 oz bottle is a great size f",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of getting a neutra",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Neutral colors like white or gra",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll go for the White ma",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The White matte finish is a fant",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also curious about eco-frien",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Eco-friendly cleaning products a",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking to redecorate my liv",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Exciting! Redecorating your livi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm particularly drawn to the Mi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Mid-Century Modern (MCM) is a fa",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm glad to hear that Mid-Centur",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Incorporating plants into your M",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thank you",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Snake Plants and Pothos are both",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try to train my Pot",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Training your Pothos to climb up",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'd like to ask about the care a",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Pothos (Epipremnum aureum) is a ",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I've been trying to reduce my pl",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Great to hear that you're making",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Those are some great suggestions",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's a great place to start! R",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been meaning to explore mor",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "There are many excellent online ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out some o",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great to hear that you're",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've also been listening to a lo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Daily is an excellent podcas",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_2bd23659_3",
+"answer_2bd23659_2",
+"answer_2bd23659_1"
+],
+"haystack_dates": [
+"2023/04/01 (Sat) 00:37",
+"2023/04/01 (Sat) 04:47",
+"2023/04/01 (Sat) 19:02"
+]
+},
+{
+"question_id": "88432d0a_abs",
+"question_type": "multi-session",
+"question": "How many times did I bake egg tarts in the past two weeks?",
+"answer": "The information provided is not enough. You did ",
+"question_date": "2023/05/30 (Tue) 23:40",
+"haystack_sessions": [],
+"haystack_session_ids": [],
+"haystack_dates": []
+},
+{
+"question_id": "8a2466db",
+"question_type": "single-session-preference",
+"question": "Can you recommend some resources where I can learn more about video editing?",
+"answer": "The user would prefer responses that suggest res",
+"question_date": "2023/05/30 (Tue) 22:03",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm trying to learn more about s",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Adobe Premiere Pro is a powerful",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I want to know more about the Lu",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Lumetri Color Panel is a pow",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you tell me more about the C",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Creative panel and the Curve",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you give me some tips on how",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Curves panel is a powerful t",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I want to know more about the \"T",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The \"Toe\" and \"Shoulder\" control",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'd like to know more about usin",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Using the Lumetri Color Panel fo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you explain the difference b",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Lumetri Color Panel and the ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Thank you for the clarification.",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Color Wheels in the Lumetri ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Are there any best practices or ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Yes, there are some best practic",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_edb03329"
+],
+"haystack_dates": [
+"2023/05/21 (Sun) 14:21"
+]
+},
+{
+"question_id": "1a1907b4",
+"question_type": "single-session-preference",
+"question": "I've been thinking about making a cocktail for an upcoming get-together, but I'm",
+"answer": "Considering their mixology class background, the",
+"question_date": "2023/05/30 (Tue) 22:31",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I was thinking of experimenting ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Hendrick's gin is a fantastic ch",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I like the idea of the Pimm's Cu",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Both cucumber juice and muddling",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks fo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Muddling cucumber slices will de",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I was thinking of using a flavor",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A citrus-flavored simple syrup c",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try the grapefruit ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The bitterness of the grapefruit",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try the Ruby Red Gr",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Ruby Red Grapefruit simple s",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm excited to try out the Ruby ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're welcome! I'm thrilled to ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try serving the Pim",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A Collins glass is a perfect cho",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_719502eb"
+],
+"haystack_dates": [
+"2023/05/21 (Sun) 00:41"
+]
+},
+{
+"question_id": "a89d7624",
+"question_type": "single-session-preference",
+"question": "I'm planning a trip to Denver soon. Any suggestions on what to do there?",
+"answer": "The user would prefer responses that take into a",
+"question_date": "2023/05/30 (Tue) 21:17",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some music recom",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That sounds like an amazing expe",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I met Brandon Flowers, the lead ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's awesome! Meeting Brandon ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "During my previous visit to Denv",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Denver's music scene is indeed t",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of going back to De",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "You're heading back to Denver fo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check those out.",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're planning to grab dinner b",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of getting some din",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're planning to grab dinner a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm going to ask them if they ha",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're thinking of asking The Sh",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_8f15ac24"
+],
+"haystack_dates": [
+"2023/05/27 (Sat) 14:23"
+]
+},
+{
+"question_id": "9aaed6a3",
+"question_type": "multi-session",
+"question": "How much cashback did I earn at SaveMart last Thursday?",
+"answer": "$0.75",
+"question_date": "2023/05/30 (Tue) 23:17",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm trying to plan my grocery sh",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you plan yo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm planning to buy some basic i",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Based on your requirements, here",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "What about some pasta and marina",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Adding pasta and marinara sauce ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "What about some ground beef to g",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Ground beef would be a great add",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you tell me how much I'd sav",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Buying in bulk can often lead to",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'd like to know if SaveMart has",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you check f",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to get a sense of my ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you track y",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I also had some coffee expenses ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Let's add those coffee expenses ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I also spent some money at Offic",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Let's add that to your non-groce",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think keeping them together is",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'll keep them together in the n",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I also spent $100 at Gap last we",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Let's add that to your non-groce",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I also spent $50 at Sephora last",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Let's add that to your non-groce",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_353d3c6d_2",
+"answer_353d3c6d_1"
+],
+"haystack_dates": [
+"2023/05/22 (Mon) 17:21",
+"2023/05/23 (Tue) 19:31"
+]
+},
+{
+"question_id": "e25c3b8d",
+"question_type": "multi-session",
+"question": "How much did I save on the designer handbag at TK Maxx?",
+"answer": "$300",
+"question_date": "2023/05/30 (Tue) 15:02",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some fashion adv",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on your new desi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think the brand is somewhat si",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "With a neutral-colored, black le",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of creating a capsu",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A capsule wardrobe is a great id",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been meaning to try out Eve",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Everlane is an excellent choice!",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also interested in checking ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Everlane's denim is another grea",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm interested in learning more ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Everlane's transparent pricing m",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm thinking of buying some new ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm happy to help you with that!",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually thinking of getting",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "In that case, here are some onli",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been eyeing some luxury bra",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "While TK Maxx is known for carry",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've had luck finding great deal",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "That's the right attitude! TK Ma",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely keep an eye out ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "TK Maxx's accessories section is",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out the ac",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're welcome! I'm glad I could",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_6702277b_1",
+"answer_6702277b_2"
+],
+"haystack_dates": [
+"2023/05/21 (Sun) 23:54",
+"2023/05/24 (Wed) 01:58"
+]
+},
+{
+"question_id": "8979f9ec",
+"question_type": "multi-session",
+"question": "What is the total number of lunch meals I got from the chicken fajitas and lenti",
+"answer": "8 meals",
+"question_date": "2023/05/30 (Tue) 21:03",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some new recipe ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "That sounds like a delicious lun",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I like the sound of the veggie f",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Veggie frittatas are a fantastic",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try using roasted s",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Roasted sweet potatoes and caram",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely try those tips t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Marinades can make all the diffe",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try the Korean-Styl",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Korean-Style Gochujang Marin",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking for some new recipes",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Meal prep is a game-changer, isn",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been really into soups late",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Lentil soup is a great choice fo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm intrigued by the Butternut S",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Roasting the butternut squash is",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm excited to try out the Butte",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You can definitely use a pre-mix",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been meaning to ask, do you",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Cauliflower rice is a fantastic ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been making cauliflower ric",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Cauliflower rice is an amazing b",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_35e36341_1",
+"answer_35e36341_2"
+],
+"haystack_dates": [
+"2023/05/24 (Wed) 20:19",
+"2023/05/26 (Fri) 23:55"
+]
+},
+{
+"question_id": "61f8c8f8",
+"question_type": "multi-session",
+"question": "How much faster did I finish the 5K run compared to my previous year's time?",
+"answer": "10 minutes",
+"question_date": "2023/10/01 (Sun) 23:53",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm planning a charity bake sale",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on completing yo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you help me come up with a c",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd love to help you come up wit",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I like \"Sweet Support for the Se",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "\"Sweet Support for the Season\" i",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's a great list of ideas! I ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Promoting your event through soc",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll also create a Faceb",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Creating a Fa",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll modify the post to ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I love the revised post! You've ",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm training for a 5K run and I'",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Creating a training plan for a 5",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I was thinking of starting with ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on having a base",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That sounds like a good plan. I'",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "16 minutes per mile is a great t",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think that sounds like a good ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Staying motivated during the bas",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Those tips are really helpful. I",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great to hear! I'm excite",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm ready to move forward with t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Congratulations on taking the fi",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_872e8da2_2",
+"answer_872e8da2_1"
+],
+"haystack_dates": [
+"2023/10/01 (Sun) 11:48",
+"2023/10/01 (Sun) 16:16"
+]
+},
+{
+"question_id": "a08a253f",
+"question_type": "multi-session",
+"question": "How many days a week do I attend fitness classes?",
+"answer": "4 days.",
+"question_date": "2023/05/30 (Tue) 23:16",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some new workout",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'm happy to help you with some ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check these out,",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Weightlifting playlists are a bi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely give these a try",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's awesome to hear that you'",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely try these stretc",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great to hear that you're",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks! I",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm glad you found the recommend",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely give hot yoga an",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Staying motivated and consistent",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to plan out my week a",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you set rem",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's perfect, thanks! Actually",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I've added a reminder to log you",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I was thinking of trying out a n",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you with so",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I love the suggestions! I think ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That sounds like a great plan! I",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I was also thinking of tracking ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Tracking progress and setting fi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'd like to set some specific go",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Setting specific goals for each ",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_47152166_2",
+"answer_47152166_1"
+],
+"haystack_dates": [
+"2023/05/26 (Fri) 03:42",
+"2023/05/27 (Sat) 06:52"
+]
+},
+{
+"question_id": "2311e44b_abs",
+"question_type": "multi-session",
+"question": "How many pages do I have left to read in 'Sapiens'?",
+"answer": "The information provided is not enough. You did ",
+"question_date": "2023/05/30 (Tue) 18:25",
+"haystack_sessions": [],
+"haystack_session_ids": [],
+"haystack_dates": []
+},
+{
+"question_id": "6456829e_abs",
+"question_type": "multi-session",
+"question": "How many plants did I initially plant for tomatoes and chili peppers?",
+"answer": "The information provided is not enough. You ment",
+"question_date": "2023/05/30 (Tue) 14:24",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some recipe idea",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Here are some delicious recipe i",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's quite a list! I think I'l",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Bruschetta and Tomato and Mozzar",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been using my fresh tomatoe",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Making pasta sauce from scratch ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've heard that using fresh toma",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Using fresh tomatoes makes a hug",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been doing my best to keep ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're a quick learner! It's gre",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been enjoying the harvest i",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "That's fantastic! There's nothin",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_743f03a1_abs_1"
+],
+"haystack_dates": [
+"2023/05/22 (Mon) 23:14"
+]
+},
+{
+"question_id": "gpt4_4929293a",
+"question_type": "temporal-reasoning",
+"question": "Which event happened first, my cousin's wedding or Michael's engagement party?",
+"answer": "Michael's engagement party",
+"question_date": "2023/10/01 (Sun) 07:41",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm thinking of planning a small",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on your upcoming",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm currently considering two op",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a lovely dilemma! Both opti",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of hiring a we",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Hiring a wedding planner can be ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm still deciding between the t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Scheduling a consultation with a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think it would be helpful to g",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Here's a potential question you ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you give me some examples of",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Here's an example response from ",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm getting ready to start plann",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on being a part ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely consider these t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A small, intimate ceremony sound",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of having a small, ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A fall wedding sounds lovely! Wi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm really enjoying looking at d",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's wonderful! It's great tha",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Yeah, being a bridesmaid at my c",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's so sweet! It's great that",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about having ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I love those ideas! A special re",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_add9b012_2",
+"answer_add9b012_1"
+],
+"haystack_dates": [
+"2023/05/06 (Sat) 03:02",
+"2023/06/15 (Thu) 03:20"
+]
+},
+{
+"question_id": "gpt4_1916e0ea",
+"question_type": "temporal-reasoning",
+"question": "How many days passed between the day I cancelled my FarmFresh subscription and t",
+"answer": "54 days. 55 days (including the last day) is als",
+"question_date": "2023/03/18 (Sat) 00:06",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm planning to meal prep for th",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Here are some easy-to-make optio",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Those recipe ideas sound amazing",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm glad you liked the recipe id",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of organizing my pa",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Pantry and kitchen cabinet organ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been meaning to organize my",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'm thrilled to hear that! Cance",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually thinking of using t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Treating your",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm planning to make some new re",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Instacart is so convenient, isn'",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I like the sound of the Chicken ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Excellent choices! Both dishes a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of making some",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Optimizing your grocery lists an",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I like the suggestion of plannin",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm glad you liked the suggestio",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try using a spreads",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A spreadsheet is a fantastic too",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll also add a column t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're welcome! I'm glad I could",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_447052a5_2",
+"answer_447052a5_1"
+],
+"haystack_dates": [
+"2023/01/05 (Thu) 18:23",
+"2023/02/28 (Tue) 22:12"
+]
+},
+{
+"question_id": "gpt4_d6585ce8",
+"question_type": "temporal-reasoning",
+"question": "What is the order of the concerts and musical events I attended in the past two ",
+"answer": "The order of the concerts I attended is: 1. Bill",
+"question_date": "2023/04/22 (Sat) 19:31",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm planning to buy some new con",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "That's awesome! I'm glad you had",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll check these out! Do you hav",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Finding rare or limited edition ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also planning to frame the c",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Framing your ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of framing the tick",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a wonderful idea! Framing a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's great advice! I think I'l",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That sounds like a fantastic pho",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try Shutterfly or S",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Both Shutterfly and Snapfish are",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking for some new music r",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'm thrilled to hear that you're",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually interested in check",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Mt. Joy is an excellent choice! ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That sounds great! I'll definite",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm so glad you're enjoying the ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually thinking of attendi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Jazz night at a local bar sounds",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about attendi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Music festivals are an amazing w",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking for some song recomm",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "That sounds like an amazing expe",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've actually seen Glass Animals",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's awesome! Glass Animals ar",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out these ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Many of the bands I mentioned ar",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually thinking of checkin",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's a great idea! Discovering",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of checking out som",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm glad you're excited to explo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of checking out som",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Here are some general tips to he",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to find some new musi",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "What a fantastic music-filled li",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out these ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm glad you're excited about th",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful! I'll defi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're in luck! Summer is a grea",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely search for jazz ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Learning to play the saxophone i",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm really excited to start lear",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Congratulations on taking the fi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely consider investi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "**Finding a good teacher or inst",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking for some recommendat",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "What an amazing experience that ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also interested in discoveri",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Discovering new artists and band",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'd like to know more about the ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The current indie rock scene is ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been to a music festival in",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're already a fan of indie ro",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm really interested in the Pan",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Panorama Music Festival is an am",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_f999b05b_1",
+"answer_f999b05b_4",
+"answer_f999b05b_2",
+"answer_f999b05b_5",
+"answer_f999b05b_3"
+],
+"haystack_dates": [
+"2023/03/18 (Sat) 00:23",
+"2023/03/25 (Sat) 09:47",
+"2023/04/01 (Sat) 09:07",
+"2023/04/08 (Sat) 11:13",
+"2023/04/15 (Sat) 02:29"
+]
+},
+{
+"question_id": "gpt4_af6db32f",
+"question_type": "temporal-reasoning",
+"question": "How many days ago did I watch the Super Bowl?",
+"answer": "17 days ago. 18 days (including the last day) is",
+"question_date": "2023/03/01 (Wed) 19:28",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm trying to plan a fantasy foo",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "A fantasy football draft party s",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually thinking of having ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Having your party on a Sunday is",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I was thinking, since we're havi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Having some f",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of also having some",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Sports-themed decorations can re",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I was thinking, since I won $20 ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Using your Su",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll get a few prizes th",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That sounds like a great plan! Y",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_184c8f56_1"
+],
+"haystack_dates": [
+"2023/02/12 (Sun) 06:29"
+]
+},
+{
+"question_id": "71017277",
+"question_type": "temporal-reasoning",
+"question": "I received a piece of jewelry last Saturday from whom?",
+"answer": "my aunt",
+"question_date": "2023/03/09 (Thu) 15:47",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some advice on c",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on your new acqu",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of doing some ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Researching t",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also interested in learning ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great question! Researchi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also curious about the histo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great question! Researchi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of visiting some lo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Visiting loca",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm going to visit some local an",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's a great idea! Visiting lo",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_0b4a8adc_1"
+],
+"haystack_dates": [
+"2023/03/04 (Sat) 16:45"
+]
+},
+{
+"question_id": "4dfccbf8",
+"question_type": "temporal-reasoning",
+"question": "What did I do with Rachel on the Wednesday two months ago?",
+"answer": "I started taking ukulele lessons with Rachel.",
+"question_date": "2023/04/01 (Sat) 16:08",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm thinking of buying a new key",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Korg and Roland are both excelle",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm not really sure about the bu",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "With a budget of $500-$1000 and ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm still not sure about the key",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you with uk",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been really enjoying the le",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Fingerpicking can be a bit trick",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about getting",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Wise decision to get your Taylor",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about selling",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Selling your harmonica can be a ",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_4bebc783_1"
+],
+"haystack_dates": [
+"2023/02/01 (Wed) 14:38"
+]
+},
+{
+"question_id": "2c63a862",
+"question_type": "temporal-reasoning",
+"question": "How many days did it take for me to find a house I loved after starting to work ",
+"answer": "14 days. 15 days (including the last day) is als",
+"question_date": "2022/03/02 (Wed) 10:19",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some advice on n",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help! It's great",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I work in the city of Irvine, Ca",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Irvine is a great city with a lo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm actually pre-approved for a ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "With a budget of $350,000, you'l",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Can you tell me more about the t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The types of properties availabl",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'd like to ask Rachel about the",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Rachel can definitely provide yo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll ask Rachel about the new co",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're welcome! I'm glad I could",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking to get some advice o",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on finding a hou",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've already got pre-approved fo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Congratulations on getting pre-a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I was thinking of offering aroun",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Your offer of $320,000 is a good",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll make the offer cont",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Excellent decision! Making the o",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I feel good about the offer. I'v",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's a great attitude to have!",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll submit the offer today, and",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's the right attitude! Submi",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_d39b7977_1",
+"answer_d39b7977_2"
+],
+"haystack_dates": [
+"2022/03/02 (Wed) 06:05",
+"2022/03/02 (Wed) 04:42"
+]
+},
+{
+"question_id": "gpt4_65aabe59",
+"question_type": "temporal-reasoning",
+"question": "Which device did I set up first, the smart thermostat or the mesh network system",
+"answer": "Smart thermostat",
+"question_date": "2023/05/25 (Thu) 11:29",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm having some issues with my d",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "A new mesh network system, that'",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "My current desktop computer is a",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you navigat",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been doing some research on",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "With your new mesh network syste",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been looking at a few diffe",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're exploring different optio",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll stick with a tradit",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's a great decision! Traditi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of spending around ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "With a budget of $800 to $1,200,",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm having some issues with my d",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you with up",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "My current computer is about 5 y",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "With 5 years of use, it's no sur",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm not really sure about buildi",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Pre-built computers can be a con",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think a 24-inch screen would b",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A 24-inch screen is a great size",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I don't think I need to consider",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "24-inch is a great size for a de",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll go with the HP Pavi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The HP Pavilion 24-inch All-in-O",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_30dfe889_1",
+"answer_30dfe889_2"
+],
+"haystack_dates": [
+"2023/05/25 (Thu) 01:12",
+"2023/05/25 (Thu) 19:02"
+]
+},
+{
+"question_id": "cc6d1ec1",
+"question_type": "temporal-reasoning",
+"question": "How long had I been bird watching when I attended the bird watching workshop?",
+"answer": "Two months",
+"question_date": "2023/05/21 (Sun) 19:31",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm considering getting a bird f",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "That's great to hear that you at",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of getting a b",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A birdbath is a wonderful additi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of getting a f",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A field guide is an excellent re",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been meaning to learn more ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Learning bird calls is a fantast",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about attendi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That sounds like a great idea! A",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm looking forward to the meetu",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's the right attitude! It's ",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking to set up a bird fee",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Welcome to the wonderful world o",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of getting a feeder",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Woodpeckers are fascinating bird",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been trying to spot a Red-h",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Red-headed Woodpecker! A bea",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've seen Downy Woodpeckers in m",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Excellent approach! Learning bir",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been trying to recognize bi",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Downy Woodpecker's call is a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm glad I could help you with t",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Congratulations on your life lis",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_be73098b_2",
+"answer_be73098b_1"
+],
+"haystack_dates": [
+"2023/05/21 (Sun) 20:08",
+"2023/05/21 (Sun) 08:56"
+]
+},
+{
+"question_id": "b29f3365",
+"question_type": "temporal-reasoning",
+"question": "How long had I been taking guitar lessons when I bought the new guitar amp?",
+"answer": "Four weeks",
+"question_date": "2023/05/25 (Thu) 19:07",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some advice on c",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congrats on the new amp! Choosin",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm still experimenting with dif",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great to hear! A new amp ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been really enjoying blues ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Blues is a great genre to explor",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've also been learning to play ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great to hear! The ukulel",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been really enjoying the uk",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's awesome! It sounds like y",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I actually got a soprano ukulele",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A soprano ukulele is a great cho",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to learn more about m",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "That's great to hear that you're",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out those ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's fantastic to hear about y",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely try to incorpora",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Practicing with a metronome is a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been using a metronome to h",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great to hear that you've",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try out the polyrhy",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That sounds like an amazing expe",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll try to incorporate those po",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great to hear! Learning t",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_436d4309_2",
+"answer_436d4309_1"
+],
+"haystack_dates": [
+"2023/05/25 (Thu) 18:54",
+"2023/05/25 (Thu) 03:25"
+]
+},
+{
+"question_id": "gpt4_70e84552_abs",
+"question_type": "temporal-reasoning",
+"question": "Which task did I complete first, fixing the fence or purchasing three cows from ",
+"answer": "The information provided is not enough. You ment",
+"question_date": "2023/05/21 (Sun) 10:40",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm thinking of hosting a farm o",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on fixing that b",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I like the idea of a petting zoo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Congratulations on getting your ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks! I",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A farm-to-table section is a gre",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks! S",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great to hear that your c",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's great, thanks for the ide",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Exciting times! Adding a new cow",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll stop here for now. ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You're welcome! It was my pleasu",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_b3070ec4_abs_1"
+],
+"haystack_dates": [
+"2023/05/21 (Sun) 17:30"
+]
+},
+{
+"question_id": "71315a70",
+"question_type": "knowledge-update",
+"question": "How many hours have I spent on my abstract ocean sculpture?",
+"answer": "10-12 hours",
+"question_date": "2023/06/18 (Sun) 19:47",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm planning to create a new pie",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a lovely idea! Capturing th",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of creating a ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What an exciting project! Workin",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been working on an abstract",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "I'm excited to hear about your o",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about creatin",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Working with ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of creating a serie",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Working with ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I want to experiment with differ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Achieving a translucent, ocean-l",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm thinking of creating a sculp",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "What a wonderful project! Captur",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks fo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Layering and impasto will defini",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking of using some",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Incorporating",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I was thinking about adding some",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a fascinating idea! Combini",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of creating a serie",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a wonderful idea! Incorpora",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've already spent 10-12 hours o",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm thrilled to hear that you're",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_c44b9df4_1",
+"answer_c44b9df4_2"
+],
+"haystack_dates": [
+"2023/06/11 (Sun) 03:51",
+"2023/06/17 (Sat) 09:26"
+]
+},
+{
+"question_id": "41698283",
+"question_type": "knowledge-update",
+"question": "What type of camera lens did I purchase most recently?",
+"answer": "a 70-200mm zoom lens",
+"question_date": "2023/09/21 (Thu) 08:41",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking for some advice on c",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Great choices! Both the Lowepro ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm mostly using my camera for p",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Based on your requirements, I th",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also considering getting a n",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Upgrading your tripod is a great",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll check out those tripod opti",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Manfrotto MT057CXPRO4 is a g",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks! I",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A remote shutter release is a fa",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about getting",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Neutral density (ND) filters are",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm considering getting a new tr",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on your new lens",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "How does the weight of the tripo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Great to hear that you're gettin",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been considering upgrading ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The eternal question: \"Is it wor",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've been thinking about getting",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Camera bag shopping! Exciting ti",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll go with the Think T",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The Think Tank Urban Disguise 40",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Actually, I've been thinking abo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A wide-angle lens is a great add",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_c7ddc051_1",
+"answer_c7ddc051_2"
+],
+"haystack_dates": [
+"2023/03/11 (Sat) 03:12",
+"2023/08/30 (Wed) 14:23"
+]
+},
+{
+"question_id": "2133c1b5",
+"question_type": "knowledge-update",
+"question": "How long have I been living in my current apartment in Harajuku?",
+"answer": "3 months",
+"question_date": "2023/10/15 (Sun) 08:39",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm planning a trip to the Japan",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a wonderful destination! Th",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of inviting so",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Nagano is relatively easy to rea",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm still getting used to living",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on settling into",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll choose to stay in M",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Matsumoto is a wonderful base fo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm looking forward to visiting ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Matsumoto is a treasure trove of",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm planning to visit the Japane",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You've planned a great itinerary",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm trying to plan a day trip to",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Yokohama is a great choice for a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out Minato",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Great choices! Minato Mirai 21 a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I actually haven't explored much",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "You should definitely visit the ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Yeah, I'll definitely check out ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Yokohama is known for its fresh ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out Kanema",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Great choices! You'll definitely",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out the Yo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The illuminations at Minato Mira",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_52382508_1",
+"answer_52382508_2"
+],
+"haystack_dates": [
+"2023/04/11 (Tue) 08:03",
+"2023/10/15 (Sun) 20:50"
+]
+},
+{
+"question_id": "7e974930",
+"question_type": "knowledge-update",
+"question": "How much did I earn at the Downtown Farmers Market on my most recent visit?",
+"answer": "$420",
+"question_date": "2023/10/26 (Thu) 11:44",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm trying to keep track of my s",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'd be happy to help you calcula",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Here's the info you requested. I",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Let me calculate your total earn",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I need to order more business ca",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "The ideal quantity depends on yo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think 100 is a good starting p",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "100 business cards is a great st",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also thinking of expanding m",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's an interesting idea! Expa",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "What do you think about offering",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I think that's a fantastic idea!",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking for some advice on h",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm happy to help you with manag",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of restocking my ca",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I think there might be some conf",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I sell homemade jams, candles, a",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Thank you for clarifying. It sou",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of setting up a loy",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on your sales at",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of a points-based s",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A points-based system with tiers",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I was thinking of promoting the ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Promoting your loyalty program t",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_c9f5693c_1",
+"answer_c9f5693c_2"
+],
+"haystack_dates": [
+"2023/04/11 (Tue) 00:10",
+"2023/09/30 (Sat) 15:13"
+]
+},
+{
+"question_id": "69fee5aa",
+"question_type": "knowledge-update",
+"question": "How many pre-1920 American coins do I have in my collection?",
+"answer": "38",
+"question_date": "2023/06/09 (Fri) 11:14",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I'm looking to organize my colle",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A collector's dilemma! I'm happy",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I think I'll try out Coin Collec",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Great choices for your coins and",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've got a few more cameras to a",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Congratulations on your new addi",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've got another question about ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A 1913 Liberty Head nickel is a ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "By the way, I was thinking of or",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "What a great idea! Organizing yo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm excited to start organizing ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "There are many great options for",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm looking to learn more about ",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Congratulations on adding a new ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That's really helpful, thanks! I",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Both PCGS (Professional Coin Gra",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I've heard that PCGS is more pop",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "PCGS is indeed popular among err",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out those ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "A camera collector, too! That's ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of expanding my cam",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Vintage rangefinders are a great",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_d6028d6e_1",
+"answer_d6028d6e_2"
+],
+"haystack_dates": [
+"2023/05/27 (Sat) 18:09",
+"2023/05/29 (Mon) 00:54"
+]
+},
+{
+"question_id": "5c40ec5b",
+"question_type": "knowledge-update",
+"question": "How many times have I met up with Alex from Germany?",
+"answer": "We've met up twice.",
+"question_date": "2023/10/30 (Mon) 13:39",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "I need some book recommendations",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a wonderful experience! I'd",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm more interested in indie fic",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I'm happy to dive into the world",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm loving this list! I'm partic",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great connection you made",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Actually, I'm also curious about",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "What a great topic! I'd be happy",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm going to ask Alex if he has ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "What a great idea! Asking Alex a",
+"has_answer": false
+}
+],
+[
+{
+"role": "user",
+"content": "I'm planning a trip to Germany s",
+"has_answer": true
+},
+{
+"role": "assistant",
+"content": "Berlin is an amazing city for in",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm more into the lo-fi and gara",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Berlin's got a fantastic lo-fi a",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'll definitely check out those ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Berlin has a thriving music blog",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm thinking of checking out som",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Kreuzberg is a fantastic neighbo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm also planning to meet up wit",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great that you're meeting",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_1cb52d0a_1",
+"answer_1cb52d0a_2"
+],
+"haystack_dates": [
+"2023/08/11 (Fri) 08:32",
+"2023/09/30 (Sat) 12:23"
+]
+},
+{
+"question_id": "7161e7e2",
+"question_type": "single-session-assistant",
+"question": "I'm checking our previous chat about the shift rotation sheet for GM social medi",
+"answer": "Admon was assigned to the 8 am - 4 pm (Day Shift",
+"question_date": "2023/05/30 (Tue) 20:16",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "can u create a shift rotation sh",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Sure, I can help you create a sh",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "7 agents",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Sure! Here's a shift rotation sh",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "4 shifts as follows: \"8 am till ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Got it! Here's an updated versio",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "2 days off for every agents",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Sure, here's an updated version ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "for only a week",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "No problem! Here's an updated ve",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Sunday - Saturday",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Sure, here's the shift rotation ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "agents names below:Admon\nMagdy\nE",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Thank you for providing the agen",
+"has_answer": true
+}
+]
+],
+"haystack_session_ids": [
+"answer_sharegpt_5Lzox6N_0"
+],
+"haystack_dates": [
+"2023/05/24 (Wed) 02:46"
+]
+},
+{
+"question_id": "cc539528",
+"question_type": "single-session-assistant",
+"question": "I wanted to follow up on our previous conversation about front-end and back-end ",
+"answer": "I recommended learning Ruby, Python, or PHP as a",
+"question_date": "2023/05/30 (Tue) 19:20",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "Can you explain the difference b",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Front-end web development involv",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Ah, I see. So a front-end develo",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Yes, that's a good way to put it",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "It sounds like front-end and bac",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Yes, it's definitely possible fo",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "It seems like there's so much to",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Yes, there's no denying that bec",
+"has_answer": true
+},
+{
+"role": "user",
+"content": "Do you recommend any specific re",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Yes, there are a lot of great on",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_ultrachat_374124"
+],
+"haystack_dates": [
+"2023/05/26 (Fri) 19:29"
+]
+},
+{
+"question_id": "8752c811",
+"question_type": "single-session-assistant",
+"question": "I remember you provided a list of 100 prompt parameters that I can specify to in",
+"answer": "The 27th parameter was 'Sound effects (e.g., amb",
+"question_date": "2023/05/30 (Tue) 21:25",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "Give me 100 prompt parameters th",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Sure, here are 100 prompt parame",
+"has_answer": true
+},
+{
+"role": "user",
+"content": "Continue",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "49. Timing (e.g., pacing, pauses",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Continue",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "97. Learning theories (e.g., beh",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_sharegpt_6pWK9yx_0"
+],
+"haystack_dates": [
+"2023/05/22 (Mon) 18:23"
+]
+},
+{
+"question_id": "fca762bc",
+"question_type": "single-session-assistant",
+"question": "I wanted to follow up on our previous conversation about language learning apps.",
+"answer": "Memrise",
+"question_date": "2023/05/30 (Tue) 21:25",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "What was the most challenging ex",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "As an AI language model, I don't",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Yeah, I understand. I found it h",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "That's great to hear! Making loc",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Yeah, consistency is key. I've a",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Sure, there are several excellen",
+"has_answer": true
+}
+]
+],
+"haystack_session_ids": [
+"answer_ultrachat_39395"
+],
+"haystack_dates": [
+"2023/05/25 (Thu) 11:38"
+]
+},
+{
+"question_id": "16c90bf4",
+"question_type": "single-session-assistant",
+"question": "I'm looking back at our previous conversation about the Seco de Cordero recipe f",
+"answer": "I recommended using a Pilsner or Lager for the r",
+"question_date": "2023/05/30 (Tue) 22:48",
+"haystack_sessions": [
+[
+{
+"role": "user",
+"content": "Could you suggest a recipe for a",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Sure! How about \"Seco de Cordero",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "That sounds amazing! I've never ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "I don't have personal preference",
+"has_answer": true
+},
+{
+"role": "user",
+"content": "I'll definitely try this recipe ",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Here are a few more tips to keep",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "I'm really excited to try this r",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Absolutely! How about a classic ",
+"has_answer": false
+},
+{
+"role": "user",
+"content": "Yum, that sounds like the perfec",
+"has_answer": false
+},
+{
+"role": "assistant",
+"content": "Yes, there are many delicious Pe",
+"has_answer": false
+}
+]
+],
+"haystack_session_ids": [
+"answer_ultrachat_294807"
+],
+"haystack_dates": [
+"2023/05/28 (Sun) 13:04"
+]
+}
+]

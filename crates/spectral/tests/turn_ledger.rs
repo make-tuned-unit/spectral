@@ -384,3 +384,36 @@ fn void_awaits_its_own_deferred_delivery() {
         "voided deferred turn leaked into evidence after reopen"
     );
 }
+
+/// `void_turn_deferred` is the Drop-guard-safe form (dispatch 2026-08-07y):
+/// enqueue never blocks or fails, the drain does the work, and the result is
+/// identical to a synchronous void. Idempotent across duplicate enqueues.
+#[test]
+fn deferred_void_enqueues_and_drains_to_the_same_state() {
+    let tmp = TempDir::new().unwrap();
+    let brain = seeded_brain(&tmp);
+
+    let aborted = deploy_turn(&brain);
+    let key = aborted.receipt.delivered[0].key.clone();
+
+    // Enqueue twice — a queue plus a crash makes duplicates likely.
+    brain.void_turn_deferred(&aborted.receipt);
+    brain.void_turn_deferred(&aborted.receipt);
+
+    // Nothing adjudicated yet: the turn is still plain unreported exposure.
+    let before = evidence_for(&brain, &key).expect("delivered");
+    assert_eq!((before.delivered, before.unreported), (1, 1));
+
+    let (voided, errs) = brain.drain_pending_voids();
+    assert_eq!(voided, 1, "one newly voided despite two enqueues");
+    assert!(errs.is_empty(), "unexpected drain errors: {errs:?}");
+
+    // Now excluded from evidence exactly as a synchronous void would be.
+    assert!(
+        evidence_for(&brain, &key).is_none_or(|e| e.delivered == 0),
+        "voided turn still counted as exposure"
+    );
+
+    // Draining again is a no-op.
+    assert_eq!(brain.drain_pending_voids().0, 0);
+}

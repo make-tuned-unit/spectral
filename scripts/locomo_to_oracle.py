@@ -5,10 +5,16 @@ tuned on (a genuine held-out set).
 
 LoCoMo is a *different* long-term-conversation benchmark. Each sample is a
 multi-session dialogue plus QA pairs; each QA carries `evidence` dia_ids
-("D<session>:<turn>") pointing at the supporting turns. We mark the sessions
-containing those turns with an `answer_` prefix — the oracle's convention for an
-evidence session (every turn in it becomes an answer key) — so both session-recall
-and key-recall are computable.
+("D<session>:<turn>") pointing at the supporting turns. We mark the SESSIONS
+containing those turns with an `answer_` prefix, so session-recall is computable.
+
+We do NOT currently emit per-turn `has_answer` labels, so the oracle's
+evidence-turn recall is UNAVAILABLE on converted sets (`n/a`, meaning
+undefined — not 0%). Emitting them is possible (match `dia_id`, never turn
+index — this script drops empty-text turns, so positions do not correspond)
+but is deliberately deferred: regenerating the sample files risks moving the
+held-out set that was actually measured. Any such change must be gated on a
+strip-`has_answer`-and-diff byte-equality check against the existing samples.
 
 Notes / honest caveats:
   * Adversarial questions (LoCoMo category 5) are excluded — they test refusal,
@@ -18,8 +24,11 @@ Notes / honest caveats:
   * We keep categories 1 (multi-hop), 2 (temporal), 4 (single-hop), mapped to the
     oracle's category labels for reporting.
   * LoCoMo evidence sessions are long (often 15-30 turns), and ALL their turns
-    count as answer keys, so key-recall is a stricter measure than on
-    LongMemEval — SESSION-recall is the comparable headline metric.
+    land in the answer-session-turn-coverage denominator. This was previously
+    described as merely "a stricter measure than on LongMemEval"; it is in
+    fact the same ~12x dilution defect R15 names, and the resulting number is
+    NOT evidence recall. SESSION-recall is the comparable headline metric.
+    See docs/internal/turn-level-evidence-recall-2026-08-07.md.
   * Sampling is deterministic (seed 42) so the held-out set is reproducible.
 
 Usage:
@@ -118,6 +127,12 @@ def main():
         help="prior sample JSON whose question_ids must not reappear "
         "(repeatable); guarantees a disjoint validation sample",
     )
+    ap.add_argument(
+        "--all",
+        action="store_true",
+        help="take EVERY answerable question rather than sampling per category "
+        "(what a full published baseline needs; --per-cat is ignored)",
+    )
     args = ap.parse_args()
 
     burned = set()
@@ -134,15 +149,19 @@ def main():
     by_cat = {}
     for q in everything:
         by_cat.setdefault(q["question_type"], []).append(q)
-    for cat, qs in sorted(by_cat.items()):
-        if len(qs) < args.per_cat:
-            raise SystemExit(
-                f"pool exhausted: {cat} has {len(qs)} < {args.per_cat} after exclusion"
-            )
+    # The pool guard protects DISJOINT sampling (a short category would
+    # silently yield a smaller sample than asked for). It must not fire for
+    # --all, where taking everything is the point.
+    if not args.all:
+        for cat, qs in sorted(by_cat.items()):
+            if len(qs) < args.per_cat:
+                raise SystemExit(
+                    f"pool exhausted: {cat} has {len(qs)} < {args.per_cat} after exclusion"
+                )
     sample = []
     for qs in by_cat.values():
         random.shuffle(qs)
-        sample += qs[: args.per_cat]
+        sample += qs if args.all else qs[: args.per_cat]
     random.shuffle(sample)
     json.dump(sample, open(args.out_json, "w"))
 
