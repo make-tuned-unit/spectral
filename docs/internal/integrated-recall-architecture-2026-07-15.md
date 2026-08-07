@@ -1,5 +1,16 @@
 # Integrated recall — how the methods work in sync — 2026-07-15
 
+> **METRIC CAVEAT (R15, 2026-08-07):** "key-recall" in this document is
+> evidence-**session** turn coverage — every turn of every `answer_` session, a
+> ~12x-diluted denominator — not evidence-turn recall. See
+> `turn-level-evidence-recall-2026-08-07.md`. This note does not assert what the
+> correct metric would have shown here; the numbers below are left exactly as
+> measured (Rule 5).
+> 
+> Specific to this document: the headline "+18-40pp answer-key recall" is a
+> diluted-metric number. It has not been rescored and must not be quoted as an
+> evidence-turn recall gain.
+
 Spectral's recall is not a bag of competing retrievers; it is one pipeline where
 each method contributes where it is strong and the measured-harmful ones are kept
 out. This is the "all methods in sync" picture, and it is what delivers the

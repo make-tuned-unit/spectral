@@ -1,5 +1,16 @@
 # ACR lift across all memory types — 2026-07-15
 
+> **METRIC CAVEAT (R15, 2026-08-07):** "key-recall" in this document is
+> evidence-**session** turn coverage — every turn of every `answer_` session, a
+> ~12x-diluted denominator — not evidence-turn recall. See
+> `turn-level-evidence-recall-2026-08-07.md`. This note does not assert what the
+> correct metric would have shown here; the numbers below are left exactly as
+> measured (Rule 5).
+> 
+> Specific to this document: the headline "+18-40pp answer-key recall" is a
+> diluted-metric number. It has not been rescored and must not be quoted as an
+> evidence-turn recall gain.
+
 Does associative recall (ACR) give real lift on every LongMemEval memory type?
 Two prongs: retrieval lift (deterministic, $0, all types) and accuracy conversion
 (weak-actor A/B — the test the strong actor couldn't provide).

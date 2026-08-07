@@ -1,5 +1,12 @@
 # Answerability rerank — run 3 (fixed foundation) — REFUTED, hypothesis closed
 
+> **METRIC CAVEAT (R15, 2026-08-07):** "key-recall" in this document is
+> evidence-**session** turn coverage — every turn of every `answer_` session, a
+> ~12x-diluted denominator — not evidence-turn recall. See
+> `turn-level-evidence-recall-2026-08-07.md`. This note does not assert what the
+> correct metric would have shown here; the numbers below are left exactly as
+> measured (Rule 5).
+
 Prereg: `answerability-prereg-run3-2026-08-02.md`. Held-out LoCoMo, 120
 questions, $0 oracle, zero LLM calls, 4 arms.
 

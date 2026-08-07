@@ -1,5 +1,16 @@
 # Tier-0 oracle: n-hop BFS graph channel + ACT-R activation rerank
 
+> **METRIC CAVEAT (R15, 2026-08-07):** "key-recall" in this document is
+> evidence-**session** turn coverage — every turn of every `answer_` session, a
+> ~12x-diluted denominator — not evidence-turn recall. See
+> `turn-level-evidence-recall-2026-08-07.md`. This note does not assert what the
+> correct metric would have shown here; the numbers below are left exactly as
+> measured (Rule 5).
+> 
+> Specific to this document: the `zero-evid` column counts questions with zero
+> retrieved keys from any `answer_` session. It is **not** a zero-evidence-turn
+> count.
+
 **Date:** 2026-07-28
 **Cost:** $0.00 (zero LLM calls; four 500-question oracle passes, brains reused)
 **Branch:** `bench/oracle-bfs-actr`

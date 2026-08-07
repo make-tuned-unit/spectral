@@ -1,5 +1,11 @@
 # K=60→80 admission test — the RESIDUAL_FLOOR deep-rank lever, measured
 
+> **R15 PROVENANCE (2026-08-07):** this document called the metric "bloated"
+> before R15 existed — it is the **first sighting** of the defect R15 later
+> named and fixed, not a document that needs correcting. "key-recall" here is
+> evidence-**session** turn coverage, ~12x diluted. See
+> `turn-level-evidence-recall-2026-08-07.md`.
+
 Date: 2026-07-20 | main tip `efdd960` | $0, zero LLM calls (oracle only).
 
 ## What this answers

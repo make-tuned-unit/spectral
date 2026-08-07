@@ -1,5 +1,12 @@
 # Prereg — cascade `k` as a turn-recall lever on LoCoMo — 2026-08-01
 
+> **METRIC CAVEAT (R15, 2026-08-07):** "key-recall" in this document is
+> evidence-**session** turn coverage — every turn of every `answer_` session, a
+> ~12x-diluted denominator — not evidence-turn recall. See
+> `turn-level-evidence-recall-2026-08-07.md`. This note does not assert what the
+> correct metric would have shown here; the numbers below are left exactly as
+> measured (Rule 5).
+
 **Written BEFORE the paid A/B.** Claims, expectations and decision rules stated
 in advance so the result cannot be retrofitted.
 
