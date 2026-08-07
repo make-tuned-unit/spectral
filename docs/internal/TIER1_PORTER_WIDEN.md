@@ -1,5 +1,15 @@
 # Tier-1 actor replay — porter+mult3, and where the lift actually is
 
+> **METRIC CAVEAT (R15, 2026-08-07):** "key-recall" in this document is
+> evidence-**session** turn coverage — every turn of every `answer_` session, a
+> ~12x-diluted denominator — not evidence-turn recall. See
+> `turn-level-evidence-recall-2026-08-07.md`. This note does not assert what the
+> correct metric would have shown here; the numbers below are left exactly as
+> measured (Rule 5).
+> 
+> Specific to this document: the same stale framing appears in a source comment
+> at `crates/spectral-bench-accuracy/src/eval.rs` (search `answer_key`).
+
 **Date:** 2026-07-03
 **Spend:** ~$5.0 (baseline arm $1.94, candidate arm $1.99, expansion probe $0.74,
 prompt-v2 replay ~$0.30). Actor/judge: Sonnet 4.6, shape-routed cascade,

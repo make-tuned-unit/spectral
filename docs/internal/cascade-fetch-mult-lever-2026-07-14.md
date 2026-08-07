@@ -1,5 +1,11 @@
 # Cascade candidate-pool widening (`fetch_mult`) — capability added, default OFF — 2026-07-14
 
+> **R15 PROVENANCE (2026-08-07):** this document called the metric "bloated"
+> before R15 existed — it is the **first sighting** of the defect R15 later
+> named and fixed, not a document that needs correcting. "key-recall" here is
+> evidence-**session** turn coverage, ~12x diluted. See
+> `turn-level-evidence-recall-2026-08-07.md`.
+
 **Status: capability shipped, default = 1 (off). Retrieval-Pareto-safe but NOT
 end-to-end validated — do not re-default without a powered actor A/B.**
 

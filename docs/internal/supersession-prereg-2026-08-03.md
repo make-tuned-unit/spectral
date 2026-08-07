@@ -1,5 +1,12 @@
 # Preregistration — read-time supersession suppression — 2026-08-03
 
+> **METRIC CAVEAT (R15, 2026-08-07):** "key-recall" in this document is
+> evidence-**session** turn coverage — every turn of every `answer_` session, a
+> ~12x-diluted denominator — not evidence-turn recall. See
+> `turn-level-evidence-recall-2026-08-07.md`. This note does not assert what the
+> correct metric would have shown here; the numbers below are left exactly as
+> measured (Rule 5).
+
 **Written before the measurement.** Binding.
 
 ## This is a SAFETY gate, not an efficacy test

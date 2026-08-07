@@ -1,5 +1,12 @@
 # Read-time supersession suppression — REJECTED (extraction precision)
 
+> **METRIC CAVEAT (R15, 2026-08-07):** "key-recall" in this document is
+> evidence-**session** turn coverage — every turn of every `answer_` session, a
+> ~12x-diluted denominator — not evidence-turn recall. See
+> `turn-level-evidence-recall-2026-08-07.md`. This note does not assert what the
+> correct metric would have shown here; the numbers below are left exactly as
+> measured (Rule 5).
+
 Prereg: `supersession-prereg-2026-08-03.md`. The prereg's stated failure mode is
 the one that occurred.
 
