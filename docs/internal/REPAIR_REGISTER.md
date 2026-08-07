@@ -352,3 +352,48 @@ expansion on carries this (unmeasured, probably small) noise floor; the
 oracle already supports `--expansion-cache`), or run paired comparisons
 with `--no-expand-queries` (what R11 does now, prereg amendment 5).
 Ref: `r11-render-ab-stage1-void-2026-08-05.md`.
+
+---
+
+## R15 — The oracle's `answer_keys_*` metric is diluted 12× · READY
+
+LongMemEval ships per-turn `has_answer: true` flags, documented for
+turn-level recall evaluation. `oracle::is_answer_key` instead counts
+**every turn in an answer session**: 10,960 turns against **896 true
+evidence turns**. So "key-recall 55.6%" measures evidence-session turn
+coverage, not evidence recall, and the 98.1% we quote is *session*
+recall.
+
+True evidence-turn recall, computed 2026-08-07 from existing rows:
+**88.5% micro / 90.5% macro, with 27/479 questions retrieving zero
+evidence.** `single-session-preference` is **65.9%** with 9/30 zero.
+
+**Fix:** add a first-class `evidence_turns_{total,retrieved}` metric from
+`has_answer`; rename `answer_keys_*` to say what it measures. Until then
+no document may cite "key-recall" as evidence about retrieval quality.
+**Consequence:** every refuted retrieval lever was scored against a
+metric that could not see this defect.
+Ref: `turn-level-evidence-recall-2026-08-07.md`.
+
+---
+
+## R16 — Default FTS path has no SQL tiebreak · READY
+
+`sqlite_store.rs:2018` (non-fusion, the default): `ORDER BY
+bm25(memories_fts, 1.0, 1.0, 0.5) LIMIT ?2` — no secondary key. The
+fusion path *does* tiebreak by id (`:2069`). FTS5 clamps non-positive IDF
+to `1e-6`, so common-term matches collapse into large tie blocks; which
+of them survive the LIMIT is decided by SQLite's query plan.
+
+**Latent, not active** — determinism tests pass because the plan is
+stable for fixed schema+data+version. But #238 added tiebreaks to all
+five `ranking.rs` sorts and missed the SQL beneath them, so the
+byte-identical invariant rests on an external guarantee a schema change
+or SQLite upgrade can move.
+
+**Fix:** `ORDER BY bm25(...), m.id`. Changes current output, so it lands
+behind an oracle diff and is recorded as a baseline shift, not a null.
+**Related:** `ORDER BY bm25(...)` forces a temp B-tree (full sort before
+LIMIT); `ORDER BY rank` with rank-config weights gets FTS5's ordered scan
+— identical scores, pure latency win.
+Ref: `landscape-research-2026-08-07.md` §G0.
