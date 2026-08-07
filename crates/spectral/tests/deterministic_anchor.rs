@@ -17,11 +17,22 @@ use tempfile::TempDir;
 
 /// A corpus spread across years, so decay has different distances to work with.
 fn aged_brain() -> (TempDir, Brain) {
+    aged_brain_inserted_in(&(0..24).collect::<Vec<_>>())
+}
+
+/// The same corpus, inserted in a caller-chosen order.
+///
+/// Insertion order is rowid order is — absent a tiebreak — the order equally
+/// scored FTS rows come back in, which becomes the `1.0 - i/n` base score the
+/// re-ranker starts from. Which memory is at which base rank is therefore a
+/// property of the fixture, and tests that only ever insert chronologically
+/// cannot see it.
+fn aged_brain_inserted_in(order: &[i64]) -> (TempDir, Brain) {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(tmp.path()).unwrap();
     let base = Utc::now() - Duration::days(3000);
 
-    for i in 0..24 {
+    for &i in order {
         let when = base + Duration::days(i * 120);
         let key = format!("s{i}:turn:0:user");
         let content = format!(
@@ -56,22 +67,46 @@ fn ranking_at(brain: &Brain, query: &str, now: chrono::DateTime<Utc>) -> Vec<Str
         .collect()
 }
 
-/// Where the drift actually is — and where it provably is not.
+/// Where the drift actually is (R16, 2026-08-07).
 ///
-/// `ranking::apply_recency_weight` (top-k FTS and the cascade) is
-/// **multiplicative**: `score *= 0.5^(age / half_life)`. Advancing `now` by D
-/// multiplies every candidate's factor by the same constant `0.5^(D/half_life)`,
-/// and scaling all scores by a common positive factor cannot reorder them. So
-/// that path is order-invariant under a clock shift, by construction.
+/// An earlier version of this test asserted that the top-k path is
+/// order-invariant under a clock shift, reasoning that
+/// `ranking::apply_recency_weight` is **multiplicative** (`score *= 0.5^(age /
+/// half_life)`) and that a common positive factor cannot reorder. That
+/// reasoning described a function the top-k path **no longer calls**.
+/// `ranking::apply_reranking_pipeline` applies recency **additively**:
+///
+/// ```text
+/// scores[i]  = 1.0 - i/n          // base: FTS rank position
+/// scores[i] += 0.1 * 0.5^(age_days / half_life)   // freshness, ADDED
+/// ```
+///
+/// Advancing `now` shrinks every freshness term toward zero while the base
+/// term stays put, so any pair whose FTS-rank order opposes its age order
+/// crosses over at some clock offset. The old test passed only because its
+/// fixture inserted chronologically *and* the FTS `ORDER BY` carried no
+/// tiebreak, so equally scored rows came back in rowid order — making rank
+/// order and age order agree, under which no such pair exists. R16 replaced
+/// that accident with `ORDER BY bm25(...), m.id`; rank order is now a stable
+/// function of content, uncorrelated with age, and the clock dependence is
+/// visible on any corpus rather than only on shuffled ones.
 ///
 /// `brain::decayed_signal_score` (the `recall`/`recall_local`/`recall_at`
-/// path) is **linear with a floor**: `raw * max(1 - days/700, 0.5)`. That is
-/// not a common factor — memories saturate at the 0.5 floor at different
-/// times — so ordering there *can* move with the calendar.
+/// path) is **linear with a floor**: `raw * max(1 - days/700, 0.5)`. Not a
+/// common factor either — memories saturate at the floor at different times.
 ///
-/// This test pins both halves. If either flips, the reasoning above is stale.
+/// Neither path is clock-invariant. The fix that ships is the **corpus
+/// anchor**: pin `now` to the newest stored memory so the calendar stops being
+/// an input at all. That is what the rest of this file tests.
+///
+/// The clock dependence itself is **open as R20** in
+/// `docs/internal/REPAIR_REGISTER.md` — every candidate fix is a default-path
+/// ranking change and needs its own prereg and oracle A/B. This test is the
+/// re-baseline R20 permits under Rule 5: it asserts the drift with `assert_ne!`
+/// rather than tolerating it, so whichever fix eventually lands turns this red
+/// and forces R20 to be closed deliberately instead of drifting shut.
 #[test]
-fn recency_decay_is_order_invariant_in_the_topk_path() {
+fn topk_additive_recency_reorders_under_a_clock_shift() {
     let (_tmp, brain) = aged_brain();
     let q = "platform rollout reviewed team";
 
@@ -80,11 +115,51 @@ fn recency_decay_is_order_invariant_in_the_topk_path() {
     let b = ranking_at(&brain, q, today + Duration::days(365 * 5));
 
     assert!(!a.is_empty(), "fixture retrieved nothing");
+    assert_ne!(
+        a, b,
+        "additive freshness on a fixed rank base must be able to reorder as \
+         the clock advances; equality here means recency went back to being a \
+         common multiplicative factor, and the doc comment above is now stale"
+    );
+
+    // Same clock, same answer — the drift is the calendar, not nondeterminism.
+    assert_eq!(
+        a,
+        ranking_at(&brain, q, today),
+        "same anchor must be stable"
+    );
+}
+
+/// What R16 actually buys: two brains holding the same memories rank them the
+/// same way, no matter what order they were written in.
+///
+/// Before the `, m.id` tiebreak this failed — equally scored FTS rows came
+/// back in rowid order, so a brain built by replaying a log backwards ranked
+/// differently from one built forwards, with identical content. That is the
+/// reproducibility claim in the README, and it was untrue for tied documents.
+#[test]
+fn topk_ranking_is_independent_of_insertion_order() {
+    let q = "platform rollout reviewed team";
+    // Same anchor for both, so the clock dependence above is held fixed and
+    // insertion order is the only variable.
+    let anchor = Utc::now();
+
+    let (_t1, forwards) = aged_brain();
+    // Fixed permutation, no RNG — reproduces exactly.
+    let shuffled: Vec<i64> = vec![
+        23, 5, 17, 2, 11, 20, 8, 14, 1, 22, 6, 18, 3, 12, 21, 9, 15, 0, 13, 7, 19, 4, 16, 10,
+    ];
+    let (_t2, jumbled) = aged_brain_inserted_in(&shuffled);
+
+    let a = ranking_at(&forwards, q, anchor);
+    let b = ranking_at(&jumbled, q, anchor);
+
+    assert!(!a.is_empty(), "fixture retrieved nothing");
     assert_eq!(
         a, b,
-        "multiplicative decay must scale all scores by a common factor and \
-         therefore preserve order; a difference here means the decay function \
-         changed shape"
+        "identical content written in a different order must rank identically; \
+         a difference means the bm25 ORDER BY lost its `, m.id` tiebreak and \
+         the LIMIT boundary is being decided by the query plan again"
     );
 }
 
