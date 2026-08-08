@@ -191,6 +191,10 @@ pub struct CascadePipelineConfig {
     pub max_per_episode: usize,
     /// Apply context chain dedup. Default true.
     pub apply_context_dedup: bool,
+    /// G4: additive proximity boost. Default false pending measurement.
+    pub apply_proximity: bool,
+    /// Weight for the proximity boost.
+    pub proximity_weight: f64,
     /// Additive weight for the co-retrieval (cross-query co-access) boost.
     /// Default **0.0** (disabled): measured on Permagent's real workload, a
     /// non-zero weight degrades top-5 relevance (~3–4.5:1 worse, p≈0) because a
@@ -250,6 +254,8 @@ impl Default for CascadePipelineConfig {
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: true,
+            apply_proximity: false,
+            proximity_weight: crate::ranking::PROXIMITY_WEIGHT_DEFAULT,
             co_retrieval_weight: 0.0,
             // CAPABILITY present, DEFAULT off (1). Widening to 3×k is measured
             // Pareto-safe on RETRIEVAL (token-neutral; recovers buried answers
@@ -422,6 +428,11 @@ pub fn run_cascade_pipeline_scoped(
         apply_episode_diversity: config.apply_episode_diversity,
         max_per_episode: config.max_per_episode,
         apply_context_dedup: config.apply_context_dedup,
+        // G4: the cascade is the path our only consumer actually calls
+        // (Permagent's `recall_cascade`), so proximity is wired here too
+        // rather than being a topk_fts-only lever.
+        apply_proximity: config.apply_proximity,
+        proximity_weight: config.proximity_weight,
     };
 
     // Only compute co-retrieval affinity when it will actually be applied.
@@ -434,11 +445,13 @@ pub fn run_cascade_pipeline_scoped(
         std::collections::HashMap::new()
     };
 
-    let mut results = crate::ranking::apply_reranking_pipeline(
+    let query_words = crate::brain::fts_query_words_opts(query, true);
+    let mut results = crate::ranking::apply_reranking_pipeline_with_query(
         candidates,
         &reranking_config,
         context,
         &co_boosts,
+        &query_words,
     );
     // Truncate the widened pool back to k after reranking: the pool exists only
     // so reranking can surface buried keys; callers and context budget see k.

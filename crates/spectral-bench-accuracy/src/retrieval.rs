@@ -548,6 +548,16 @@ fn parse_hit_ts(s: &str) -> Option<i64> {
 /// position score derived from the pipeline's own ordering:
 /// `score_i = 0.8·(1 - i/(n-1)) + 0.2·norm(B_i)`. Stable and deterministic;
 /// a no-op when activations are degenerate (all equal).
+/// G4 sweep knob: `SPECTRAL_TOPK_PROXIMITY=0.05` sets the weight directly;
+/// any non-numeric value (e.g. `=1`) uses the library default.
+pub fn proximity_weight_env() -> f64 {
+    std::env::var("SPECTRAL_TOPK_PROXIMITY")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|w| *w > 0.0 && *w <= 50.0)
+        .unwrap_or(spectral_graph::ranking::PROXIMITY_WEIGHT_DEFAULT)
+}
+
 pub fn apply_actr_rerank(hits: &mut [MemoryHit], now: DateTime<Utc>, d: f64) {
     let n = hits.len();
     if n < 2 {
@@ -640,6 +650,10 @@ pub fn retrieve_topk_fts(
         apply_signal_score_weighting: std::env::var("SPECTRAL_DISABLE_SIGNAL_SCORE").is_err(),
         apply_recency_weighting: std::env::var("SPECTRAL_DISABLE_RECENCY").is_err(),
         apply_entity_resolution: std::env::var("SPECTRAL_DISABLE_ENTITY_RESOLUTION").is_err(),
+        // G4 lever: additive proximity boost, off unless asked for. The value
+        // is the weight when numeric, so it can be swept.
+        apply_proximity: std::env::var("SPECTRAL_TOPK_PROXIMITY").is_ok(),
+        proximity_weight: proximity_weight_env(),
         apply_declarative_boost: std::env::var("SPECTRAL_TOPK_DECLARATIVE").is_ok(),
         apply_context_dedup: std::env::var("SPECTRAL_DISABLE_CONTEXT_DEDUP").is_err(),
         now: question_date.and_then(parse_question_date),
@@ -798,6 +812,10 @@ pub fn retrieve_cascade(
     // P1: Question-type routing
     let qtype = classify_question(question);
     let mut pipeline_config = qtype.cascade_profile();
+    // G4 lever on the cascade path too — this is the path our only real
+    // consumer calls, so a topk_fts-only measurement would not speak to it.
+    pipeline_config.apply_proximity = std::env::var("SPECTRAL_TOPK_PROXIMITY").is_ok();
+    pipeline_config.proximity_weight = proximity_weight_env();
     // Ablation overrides (multi-session answer-KEY completeness sweep). The
     // Counting profile caps max_per_episode=3 to force session diversity; when
     // answer keys cluster >3 per session that undercounts. These let a sweep
