@@ -12,6 +12,62 @@ pub struct GradeResult {
     pub reasoning: Option<String>,
 }
 
+/// Extract the **first complete** JSON object from a judge response (R21).
+///
+/// The judge is asked for JSON and usually complies, but sometimes emits a
+/// valid object followed by commentary. The previous extraction took the span
+/// from the first `{` to the **last** `}`, so any trailing prose containing a
+/// brace was pulled into the slice and `serde_json` rejected the whole thing
+/// with `trailing characters` — scoring the question **incorrect** even though
+/// the judge's own verdict was `"correct": true`. Measured on the BM25 LoCoMo
+/// baseline: 4/1438 questions, 3 of them false negatives.
+///
+/// This scans for balanced braces instead, and is string-aware so that braces
+/// inside a `reasoning` string (and `\"` escapes within it) do not move the
+/// depth counter. Returns the first balanced object, or `None`.
+///
+/// Deliberately NOT tolerant of anything else: a response with no balanced
+/// object is still a judge failure, excluded from the accuracy denominator
+/// rather than silently scored wrong.
+pub(crate) fn first_json_object(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for i in start..bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                // `checked_sub`, not `-=`: if a stray quote in the prose
+                // desynchronised the string state, a `}` can arrive at depth 0.
+                // Underflowing would panic and kill a multi-hour run; giving up
+                // here just records a judge failure, which is the safe
+                // direction (excluded from the denominator, never scored wrong).
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&text[start..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Judge that evaluates predicted answers.
 pub trait Judge: Send + Sync {
     fn grade(
@@ -229,14 +285,14 @@ impl Judge for AnthropicJudge {
         // cannot parse is a judge FAILURE, not a wrong answer — returning Err
         // lets the retry layer re-ask, and terminal failures are excluded from
         // the accuracy denominator instead of silently scored incorrect.
-        let grade: GradeResult = match (text.find('{'), text.rfind('}')) {
-            (Some(s), Some(e)) if e > s => serde_json::from_str(&text[s..=e]).map_err(|err| {
+        let grade: GradeResult = match first_json_object(&text) {
+            Some(obj) => serde_json::from_str(obj).map_err(|err| {
                 anyhow::anyhow!(
                     "judge parse failure: {err}: {}",
                     text.chars().take(300).collect::<String>()
                 )
             })?,
-            _ => {
+            None => {
                 return Err(anyhow::anyhow!(
                     "judge parse failure: no JSON object in response: {}",
                     text.chars().take(300).collect::<String>()
@@ -319,15 +375,15 @@ impl Judge for OpenAiJudge {
             .ok_or_else(|| anyhow::anyhow!("OpenAI-compat judge missing content"))?
             .to_string();
         // See AnthropicJudge: unparseable judge output is a failure, not a
-        // wrong answer.
-        let grade: GradeResult = match (text.find('{'), text.rfind('}')) {
-            (Some(s), Some(e)) if e > s => serde_json::from_str(&text[s..=e]).map_err(|err| {
+        // wrong answer. Same first-complete-object extraction (R21).
+        let grade: GradeResult = match first_json_object(&text) {
+            Some(obj) => serde_json::from_str(obj).map_err(|err| {
                 anyhow::anyhow!(
                     "judge parse failure: {err}: {}",
                     text.chars().take(300).collect::<String>()
                 )
             })?,
-            _ => {
+            None => {
                 return Err(anyhow::anyhow!(
                     "judge parse failure: no JSON object in response: {}",
                     text.chars().take(300).collect::<String>()
@@ -505,5 +561,85 @@ mod tests {
         let b = rubric_fingerprint();
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
+    }
+
+    // ── R21: first-complete-object extraction ──────────────────────────
+    //
+    // The defect these pin cost 4/1438 questions on the BM25 LoCoMo baseline,
+    // 3 of them scored incorrect while the judge had said `"correct": true`.
+    // Every case below FAILS under the old `find('{')`..`rfind('}')` span.
+
+    fn parse(text: &str) -> Option<GradeResult> {
+        serde_json::from_str(first_json_object(text)?).ok()
+    }
+
+    #[test]
+    fn r21_trailing_prose_after_the_object_no_longer_fails() {
+        // The exact shape observed in the run: valid JSON, blank line, then
+        // commentary. `rfind('}')` reached into the prose and serde rejected
+        // the span with "trailing characters at line 3 column 1".
+        let text = "{\"correct\": true, \"reasoning\": \"The system answer matches.\"}\n\n\
+                    Note: the ground truth is ambiguous here (see {2} above).";
+        let g = parse(text).expect("must parse");
+        assert!(g.correct, "the judge said true; we must not record false");
+    }
+
+    #[test]
+    fn r21_braces_inside_the_reasoning_string_do_not_end_the_object() {
+        let text = "{\"correct\": false, \"reasoning\": \"answer used {placeholder} syntax\"}";
+        let g = parse(text).expect("must parse");
+        assert!(!g.correct);
+        assert!(g.reasoning.unwrap().contains("{placeholder}"));
+    }
+
+    #[test]
+    fn r21_escaped_quotes_inside_the_string_do_not_end_the_string() {
+        let text =
+            r#"{"correct": true, "reasoning": "system said \"Rome\" which matches"} trailing }"#;
+        let g = parse(text).expect("must parse");
+        assert!(g.correct);
+        assert!(g.reasoning.unwrap().contains("\"Rome\""));
+    }
+
+    #[test]
+    fn r21_preamble_before_the_object_is_skipped() {
+        let text = "Here is my grade:\n{\"correct\": true, \"reasoning\": \"ok\"}";
+        assert!(parse(text).expect("must parse").correct);
+    }
+
+    #[test]
+    fn r21_nested_objects_return_the_whole_outer_object() {
+        let text = "{\"correct\": true, \"reasoning\": \"x\", \"meta\": {\"a\": {\"b\": 1}}} tail";
+        let obj = first_json_object(text).unwrap();
+        assert!(obj.ends_with("}}}"), "got {obj}");
+        assert!(parse(text).unwrap().correct);
+    }
+
+    #[test]
+    fn r21_no_object_is_still_a_judge_failure() {
+        assert!(first_json_object("I cannot grade this.").is_none());
+        // Unbalanced (truncated mid-object) must NOT be salvaged into a false
+        // verdict — it stays a failure, excluded from the denominator.
+        assert!(first_json_object("{\"correct\": true, \"reasoning\": \"cut off").is_none());
+    }
+
+    #[test]
+    fn r21_old_span_extraction_would_have_failed_these() {
+        // Guards the premise: these inputs genuinely break the old approach,
+        // so the tests above are not vacuous.
+        for text in [
+            "{\"correct\": true, \"reasoning\": \"ok\"}\n\nAside: {note}",
+            r#"{"correct": true, "reasoning": "said \"Rome\""} trailing }"#,
+        ] {
+            let (s, e) = (text.find('{').unwrap(), text.rfind('}').unwrap());
+            assert!(
+                serde_json::from_str::<GradeResult>(&text[s..=e]).is_err(),
+                "old extraction unexpectedly succeeded on {text}"
+            );
+            assert!(
+                parse(text).is_some(),
+                "new extraction must succeed on {text}"
+            );
+        }
     }
 }
