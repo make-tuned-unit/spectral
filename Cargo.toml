@@ -41,7 +41,7 @@ getrandom = "0.4"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.1"
 
 # String matching
 strsim = "0.11"
@@ -59,7 +59,7 @@ tracing = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Caching
-lru = "0.12"
+lru = "0.18"
 
 # Storage
 rusqlite = { version = "0.40", features = ["bundled"] }
