@@ -911,6 +911,56 @@ impl SqliteStore {
             )?;
         }
 
+        // ── G1: bi-temporal validity ────────────────────────────────────
+        //
+        // `created_at`/`updated_at` are SYSTEM time — when we learned it. These
+        // two are VALID time — when it was true in the world. Conflating them
+        // is why `render.rs` dates a memory by when it was ingested rather than
+        // when the thing happened.
+        //
+        // `valid_to` uses a far-future SENTINEL rather than NULL so every
+        // predicate stays an indexable range comparison (`valid_from <= t AND
+        // t < valid_to`) instead of degrading into `IS NULL OR ...`. Half-open
+        // `[from, to)` so adjacent versions of a fact never both match.
+        //
+        // Invalidation writes `valid_to`; it never deletes. That is what makes
+        // "what would we have answered on date X" answerable at all, and it is
+        // the audit property no benchmark in the field measures.
+        let mut has_valid_from = false;
+        let mut has_valid_to = false;
+        {
+            let mut stmt = conn.prepare("PRAGMA table_info(memories)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                match name.as_str() {
+                    "valid_from" => has_valid_from = true,
+                    "valid_to" => has_valid_to = true,
+                    _ => {}
+                }
+            }
+        }
+        if !has_valid_from {
+            // NO backfill UPDATE here, deliberately. A bulk `UPDATE memories`
+            // during migration fires the FTS sync triggers, and on a database
+            // migrating up from an older schema those triggers can reference
+            // FTS columns that do not exist yet — the migration would fail on
+            // exactly the legacy databases it exists to upgrade.
+            //
+            // Instead, `valid_from IS NULL` means "unrecorded", and every
+            // validity predicate reads `COALESCE(valid_from, created_at)`. Rows
+            // written before this migration therefore behave as if valid from
+            // ingestion, which is the only defensible reading for data recorded
+            // before the distinction existed — and it is a read-time
+            // approximation we can state, not a write we have to trust.
+            conn.execute_batch("ALTER TABLE memories ADD COLUMN valid_from TEXT DEFAULT NULL")?;
+        }
+        if !has_valid_to {
+            conn.execute_batch(&format!(
+                "ALTER TABLE memories ADD COLUMN valid_to TEXT NOT NULL DEFAULT '{VALID_TO_SENTINEL}'"
+            ))?;
+        }
+
         // co_retrieval_pairs table
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS co_retrieval_pairs (
@@ -1279,6 +1329,82 @@ impl SqliteStore {
         self.conn.lock().unwrap()
     }
 
+    // ── G1: bi-temporal validity ────────────────────────────────────────
+    //
+    // The audit property: recall is a function of what the brain contained at
+    // a chosen instant, not of what it contains now. Without this, an eval run
+    // against a store that has since changed is unreproducible in principle —
+    // you cannot even state what it was measuring.
+
+    /// Mark a memory no longer true in the world as of `valid_to`.
+    ///
+    /// **Never deletes.** The row stays queryable through
+    /// [`as_of`](Self::as_of), which is what makes "what would we have answered
+    /// then" answerable. Returns false if the key does not exist.
+    ///
+    /// Idempotent in effect but not in value: re-invalidating overwrites the
+    /// timestamp, so the caller owns the decision of which invalidation is
+    /// authoritative.
+    pub fn invalidate_at(&self, key: &str, valid_to: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let n = conn.execute(
+            "UPDATE memories SET valid_to = ?1, updated_at = datetime('now') WHERE key = ?2",
+            params![valid_to, key],
+        )?;
+        drop(conn);
+        self.invalidate_wing_cache();
+        Ok(n > 0)
+    }
+
+    /// Keys valid at `instant`, under the half-open convention
+    /// `valid_from <= instant < valid_to`.
+    ///
+    /// Rows written before the G1 migration have `valid_from = created_at`
+    /// (system time standing in for valid time) and the sentinel `valid_to`,
+    /// so they are valid from ingestion onward — the only defensible reading
+    /// of data recorded before the distinction existed.
+    pub fn keys_as_of(&self, instant: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.read_conn();
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT key FROM memories
+             WHERE COALESCE(valid_from, created_at) <= ?1 AND ?1 < valid_to
+             ORDER BY key",
+        )?;
+        let rows = stmt.query_map(params![instant], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Set when a memory became true in the world.
+    ///
+    /// This is the sink for G2: `spectral::resolve_relative_dates` turns "I
+    /// started yesterday" plus an anchor into a date deterministically, and
+    /// that date is a valid-time, not a system-time. Without somewhere to put
+    /// it the resolver had no consumer, which is why it shipped wired to
+    /// nothing.
+    pub fn set_valid_from(&self, key: &str, valid_from: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let n = conn.execute(
+            "UPDATE memories SET valid_from = ?1, updated_at = datetime('now') WHERE key = ?2",
+            params![valid_from, key],
+        )?;
+        drop(conn);
+        self.invalidate_wing_cache();
+        Ok(n > 0)
+    }
+
+    /// Validity window for one key, as `(valid_from, valid_to)`.
+    pub fn validity_of(&self, key: &str) -> anyhow::Result<Option<(Option<String>, String)>> {
+        let conn = self.read_conn();
+        let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let mut stmt = conn.prepare("SELECT valid_from, valid_to FROM memories WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some((row.get(0)?, row.get(1)?))),
+            None => Ok(None),
+        }
+    }
+
     /// Drop the entire wing read-cache. Call after ANY mutation that changes,
     /// removes, or adds a memory outside the `MemoryStore` write/delete methods —
     /// e.g. the federation import/tombstone paths mutate `memories` directly and
@@ -1342,6 +1468,16 @@ fn wing_cache_clear(cache: &Arc<Mutex<LruCache<String, Vec<MemoryHit>>>>) {
 }
 
 /// Standard column list for memory queries.
+/// G1: far-future sentinel for `memories.valid_to`.
+///
+/// A sentinel rather than NULL so every validity predicate stays an indexable
+/// range comparison. `IS NULL OR valid_to > ?` cannot use an index;
+/// `? < valid_to` can, and the sentinel makes the two forms equivalent.
+///
+/// Sorts correctly under BINARY collation against any RFC3339 timestamp this
+/// century, which is the only ordering property the predicates rely on.
+pub const VALID_TO_SENTINEL: &str = "9999-12-31T23:59:59.999Z";
+
 const MEMORY_COLUMNS: &str = "id, key, content, wing, hall, signal_score, visibility, source, device_id, confidence, created_at, last_reinforced_at, episode_id, compaction_tier, declarative_density, description, description_generated_at, content_hash, source_brain_id, signature";
 
 /// Read an optional 32-byte id blob at `idx`, tolerating a missing column
@@ -8049,5 +8185,143 @@ mod tests {
             top[0].id, TIE_ID_LOW,
             "fusion channel ranks must be tiebroken by memory id before RRF"
         );
+    }
+}
+
+#[cfg(test)]
+mod bitemporal_tests {
+    use super::*;
+
+    fn mem(key: &str, content: &str) -> Memory {
+        Memory {
+            id: format!("id-{key}"),
+            key: key.to_string(),
+            content: content.to_string(),
+            wing: Some("general".into()),
+            hall: Some("fact".into()),
+            signal_score: 0.5,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            // Explicit: these facts were recorded in January, so asking
+            // "what was true in May" is a coherent question about them. A row
+            // ingested today was genuinely NOT in the brain last May, and
+            // COALESCE(valid_from, created_at) is right to hide it.
+            created_at: Some("2026-01-01T00:00:00Z".into()),
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        }
+    }
+
+    /// The G1 claim, stated as a test: recall is a function of what the brain
+    /// contained at an instant, not of what it contains now.
+    #[tokio::test]
+    async fn what_would_we_have_answered_then() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&mem("fact:role", "I work at Acme"), &[])
+            .await
+            .unwrap();
+
+        // True until 2026-06-01, then not.
+        assert!(store
+            .invalidate_at("fact:role", "2026-06-01T00:00:00Z")
+            .unwrap());
+
+        let before = store.keys_as_of("2026-05-01T00:00:00Z").unwrap();
+        let after = store.keys_as_of("2026-07-01T00:00:00Z").unwrap();
+
+        assert!(
+            before.contains(&"fact:role".to_string()),
+            "must be visible before invalidation"
+        );
+        assert!(
+            !after.contains(&"fact:role".to_string()),
+            "must be invisible after"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalidation_never_deletes() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.write(&mem("fact:x", "some fact"), &[]).await.unwrap();
+        store
+            .invalidate_at("fact:x", "2020-01-01T00:00:00Z")
+            .unwrap();
+
+        // Gone from the present...
+        assert!(!store
+            .keys_as_of("2026-01-01T00:00:00Z")
+            .unwrap()
+            .contains(&"fact:x".to_string()));
+        // ...but the row is still there, which is the whole point.
+        assert!(
+            store.get_memory("id-fact:x").await.unwrap().is_some(),
+            "row must survive invalidation"
+        );
+        let (_, to) = store.validity_of("fact:x").unwrap().expect("validity row");
+        assert_eq!(to, "2020-01-01T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn fresh_rows_use_the_sentinel_not_null() {
+        // A NULL would force `IS NULL OR ...` predicates, which cannot use an
+        // index. The sentinel is what keeps validity a range comparison.
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .write(&mem("fact:y", "still true"), &[])
+            .await
+            .unwrap();
+        let (_, to) = store.validity_of("fact:y").unwrap().expect("validity row");
+        assert_eq!(to, VALID_TO_SENTINEL);
+        assert!(
+            store
+                .keys_as_of("2999-01-01T00:00:00Z")
+                .unwrap()
+                .contains(&"fact:y".to_string()),
+            "sentinel must outlast any realistic query instant"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_window_is_half_open() {
+        // Adjacent versions of a fact must never both match at the boundary.
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.write(&mem("fact:z", "v1"), &[]).await.unwrap();
+        let cut = "2026-06-01T00:00:00Z";
+        store.invalidate_at("fact:z", cut).unwrap();
+        assert!(
+            !store
+                .keys_as_of(cut)
+                .unwrap()
+                .contains(&"fact:z".to_string()),
+            "`valid_to` is EXCLUSIVE: the instant of invalidation is already after"
+        );
+    }
+
+    #[tokio::test]
+    async fn as_of_is_stable_across_repeated_calls() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.write(&mem("a", "one"), &[]).await.unwrap();
+        store.write(&mem("b", "two"), &[]).await.unwrap();
+        store.invalidate_at("b", "2026-03-01T00:00:00Z").unwrap();
+        let first = store.keys_as_of("2026-01-01T00:00:00Z").unwrap();
+        for _ in 0..3 {
+            assert_eq!(store.keys_as_of("2026-01-01T00:00:00Z").unwrap(), first);
+        }
+    }
+
+    #[tokio::test]
+    async fn invalidating_a_missing_key_reports_it() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        assert!(!store.invalidate_at("nope", "2026-01-01T00:00:00Z").unwrap());
     }
 }
