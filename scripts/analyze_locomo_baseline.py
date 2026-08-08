@@ -55,6 +55,70 @@ def interval(samples, alpha=0.05):
 EV_SESSION = re.compile(r"answer_session_\d+")
 
 
+def evidence_turn_recall(ds, rows):
+    """R19: the metric session recall was standing in for.
+
+    Requires a dataset carrying per-turn `has_answer` (emit it with
+    `locomo_to_oracle.py`, R19). Silently reports unavailable otherwise, since
+    that is the honest state for a pre-R19 file — undefined, not 0%.
+
+    Expected keys are built the same way `ingest::memory_key` builds them:
+    `{session_id}:turn:{index}:{role}`, index enumerated per session. That
+    format is frozen by `memory_key_format_is_frozen`.
+    """
+    want = {}
+    session_turns = 0
+    for q in ds:
+        keys = set()
+        for sid, sess in zip(q["haystack_session_ids"], q["haystack_sessions"]):
+            if sid.startswith("answer_"):
+                session_turns += len(sess)
+            for i, t in enumerate(sess):
+                if t.get("has_answer"):
+                    keys.add(f"{sid}:turn:{i}:{t['role']}")
+        if keys:
+            want[q["question_id"]] = keys
+
+    if not want:
+        print("\nEVIDENCE-TURN RECALL: unavailable — dataset carries no `has_answer`")
+        print("  (UNDEFINED, not 0%. Regenerate with locomo_to_oracle.py for R19 labels.)")
+        return
+
+    num = den = zero = 0
+    ratios, by_cat = [], defaultdict(lambda: [0, 0, []])
+    split = {True: [], False: []}
+    for r in rows:
+        w = want.get(r["question_id"])
+        if not w:
+            continue
+        hit = len(w & set(r["retrieved_memory_keys"]))
+        num += hit
+        den += len(w)
+        ratios.append(hit / len(w))
+        zero += hit == 0
+        c = by_cat[r["category"]]
+        c[0] += hit
+        c[1] += len(w)
+        c[2].append(hit / len(w))
+        split[bool(r["correct"])].append(hit / len(w))
+
+    print("\nEVIDENCE-TURN RECALL (R19 — the real metric; session recall is ~20x diluted)")
+    print(f"  questions labelled  {len(ratios)}")
+    print(f"  micro (pooled)      {num}/{den} = {num/den*100:.2f}%")
+    print(f"  macro (mean)        {sum(ratios)/len(ratios)*100:.2f}%")
+    print(f"  ZERO-evidence       {zero}/{len(ratios)} ({zero/len(ratios)*100:.2f}%)")
+    for cat in sorted(by_cat):
+        h, t, rr = by_cat[cat]
+        z = sum(1 for x in rr if x == 0)
+        print(f"    {cat:22s} micro {h}/{t} = {h/t*100:6.2f}%  macro {sum(rr)/len(rr)*100:6.2f}%  zero {z}")
+    ok, bad = statistics.mean(split[True]), statistics.mean(split[False])
+    print(f"  recall | judged CORRECT    {ok*100:.2f}%  (n={len(split[True])})")
+    print(f"  recall | judged INCORRECT  {bad*100:.2f}%  (n={len(split[False])})")
+    print(f"  -> difference {(ok-bad)*100:.2f}pp. Retrieval IS discriminative here.")
+    print(f"  dilution check: {session_turns} evidence-session turns / {den} true "
+          f"evidence turns = {session_turns/den:.1f}x")
+
+
 def session_recall(dataset_path, rows):
     """The $0 retrieval-side companion, from this run's own retrieved keys.
 
@@ -65,6 +129,7 @@ def session_recall(dataset_path, rows):
     n/a (undefined, not 0%). See R19.
     """
     ds = json.load(open(dataset_path))
+    evidence_turn_recall(ds, rows)
     ev = {
         q["question_id"]: {s for s in q["haystack_session_ids"] if s.startswith("answer_")}
         for q in ds

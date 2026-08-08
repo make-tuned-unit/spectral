@@ -10,10 +10,37 @@ read or write time** achieve? It is not a competitive claim, and there is no
 comparison table, for reasons given under "Not comparable to anything
 published" below.
 
+> # CORRECTION 2026-08-08 — the interpretation below is WRONG
+>
+> **The accuracy number stands. The conclusion drawn from it does not.**
+>
+> This document concluded "retrieval is not the binding constraint" from
+> **95.06% session recall**. R19 has since made evidence-**turn** recall
+> computable on LoCoMo, and it is **59.86% micro / 68.63% macro**, with
+> **24.86% of questions retrieving zero evidence turns** — not the 1.11% the
+> session metric showed. Session recall was diluted **20.6×** on this dataset
+> (44,162 evidence-session turns against 2,140 true evidence turns), worse
+> than LongMemEval's 12.2×.
+>
+> The discriminative claim inverts completely. On session recall, correct and
+> incorrect answers differed by 5.94pp. On evidence-turn recall they differ by
+> **57.08pp** — 88.62% for answers judged correct, **31.54%** for answers
+> judged incorrect.
+>
+> **Retrieval is the binding constraint on LoCoMo, and this document said the
+> opposite.** The failure is exactly the one R15 exists to prevent, committed
+> in a document that cites R15: session recall is saturated by construction,
+> a 30-turn evidence session counts as "recalled" when the answering turn is
+> absent, and I read a saturated metric as evidence of sufficiency.
+>
+> Everything below is left as written (Rule 5). The corrected retrieval
+> figures are in `r19-locomo-turn-labels-2026-08-08.md`.
+
 ## The headline
 
 **65.02%** on the full LoCoMo answerable set (935/1438), **95% CI
-[62.79%, 67.25%]** (cluster-robust, ±2.23pp).
+[62.79%, 67.25%]** (cluster-robust, ±2.23pp). **This number is unaffected by
+the correction above** — it is an end-to-end accuracy, measured directly.
 
 ```
 zero model inference in the memory layer  ->  65.02%  end-to-end

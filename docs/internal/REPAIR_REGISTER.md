@@ -456,7 +456,33 @@ Result: `r15-evidence-metric-2026-08-07.md`.
 
 ---
 
-## R19 — LoCoMo converter emits no per-turn evidence labels · READY
+## R19 — LoCoMo converter emits no per-turn evidence labels · DONE (2026-08-08)
+
+**SHIPPED, and it overturned a conclusion published the day before.**
+`locomo_to_oracle.py` now emits per-turn `has_answer`, matched by `dia_id` with
+sessions deep-copied per QA. 1438 questions, 2140 evidence turns labelled.
+
+The mandatory gate is enforced in code as `--verify`: regenerate, strip
+`has_answer`, compare **serialized bytes**, exit non-zero without writing if
+they differ (and say whether membership, order, or content moved). Run against
+the published baseline dataset: **GATE PASSED, sample unmoved.**
+
+**Finding.** Rescoring the published BM25 baseline — same run, same retrieved
+keys, $0 — evidence-turn recall is **59.86% micro / 68.63% macro** against
+95.06% session recall, with **24.86% of questions retrieving ZERO evidence
+turns** (vs 1.11% on the session metric). Dilution on LoCoMo is **20.6x**.
+Correct-vs-incorrect separation goes from 5.94pp on session recall to
+**57.08pp** on evidence-turn recall (88.62% vs 31.54%).
+
+The baseline document's claim that "retrieval is not the binding constraint" is
+**refuted**. It cited R15, correctly labelled the metric as diluted, and
+reasoned from it anyway. Labelling a diluted metric does not stop it being
+misread; making the real one computable does.
+Result: `r19-locomo-turn-labels-2026-08-08.md`.
+
+Original row follows.
+
+---
 
 `scripts/locomo_to_oracle.py` marks whole sessions `answer_`, so every
 LoCoMo-converted set (including the R11 held-out and validation samples)
