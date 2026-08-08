@@ -1,6 +1,31 @@
 # Prereg — relative date offsets in rendered context (2026-08-08)
 
-**Status: committed before any measurement.** Rule 1. No arm has been run.
+**Status: committed before any measurement.** Rule 1.
+
+> **CORRECTION 2026-08-08, after an 8-question aborted start and BEFORE any arm
+> completed or any A-vs-B comparison existed.** Two defects in this document
+> were found by launching arm A and reading its first lines, and both are fixed
+> below rather than discovered afterwards:
+>
+> 1. **Query expansion was on.** The run log printed *"Query expansion enabled
+>    (model: claude-haiku-4-5)"*. That is a **second variable**, and worse, one
+>    with known nondeterminism — R14 expansion nondeterminism is precisely what
+>    **voided the R11 stage-1 run**. Both arms now pass `--no-expand-queries`.
+>    This makes both arms non-default in the same way, which preserves the
+>    paired comparison of the one variable under test and removes a known
+>    self-voiding hazard. It also means **this run does not measure the shipped
+>    expansion-on configuration**, and no claim about it may be drawn.
+> 2. **The cost estimate was wrong by ~4x.** $0.0127/question was taken from the
+>    LoCoMo baseline, but LongMemEval contexts average **14,665 tokens** against
+>    LoCoMo's 2,841. Measured: **$0.0478/question → ~$12.72** for both arms, not
+>    $3.38.
+>
+> No result has been observed. The 8 aborted questions are discarded and both
+> arms run fresh. Disclosed here rather than quietly amended, because "the
+> prereg was adjusted once measurement started" is exactly the move this
+> discipline exists to prevent — the mitigating fact is that nothing
+> comparative was seen, and that fact is checkable: the aborted arm has no
+> counterpart.
 
 ## Why this experiment exists
 
@@ -55,8 +80,10 @@ this project exists to eliminate.
   categories were bit-flat under R11 and are excluded to keep the run cheap —
   which also means **this experiment cannot speak to them**, and no claim about
   them may be drawn from it.
-* **Arms:** A = shipped default (no relative offsets). B = `SPECTRAL_DATED_CONTEXT=1`.
-  **Paired** — identical question set, identical retrieval.
+* **Arms:** A = no relative offsets. B = `SPECTRAL_DATED_CONTEXT=1`.
+  **Paired** — identical question set, identical retrieval. **Both arms run
+  `--no-expand-queries`** (see the correction above): expansion is a second
+  variable and a known source of cross-arm divergence.
 * **Actor/judge:** `claude-sonnet-4-6`, **temperature pinned to 0** on both
   (`actor.rs:143`, `judge.rs:194`). The 2026-07-14 cascade A/B was rendered
   inconclusive by unpinned actor temperature; that defect is fixed and this
@@ -85,7 +112,9 @@ Context-token delta is **reported, not gated** — it is a cost, not the endpoin
 
 ## Cost
 
-133 questions × 2 arms × $0.0127/question ≈ **$3.38**.
+**Measured: $0.0478/question → ~$12.72** for 133 questions × 2 arms.
+LongMemEval contexts average 14,665 tokens, ~5× LoCoMo's, so the LoCoMo-derived
+$0.0127 in the first draft of this document understated by ~4×.
 
 Derived from the measured per-question cost of the LoCoMo baseline, **not** from
 the binary's `--confirm-cost` pre-flight, which is a flat `$0.04/call` constant
