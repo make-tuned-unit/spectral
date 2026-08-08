@@ -664,6 +664,13 @@ pub struct RecallTopKConfig {
     pub recency_half_life_days: f64,
     /// Boost top candidate within entity/wing clusters. Default true.
     pub apply_entity_resolution: bool,
+    /// G4: additive boost for candidates whose query terms cluster together.
+    /// Default false pending measurement. BM25 discards position, which on
+    /// short memories is most of the available signal.
+    pub apply_proximity: bool,
+    /// Weight for the proximity boost. Must be scaled against the base score's
+    /// rank granularity (`1/pool_size`), not chosen in the abstract.
+    pub proximity_weight: f64,
     /// Additive boost for first-person declarative content (answer-bearing
     /// user-fact turns). Default false — kept off historically because the
     /// signal blends into cascade; enabled selectively for the topk_fts path
@@ -693,6 +700,8 @@ impl Default for RecallTopKConfig {
             apply_recency_weighting: true,
             recency_half_life_days: 365.0,
             apply_entity_resolution: true,
+            apply_proximity: false,
+            proximity_weight: crate::ranking::PROXIMITY_WEIGHT_DEFAULT,
             apply_declarative_boost: false,
             apply_context_dedup: true,
             now: None,
@@ -2115,6 +2124,8 @@ impl Brain {
             recency_half_life_days: config.recency_half_life_days,
             apply_entity_boost: config.apply_entity_resolution,
             entity_boost_weight: 0.05,
+            apply_proximity: config.apply_proximity,
+            proximity_weight: config.proximity_weight,
             apply_ambient_boost: false,
             ambient_weights: crate::cascade_layers::AmbientBoostWeights::default(),
             apply_declarative_boost: config.apply_declarative_boost,
@@ -2137,11 +2148,16 @@ impl Brain {
         } else {
             std::collections::HashMap::new()
         };
-        let mut results = crate::ranking::apply_reranking_pipeline(
+        // `words` is the same sanitized term list the FTS MATCH was built
+        // from, so proximity scores exactly the terms that admitted the
+        // candidate — not the raw question, which carries stopwords the index
+        // never saw.
+        let mut results = crate::ranking::apply_reranking_pipeline_with_query(
             candidates,
             &reranking_config,
             &ctx,
             &co_boosts,
+            &words,
         );
         // Truncate the widened re-rank pool back to the requested k.
         results.truncate(config.k);

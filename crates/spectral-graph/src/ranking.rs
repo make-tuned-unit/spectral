@@ -274,6 +274,15 @@ pub struct RerankingConfig {
     pub apply_episode_diversity: bool,
     pub max_per_episode: usize,
     pub apply_context_dedup: bool,
+    /// G4: reward candidates whose query terms sit close together.
+    ///
+    /// BM25 discards position entirely. On 10–50-token memories that is most
+    /// of the signal: `tf` is almost always 1, so the saturation term does
+    /// nothing and ranking collapses toward `Σ IDF` — a bag of documents that
+    /// each contain the words, ranked by how rare the words are, with no way
+    /// to prefer the one where they form a phrase.
+    pub apply_proximity: bool,
+    pub proximity_weight: f64,
 }
 
 impl Default for RerankingConfig {
@@ -295,8 +304,105 @@ impl Default for RerankingConfig {
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: true,
+            // Off by default until measured. G4.
+            apply_proximity: false,
+            proximity_weight: PROXIMITY_WEIGHT_DEFAULT,
         }
     }
+}
+
+/// Default additive weight for the proximity boost, on the same scale as the
+/// other additive boosts (recency 0.1, declarative 0.10, entity 0.05).
+pub const PROXIMITY_WEIGHT_DEFAULT: f64 = 0.15;
+
+/// Fold a token toward its stem so proximity matching survives the FTS
+/// tokenizer's porter stemming.
+///
+/// The FTS match set is built with `porter unicode61`, so a memory can match
+/// "reviewed" via the stem "review". Comparing raw tokens here would score
+/// those memories at proximity 0 — systematically penalising exactly the
+/// candidates FTS admitted. This is a cheap approximation of porter, not
+/// porter: it is deterministic, allocation-light, and errs toward folding too
+/// little (a missed fold costs a boost; it never invents one).
+fn fold_token(w: &str) -> &str {
+    for suffix in ["ing", "ed", "es", "ly", "s"] {
+        if let Some(stem) = w.strip_suffix(suffix) {
+            // Keep stems meaningful: "is"/"as" must not fold to one letter.
+            if stem.len() >= 3 {
+                return stem;
+            }
+        }
+    }
+    w
+}
+
+/// Positional proximity of `query_words` within `content`, in `[0, 1]`.
+///
+/// `coverage * density`, where coverage is the fraction of distinct query
+/// terms present and density is how tightly the matched terms cluster — 1.0
+/// when they are adjacent, decaying as the smallest window containing them
+/// widens. A single matched term has no pair and scores 0: with one term there
+/// is no proximity, only presence, and presence is what BM25 already measures.
+pub fn proximity_score(content: &str, query_words: &[String]) -> f64 {
+    if query_words.len() < 2 || content.is_empty() {
+        return 0.0;
+    }
+    let wanted: Vec<String> = query_words
+        .iter()
+        .map(|w| fold_token(&w.to_lowercase()).to_string())
+        .collect();
+
+    // Positions of each matched query term within the content token stream.
+    let mut hits: Vec<(usize, usize)> = Vec::new(); // (position, term index)
+    for (pos, raw) in content
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-' || c == '\''))
+        .filter(|t| !t.is_empty())
+        .enumerate()
+    {
+        let tok = raw.to_lowercase();
+        let folded = fold_token(&tok);
+        if let Some(ti) = wanted.iter().position(|w| w == folded) {
+            hits.push((pos, ti));
+        }
+    }
+    if hits.len() < 2 {
+        return 0.0;
+    }
+
+    let distinct: std::collections::HashSet<usize> = hits.iter().map(|(_, t)| *t).collect();
+    let matched = distinct.len();
+    if matched < 2 {
+        return 0.0;
+    }
+    let coverage = matched as f64 / wanted.len() as f64;
+
+    // Smallest window containing all `matched` distinct terms — a sliding
+    // window over the hit list, which is already position-ordered.
+    let mut counts = std::collections::HashMap::<usize, usize>::new();
+    let (mut lo, mut have, mut best) = (0usize, 0usize, usize::MAX);
+    for hi in 0..hits.len() {
+        *counts.entry(hits[hi].1).or_insert(0) += 1;
+        if counts[&hits[hi].1] == 1 {
+            have += 1;
+        }
+        while have == matched {
+            best = best.min(hits[hi].0 - hits[lo].0 + 1);
+            let t = hits[lo].1;
+            let c = counts.get_mut(&t).expect("term counted on the way in");
+            *c -= 1;
+            if *c == 0 {
+                have -= 1;
+            }
+            lo += 1;
+        }
+    }
+    if best == usize::MAX {
+        return 0.0;
+    }
+    // Density: 1.0 when the matched terms are adjacent, decaying as the window
+    // widens. `matched - 1` is the minimum possible span-minus-one.
+    let density = (matched - 1) as f64 / (best - 1).max(1) as f64;
+    coverage * density.min(1.0)
 }
 
 /// Unified re-ranking pipeline. Both retrieval frontends (topk_fts, cascade)
@@ -335,6 +441,23 @@ pub fn apply_reranking_pipeline(
     config: &RerankingConfig,
     context: &RecognitionContext,
     co_retrieval_boosts: &std::collections::HashMap<String, f64>,
+) -> Vec<MemoryHit> {
+    apply_reranking_pipeline_with_query(candidates, config, context, co_retrieval_boosts, &[])
+}
+
+/// As [`apply_reranking_pipeline`], with the query terms available to
+/// query-conditioned signals (G4 proximity).
+///
+/// The pipeline was deliberately query-free — see `answerability.rs` — so this
+/// is an additive entry point rather than a signature change: every existing
+/// caller keeps the query-free behaviour, and passing `&[]` is exactly
+/// equivalent to the old function.
+pub fn apply_reranking_pipeline_with_query(
+    candidates: Vec<MemoryHit>,
+    config: &RerankingConfig,
+    context: &RecognitionContext,
+    co_retrieval_boosts: &std::collections::HashMap<String, f64>,
+    query_words: &[String],
 ) -> Vec<MemoryHit> {
     if candidates.is_empty() {
         return candidates;
@@ -409,6 +532,14 @@ pub fn apply_reranking_pipeline(
             // freshness in [0,1]: 1.0 = brand new, -> 0 as age grows.
             let freshness = 0.5_f64.powf(age_days / config.recency_half_life_days);
             scores[i] += RECENCY_BOOST_WEIGHT * freshness;
+        }
+    }
+
+    // G4 proximity: additive, query-conditioned. No-op when the caller passed
+    // no query, which keeps every pre-G4 call site bit-identical.
+    if config.apply_proximity && query_words.len() >= 2 {
+        for (i, hit) in candidates.iter().enumerate() {
+            scores[i] += config.proximity_weight * proximity_score(&hit.content, query_words);
         }
     }
 
@@ -1329,5 +1460,100 @@ mod tests {
         );
         // Neutral should be last
         assert_eq!(result[2].id, "neutral", "neutral should rank last");
+    }
+}
+
+#[cfg(test)]
+mod proximity_tests {
+    use super::*;
+
+    fn words(s: &str) -> Vec<String> {
+        s.split_whitespace().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn adjacent_terms_beat_scattered_ones() {
+        let q = words("platform rollout");
+        let tight = proximity_score("the platform rollout was approved", &q);
+        let loose = proximity_score(
+            "the platform was discussed at length and much later the rollout happened",
+            &q,
+        );
+        assert!(tight > loose, "tight {tight} should beat loose {loose}");
+        assert!(
+            (tight - 1.0).abs() < 1e-9,
+            "adjacent full coverage is 1.0, got {tight}"
+        );
+    }
+
+    #[test]
+    fn a_single_matched_term_scores_zero() {
+        // One term is presence, not proximity — and presence is what BM25
+        // already measures. Scoring it here would double-count.
+        assert_eq!(
+            proximity_score("only the platform appears here", &words("platform rollout")),
+            0.0
+        );
+    }
+
+    #[test]
+    fn coverage_scales_the_score() {
+        let q = words("platform rollout review team");
+        let two = proximity_score("platform rollout", &q);
+        let four = proximity_score("platform rollout review team", &q);
+        assert!(four > two, "4/4 coverage {four} should beat 2/4 {two}");
+    }
+
+    #[test]
+    fn stemmed_matches_still_count() {
+        // FTS admits on the porter stem, so proximity must see the same match
+        // or it penalises exactly the candidates FTS let through.
+        let s = proximity_score("the rollout was reviewed", &words("rollout review"));
+        assert!(s > 0.0, "stemmed variant must match, got {s}");
+    }
+
+    #[test]
+    fn short_stems_are_not_over_folded() {
+        // "as" -> "a" would be a nonsense stem; guard the minimum length.
+        assert_eq!(fold_token("as"), "as");
+        assert_eq!(fold_token("is"), "is");
+        assert_eq!(fold_token("reviewed"), "review");
+        assert_eq!(fold_token("rollouts"), "rollout");
+    }
+
+    #[test]
+    fn empty_or_single_word_queries_are_inert() {
+        assert_eq!(proximity_score("anything at all", &words("platform")), 0.0);
+        assert_eq!(proximity_score("anything at all", &[]), 0.0);
+        assert_eq!(proximity_score("", &words("a b")), 0.0);
+    }
+
+    #[test]
+    fn score_is_bounded_in_unit_interval() {
+        let q = words("alpha beta gamma");
+        for text in [
+            "alpha beta gamma",
+            "alpha alpha beta beta gamma gamma",
+            "alpha zzz beta zzz gamma",
+            "gamma beta alpha",
+        ] {
+            let s = proximity_score(text, &q);
+            assert!((0.0..=1.0).contains(&s), "{text} scored {s}");
+        }
+    }
+
+    #[test]
+    fn pipeline_without_a_query_is_identical_to_the_query_free_entry_point() {
+        // The additive entry point must not change any existing caller.
+        let cands: Vec<MemoryHit> = Vec::new();
+        let cfg = RerankingConfig {
+            apply_proximity: true,
+            ..RerankingConfig::default()
+        };
+        let ctx = RecognitionContext::empty();
+        let empty = std::collections::HashMap::new();
+        let a = apply_reranking_pipeline(cands.clone(), &cfg, &ctx, &empty);
+        let b = apply_reranking_pipeline_with_query(cands, &cfg, &ctx, &empty, &[]);
+        assert_eq!(a.len(), b.len());
     }
 }

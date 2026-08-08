@@ -2498,6 +2498,8 @@ fn co_retrieval_boost_lifts_co_retrieved_memories_in_cascade() {
         apply_episode_diversity: false,
         max_per_episode: 5,
         apply_context_dedup: false,
+        apply_proximity: false,
+        proximity_weight: 0.0,
     };
 
     // Control: rank without co-retrieval (empty map)
