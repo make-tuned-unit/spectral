@@ -119,13 +119,12 @@ pub fn position_corrected_rate(
         if n == 0 {
             continue;
         }
-        match curve.get(r).copied().flatten() {
-            Some(rate) => {
-                expected += rate * n as f64;
-                covered += n;
-            }
-            None => return None,
-        }
+        // `?` propagates the refusal: a rank with no exposure estimate means
+        // the correction cannot be computed for this memory at all, and
+        // returning the uncorrected rate instead would be worse than nothing.
+        let rate = curve.get(r).copied().flatten()?;
+        expected += rate * n as f64;
+        covered += n;
     }
     if covered == 0 || expected <= 0.0 {
         return None;
