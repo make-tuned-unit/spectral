@@ -558,6 +558,30 @@ pub fn proximity_weight_env() -> f64 {
         .unwrap_or(spectral_graph::ranking::PROXIMITY_WEIGHT_DEFAULT)
 }
 
+/// RRF per-channel weight override, `SPECTRAL_RRF_<CHANNEL>_W`.
+///
+/// Unit weights are the honest default — every channel counts equally — but
+/// they also encode the risk RRF carries: a candidate BM25 ranks first is
+/// worth only `1/(K+1)` and can be displaced by a crowd the signal ranks
+/// highly and BM25 ranks poorly. Raising the BM25 weight is how that risk gets
+/// measured rather than argued about.
+pub fn rrf_weight_env(channel: &str, default: f64) -> f64 {
+    std::env::var(format!("SPECTRAL_RRF_{channel}_W"))
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|w| *w >= 0.0 && *w <= 100.0)
+        .unwrap_or(default)
+}
+
+/// Apply every `SPECTRAL_RRF_*_W` override to a cascade pipeline config.
+fn apply_rrf_weight_env_cascade(cfg: &mut spectral_graph::cascade_layers::CascadePipelineConfig) {
+    cfg.rrf_bm25_weight = rrf_weight_env("BM25", cfg.rrf_bm25_weight);
+    cfg.rrf_declarative_weight = rrf_weight_env("DECLARATIVE", cfg.rrf_declarative_weight);
+    cfg.rrf_proximity_weight = rrf_weight_env("PROXIMITY", cfg.rrf_proximity_weight);
+    cfg.rrf_recency_weight = rrf_weight_env("RECENCY", cfg.rrf_recency_weight);
+    cfg.rrf_signal_weight = rrf_weight_env("SIGNAL", cfg.rrf_signal_weight);
+}
+
 pub fn apply_actr_rerank(hits: &mut [MemoryHit], now: DateTime<Utc>, d: f64) {
     let n = hits.len();
     if n < 2 {
@@ -655,6 +679,11 @@ pub fn retrieve_topk_fts(
         apply_proximity: std::env::var("SPECTRAL_TOPK_PROXIMITY").is_ok(),
         // RRF composition lever (failure-analysis 2026-08-08).
         use_rrf: std::env::var("SPECTRAL_RRF").is_ok(),
+        rrf_bm25_weight: rrf_weight_env("BM25", 1.0),
+        rrf_declarative_weight: rrf_weight_env("DECLARATIVE", 1.0),
+        rrf_proximity_weight: rrf_weight_env("PROXIMITY", 1.0),
+        rrf_recency_weight: rrf_weight_env("RECENCY", 1.0),
+        rrf_signal_weight: rrf_weight_env("SIGNAL", 1.0),
         proximity_weight: proximity_weight_env(),
         apply_declarative_boost: std::env::var("SPECTRAL_TOPK_DECLARATIVE").is_ok(),
         apply_context_dedup: std::env::var("SPECTRAL_DISABLE_CONTEXT_DEDUP").is_err(),
@@ -819,6 +848,7 @@ pub fn retrieve_cascade(
     pipeline_config.apply_proximity = std::env::var("SPECTRAL_TOPK_PROXIMITY").is_ok();
     pipeline_config.proximity_weight = proximity_weight_env();
     pipeline_config.use_rrf = std::env::var("SPECTRAL_RRF").is_ok();
+    apply_rrf_weight_env_cascade(&mut pipeline_config);
     // Ablation overrides (multi-session answer-KEY completeness sweep). The
     // Counting profile caps max_per_episode=3 to force session diversity; when
     // answer keys cluster >3 per session that undercounts. These let a sweep

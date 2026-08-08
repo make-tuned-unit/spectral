@@ -674,6 +674,17 @@ pub struct RecallTopKConfig {
     /// Compose signals by reciprocal rank fusion instead of additive boosts.
     /// Default false pending measurement. See `ranking::rrf_fuse`.
     pub use_rrf: bool,
+    /// Per-channel RRF weights, applied only when `use_rrf` is set.
+    ///
+    /// Unit weights are the honest default, but they also encode RRF's
+    /// characteristic risk: a candidate BM25 ranks first is worth only
+    /// `1/(K+1)`, so a crowd of candidates a weak signal ranks highly can
+    /// displace it. Raising `rrf_bm25_weight` is how that gets measured.
+    pub rrf_bm25_weight: f64,
+    pub rrf_declarative_weight: f64,
+    pub rrf_proximity_weight: f64,
+    pub rrf_recency_weight: f64,
+    pub rrf_signal_weight: f64,
     /// Additive boost for first-person declarative content (answer-bearing
     /// user-fact turns). Default false — kept off historically because the
     /// signal blends into cascade; enabled selectively for the topk_fts path
@@ -706,6 +717,11 @@ impl Default for RecallTopKConfig {
             apply_proximity: false,
             proximity_weight: crate::ranking::PROXIMITY_WEIGHT_DEFAULT,
             use_rrf: false,
+            rrf_bm25_weight: 1.0,
+            rrf_declarative_weight: 1.0,
+            rrf_proximity_weight: 1.0,
+            rrf_recency_weight: 1.0,
+            rrf_signal_weight: 1.0,
             apply_declarative_boost: false,
             apply_context_dedup: true,
             now: None,
@@ -2131,6 +2147,11 @@ impl Brain {
             apply_proximity: config.apply_proximity,
             proximity_weight: config.proximity_weight,
             use_rrf: config.use_rrf,
+            rrf_bm25_weight: config.rrf_bm25_weight,
+            rrf_declarative_weight: config.rrf_declarative_weight,
+            rrf_proximity_weight: config.rrf_proximity_weight,
+            rrf_recency_weight: config.rrf_recency_weight,
+            rrf_signal_weight: config.rrf_signal_weight,
             apply_ambient_boost: false,
             ambient_weights: crate::cascade_layers::AmbientBoostWeights::default(),
             apply_declarative_boost: config.apply_declarative_boost,
