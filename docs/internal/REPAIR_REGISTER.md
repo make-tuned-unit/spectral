@@ -710,7 +710,29 @@ Ref: `research-alignment-2026-08-07.md` §2, `r16-baseline-shift-2026-08-07.md`.
 
 ---
 
-## R21 — Judge JSON parse rejects trailing content · READY
+## R21 — Judge JSON parse rejects trailing content · DONE (2026-08-08)
+
+**FIXED after the baseline published, deliberately in that order.**
+`judge::first_json_object` scans for balanced braces — string-aware, so braces
+and `\"` escapes inside `reasoning` do not move the depth counter — and returns
+the **first complete** object instead of the span from the first `{` to the
+last `}`. Applied at both judge sites (Anthropic and OpenAI-compat).
+
+An unbalanced `}` returns `None` rather than underflowing: a panic here would
+kill a multi-hour run, and a judge failure is the safe direction (excluded from
+the denominator, never scored wrong). Truncated mid-object responses stay
+failures — the fix does not salvage them into a verdict.
+
+Seven tests, including `r21_old_span_extraction_would_have_failed_these`, which
+asserts the old approach genuinely breaks on the same inputs so the others
+cannot pass vacuously.
+
+**The published 65.02% is NOT re-scored.** The next run that uses this scorer
+must say it is running a different scorer than the baseline did.
+
+Original row follows.
+
+---
 
 **Found 2026-08-07 by the BM25 LoCoMo baseline run** (4/1438 questions).
 

@@ -208,6 +208,12 @@ The parser's intolerance of trailing content after valid JSON is a real harness
 defect. It is **not fixed here** (fixing it and re-running would be a re-roll);
 it is opened as a register row for a later run.
 
+> **Follow-up 2026-08-08: R21 is now fixed** — `judge::first_json_object` takes
+> the first *balanced* object instead of the first-`{`-to-last-`}` span.
+> **The 65.02% above was NOT re-scored and will not be.** Any future run is
+> using a different scorer than this one did, and must say so when compared
+> against this number.
+
 ## Cost and latency
 
 | | |
