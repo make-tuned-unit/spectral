@@ -1,10 +1,12 @@
-# Result — relative date offsets · **PASS** against a preregistered null
+# Result — relative date offsets · PASS on one corpus, **FAILED replication** on another
 
 **Preregistered in `relative-offsets-prereg-2026-08-08.md`**, including the
 expectation that this would fail. It did not.
 
-This is the project's **second** preregistered accuracy win, after R11 — and it
-is on the same axis, which is now the only axis that has ever paid here.
+**Verdict: NOT VALIDATED.** The primary passed (p = 0.0039) and the
+replication on a second corpus returned a flat null (p = 1.0000, 9 fixed vs 10
+broken). The default stays off. Both results are below, in the order they were
+run, because that ordering is the point.
 
 ## Primary result — LongMemEval `temporal-reasoning`, n = 133
 
@@ -68,31 +70,48 @@ That also explains the zero regressions: a correct annotation cannot mislead an
 actor that would otherwise have computed the same value correctly. It can only
 help the cases where the actor would have been wrong.
 
-## Replication — **INCOMPLETE, blocked on credit, NOT a result**
+## Replication — **FAILED. The lever is not validated.**
 
-The replication (LoCoMo `temporal-reasoning`, n=317, preregistered above) got
-one arm and part of the other before the account ran out of API credit:
+LoCoMo `temporal-reasoning`, n=317 paired, same single variable, same
+`--no-expand-queries`, same temperature, same scorer. Direction and gate were
+fixed in advance.
 
-| arm | progress | outcome |
-|---|---|---|
-| A (no offsets) | **317/317 complete** | 230 correct, 72.56%, $3.74 |
-| B (relative offsets) | **59/317, then auth-failed** | 2 auth failures, run killed |
+| | A: no offsets | B: relative offsets |
+|---|---:|---:|
+| accuracy | 72.56% (230/317) | 72.24% (229/317) |
+| mean context tokens | 2,728 | 2,963 (**+8.6%**) |
+| failures | 0 / 0 / 0 | 0 / 0 / 0 |
 
-`Your credit balance is too low to access the Anthropic API.` The run was
-stopped immediately so that further questions would not be recorded against a
-dead key. Auth failures are excluded from the accuracy denominator by design,
-so the partial data is incomplete rather than corrupted, and both arms are
-resumable from their checkpoints when credit is restored.
+**Delta −0.32pp.** Contingency: **9 fixed, 10 broke**, 19 discordant.
+**McNemar exact two-sided p = 1.0000. NULL.**
 
-**The partial has NOT been analysed, deliberately.** Fifty-seven paired
-questions would produce a number, and that number would be read *after*
-already knowing the primary result — a textbook garden-of-forking-paths. The
-prereg specified n=317 and a single test. Looking at a partial and reporting
-whichever way it fell is precisely the selective-reporting failure this
-project exists to avoid, and the fact that the partial is *available* is not a
-reason to spend it.
+Nine fixed against ten broken is not a weak effect; it is the absence of one.
+And the token cost that was negligible on LongMemEval (+1.1%) is **+8.6%** here,
+because LoCoMo contexts are ~5× smaller — so on this corpus the lever charges
+more and returns nothing.
 
-**Status: the primary result stands, unreplicated.**
+### What this does and does not overturn
+
+The primary p-value is **not retracted**. It was a correctly conducted paired
+test and 9-fixed/0-broken is not a plausible fluke. What the replication
+establishes is that the effect **does not generalise**, and therefore that the
+primary's scope is LongMemEval temporal-reasoning and not "temporal questions".
+
+**The lever is NOT validated and the default stays `false`.** That was the
+preregistered consequence of exactly this outcome, written before the run.
+
+### A hypothesis for why, offered as a hypothesis
+
+The two corpora differ ~5× in context size (14,026 vs 2,728 mean tokens). The
+mechanism measured on the primary was that the actor mis-computes date offsets
+and lands on the wrong session; that failure needs enough sessions, and enough
+temporal spread, to be possible at all. On a small context the arithmetic is
+easy and there is little to get wrong, so a pre-computed offset has nothing to
+save.
+
+That is consistent with both results but **is not established by them**. It
+predicts the effect would return on any large-context temporal corpus, which is
+a testable claim and the natural next experiment — not a conclusion.
 
 ## What this claims, and what it does not
 
