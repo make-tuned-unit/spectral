@@ -10,7 +10,7 @@ description = "Core primitives for Spectral: identity, content-addressed IDs, vi
 [dependencies]
 blake3 = { workspace = true }
 ed25519-dalek = { workspace = true }
-rand = { workspace = true }
+getrandom = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

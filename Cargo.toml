@@ -27,8 +27,16 @@ readme = "README.md"
 [workspace.dependencies]
 # Crypto + identity
 blake3 = "1.5"
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-rand = "0.8"
+# No `rand_core` feature: the only caller of `SigningKey::generate` now takes
+# entropy from `getrandom` directly, so the RNG integration is dead weight.
+ed25519-dalek = { version = "3.0" }
+# `getrandom`, not `rand`. ed25519-dalek 3.0 moved to rand_core 0.10, which is
+# traits-only and ships no `OsRng` at all, while `rand` 0.9 still carries
+# rand_core 0.9 — the two `CryptoRng` traits are not interchangeable. Since
+# `SigningKey::generate` is just `fill_bytes` into 32 bytes followed by
+# `from_bytes`, taking the entropy directly sidesteps the trait-version skew
+# entirely and cannot drift out of step with dalek again.
+getrandom = "0.4"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -54,7 +62,7 @@ chrono = { version = "0.4", features = ["serde"] }
 lru = "0.12"
 
 # Storage
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # HTTP
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

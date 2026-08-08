@@ -102,7 +102,18 @@ pub struct BrainIdentity {
 impl BrainIdentity {
     /// Generate a new random brain identity.
     pub fn generate() -> Self {
-        let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        // Entropy is taken straight from the OS rather than through an RNG
+        // trait. `SigningKey::generate` is exactly `fill_bytes` into 32 bytes
+        // followed by `from_bytes`, so this is equivalent — and it does not
+        // depend on which `rand_core` major version dalek happens to speak,
+        // which is what broke on the 2.x -> 3.0 bump.
+        //
+        // `expect` is deliberate: if the kernel cannot supply entropy we must
+        // not continue and mint a brain identity from a degraded source.
+        let mut secret = [0u8; 32];
+        getrandom::fill(&mut secret)
+            .expect("OS entropy unavailable; refusing to generate a brain identity");
+        let signing_key = SigningKey::from_bytes(&secret);
         let verifying_key = signing_key.verifying_key();
         let brain_id = BrainId::from_verifying_key(&verifying_key);
         Self {

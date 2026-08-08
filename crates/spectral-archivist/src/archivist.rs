@@ -148,9 +148,15 @@ impl Archivist {
 
     /// Run all passes in dry-run mode (no mutations).
     pub fn report(&self) -> anyhow::Result<ArchivistReport> {
-        let memory_count: usize =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
+        // rusqlite 0.40 dropped `FromSql for usize` (it is platform-width, so
+        // the conversion was never total). SQLite counts are i64; narrow
+        // explicitly at the boundary.
+        let memory_count: usize = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .max(0) as usize;
 
         Ok(ArchivistReport {
             duplicates: self.find_duplicates()?,
