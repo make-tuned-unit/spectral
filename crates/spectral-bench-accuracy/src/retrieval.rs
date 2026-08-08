@@ -653,6 +653,8 @@ pub fn retrieve_topk_fts(
         // G4 lever: additive proximity boost, off unless asked for. The value
         // is the weight when numeric, so it can be swept.
         apply_proximity: std::env::var("SPECTRAL_TOPK_PROXIMITY").is_ok(),
+        // RRF composition lever (failure-analysis 2026-08-08).
+        use_rrf: std::env::var("SPECTRAL_RRF").is_ok(),
         proximity_weight: proximity_weight_env(),
         apply_declarative_boost: std::env::var("SPECTRAL_TOPK_DECLARATIVE").is_ok(),
         apply_context_dedup: std::env::var("SPECTRAL_DISABLE_CONTEXT_DEDUP").is_err(),
@@ -816,6 +818,7 @@ pub fn retrieve_cascade(
     // consumer calls, so a topk_fts-only measurement would not speak to it.
     pipeline_config.apply_proximity = std::env::var("SPECTRAL_TOPK_PROXIMITY").is_ok();
     pipeline_config.proximity_weight = proximity_weight_env();
+    pipeline_config.use_rrf = std::env::var("SPECTRAL_RRF").is_ok();
     // Ablation overrides (multi-session answer-KEY completeness sweep). The
     // Counting profile caps max_per_episode=3 to force session diversity; when
     // answer keys cluster >3 per session that undercounts. These let a sweep

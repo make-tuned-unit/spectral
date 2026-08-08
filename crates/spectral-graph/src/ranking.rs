@@ -283,6 +283,17 @@ pub struct RerankingConfig {
     /// to prefer the one where they form a phrase.
     pub apply_proximity: bool,
     pub proximity_weight: f64,
+    /// Use reciprocal rank fusion instead of additive boosts. Off by default
+    /// pending measurement. See [`rrf_fuse`].
+    pub use_rrf: bool,
+    /// Per-channel RRF weights. All 1.0 means every signal counts equally,
+    /// which is the honest starting point — weighting them differently is a
+    /// tuning decision that needs its own measurement.
+    pub rrf_bm25_weight: f64,
+    pub rrf_declarative_weight: f64,
+    pub rrf_proximity_weight: f64,
+    pub rrf_recency_weight: f64,
+    pub rrf_signal_weight: f64,
 }
 
 impl Default for RerankingConfig {
@@ -307,8 +318,141 @@ impl Default for RerankingConfig {
             // Off by default until measured. G4.
             apply_proximity: false,
             proximity_weight: PROXIMITY_WEIGHT_DEFAULT,
+            use_rrf: false,
+            rrf_bm25_weight: 1.0,
+            rrf_declarative_weight: 1.0,
+            rrf_proximity_weight: 1.0,
+            rrf_recency_weight: 1.0,
+            rrf_signal_weight: 1.0,
         }
     }
+}
+
+/// Reciprocal-rank-fusion constant. 60 is the value from the original RRF
+/// paper (Cormack et al.) and the same one `sqlite_store::ranked_ids` already
+/// uses to fuse the two FTS channels. Large enough that the top few ranks are
+/// not winner-take-all, small enough that deep ranks still decay.
+pub const RRF_K: f64 = 60.0;
+
+/// Fuse per-signal rankings by reciprocal rank fusion.
+///
+/// # Why this exists
+///
+/// The additive composition scores a candidate as `1 - i/n` (its FTS rank
+/// position) plus a set of bounded boosts. That makes a boost's value **in
+/// ranks** depend on the pool size, and the arithmetic does not work out:
+/// measured on LoCoMo, the evidence turns we fail to retrieve sit at a median
+/// rank of 99, so promoting one into the top 40 at the shipped pool of 120
+/// requires a score delta of 0.49 — while recency (0.10), declarative (0.10),
+/// entity (0.05) and proximity (0.15) sum to 0.40 even if all four fire at
+/// maximum in the same direction. Widening the pool makes the boosts able to
+/// reach, but then they overwhelm BM25 entirely and recall gets *worse*
+/// (measured: 72.7% -> 61.5% as proximity weight rose at fetch_mult=12).
+///
+/// RRF has no such scale problem. Each signal contributes `1/(K + rank)`,
+/// which is bounded and pool-independent, so a document ranked 3rd by one
+/// signal and 150th by BM25 gets a meaningful fused score at any pool size and
+/// no single signal can wholesale override another.
+///
+/// # What it fuses
+///
+/// BM25 order is always a channel (it is the input order). Each enabled
+/// signal contributes a second channel, ranked by that signal alone. Signals
+/// that are inert for a query (e.g. proximity with a one-word query) are
+/// skipped rather than contributing a meaningless ranking.
+///
+/// Ties are broken by memory id, matching every other sort in this module, so
+/// the output stays byte-reproducible.
+fn rrf_fuse(
+    candidates: Vec<MemoryHit>,
+    config: &RerankingConfig,
+    context: &RecognitionContext,
+    query_words: &[String],
+) -> Vec<MemoryHit> {
+    let n = candidates.len();
+    let mut fused = vec![0.0_f64; n];
+
+    // Channel 1: BM25 / FTS order, which is the order candidates arrive in.
+    for (i, f) in fused.iter_mut().enumerate() {
+        *f += config.rrf_bm25_weight / (RRF_K + i as f64 + 1.0);
+    }
+
+    // A signal channel: rank by `key` descending, then add 1/(K+rank).
+    let add_channel = |vals: Vec<f64>, weight: f64, fused: &mut Vec<f64>| {
+        if weight <= 0.0 || vals.iter().all(|v| *v <= 0.0) {
+            return; // inert signal: contribute nothing rather than noise
+        }
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by(|&a, &b| {
+            vals[b]
+                .partial_cmp(&vals[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| candidates[a].id.cmp(&candidates[b].id))
+        });
+        for (rank, &i) in idx.iter().enumerate() {
+            fused[i] += weight / (RRF_K + rank as f64 + 1.0);
+        }
+    };
+
+    if config.apply_declarative_boost {
+        let vals: Vec<f64> = candidates
+            .iter()
+            .map(|h| {
+                h.declarative_density
+                    .unwrap_or_else(|| declarative_density(&h.content))
+            })
+            .collect();
+        add_channel(vals, config.rrf_declarative_weight, &mut fused);
+    }
+
+    if config.apply_proximity && query_words.len() >= 2 {
+        let vals: Vec<f64> = candidates
+            .iter()
+            .map(|h| proximity_score(&h.content, query_words))
+            .collect();
+        add_channel(vals, config.rrf_proximity_weight, &mut fused);
+    }
+
+    if config.apply_recency && config.recency_half_life_days > 0.0 {
+        let now = context.now;
+        let vals: Vec<f64> = candidates
+            .iter()
+            .map(
+                |h| match h.created_at.as_deref().and_then(parse_created_at) {
+                    Some(dt) => {
+                        let age = ((now - dt).num_hours() as f64 / 24.0).max(0.0);
+                        0.5_f64.powf(age / config.recency_half_life_days)
+                    }
+                    None => 0.0,
+                },
+            )
+            .collect();
+        add_channel(vals, config.rrf_recency_weight, &mut fused);
+    }
+
+    if config.apply_signal_score {
+        let vals: Vec<f64> = candidates.iter().map(|h| h.signal_score).collect();
+        add_channel(vals, config.rrf_signal_weight, &mut fused);
+    }
+
+    let mut indexed: Vec<(MemoryHit, f64)> = candidates.into_iter().zip(fused).collect();
+    indexed.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+    let mut out: Vec<MemoryHit> = indexed
+        .into_iter()
+        .map(|(mut h, s)| {
+            h.signal_score = s;
+            h
+        })
+        .collect();
+
+    if config.apply_context_dedup {
+        out = dedup_context_chains(out);
+    }
+    out
 }
 
 /// Default additive weight for the proximity boost, on the same scale as the
@@ -461,6 +605,13 @@ pub fn apply_reranking_pipeline_with_query(
 ) -> Vec<MemoryHit> {
     if candidates.is_empty() {
         return candidates;
+    }
+
+    // RRF composition (opt-in). Fuses per-signal RANKINGS instead of adding
+    // boosts to a rank-position base. See `rrf_fuse` for why that difference
+    // is load-bearing rather than stylistic.
+    if config.use_rrf {
+        return rrf_fuse(candidates, config, context, query_words);
     }
 
     // Assign initial composite score from FTS rank position
