@@ -2500,6 +2500,7 @@ fn co_retrieval_boost_lifts_co_retrieved_memories_in_cascade() {
         apply_context_dedup: false,
         apply_proximity: false,
         proximity_weight: 0.0,
+        ..Default::default()
     };
 
     // Control: rank without co-retrieval (empty map)

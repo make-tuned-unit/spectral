@@ -671,6 +671,9 @@ pub struct RecallTopKConfig {
     /// Weight for the proximity boost. Must be scaled against the base score's
     /// rank granularity (`1/pool_size`), not chosen in the abstract.
     pub proximity_weight: f64,
+    /// Compose signals by reciprocal rank fusion instead of additive boosts.
+    /// Default false pending measurement. See `ranking::rrf_fuse`.
+    pub use_rrf: bool,
     /// Additive boost for first-person declarative content (answer-bearing
     /// user-fact turns). Default false — kept off historically because the
     /// signal blends into cascade; enabled selectively for the topk_fts path
@@ -702,6 +705,7 @@ impl Default for RecallTopKConfig {
             apply_entity_resolution: true,
             apply_proximity: false,
             proximity_weight: crate::ranking::PROXIMITY_WEIGHT_DEFAULT,
+            use_rrf: false,
             apply_declarative_boost: false,
             apply_context_dedup: true,
             now: None,
@@ -2126,6 +2130,7 @@ impl Brain {
             entity_boost_weight: 0.05,
             apply_proximity: config.apply_proximity,
             proximity_weight: config.proximity_weight,
+            use_rrf: config.use_rrf,
             apply_ambient_boost: false,
             ambient_weights: crate::cascade_layers::AmbientBoostWeights::default(),
             apply_declarative_boost: config.apply_declarative_boost,
@@ -2136,6 +2141,7 @@ impl Brain {
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: config.apply_context_dedup,
+            ..Default::default()
         };
         let ctx = match config.now {
             Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),

@@ -95,6 +95,28 @@ pub struct RenderOptions<'a> {
     /// Annotate dates with a computed offset from `question_date`
     /// ("4 months ago"). Requires `question_date`. Off by default, matching
     /// the published run.
+    ///
+    /// **Measured twice, NOT VALIDATED (2026-08-08).**
+    /// Preregistered A/B on LongMemEval `temporal-reasoning` (n=133, paired,
+    /// expansion off, temp 0): **76.69% → 83.46%, +6.77pp, 9 fixed / 0 broken,
+    /// McNemar exact p = 0.0039**, at **+1.1% context tokens**.
+    ///
+    /// The mechanism is not extra information — the absolute date is still
+    /// there and the offset is derivable from it. It **removes an arithmetic
+    /// failure mode**: without the annotation the actor computes the offset
+    /// itself and sometimes picks the wrong session. 7 of the 9 fixed
+    /// questions are phrased in relative time ("a week ago").
+    ///
+    /// **The replication FAILED.** LoCoMo `temporal-reasoning` (n=317, same
+    /// design): **−0.32pp, 9 fixed vs 10 broken, McNemar exact p = 1.0000**,
+    /// at +8.6% context tokens. The effect does not generalise, so the
+    /// primary's scope is LongMemEval temporal-reasoning specifically.
+    ///
+    /// **The default stays `false`.** Plausible explanation, untested: the two
+    /// corpora differ ~5x in context size (14,026 vs 2,728 mean tokens), and
+    /// the arithmetic failure this removes needs a large, temporally spread
+    /// context to occur at all. See
+    /// `docs/internal/relative-offsets-result-2026-08-08.md`.
     pub relative_offsets: bool,
     /// Append the Librarian's per-memory `description` as a labeled
     /// `[librarian: …]` note. Off by default: measured **no lift** (9/10 vs
