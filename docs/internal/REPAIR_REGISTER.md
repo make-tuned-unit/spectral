@@ -707,3 +707,29 @@ order agree with age order, the one arrangement in which an additive freshness
 term provably cannot reorder anything. The property was never held; it was
 never tested.
 Ref: `research-alignment-2026-08-07.md` §2, `r16-baseline-shift-2026-08-07.md`.
+
+---
+
+## R21 — Judge JSON parse rejects trailing content · READY
+
+**Found 2026-08-07 by the BM25 LoCoMo baseline run** (4/1438 questions).
+
+The judge returns a valid JSON object followed by extra prose. The parser
+rejects the whole response — `trailing characters at line 3 column 1` — and the
+harness records the question as **not correct**.
+
+It is a silent, one-directional scoring bias: **3 of the 4 failures carried the
+judge's own `"correct": true`** verdict, visible in the truncated error text.
+Parse failures are scored as wrong, so the defect can only push a reported
+accuracy **down**, never up. On this run it is worth ~0.2pp (65.02% recorded vs
+65.23% if the three visible verdicts were honoured) — inside the interval, but
+a real defect and free to fix.
+
+**Fix:** parse the first complete JSON object in the response rather than
+requiring the response to be exactly one JSON object — the same tolerance the
+actor path already applies via `strip_actor_continuation`.
+
+**Deliberately NOT fixed before publishing the baseline.** Fixing the scorer
+after seeing the result and re-running is a re-roll, which the baseline's
+prereg forbids. It lands after, and the next run that uses it says so.
+Ref: `bm25-locomo-baseline-result-2026-08-07.md`.
