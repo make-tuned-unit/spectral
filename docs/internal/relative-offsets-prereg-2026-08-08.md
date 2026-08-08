@@ -130,3 +130,33 @@ numbers.
 
 **Refs:** `r11-render-ab-stage2-result-2026-08-06.md` (the axis that paid),
 `render.rs`, `render_contract.rs`, `landscape-research-2026-08-07.md` §G2.
+
+---
+
+## Replication prereg — committed before the replication ran (2026-08-08)
+
+The primary run above **PASSED** (+6.77pp, 9 fixed / 0 broken, McNemar exact
+p = 0.0039). It was a **single-stage** design: the whole n=133 in one
+comparison, with no held-out half. R11 — the project's only other validated
+accuracy lever — required a **disjoint validation set** before it was believed,
+and this result has not met that bar.
+
+LongMemEval `temporal-reasoning` is exhausted (n=133 total, all used), so the
+replication uses a **different corpus**: LoCoMo `temporal-reasoning`, n=317.
+That is a stronger test than a held-out split of the same dataset — it tests
+generalisation across benchmarks, not just across samples.
+
+* **Direction is pre-specified:** B (relative offsets) > A. A two-sided test is
+  still reported, but the hypothesis under test is directional and was fixed by
+  the primary result before this run started.
+* **Arms:** identical to the primary — `--no-expand-queries` on both, temp 0,
+  post-R21 scorer, single variable `SPECTRAL_DATED_CONTEXT=1`.
+* **Gate:** McNemar exact **p < 0.05 in the same direction**. Anything else and
+  the primary result is recorded as **not replicated**, and the lever does not
+  become default on the strength of one run.
+* **Cost:** ~$8 (LoCoMo contexts average 2,841 tokens, ~5× smaller than
+  LongMemEval's).
+
+**Commitment:** the replication result is published whichever way it falls. A
+failed replication does not retract the primary p-value — it bounds what the
+primary run supports, which is the point of running it.
