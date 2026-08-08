@@ -95,6 +95,23 @@ pub struct RenderOptions<'a> {
     /// Annotate dates with a computed offset from `question_date`
     /// ("4 months ago"). Requires `question_date`. Off by default, matching
     /// the published run.
+    ///
+    /// **Measured once, significant, not yet replicated (2026-08-08).**
+    /// Preregistered A/B on LongMemEval `temporal-reasoning` (n=133, paired,
+    /// expansion off, temp 0): **76.69% → 83.46%, +6.77pp, 9 fixed / 0 broken,
+    /// McNemar exact p = 0.0039**, at **+1.1% context tokens**.
+    ///
+    /// The mechanism is not extra information — the absolute date is still
+    /// there and the offset is derivable from it. It **removes an arithmetic
+    /// failure mode**: without the annotation the actor computes the offset
+    /// itself and sometimes picks the wrong session. 7 of the 9 fixed
+    /// questions are phrased in relative time ("a week ago").
+    ///
+    /// **The default stays `false`** until the replication finishes — it
+    /// stopped mid-arm when API credit ran out, and R11 (the only other
+    /// validated accuracy lever here) was believed because it survived a
+    /// disjoint validation set. See
+    /// `docs/internal/relative-offsets-result-2026-08-08.md`.
     pub relative_offsets: bool,
     /// Append the Librarian's per-memory `description` as a labeled
     /// `[librarian: …]` note. Off by default: measured **no lift** (9/10 vs
