@@ -456,8 +456,7 @@ fn rrf_fuse(
     // "Top member" is resolved by BM25 rank here because the composite score
     // the additive path ranks by does not exist yet at this point.
     if config.apply_entity_boost {
-        let mut wing_top: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
+        let mut wing_top: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         let mut wing_size: std::collections::HashMap<&str, usize> =
             std::collections::HashMap::new();
         for (i, hit) in candidates.iter().enumerate() {

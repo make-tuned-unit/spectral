@@ -2165,7 +2165,6 @@ impl Brain {
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: config.apply_context_dedup,
-            ..Default::default()
         };
         let ctx = match config.now {
             Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),

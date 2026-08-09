@@ -457,7 +457,6 @@ pub fn run_cascade_pipeline_scoped(
         rrf_recency_weight: config.rrf_recency_weight,
         rrf_signal_weight: config.rrf_signal_weight,
         rrf_entity_weight: config.rrf_entity_weight,
-        ..Default::default()
     };
 
     // Only compute co-retrieval affinity when it will actually be applied.
