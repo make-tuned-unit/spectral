@@ -887,3 +887,71 @@ plumbing `description` through `RememberOpts`.
 Ref: `speaker-attribution-result-2026-08-09.md`,
 `speaker-attribution-prereg-2026-08-09.md`,
 `speaker-attribution-diagnostic-2026-08-09.md`.
+
+---
+
+## R24 — Speaker attribution · **PASS** (2026-08-09)
+
+**The first PASS in this retrieval series, and it replicates.** $0,
+preregistered at `aaba5a9` before implementation, full N=1438, `topk_fts`,
+model-free.
+
+Evidence-turn micro **59.86% → 62.62% (+2.76pp, +59 turns)**, Wilcoxon on
+per-question counts **72 nonzero pairs [+64/−8], p<0.0001**, both prespecified
+clauses met with the power floor cleared ~5×. Zero-evidence 357→329. Context
+cost **+0.3%**. Multi-session — the weakest slice, and the one every RRF arm
+made worse — gained most at **+4.58pp**.
+
+Both preconditions passed; the stronger one validates against the *published*
+record: A0″ at full N reproduces R19's corpus figures exactly (59.86% / 68.63%
+/ 357).
+
+**Mechanism confirmed, not merely outcome:** retrieved turns containing the
+queried name fell 38.4% → 20.8%, cutting the coreference inversion 4.8× → 1.9×.
+
+**Two things went wrong and are recorded:** (a) the prereg predicted arm C
+(separate FTS column) would beat arm B′ (prefix into content); they are
+**identical on every question's evidence count**, so the dilution argument was
+wrong — FTS5 matches across all indexed columns, so a separate column is not a
+separate channel, and dilution lives in the *attachment*, not the *placement*.
+The choice is a token decision only (+0.3% vs +3.8%). (b) R23's null was
+**underpowered, not absent** — same lever, +1.69pp/p=0.25 at N=250 versus
++2.76pp/p<0.0001 at N=1438.
+
+**Bounded by measurement:** does **not** replicate on LongMemEval, because that
+corpus has no named speakers — a structural absence, not a failed test. The
+no-lexical-bridge failure family does generalize (72.1% there vs 62.9% on
+LoCoMo); the specific pathology is ~half as strong (18.9% vs 38.4%).
+
+**Does NOT follow:** no accuracy claim (retrieval only, no end-to-end arm), no
+cascade change (`recall_cascade` unmeasured and it is the only path Permagent
+calls), bench-scoped implementation, corpus-shaped result. Defaults stay OFF.
+
+Ref: `speaker-field-result-2026-08-09.md`, `speaker-field-prereg-2026-08-09.md`,
+`longmemeval-replication-2026-08-09.md`,
+`speaker-attribution-diagnostic-2026-08-09.md`.
+
+---
+
+## R26 — Do the N=250 verdicts survive at full N? · IN FLIGHT (2026-08-09)
+
+**A repair of our own record, designed so it can embarrass us.** Preregistered
+before running: `full-n-recheck-prereg-2026-08-09.md`.
+
+R24 established that the sample, not the statistic, was the constraint. **Every
+retrieval verdict in this series was measured at N=250** — a subset inherited
+from G4, never justified, and **~5pp easier than the corpus** it was drawn from
+(64.89% vs 59.86%). Those verdicts are published in `MEASURED_RECORD.md` as
+measured results, and **at least one is now known to have been wrong**.
+
+Re-tests A3′ (additive declarative, was NULL +0.84pp — **runs first, most likely
+to flip**), A2′ (RRF+declarative, R22's primary, was NULL at p=0.0525, the same
+just-above-α profile R23 had), and A1′ (RRF, was **REFUTED** −5.90pp p=0.0004),
+against the existing full-N A0″ baseline. Gates identical to R22's, so N is the
+only variable.
+
+If a verdict flips, `MEASURED_RECORD.md` is corrected with the prominence the
+original claim received, and R22's numbers stay put with the correction beside
+them — the treatment R19 gave the BM25 baseline.
+
+Ref: `full-n-recheck-prereg-2026-08-09.md`.
