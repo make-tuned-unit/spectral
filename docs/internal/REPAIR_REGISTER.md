@@ -842,3 +842,48 @@ does not affect R22 — all six arms share one binary.
 
 Ref: `rrf-composition-result-2026-08-09.md`,
 `rrf-composition-prereg-2026-08-08.md`.
+
+---
+
+## R23 — Speaker attribution · NULL (2026-08-09), gate underpowered
+
+**$0, preregistered at `6c2e32a` before implementation.** LoCoMo, 250
+questions, `topk_fts`, R19 labels. A0' precondition passed exactly (a full
+re-ingest reproduced 231/356, 53 zero-evidence, 0 discordant vs R22's A0), so
+arm B is interpretable.
+
+Arm B (turn content prefixed with the speaker's name) scored **+1.69pp**
+evidence-turn micro-recall (231 → 237 turns), **p = 0.2500**, discordant 0/3,
+against a prespecified gate of p<0.05 **and** ≥+2.0pp. **It fails both clauses
+and is recorded as a NULL.**
+
+**The gate could not have passed.** With 3 discordant pairs the smallest
+attainable two-sided exact McNemar p is `2 × 0.5³ = 0.25`; significance needed
+≥6 discordant pairs one-way. The all-or-nothing "all evidence turns retrieved"
+indicator discards most of the signal — arm B gained 6 evidence turns but only
+3 questions crossed the threshold. **The prereg was underpowered for the effect
+it was built to detect, and that was not checked before running.** The result
+stands as preregistered; re-scoring under a statistic chosen after seeing the
+data would be the forking path the prereg exists to prevent. The fix (paired
+Wilcoxon on per-question evidence-turn counts, power computed in advance)
+belongs to the next prereg and is NOT applied retroactively.
+
+**Direction and mechanism both went the right way, uniquely in this series.**
+Prespecified mechanism check: retrieved top-40 turns containing the queried
+name fell **36.4% → 19.2%**, narrowing the inversion 8.5× → 5.9%; missed
+evidence shrank 70 → 62. The dilution risk the prereg warned about did **not**
+materialise: 65 promotions vs 30 demotions (RRF churned 71/76), **zero
+questions lost full-evidence status**, zero-evidence improved 53 → 51, and
+**multi-session improved +2.27pp** — the slice every RRF arm made worse.
+
+Small capture of a large opportunity: prefixing makes the name *present* in the
+right turns but also in every other turn by that speaker, so the signal is
+admitted rather than made discriminative. That is what **arm C** (speaker as a
+separate indexed field) was preregistered to test; it is **deferred, not
+dropped**, and is cheaper than first assessed — `memories_fts` already indexes
+`key, content, description` separately, so no schema change is needed, only
+plumbing `description` through `RememberOpts`.
+
+Ref: `speaker-attribution-result-2026-08-09.md`,
+`speaker-attribution-prereg-2026-08-09.md`,
+`speaker-attribution-diagnostic-2026-08-09.md`.
