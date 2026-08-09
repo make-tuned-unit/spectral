@@ -5,8 +5,9 @@ topk_fts`, k=40, R19 turn labels. No model calls, no paid runs, model-free.**
 Preregistered at `aaba5a9` before implementation:
 `speaker-field-prereg-2026-08-09.md`.
 
-**The first PASS in this retrieval series.** Capability is bench-scoped and
-**default off**; see "What does NOT follow" before acting on it.
+**The first PASS in this retrieval series** — and it replicates: both speaker
+placements pass independently. Capability is bench-scoped and **default off**;
+see "What does NOT follow" before acting on it.
 
 ## Result
 
@@ -71,9 +72,48 @@ speaker*, diluting the content channel; a separate column lets a query naming a
 person match turns that person **spoke** without competing with content
 matching.
 
-The B′ arm (R23 replicated at full N) is **still running** and will settle
-whether that account is right. It is reported separately and does not affect
-this verdict.
+**That account is wrong, and B′ proves it.**
+
+## B′ — my prereg prediction is REFUTED
+
+| arm | evidence micro | zero-ev | multi-session | tokens |
+|---|---:|---:|---:|---:|
+| A0″ | 59.86% (1281/2140) | 357 | 40.91% | 1.000× |
+| **C** (separate column) | **62.62% (1340/2140)** | 329 | 45.49% | **1.003×** |
+| **B′** (prefix in content) | **62.62% (1340/2140)** | 329 | 45.49% | 1.038× |
+
+B′ also **PASSES** — +2.76pp, 72 nonzero pairs [+64/−8], p < 0.0001 — with
+**evidence metrics identical to C on every single question**.
+
+This is not two runs of the same thing. The arms genuinely differ: **all 1,438
+context hashes differ, 179 questions retrieve in a different order, and 40
+retrieve a different set.** Both differ from baseline on ~1,420 questions. They
+simply capture the *same evidence* while doing so.
+
+**The prereg predicted C > B′ on a dilution argument. That argument was wrong.**
+Prefixing and a separate column both attach the speaker's name to every turn
+that person spoke — so both dilute *identically*. FTS5 matches across all
+indexed columns, so a separate column is not a separate channel; it is the same
+document with the term in a different slot. **The dilution lives in the
+attachment, not the placement.**
+
+**What survives:** the choice between them is a **token** decision, not a recall
+one. C costs +0.3%, B′ costs +3.8% (the prefix is emitted in every rendered
+turn). C is preferable, for a reason the prereg did not anticipate.
+
+## R23's null was underpowered, not absent — now confirmed
+
+B′ is R23 arm B at 5.75× the data. Same lever, same corpus, same config:
+
+| | N | Δ micro | p | verdict |
+|---|---:|---:|---:|---|
+| R23 arm B | 250 | +1.69pp | 0.2500 | NULL (underpowered) |
+| **R24 arm B′** | **1,438** | **+2.76pp** | **<0.0001** | **PASS** |
+
+The effect was real all along and the sample could not see it. This is the
+cleanest possible demonstration of the N lesson below — and a caution that
+*every* null in this series measured at N=250 deserves re-examination before
+being treated as settled.
 
 ## What does NOT follow
 
