@@ -583,6 +583,73 @@ fn apply_rrf_weight_env_cascade(cfg: &mut spectral_graph::cascade_layers::Cascad
     cfg.rrf_entity_weight = rrf_weight_env("ENTITY", cfg.rrf_entity_weight);
 }
 
+/// R25: emit the dialogue neighbours of every retrieved turn.
+///
+/// The coreference diagnostic measured why this should work: a question names a
+/// person, BM25 spends its budget on turns that *mention* them, and the answer
+/// is that person's own reply — the adjacent turn. Measured on the archived
+/// baseline, **46.4% of missed evidence sits exactly one turn from something we
+/// already retrieved.**
+///
+/// This is deliberately **not** a ranking lever. Every refuted lever tried to
+/// re-order the candidate set; this changes what is *emitted*, and it runs after
+/// ranking and truncation so it cannot perturb either.
+///
+/// **Bench-scoped by construction.** It parses the harness key format
+/// `{session}:turn:{index}:{role}`, so it tests whether the signal is worth
+/// anything — it is not a shippable feature. Production adjacency would need
+/// real sequence metadata on the memory, which is a separate design question.
+///
+/// `SPECTRAL_ADJACENCY=<radius>`; unset = off.
+fn apply_turn_adjacency(brain: &Brain, hits: &mut Vec<MemoryHit>) {
+    let Some(radius) = std::env::var("SPECTRAL_ADJACENCY")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|r| *r >= 1 && *r <= 10)
+    else {
+        return;
+    };
+
+    let present: std::collections::HashSet<String> = hits.iter().map(|h| h.key.clone()).collect();
+    let mut seen = present.clone();
+    let mut added: Vec<MemoryHit> = Vec::new();
+
+    for key in present.iter() {
+        // {session}:turn:{index}:{role}
+        let parts: Vec<&str> = key.split(':').collect();
+        if parts.len() < 4 || parts[1] != "turn" {
+            continue;
+        }
+        let Ok(idx) = parts[2].parse::<i64>() else {
+            continue;
+        };
+        for d in -radius..=radius {
+            if d == 0 {
+                continue;
+            }
+            let n = idx + d;
+            if n < 0 {
+                continue;
+            }
+            // Role is part of the key and turns alternate, so try both rather
+            // than assume the alternation holds. A miss is simply skipped.
+            for role in ["user", "assistant"] {
+                let nkey = format!("{}:turn:{}:{}", parts[0], n, role);
+                if seen.contains(&nkey) {
+                    continue;
+                }
+                if let Ok(Some(m)) = brain.get_memory_by_key(&nkey) {
+                    seen.insert(nkey);
+                    added.push(Brain::memory_as_hit(m));
+                }
+            }
+        }
+    }
+    // Stable order so the emitted context is byte-reproducible.
+    added.sort_by(|a, b| a.key.cmp(&b.key));
+    hits.extend(added);
+}
+
 pub fn apply_actr_rerank(hits: &mut [MemoryHit], now: DateTime<Utc>, d: f64) {
     let n = hits.len();
     if n < 2 {
@@ -751,6 +818,12 @@ pub fn retrieve_topk_fts(
     if answ_cfg.enabled || sup_cfg.enabled {
         hits.truncate(output_size);
     }
+    // R25: structural adjacency emission. Runs LAST, after every ranking and
+    // truncation step, because it deliberately does not rank — it emits the
+    // dialogue neighbours of what ranking already chose. See
+    // docs/internal/turn-adjacency-prereg-2026-08-09.md.
+    apply_turn_adjacency(brain, &mut hits);
+
     let cap = cap_for_shape(shape);
     let memories: Vec<String> = hits
         .iter()

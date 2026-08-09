@@ -2545,6 +2545,22 @@ impl Brain {
     }
 
     /// Fetch a memory by ID. Returns None if not found.
+    /// Resolve a memory by its **key** rather than its id.
+    ///
+    /// Ids are `blake3(key)`, so this is a pure derivation plus a point read —
+    /// no scan. Exposed because callers that hold keys (consolidation edges,
+    /// structural neighbour lookup) otherwise cannot reach a row at all: the
+    /// derivation was private.
+    pub fn get_memory_by_key(&self, key: &str) -> Result<Option<spectral_ingest::Memory>, Error> {
+        self.get_memory(&key_to_id(key))
+    }
+
+    /// Project a stored memory into a hit, marked `hits = 0` so consumers can
+    /// tell it was surfaced structurally rather than by query match.
+    pub fn memory_as_hit(m: spectral_ingest::Memory) -> spectral_ingest::MemoryHit {
+        memory_to_hit(m)
+    }
+
     pub fn get_memory(&self, id: &str) -> Result<Option<spectral_ingest::Memory>, Error> {
         self.rt
             .block_on(self.memory_store.get_memory(id))

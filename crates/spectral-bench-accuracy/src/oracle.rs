@@ -926,6 +926,7 @@ mod tests {
                         content: "The sky is blue today and I love it.".into(),
                         // The one labelled evidence turn.
                         has_answer: Some(true),
+                        speaker: None,
                     },
                     Turn {
                         role: "assistant".into(),
@@ -933,12 +934,14 @@ mod tests {
                         // Explicit `false` occurs in the real dataset and is
                         // NOT evidence.
                         has_answer: Some(false),
+                        speaker: None,
                     },
                 ],
                 vec![Turn {
                     role: "user".into(),
                     content: "I ate pasta for dinner yesterday evening.".into(),
                     has_answer: None,
+                    speaker: None,
                 }],
             ],
             haystack_session_ids: vec!["answer_abc_1".into(), "noise_1".into()],
