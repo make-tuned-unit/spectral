@@ -781,3 +781,64 @@ actor path already applies via `strip_actor_continuation`.
 after seeing the result and re-running is a re-roll, which the baseline's
 prereg forbids. It lands after, and the next run that uses it says so.
 Ref: `bm25-locomo-baseline-result-2026-08-07.md`.
+
+---
+
+## R22 — RRF composition · REFUTED (2026-08-09)
+
+**The composition was never the binding constraint.** The failure analysis
+named reciprocal rank fusion "the fix we already own" and the highest-value
+untested lever, on the argument that additive boosts structurally cannot
+promote deep evidence (48 ranks of budget where 59 are needed). The arithmetic
+was right. The conclusion drawn from it was not.
+
+Preregistered before any arm ran (`a3b241d`), $0, 250 LoCoMo questions,
+`topk_fts`, R19 labels. Primary arm A2 (RRF + declarative) scored **−3.65pp**
+evidence-turn micro-recall (p=0.0525) against a prespecified PASS gate of
+p<0.05 **and** ≥+2.0pp. A1 (RRF, default channels) is refuted outright at
+**−5.90pp, p=0.0004**. The additive control A3 scored **+0.84pp**, reproducing
+the previously measured +3 evidence turns — so A2 is **16 evidence turns worse
+than the additive composition it was supposed to beat**.
+
+**The mechanism worked and the hypothesis still failed.** RRF promoted the
+first evidence turn in 82 questions and rescued 5 questions that had zero
+evidence — exactly the class additive boosts provably could not reach. It also
+newly broke 17, losing 21 evidence turns to gain 8. Weighting BM25 up (A5)
+returns recall to baseline with the most rank movement and almost no damage:
+the best thing RRF does is stop being RRF, and the frontier runs monotonically
+back toward BM25-only.
+
+This **confirms** the failure analysis §3 (BM25 ranks correctly by its own
+criterion; missed evidence has 0.46× query-term overlap) and **refutes** §4–§5.
+The residue is not a composition problem. We do not have a signal that
+identifies answer-bearing turns, and no arrangement of the signals we have will
+manufacture one. Remaining $0 levers are about *acquiring* a signal:
+`query_aliases` vocabulary bridging (never tested) and query-conditioned
+answer-shape matching.
+
+**Default stays OFF on both paths.** `recall_cascade` — the only path Permagent
+calls — was not measured, so nothing here licenses a cascade change.
+
+Two `rrf_fuse` defects were found by audit **before any arm produced a row**
+(`b0ed077`): `add_channel` paid channel mass to candidates a signal scores 0,
+ordered by the `id` tiebreak (proximity is exactly 0 for 91.8% of non-evidence
+turns, so A4 would have been measuring memory-id order), and RRF silently
+dropped the entity signal the additive path applies, making an RRF-vs-additive
+arm a two-variable change. `rrf_fuse` had shipped with **no tests**; six added
+at `59fbdb4`.
+
+The prereg also contradicted itself on retrieval path (Amendment 3): it
+specified shape routing while naming G4's k40 arm as the precondition, and
+`SPECTRAL_TOPK_DECLARATIVE` is read only on the topk path — under shape routing
+the primary arm's single variable would have been inert on ~80% of questions
+and produced a meaningless result that looked like a clean null.
+
+**Side observation, R16.** A0 is metric-identical to G4's archived arm but not
+byte-identical: 64/181 shared context hashes differ, **63 of them pure
+reorderings** of an identical key set, 1 a genuine set change. That is the R16
+tiebreak signature, and R16 landed between the runs. R16 was validated 0/500 on
+LongMemEval; LoCoMo is the first corpus where it visibly moves ordering. It
+does not affect R22 — all six arms share one binary.
+
+Ref: `rrf-composition-result-2026-08-09.md`,
+`rrf-composition-prereg-2026-08-08.md`.

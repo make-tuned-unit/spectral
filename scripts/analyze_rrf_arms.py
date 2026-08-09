@@ -18,14 +18,26 @@ from pathlib import Path
 
 
 def load(path):
-    rows = {}
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
+    """Load oracle rows, tolerating a torn final line.
+
+    Arms are read while they are still being written, and a half-flushed last
+    line is not a corrupt arm. Anything *other* than an unterminated tail is
+    still an error — silently dropping bad rows mid-file would quietly shrink a
+    denominator, which is the one failure mode that would not be visible in the
+    output.
+    """
+    rows, lines = {}, open(path).read().splitlines()
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
             r = json.loads(line)
-            rows[r["question_id"]] = r
+        except json.JSONDecodeError:
+            if i == len(lines) - 1:
+                continue  # torn tail of an in-flight arm
+            raise
+        rows[r["question_id"]] = r
     return rows
 
 
@@ -130,6 +142,36 @@ def main():
     ms = lambda r: r.get("category") == "multi-session"
     for label, rows in arms.items():
         print(f"  {label:<8} {fmt(summarize(rows, ms))}")
+
+    print(f"\n=== Rank of first evidence turn, vs {args.baseline} ===")
+    # The mechanism, not the verdict. RRF's entire claim is that it can promote
+    # a deep evidence turn that additive boosts cannot reach. That claim is
+    # about RANK, and it is testable even when recall does not move: a
+    # composition that promotes nothing has no mechanism, while one that
+    # promotes turns without improving recall is displacing something else.
+    basline_rows = arms[args.baseline]
+    for label, rows in arms.items():
+        if label == args.baseline:
+            continue
+        moved_up = moved_down = same = 0
+        deltas = []
+        for q in set(labelled(basline_rows)) & set(labelled(rows)):
+            rb = basline_rows[q].get("rank_first_evidence_turn")
+            rc = rows[q].get("rank_first_evidence_turn")
+            if rb is None or rc is None:
+                continue  # no evidence retrieved in one arm; recall covers that
+            deltas.append(rb - rc)
+            if rc < rb:
+                moved_up += 1
+            elif rc > rb:
+                moved_down += 1
+            else:
+                same += 1
+        med = sorted(deltas)[len(deltas) // 2] if deltas else 0
+        print(
+            f"  {label:<8} promoted {moved_up:>3}  demoted {moved_down:>3}  "
+            f"unchanged {same:>3}  median move {med:+d} ranks"
+        )
 
     print(f"\n=== Paired McNemar vs {args.baseline} (full-evidence indicator) ===")
     base = arms[args.baseline]
