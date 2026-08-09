@@ -152,5 +152,35 @@ the run command omitted. All arms pass `--max-questions 250` explicitly, taking
 the first 250 in dataset order, matching G4's arm. Nothing about the prereg's
 targets changes — this pins the command to the N that was already specified.
 
+## Amendment 3 — retrieval path (the prereg contradicted itself)
+
+The arms table said **shape routing**, and the precondition said **reproduce
+G4's k40 arm**. Those two cannot both hold. G4's archived `k40.jsonl` is
+**250/250 `TopkFts`**, i.e. it was run with `--retrieval-path topk_fts`; a
+shape-routed run of the same questions is **104 Cascade / 24 TopkFts** over the
+first 128. The contradiction was caught by comparing routing counts before any
+arm was scored.
+
+Resolved in favour of **`--retrieval-path topk_fts`**, for two independent
+reasons:
+
+1. It is the configuration the precondition names, and the one the failure
+   analysis's arithmetic describes — pool 120 is `fetch_mult=3 × k=40`, the
+   topk path's numbers.
+2. **`SPECTRAL_TOPK_DECLARATIVE` is only read on the topk path.** On cascade,
+   declarative comes from the question-type profile. Under shape routing the
+   primary arm's single variable would therefore have been inert on ~80% of
+   questions, and A2 would have been a near no-op measured as if it were a
+   test of RRF.
+
+Reason 2 is the important one: shape routing would not have produced a *wrong*
+number so much as a **meaningless** one, and it would have looked like a
+clean null.
+
+**Queued, not claimed:** `recall_cascade` is the only path our real consumer
+calls (Permagent 08b), so a topk-only result does not speak to production. A
+cascade replication is a separate prereg, and RRF must not be defaulted on
+anywhere on the strength of a topk-only measurement.
+
 **Register row:** R22. **Refs:** `failure-analysis-2026-08-08.md` (§4, §5),
 `g4-proximity-result-2026-08-08.md`, `r19-locomo-turn-labels-2026-08-08.md`.

@@ -39,15 +39,15 @@ run () {
         --output "${label}.jsonl" \
         --label "$label" \
         --max-questions "$N" \
+        --retrieval-path topk_fts \
       2>&1 | tail -3
 }
 
-# A0 builds the brains every later arm reuses. Never pass --fresh-brains again.
-if [ ! -d ./brains ]; then
-  echo "== a0: building brains (fresh)"
-  "$BIN" oracle --dataset "$DS" --work-dir ./brains --output a0.jsonl \
-    --label a0 --max-questions "$N" --fresh-brains 2>&1 | tail -3
-fi
+# Brains are ingest artefacts and do not depend on the retrieval path, so a
+# partial set is reused and only the missing ones are built (oracle.rs:
+# `reused = reuse_brains && brain_dir/memory.db exists`). No --fresh-brains:
+# the ingest-affecting config has not changed, and forcing a rebuild here would
+# discard a correct brain set for no reason.
 
 run a0
 run a1 SPECTRAL_RRF=1
