@@ -30,7 +30,7 @@ def load(path):
         if line:
             r = json.loads(line)
             rows[r["question_id"]] = r
-    return {q: r for q, r in rows.items() if r.get("evidence_turns_total", 0) > 0}
+    return {q: r for q, r in rows.items() if (r.get("evidence_turns_total") or 0) > 0}
 
 
 def ranks(vals):

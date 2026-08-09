@@ -57,7 +57,7 @@ def exact_two_sided_p(b, c):
 def labelled(rows):
     """Rows carrying R19 evidence labels. Unlabelled rows are excluded from
     every metric rather than silently counted as misses."""
-    return {q: r for q, r in rows.items() if r.get("evidence_turns_total", 0) > 0}
+    return {q: r for q, r in rows.items() if (r.get("evidence_turns_total") or 0) > 0}
 
 
 def summarize(rows, key=None):
