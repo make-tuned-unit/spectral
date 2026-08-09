@@ -43,6 +43,15 @@ def main():
     ap.add_argument("--raw", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-questions", type=int)
+    ap.add_argument(
+        "--mode",
+        choices=["prefix", "field"],
+        default="prefix",
+        help="prefix: 'Name: <text>' inline in content (R23 arm B). "
+             "field: leave content untouched, emit a `speaker` field that "
+             "ingest writes to the separate indexed FTS description column "
+             "(R24 arm C).",
+    )
     args = ap.parse_args()
 
     lab = json.load(open(args.labelled))
@@ -62,11 +71,14 @@ def main():
                     unmatched += 1
                     continue  # leave untouched rather than guess
                 matched += 1
-                t["content"] = f"{sp}: {t['content']}"
+                if args.mode == "prefix":
+                    t["content"] = f"{sp}: {t['content']}"
+                else:
+                    t["speaker"] = sp
 
     json.dump(lab, open(args.out, "w"))
     total = matched + unmatched
-    print(f"turns speaker-prefixed: {matched}/{total} "
+    print(f"turns speaker-attributed ({args.mode}): {matched}/{total} "
           f"({matched/max(total,1)*100:.2f}%), unmatched left as-is: {unmatched}")
     print(f"wrote {args.out}")
 
