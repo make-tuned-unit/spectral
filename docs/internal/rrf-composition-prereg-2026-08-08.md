@@ -112,5 +112,45 @@ zero-evidence rate (31.2%), so it is the slice most likely to move.
   exactly the garden-of-forking-paths this file exists to prevent.
 - Per-channel weights: only the single prespecified A5 setting. No sweep.
 
+## Amendment 1 — two implementation defects, fixed before any arm produced data
+
+Auditing `rrf_fuse` before trusting it turned up two defects. Both are recorded
+here rather than quietly fixed, and both were committed **before the first arm
+produced a row**. Neither is a response to a result; no result existed.
+
+**(a) Inert candidates were being ranked.** `add_channel` ranked *all* `n`
+candidates, so candidates a signal scores at exactly 0 still received real
+`w/(K + rank)` mass, ordered by the `id` tiebreak. Our signals are sparse — G4
+measured proximity at exactly 0 for **91.8%** of non-evidence turns — so that
+channel would have been mostly **memory-id order wearing a signal's name**.
+Fixed: only candidates with a value `> 0` are ranked.
+
+Without this fix the A4 (proximity) arm would have been measuring id order, and
+a null there would have been uninterpretable.
+
+**(b) RRF silently dropped the entity signal.** `apply_entity_boost` is **on by
+default** on the topk path (`RecallTopKConfig::apply_entity_resolution`), but
+`rrf_fuse` had no entity channel. So A0 → A2 would have differed by *two*
+things: the composition, and the loss of a signal. Fixed by adding an entity
+channel; cluster leaders are resolved by BM25 rank, since the composite score
+the additive path uses to pick them does not exist under RRF.
+
+This is what the prereg's "single variable per arm" requires, and it is only
+correct now because of (a): the entity signal is sparse and binary, so before
+(a) it would have contributed almost pure noise.
+
+**Consequence for A0:** `use_rrf = false` means `rrf_fuse` is never called, so
+neither fix can change A0's output. That is a checkable claim, not an
+assumption, and it is checked — A0 is re-run on the final binary and must
+produce **0/250 `context_hash` diffs** against its pre-amendment run.
+
+## Amendment 2 — question count
+
+The labelled LoCoMo file holds **1,438** questions, not 250. The 250 figure
+comes from `--max-questions 250`, which G4 used and which the first draft of
+the run command omitted. All arms pass `--max-questions 250` explicitly, taking
+the first 250 in dataset order, matching G4's arm. Nothing about the prereg's
+targets changes — this pins the command to the N that was already specified.
+
 **Register row:** R22. **Refs:** `failure-analysis-2026-08-08.md` (§4, §5),
 `g4-proximity-result-2026-08-08.md`, `r19-locomo-turn-labels-2026-08-08.md`.

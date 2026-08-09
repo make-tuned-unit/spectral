@@ -204,6 +204,7 @@ pub struct CascadePipelineConfig {
     pub rrf_proximity_weight: f64,
     pub rrf_recency_weight: f64,
     pub rrf_signal_weight: f64,
+    pub rrf_entity_weight: f64,
     /// Additive weight for the co-retrieval (cross-query co-access) boost.
     /// Default **0.0** (disabled): measured on Permagent's real workload, a
     /// non-zero weight degrades top-5 relevance (~3–4.5:1 worse, p≈0) because a
@@ -271,6 +272,7 @@ impl Default for CascadePipelineConfig {
             rrf_proximity_weight: 1.0,
             rrf_recency_weight: 1.0,
             rrf_signal_weight: 1.0,
+            rrf_entity_weight: 1.0,
             co_retrieval_weight: 0.0,
             // CAPABILITY present, DEFAULT off (1). Widening to 3×k is measured
             // Pareto-safe on RETRIEVAL (token-neutral; recovers buried answers
@@ -454,6 +456,7 @@ pub fn run_cascade_pipeline_scoped(
         rrf_proximity_weight: config.rrf_proximity_weight,
         rrf_recency_weight: config.rrf_recency_weight,
         rrf_signal_weight: config.rrf_signal_weight,
+        rrf_entity_weight: config.rrf_entity_weight,
         ..Default::default()
     };
 

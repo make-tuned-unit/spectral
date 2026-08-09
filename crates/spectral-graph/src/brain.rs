@@ -685,6 +685,7 @@ pub struct RecallTopKConfig {
     pub rrf_proximity_weight: f64,
     pub rrf_recency_weight: f64,
     pub rrf_signal_weight: f64,
+    pub rrf_entity_weight: f64,
     /// Additive boost for first-person declarative content (answer-bearing
     /// user-fact turns). Default false — kept off historically because the
     /// signal blends into cascade; enabled selectively for the topk_fts path
@@ -722,6 +723,7 @@ impl Default for RecallTopKConfig {
             rrf_proximity_weight: 1.0,
             rrf_recency_weight: 1.0,
             rrf_signal_weight: 1.0,
+            rrf_entity_weight: 1.0,
             apply_declarative_boost: false,
             apply_context_dedup: true,
             now: None,
@@ -2152,6 +2154,7 @@ impl Brain {
             rrf_proximity_weight: config.rrf_proximity_weight,
             rrf_recency_weight: config.rrf_recency_weight,
             rrf_signal_weight: config.rrf_signal_weight,
+            rrf_entity_weight: config.rrf_entity_weight,
             apply_ambient_boost: false,
             ambient_weights: crate::cascade_layers::AmbientBoostWeights::default(),
             apply_declarative_boost: config.apply_declarative_boost,

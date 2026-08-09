@@ -580,6 +580,7 @@ fn apply_rrf_weight_env_cascade(cfg: &mut spectral_graph::cascade_layers::Cascad
     cfg.rrf_proximity_weight = rrf_weight_env("PROXIMITY", cfg.rrf_proximity_weight);
     cfg.rrf_recency_weight = rrf_weight_env("RECENCY", cfg.rrf_recency_weight);
     cfg.rrf_signal_weight = rrf_weight_env("SIGNAL", cfg.rrf_signal_weight);
+    cfg.rrf_entity_weight = rrf_weight_env("ENTITY", cfg.rrf_entity_weight);
 }
 
 pub fn apply_actr_rerank(hits: &mut [MemoryHit], now: DateTime<Utc>, d: f64) {
@@ -684,6 +685,7 @@ pub fn retrieve_topk_fts(
         rrf_proximity_weight: rrf_weight_env("PROXIMITY", 1.0),
         rrf_recency_weight: rrf_weight_env("RECENCY", 1.0),
         rrf_signal_weight: rrf_weight_env("SIGNAL", 1.0),
+        rrf_entity_weight: rrf_weight_env("ENTITY", 1.0),
         proximity_weight: proximity_weight_env(),
         apply_declarative_boost: std::env::var("SPECTRAL_TOPK_DECLARATIVE").is_ok(),
         apply_context_dedup: std::env::var("SPECTRAL_DISABLE_CONTEXT_DEDUP").is_err(),

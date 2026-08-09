@@ -294,6 +294,7 @@ pub struct RerankingConfig {
     pub rrf_proximity_weight: f64,
     pub rrf_recency_weight: f64,
     pub rrf_signal_weight: f64,
+    pub rrf_entity_weight: f64,
 }
 
 impl Default for RerankingConfig {
@@ -324,6 +325,7 @@ impl Default for RerankingConfig {
             rrf_proximity_weight: 1.0,
             rrf_recency_weight: 1.0,
             rrf_signal_weight: 1.0,
+            rrf_entity_weight: 1.0,
         }
     }
 }
@@ -377,12 +379,23 @@ fn rrf_fuse(
         *f += config.rrf_bm25_weight / (RRF_K + i as f64 + 1.0);
     }
 
-    // A signal channel: rank by `key` descending, then add 1/(K+rank).
+    // A signal channel: rank by `key` descending, then add w/(K+rank).
+    //
+    // **Only candidates the signal actually scores are ranked.** A signal that
+    // returns 0 for a candidate has no opinion about it, and the difference
+    // matters: our signals are sparse (G4 measured proximity at exactly 0 for
+    // 91.8% of non-evidence turns). Ranking the zero-valued tail anyway would
+    // order it by the `id` tiebreak and hand out real `1/(K+rank)` mass on that
+    // basis — a channel that is mostly memory-id order wearing a signal's name.
+    // Sparse binary signals (entity) would be almost entirely that noise.
     let add_channel = |vals: Vec<f64>, weight: f64, fused: &mut Vec<f64>| {
-        if weight <= 0.0 || vals.iter().all(|v| *v <= 0.0) {
+        if weight <= 0.0 {
+            return;
+        }
+        let mut idx: Vec<usize> = (0..n).filter(|&i| vals[i] > 0.0).collect();
+        if idx.is_empty() {
             return; // inert signal: contribute nothing rather than noise
         }
-        let mut idx: Vec<usize> = (0..n).collect();
         idx.sort_by(|&a, &b| {
             vals[b]
                 .partial_cmp(&vals[a])
@@ -433,6 +446,38 @@ fn rrf_fuse(
     if config.apply_signal_score {
         let vals: Vec<f64> = candidates.iter().map(|h| h.signal_score).collect();
         add_channel(vals, config.rrf_signal_weight, &mut fused);
+    }
+
+    // Entity channel. The additive path gives a flat bonus to the top-scoring
+    // member of each wing cluster with >=2 members; without this, enabling RRF
+    // would silently *drop* a signal the additive path applies, and an
+    // RRF-vs-additive comparison would be measuring two changes at once.
+    //
+    // "Top member" is resolved by BM25 rank here because the composite score
+    // the additive path ranks by does not exist yet at this point.
+    if config.apply_entity_boost {
+        let mut wing_top: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        let mut wing_size: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for (i, hit) in candidates.iter().enumerate() {
+            // Wingless hits are skipped for the same reason as the additive
+            // path: grouping them under "" forms a phantom cluster.
+            let Some(wing) = hit.wing.as_deref().filter(|w| !w.is_empty()) else {
+                continue;
+            };
+            *wing_size.entry(wing).or_insert(0) += 1;
+            wing_top.entry(wing).or_insert(i); // candidates arrive in BM25 order
+        }
+        let mut vals = vec![0.0_f64; n];
+        for (wing, &i) in &wing_top {
+            if wing_size.get(wing).copied().unwrap_or(0) >= 2 {
+                // Flat: the additive signal is binary, so every cluster leader
+                // ties and the `id` tiebreak orders them reproducibly.
+                vals[i] = 1.0;
+            }
+        }
+        add_channel(vals, config.rrf_entity_weight, &mut fused);
     }
 
     let mut indexed: Vec<(MemoryHit, f64)> = candidates.into_iter().zip(fused).collect();
