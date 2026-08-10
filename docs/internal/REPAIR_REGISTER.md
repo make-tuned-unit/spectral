@@ -955,3 +955,31 @@ original claim received, and R22's numbers stay put with the correction beside
 them — the treatment R19 gave the BM25 baseline.
 
 Ref: `full-n-recheck-prereg-2026-08-09.md`.
+
+### R26 — RESULT (2026-08-09)
+
+**The RRF refutation survives full N and is stronger.** A1′: −5.90pp at N=250
+becomes **−6.96pp (−149 turns), p<0.0001, 211 nonzero pairs [+40/−171]**;
+multi-session collapses 40.91% → 32.69%. Our most consequential negative claim
+is now verified at 5.75× the data rather than asserted from a subset.
+
+**A2′ changed verdict — toward R22, not away.** R22's *primary* arm sat at
+p=0.0525, the same just-above-α profile that made R23's null wrong. At full N it
+resolves to **REFUTED (−2.71pp, p=0.0015, 224 pairs)**. It was a real harm the
+sample was too small to confirm, not "no effect".
+
+**A3′ is the correction the record needs.** My prereg predicted it would flip to
+PASS; **it did not, and that prediction was wrong.** But it is not a null either:
+at full N the additive declarative boost is statistically unambiguous
+(**p=0.0001**, 33 improved vs 6 worsened) and practically marginal
+(**+1.36pp, +29 turns** — under the prespecified +2.0pp bar). **The effect-size
+clause is what preserves that distinction**; without it this reads as a win on
+p<0.001. So "six lexical levers, six nulls" needs amending: declarative is a
+*small real gain*, not an absence — though +1.36pp against a +23.34pp
+opportunity is still a rounding error, and it is the family's best member.
+
+**Not repaired:** G4 proximity, the k-admission rejection, and porter/widening/
+ACT-R/spreading remain measured at N=250 or on the pre-R19 diluted metric.
+**They are not settled.**
+
+Ref: `full-n-recheck-result-2026-08-09.md`.
