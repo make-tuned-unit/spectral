@@ -61,10 +61,17 @@ REFUTED; A3′ was published NULL and is a real sub-threshold effect. Neither
 error changed a decision — both point the same way R22 already concluded — but
 the record said "no effect" where it should have said "harmful" and "small."
 
-**Still outstanding:** G4 proximity, the k-admission rejection, and the earlier
-lexical levers (porter, widening, ACT-R, spreading) remain measured at N=250 or
-on the pre-R19 diluted metric. They are **not** re-tested here and should not be
-treated as settled.
+**Still outstanding:** G4 proximity and the earlier lexical levers (porter,
+widening, ACT-R, spreading) remain measured at N=250 or on the pre-R19 diluted
+metric. They are **not** re-tested here and should not be treated as settled.
+
+**Correction (2026-08-10):** this section originally listed the **k-admission
+rejection** among them. That was wrong — it was re-tested on 2026-08-08 at
+**N=500 on LongMemEval** on the corrected evidence-turn metric, not at N=250.
+The error was mine and it overstated the disrepair of the record. The k
+rejection is revisited for a different and legitimate reason — it was measured
+on a corpus with 11.5pp of headroom and applied to one with 40.1pp — under
+`k-admission-frontier-prereg-2026-08-10.md` (R27).
 
 ## Honest limits
 
