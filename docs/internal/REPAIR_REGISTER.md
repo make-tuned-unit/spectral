@@ -983,3 +983,44 @@ ACT-R/spreading remain measured at N=250 or on the pre-R19 diluted metric.
 **They are not settled.**
 
 Ref: `full-n-recheck-result-2026-08-09.md`.
+
+---
+
+## R25 — Turn adjacency · **PASS on the token-matched control** (2026-08-10)
+
+$0, preregistered before implementation, full N=1438, `topk_fts`, model-free.
+
+**PRIMARY (ADJ1 vs KMATCH, both ~2.5–2.62× tokens): +6.73pp (+144 turns), 303
+nonzero pairs [+219/−84], p<0.0001 — PASS.** At an identical token budget,
+spending context on the *neighbours of what you found* beats spending it on
+*more of what BM25 ranked next*.
+
+The flattering comparison (ADJ1 vs k=40) is **+18.93pp**. Reporting that as the
+headline would have claimed ~3× the entitled effect; the token-matched primary
+is what the prereg fixed and what this row reports.
+
+**Zero-evidence questions 357 → 119 (±1) → 63 (±2), an 82% reduction.**
+
+**Mechanism confirmed:** of 859 turns missed at k=40, **272 (31.7%) are reached
+ONLY by adjacency** and just 15.5% overlap with k=105 — structurally different
+populations, as the discourse-pair account predicts. **Speaker attribution (R24)
+contributes ZERO exclusively** (all 68 of its turns are also caught by k=105),
+so R24 is a cheap win at fixed k but **subsumed by k-raising, not
+complementary** — a material narrowing of how R24 should be described.
+
+**A prereg prediction was made and held:** ADJ2 was predicted "real but
+diminishing, ~a third of ADJ1's increment"; measured **+123 = 30%**. The
+diagnostic-then-predict method is two-for-two (it also predicted the 2.62× token
+cost from archived data; measured 2.50×).
+
+**Diminishing returns:** 270 turns/unit-context for ±1, 109 for ±2, ~31 for
+priced-but-unrun session-completion. The cliff is past ±2.
+
+**Does NOT follow:** no accuracy claim (no end-to-end arm, none budgeted; 3.63×
+context could dilute the reader); ADJ2-vs-ADJ1 is cost-unmatched (R27's k=150
+supplies the control); `recall_cascade` unmeasured (R28 tests transfer);
+bench-scoped implementation; corpus-shaped (two-party strictly-alternating
+dialogue is adjacency's ideal case).
+
+Ref: `turn-adjacency-result-2026-08-10.md`, `turn-adjacency-prereg-2026-08-09.md`,
+`turn-adjacency-diagnostic-2026-08-09.md`.
