@@ -1033,6 +1033,14 @@ pub fn retrieve_cascade(
     }
     // Restore the output size the shape profile asked for.
     hits.truncate(output_k);
+
+    // R28: adjacency on the CASCADE path too. `recall_cascade` is the only path
+    // Permagent calls, so a topk_fts-only measurement does not speak to
+    // production — the same reason G4 wired proximity here. Runs after
+    // truncation for the same reason it does on topk: it emits neighbours of
+    // what ranking chose, it does not rank.
+    apply_turn_adjacency(brain, &mut hits);
+
     let formatted = format_hits_grouped_capped_dated(&hits, cap_for_shape(qtype), question_date);
 
     Ok((formatted, hits, telemetry))
