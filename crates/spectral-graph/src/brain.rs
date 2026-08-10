@@ -1704,9 +1704,8 @@ impl Brain {
             compaction_tier: opts.compaction_tier,
             wing: opts.wing,
         };
-        let result = self
-            .rt
-            .block_on(spectral_ingest::ingest::ingest_with(
+        let result = crate::ingest_profile::time("ingest_call", || {
+            self.rt.block_on(spectral_ingest::ingest::ingest_with(
                 &memory_id,
                 key,
                 content,
@@ -1717,23 +1716,29 @@ impl Brain {
                 self.memory_store.as_ref(),
                 ingest_opts,
             ))
-            .map_err(|e| Error::Schema(e.to_string()))?;
+        })
+        .map_err(|e| Error::Schema(e.to_string()))?;
 
         if let Some(session_id) = session_id.as_deref().filter(|id| !id.is_empty()) {
-            self.rt
-                .block_on(
+            crate::ingest_profile::time("session_assoc", || {
+                self.rt.block_on(
                     self.memory_store
                         .associate_memory_session(&result.memory.id, session_id),
                 )
-                .map_err(|e| Error::Schema(format!("persist memory session: {e}")))?;
+            })
+            .map_err(|e| Error::Schema(format!("persist memory session: {e}")))?;
         }
 
         // Compute and store declarative density
-        let density = crate::ranking::declarative_density(content);
-        if let Err(error) = self.rt.block_on(
-            self.memory_store
-                .set_declarative_density(&result.memory.id, density),
-        ) {
+        let density = crate::ingest_profile::time("density_compute", || {
+            crate::ranking::declarative_density(content)
+        });
+        if let Err(error) = crate::ingest_profile::time("density_write", || {
+            self.rt.block_on(
+                self.memory_store
+                    .set_declarative_density(&result.memory.id, density),
+            )
+        }) {
             derivation_warnings.push(format!("declarative density: {error}"));
         }
 
@@ -1742,26 +1747,29 @@ impl Brain {
         // content hash, creation time, and visibility, so verification later
         // recomputes the exact payload. Read the row back to get the values
         // the store actually persisted (created_at default, cleaned content).
-        if let Ok(Some(stored)) = self
-            .rt
-            .block_on(
-                self.memory_store
-                    .fetch_by_ids(std::slice::from_ref(&result.memory.id)),
-            )
-            .map(|v| v.into_iter().next())
-        {
+        if let Ok(Some(stored)) = crate::ingest_profile::time("readback", || {
+            self.rt
+                .block_on(
+                    self.memory_store
+                        .fetch_by_ids(std::slice::from_ref(&result.memory.id)),
+                )
+                .map(|v| v.into_iter().next())
+        }) {
             if let (Some(content_hash), Some(created_at)) =
                 (stored.content_hash.as_deref(), stored.created_at.as_deref())
             {
-                let sig = self
-                    .identity
-                    .sign_memory(content_hash, created_at, &stored.visibility);
+                let sig = crate::ingest_profile::time("sign", || {
+                    self.identity
+                        .sign_memory(content_hash, created_at, &stored.visibility)
+                });
                 let sbid = *self.identity.brain_id().as_bytes();
-                if let Err(error) = self.rt.block_on(self.memory_store.set_signature(
-                    &result.memory.id,
-                    &sbid,
-                    &sig.to_bytes(),
-                )) {
+                if let Err(error) = crate::ingest_profile::time("sig_write", || {
+                    self.rt.block_on(self.memory_store.set_signature(
+                        &result.memory.id,
+                        &sbid,
+                        &sig.to_bytes(),
+                    ))
+                }) {
                     derivation_warnings.push(format!("signed provenance: {error}"));
                 }
             }
