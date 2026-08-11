@@ -23,16 +23,21 @@ from pathlib import Path
 
 
 def load(path):
-    rows = {}
-    for line in Path(path).read_text().splitlines():
+    """Load oracle rows, tolerating a half-flushed final line.
+
+    Arms are read while they are still being written. A torn *last* line is
+    not a corrupt arm; a torn line anywhere else is, and swallowing it would
+    shrink a denominator invisibly -- the one failure mode that would not show
+    up in the output.
+    """
+    rows, lines = {}, Path(path).read_text().splitlines()
+    for i, line in enumerate(lines):
         if not line.strip():
             continue
         try:
             r = json.loads(line)
         except json.JSONDecodeError:
-            # Tolerate only an unterminated tail; anything else shrinks a
-            # denominator invisibly.
-            if line is Path(path).read_text().splitlines()[-1]:
+            if i == len(lines) - 1:
                 continue
             raise
         rows[r["question_id"]] = r
