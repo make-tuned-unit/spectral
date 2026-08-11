@@ -464,6 +464,14 @@ pub fn run_oracle(config: &OracleConfig) -> Result<Vec<OracleRow>> {
     pb.finish_and_clear();
     out.flush()?;
 
+    // Track C: per-stage write-path timing, printed only when the profile lever
+    // is set. Reports measured stages only and does not claim to account for
+    // the whole per-event cost -- unmeasured code between stages is exactly the
+    // gap that made the original decomposition misleading.
+    if std::env::var("SPECTRAL_INGEST_PROFILE").is_ok() {
+        eprintln!("\n{}", spectral_graph::ingest_profile::report());
+    }
+
     if labelled_questions == 0 {
         eprintln!(
             "warning: dataset carries no `has_answer` labels (LoCoMo-converted sets); \
@@ -926,6 +934,7 @@ mod tests {
                         content: "The sky is blue today and I love it.".into(),
                         // The one labelled evidence turn.
                         has_answer: Some(true),
+                        speaker: None,
                     },
                     Turn {
                         role: "assistant".into(),
@@ -933,12 +942,14 @@ mod tests {
                         // Explicit `false` occurs in the real dataset and is
                         // NOT evidence.
                         has_answer: Some(false),
+                        speaker: None,
                     },
                 ],
                 vec![Turn {
                     role: "user".into(),
                     content: "I ate pasta for dinner yesterday evening.".into(),
                     has_answer: None,
+                    speaker: None,
                 }],
             ],
             haystack_session_ids: vec!["answer_abc_1".into(), "noise_1".into()],

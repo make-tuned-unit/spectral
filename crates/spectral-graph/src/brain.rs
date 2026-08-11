@@ -674,6 +674,18 @@ pub struct RecallTopKConfig {
     /// Compose signals by reciprocal rank fusion instead of additive boosts.
     /// Default false pending measurement. See `ranking::rrf_fuse`.
     pub use_rrf: bool,
+    /// Per-channel RRF weights, applied only when `use_rrf` is set.
+    ///
+    /// Unit weights are the honest default, but they also encode RRF's
+    /// characteristic risk: a candidate BM25 ranks first is worth only
+    /// `1/(K+1)`, so a crowd of candidates a weak signal ranks highly can
+    /// displace it. Raising `rrf_bm25_weight` is how that gets measured.
+    pub rrf_bm25_weight: f64,
+    pub rrf_declarative_weight: f64,
+    pub rrf_proximity_weight: f64,
+    pub rrf_recency_weight: f64,
+    pub rrf_signal_weight: f64,
+    pub rrf_entity_weight: f64,
     /// Additive boost for first-person declarative content (answer-bearing
     /// user-fact turns). Default false — kept off historically because the
     /// signal blends into cascade; enabled selectively for the topk_fts path
@@ -706,6 +718,12 @@ impl Default for RecallTopKConfig {
             apply_proximity: false,
             proximity_weight: crate::ranking::PROXIMITY_WEIGHT_DEFAULT,
             use_rrf: false,
+            rrf_bm25_weight: 1.0,
+            rrf_declarative_weight: 1.0,
+            rrf_proximity_weight: 1.0,
+            rrf_recency_weight: 1.0,
+            rrf_signal_weight: 1.0,
+            rrf_entity_weight: 1.0,
             apply_declarative_boost: false,
             apply_context_dedup: true,
             now: None,
@@ -1686,9 +1704,8 @@ impl Brain {
             compaction_tier: opts.compaction_tier,
             wing: opts.wing,
         };
-        let result = self
-            .rt
-            .block_on(spectral_ingest::ingest::ingest_with(
+        let result = crate::ingest_profile::time("ingest_call", || {
+            self.rt.block_on(spectral_ingest::ingest::ingest_with(
                 &memory_id,
                 key,
                 content,
@@ -1699,23 +1716,29 @@ impl Brain {
                 self.memory_store.as_ref(),
                 ingest_opts,
             ))
-            .map_err(|e| Error::Schema(e.to_string()))?;
+        })
+        .map_err(|e| Error::Schema(e.to_string()))?;
 
         if let Some(session_id) = session_id.as_deref().filter(|id| !id.is_empty()) {
-            self.rt
-                .block_on(
+            crate::ingest_profile::time("session_assoc", || {
+                self.rt.block_on(
                     self.memory_store
                         .associate_memory_session(&result.memory.id, session_id),
                 )
-                .map_err(|e| Error::Schema(format!("persist memory session: {e}")))?;
+            })
+            .map_err(|e| Error::Schema(format!("persist memory session: {e}")))?;
         }
 
         // Compute and store declarative density
-        let density = crate::ranking::declarative_density(content);
-        if let Err(error) = self.rt.block_on(
-            self.memory_store
-                .set_declarative_density(&result.memory.id, density),
-        ) {
+        let density = crate::ingest_profile::time("density_compute", || {
+            crate::ranking::declarative_density(content)
+        });
+        if let Err(error) = crate::ingest_profile::time("density_write", || {
+            self.rt.block_on(
+                self.memory_store
+                    .set_declarative_density(&result.memory.id, density),
+            )
+        }) {
             derivation_warnings.push(format!("declarative density: {error}"));
         }
 
@@ -1724,26 +1747,29 @@ impl Brain {
         // content hash, creation time, and visibility, so verification later
         // recomputes the exact payload. Read the row back to get the values
         // the store actually persisted (created_at default, cleaned content).
-        if let Ok(Some(stored)) = self
-            .rt
-            .block_on(
-                self.memory_store
-                    .fetch_by_ids(std::slice::from_ref(&result.memory.id)),
-            )
-            .map(|v| v.into_iter().next())
-        {
+        if let Ok(Some(stored)) = crate::ingest_profile::time("readback", || {
+            self.rt
+                .block_on(
+                    self.memory_store
+                        .fetch_by_ids(std::slice::from_ref(&result.memory.id)),
+                )
+                .map(|v| v.into_iter().next())
+        }) {
             if let (Some(content_hash), Some(created_at)) =
                 (stored.content_hash.as_deref(), stored.created_at.as_deref())
             {
-                let sig = self
-                    .identity
-                    .sign_memory(content_hash, created_at, &stored.visibility);
+                let sig = crate::ingest_profile::time("sign", || {
+                    self.identity
+                        .sign_memory(content_hash, created_at, &stored.visibility)
+                });
                 let sbid = *self.identity.brain_id().as_bytes();
-                if let Err(error) = self.rt.block_on(self.memory_store.set_signature(
-                    &result.memory.id,
-                    &sbid,
-                    &sig.to_bytes(),
-                )) {
+                if let Err(error) = crate::ingest_profile::time("sig_write", || {
+                    self.rt.block_on(self.memory_store.set_signature(
+                        &result.memory.id,
+                        &sbid,
+                        &sig.to_bytes(),
+                    ))
+                }) {
                     derivation_warnings.push(format!("signed provenance: {error}"));
                 }
             }
@@ -2131,6 +2157,12 @@ impl Brain {
             apply_proximity: config.apply_proximity,
             proximity_weight: config.proximity_weight,
             use_rrf: config.use_rrf,
+            rrf_bm25_weight: config.rrf_bm25_weight,
+            rrf_declarative_weight: config.rrf_declarative_weight,
+            rrf_proximity_weight: config.rrf_proximity_weight,
+            rrf_recency_weight: config.rrf_recency_weight,
+            rrf_signal_weight: config.rrf_signal_weight,
+            rrf_entity_weight: config.rrf_entity_weight,
             apply_ambient_boost: false,
             ambient_weights: crate::cascade_layers::AmbientBoostWeights::default(),
             apply_declarative_boost: config.apply_declarative_boost,
@@ -2141,7 +2173,6 @@ impl Brain {
             apply_episode_diversity: false,
             max_per_episode: 5,
             apply_context_dedup: config.apply_context_dedup,
-            ..Default::default()
         };
         let ctx = match config.now {
             Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
@@ -2522,6 +2553,22 @@ impl Brain {
     }
 
     /// Fetch a memory by ID. Returns None if not found.
+    /// Resolve a memory by its **key** rather than its id.
+    ///
+    /// Ids are `blake3(key)`, so this is a pure derivation plus a point read —
+    /// no scan. Exposed because callers that hold keys (consolidation edges,
+    /// structural neighbour lookup) otherwise cannot reach a row at all: the
+    /// derivation was private.
+    pub fn get_memory_by_key(&self, key: &str) -> Result<Option<spectral_ingest::Memory>, Error> {
+        self.get_memory(&key_to_id(key))
+    }
+
+    /// Project a stored memory into a hit, marked `hits = 0` so consumers can
+    /// tell it was surfaced structurally rather than by query match.
+    pub fn memory_as_hit(m: spectral_ingest::Memory) -> spectral_ingest::MemoryHit {
+        memory_to_hit(m)
+    }
+
     pub fn get_memory(&self, id: &str) -> Result<Option<spectral_ingest::Memory>, Error> {
         self.rt
             .block_on(self.memory_store.get_memory(id))

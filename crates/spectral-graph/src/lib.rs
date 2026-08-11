@@ -12,6 +12,7 @@ pub mod extract;
 pub mod federation;
 pub mod federation_recall;
 pub mod graph_store;
+pub mod ingest_profile;
 pub mod ledger_stats;
 pub mod ontology;
 pub mod provenance;

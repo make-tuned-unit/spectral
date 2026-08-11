@@ -558,6 +558,98 @@ pub fn proximity_weight_env() -> f64 {
         .unwrap_or(spectral_graph::ranking::PROXIMITY_WEIGHT_DEFAULT)
 }
 
+/// RRF per-channel weight override, `SPECTRAL_RRF_<CHANNEL>_W`.
+///
+/// Unit weights are the honest default — every channel counts equally — but
+/// they also encode the risk RRF carries: a candidate BM25 ranks first is
+/// worth only `1/(K+1)` and can be displaced by a crowd the signal ranks
+/// highly and BM25 ranks poorly. Raising the BM25 weight is how that risk gets
+/// measured rather than argued about.
+pub fn rrf_weight_env(channel: &str, default: f64) -> f64 {
+    std::env::var(format!("SPECTRAL_RRF_{channel}_W"))
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|w| *w >= 0.0 && *w <= 100.0)
+        .unwrap_or(default)
+}
+
+/// Apply every `SPECTRAL_RRF_*_W` override to a cascade pipeline config.
+fn apply_rrf_weight_env_cascade(cfg: &mut spectral_graph::cascade_layers::CascadePipelineConfig) {
+    cfg.rrf_bm25_weight = rrf_weight_env("BM25", cfg.rrf_bm25_weight);
+    cfg.rrf_declarative_weight = rrf_weight_env("DECLARATIVE", cfg.rrf_declarative_weight);
+    cfg.rrf_proximity_weight = rrf_weight_env("PROXIMITY", cfg.rrf_proximity_weight);
+    cfg.rrf_recency_weight = rrf_weight_env("RECENCY", cfg.rrf_recency_weight);
+    cfg.rrf_signal_weight = rrf_weight_env("SIGNAL", cfg.rrf_signal_weight);
+    cfg.rrf_entity_weight = rrf_weight_env("ENTITY", cfg.rrf_entity_weight);
+}
+
+/// R25: emit the dialogue neighbours of every retrieved turn.
+///
+/// The coreference diagnostic measured why this should work: a question names a
+/// person, BM25 spends its budget on turns that *mention* them, and the answer
+/// is that person's own reply — the adjacent turn. Measured on the archived
+/// baseline, **46.4% of missed evidence sits exactly one turn from something we
+/// already retrieved.**
+///
+/// This is deliberately **not** a ranking lever. Every refuted lever tried to
+/// re-order the candidate set; this changes what is *emitted*, and it runs after
+/// ranking and truncation so it cannot perturb either.
+///
+/// **Bench-scoped by construction.** It parses the harness key format
+/// `{session}:turn:{index}:{role}`, so it tests whether the signal is worth
+/// anything — it is not a shippable feature. Production adjacency would need
+/// real sequence metadata on the memory, which is a separate design question.
+///
+/// `SPECTRAL_ADJACENCY=<radius>`; unset = off.
+fn apply_turn_adjacency(brain: &Brain, hits: &mut Vec<MemoryHit>) {
+    let Some(radius) = std::env::var("SPECTRAL_ADJACENCY")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|r| *r >= 1 && *r <= 10)
+    else {
+        return;
+    };
+
+    let present: std::collections::HashSet<String> = hits.iter().map(|h| h.key.clone()).collect();
+    let mut seen = present.clone();
+    let mut added: Vec<MemoryHit> = Vec::new();
+
+    for key in present.iter() {
+        // {session}:turn:{index}:{role}
+        let parts: Vec<&str> = key.split(':').collect();
+        if parts.len() < 4 || parts[1] != "turn" {
+            continue;
+        }
+        let Ok(idx) = parts[2].parse::<i64>() else {
+            continue;
+        };
+        for d in -radius..=radius {
+            if d == 0 {
+                continue;
+            }
+            let n = idx + d;
+            if n < 0 {
+                continue;
+            }
+            // Role is part of the key and turns alternate, so try both rather
+            // than assume the alternation holds. A miss is simply skipped.
+            for role in ["user", "assistant"] {
+                let nkey = format!("{}:turn:{}:{}", parts[0], n, role);
+                if seen.contains(&nkey) {
+                    continue;
+                }
+                if let Ok(Some(m)) = brain.get_memory_by_key(&nkey) {
+                    seen.insert(nkey);
+                    added.push(Brain::memory_as_hit(m));
+                }
+            }
+        }
+    }
+    // Stable order so the emitted context is byte-reproducible.
+    added.sort_by(|a, b| a.key.cmp(&b.key));
+    hits.extend(added);
+}
+
 pub fn apply_actr_rerank(hits: &mut [MemoryHit], now: DateTime<Utc>, d: f64) {
     let n = hits.len();
     if n < 2 {
@@ -655,6 +747,12 @@ pub fn retrieve_topk_fts(
         apply_proximity: std::env::var("SPECTRAL_TOPK_PROXIMITY").is_ok(),
         // RRF composition lever (failure-analysis 2026-08-08).
         use_rrf: std::env::var("SPECTRAL_RRF").is_ok(),
+        rrf_bm25_weight: rrf_weight_env("BM25", 1.0),
+        rrf_declarative_weight: rrf_weight_env("DECLARATIVE", 1.0),
+        rrf_proximity_weight: rrf_weight_env("PROXIMITY", 1.0),
+        rrf_recency_weight: rrf_weight_env("RECENCY", 1.0),
+        rrf_signal_weight: rrf_weight_env("SIGNAL", 1.0),
+        rrf_entity_weight: rrf_weight_env("ENTITY", 1.0),
         proximity_weight: proximity_weight_env(),
         apply_declarative_boost: std::env::var("SPECTRAL_TOPK_DECLARATIVE").is_ok(),
         apply_context_dedup: std::env::var("SPECTRAL_DISABLE_CONTEXT_DEDUP").is_err(),
@@ -720,6 +818,12 @@ pub fn retrieve_topk_fts(
     if answ_cfg.enabled || sup_cfg.enabled {
         hits.truncate(output_size);
     }
+    // R25: structural adjacency emission. Runs LAST, after every ranking and
+    // truncation step, because it deliberately does not rank — it emits the
+    // dialogue neighbours of what ranking already chose. See
+    // docs/internal/turn-adjacency-prereg-2026-08-09.md.
+    apply_turn_adjacency(brain, &mut hits);
+
     let cap = cap_for_shape(shape);
     let memories: Vec<String> = hits
         .iter()
@@ -819,6 +923,7 @@ pub fn retrieve_cascade(
     pipeline_config.apply_proximity = std::env::var("SPECTRAL_TOPK_PROXIMITY").is_ok();
     pipeline_config.proximity_weight = proximity_weight_env();
     pipeline_config.use_rrf = std::env::var("SPECTRAL_RRF").is_ok();
+    apply_rrf_weight_env_cascade(&mut pipeline_config);
     // Ablation overrides (multi-session answer-KEY completeness sweep). The
     // Counting profile caps max_per_episode=3 to force session diversity; when
     // answer keys cluster >3 per session that undercounts. These let a sweep
@@ -828,6 +933,19 @@ pub fn retrieve_cascade(
         .and_then(|v| v.parse::<usize>().ok())
     {
         pipeline_config.k = k;
+    }
+    // R29 token-matched control. SPECTRAL_CASCADE_K flattens every question
+    // shape to one k, which would confound a k-raising control: a deficit could
+    // be blamed on destroying the tuned per-shape profile rather than on
+    // k-raising itself — a confound that flatters our own lever. This scales
+    // each shape's own k instead, preserving the profile. Applied after the
+    // flat override so the two compose predictably (flat sets the base).
+    if let Some(mult) = std::env::var("SPECTRAL_CASCADE_K_MULT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|m| *m > 0.0 && m.is_finite())
+    {
+        pipeline_config.k = ((pipeline_config.k as f64) * mult).round().max(1.0) as usize;
     }
     if let Some(mpe) = std::env::var("SPECTRAL_CASCADE_MAX_PER_EPISODE")
         .ok()
@@ -928,6 +1046,14 @@ pub fn retrieve_cascade(
     }
     // Restore the output size the shape profile asked for.
     hits.truncate(output_k);
+
+    // R28: adjacency on the CASCADE path too. `recall_cascade` is the only path
+    // Permagent calls, so a topk_fts-only measurement does not speak to
+    // production — the same reason G4 wired proximity here. Runs after
+    // truncation for the same reason it does on topk: it emits neighbours of
+    // what ranking chose, it does not rank.
+    apply_turn_adjacency(brain, &mut hits);
+
     let formatted = format_hits_grouped_capped_dated(&hits, cap_for_shape(qtype), question_date);
 
     Ok((formatted, hits, telemetry))

@@ -48,6 +48,15 @@ pub struct Turn {
     /// byte-identical to what it read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_answer: Option<bool>,
+    /// Who spoke this turn (R23/R24). Corpus metadata, not inference: raw
+    /// LoCoMo carries `speaker` on every turn and the answerable export simply
+    /// dropped it. Present only in datasets built by
+    /// `scripts/build_speaker_dataset.py --mode field`.
+    ///
+    /// Skipped on serialization when absent so datasets the harness writes
+    /// stay byte-identical to what it read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 /// LongMemEval_S question category.

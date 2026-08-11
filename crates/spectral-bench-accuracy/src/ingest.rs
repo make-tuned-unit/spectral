@@ -106,9 +106,15 @@ pub fn ingest_question(
 
         match strategy {
             IngestStrategy::PerTurn => {
+                // R24 arm C: put the speaker in the SEPARATE indexed FTS column
+                // rather than inline in content. `memories_fts` already indexes
+                // (key, content, description), so a query naming a person can
+                // match the turns that person SPOKE without the name diluting
+                // the content channel — which is what capped R23 arm B.
+                let speaker_field = std::env::var("SPECTRAL_SPEAKER_FIELD").is_ok();
                 for (turn_idx, turn) in session.iter().enumerate() {
                     let key = memory_key(strategy, session_id, turn_idx, &turn.role);
-                    brain.remember_with(
+                    let written = brain.remember_with(
                         &key,
                         &turn.content,
                         RememberOpts {
@@ -118,6 +124,11 @@ pub fn ingest_question(
                             ..Default::default()
                         },
                     )?;
+                    if speaker_field {
+                        if let Some(speaker) = turn.speaker.as_deref() {
+                            brain.set_description(&written.memory_id, speaker)?;
+                        }
+                    }
                 }
             }
             IngestStrategy::PerSession => {
@@ -161,11 +172,13 @@ mod tests {
                     role: "user".into(),
                     content: "The sky is blue today.".into(),
                     has_answer: None,
+                    speaker: None,
                 },
                 Turn {
                     role: "assistant".into(),
                     content: "That sounds lovely!".into(),
                     has_answer: None,
+                    speaker: None,
                 },
             ]],
             haystack_session_ids: vec!["s1".into()],
@@ -254,6 +267,7 @@ mod tests {
                 role: "user".into(),
                 content: "Malformed date memory about project status".into(),
                 has_answer: None,
+                speaker: None,
             }]],
             haystack_session_ids: vec!["s-bad".into()],
             haystack_dates: vec!["not a date".into()],
@@ -303,11 +317,13 @@ mod tests {
                         role: "user".into(),
                         content: "Session one content about project alpha".into(),
                         has_answer: None,
+                        speaker: None,
                     },
                     Turn {
                         role: "assistant".into(),
                         content: "I see, project alpha looks good".into(),
                         has_answer: None,
+                        speaker: None,
                     },
                 ],
                 vec![
@@ -315,11 +331,13 @@ mod tests {
                         role: "user".into(),
                         content: "Session two content about project beta".into(),
                         has_answer: None,
+                        speaker: None,
                     },
                     Turn {
                         role: "assistant".into(),
                         content: "Project beta is interesting".into(),
                         has_answer: None,
+                        speaker: None,
                     },
                 ],
             ],

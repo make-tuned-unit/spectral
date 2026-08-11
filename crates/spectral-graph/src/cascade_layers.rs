@@ -197,6 +197,14 @@ pub struct CascadePipelineConfig {
     pub proximity_weight: f64,
     /// Compose signals by reciprocal rank fusion instead of additive boosts.
     pub use_rrf: bool,
+    /// Per-channel RRF weights, applied only when `use_rrf` is set. See
+    /// [`crate::brain::RecallTopKConfig`] for why these are worth varying.
+    pub rrf_bm25_weight: f64,
+    pub rrf_declarative_weight: f64,
+    pub rrf_proximity_weight: f64,
+    pub rrf_recency_weight: f64,
+    pub rrf_signal_weight: f64,
+    pub rrf_entity_weight: f64,
     /// Additive weight for the co-retrieval (cross-query co-access) boost.
     /// Default **0.0** (disabled): measured on Permagent's real workload, a
     /// non-zero weight degrades top-5 relevance (~3–4.5:1 worse, p≈0) because a
@@ -259,6 +267,12 @@ impl Default for CascadePipelineConfig {
             apply_proximity: false,
             proximity_weight: crate::ranking::PROXIMITY_WEIGHT_DEFAULT,
             use_rrf: false,
+            rrf_bm25_weight: 1.0,
+            rrf_declarative_weight: 1.0,
+            rrf_proximity_weight: 1.0,
+            rrf_recency_weight: 1.0,
+            rrf_signal_weight: 1.0,
+            rrf_entity_weight: 1.0,
             co_retrieval_weight: 0.0,
             // CAPABILITY present, DEFAULT off (1). Widening to 3×k is measured
             // Pareto-safe on RETRIEVAL (token-neutral; recovers buried answers
@@ -437,7 +451,12 @@ pub fn run_cascade_pipeline_scoped(
         apply_proximity: config.apply_proximity,
         proximity_weight: config.proximity_weight,
         use_rrf: config.use_rrf,
-        ..Default::default()
+        rrf_bm25_weight: config.rrf_bm25_weight,
+        rrf_declarative_weight: config.rrf_declarative_weight,
+        rrf_proximity_weight: config.rrf_proximity_weight,
+        rrf_recency_weight: config.rrf_recency_weight,
+        rrf_signal_weight: config.rrf_signal_weight,
+        rrf_entity_weight: config.rrf_entity_weight,
     };
 
     // Only compute co-retrieval affinity when it will actually be applied.

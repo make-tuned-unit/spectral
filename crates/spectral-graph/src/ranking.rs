@@ -294,6 +294,7 @@ pub struct RerankingConfig {
     pub rrf_proximity_weight: f64,
     pub rrf_recency_weight: f64,
     pub rrf_signal_weight: f64,
+    pub rrf_entity_weight: f64,
 }
 
 impl Default for RerankingConfig {
@@ -324,6 +325,7 @@ impl Default for RerankingConfig {
             rrf_proximity_weight: 1.0,
             rrf_recency_weight: 1.0,
             rrf_signal_weight: 1.0,
+            rrf_entity_weight: 1.0,
         }
     }
 }
@@ -377,12 +379,23 @@ fn rrf_fuse(
         *f += config.rrf_bm25_weight / (RRF_K + i as f64 + 1.0);
     }
 
-    // A signal channel: rank by `key` descending, then add 1/(K+rank).
+    // A signal channel: rank by `key` descending, then add w/(K+rank).
+    //
+    // **Only candidates the signal actually scores are ranked.** A signal that
+    // returns 0 for a candidate has no opinion about it, and the difference
+    // matters: our signals are sparse (G4 measured proximity at exactly 0 for
+    // 91.8% of non-evidence turns). Ranking the zero-valued tail anyway would
+    // order it by the `id` tiebreak and hand out real `1/(K+rank)` mass on that
+    // basis — a channel that is mostly memory-id order wearing a signal's name.
+    // Sparse binary signals (entity) would be almost entirely that noise.
     let add_channel = |vals: Vec<f64>, weight: f64, fused: &mut Vec<f64>| {
-        if weight <= 0.0 || vals.iter().all(|v| *v <= 0.0) {
+        if weight <= 0.0 {
+            return;
+        }
+        let mut idx: Vec<usize> = (0..n).filter(|&i| vals[i] > 0.0).collect();
+        if idx.is_empty() {
             return; // inert signal: contribute nothing rather than noise
         }
-        let mut idx: Vec<usize> = (0..n).collect();
         idx.sort_by(|&a, &b| {
             vals[b]
                 .partial_cmp(&vals[a])
@@ -433,6 +446,37 @@ fn rrf_fuse(
     if config.apply_signal_score {
         let vals: Vec<f64> = candidates.iter().map(|h| h.signal_score).collect();
         add_channel(vals, config.rrf_signal_weight, &mut fused);
+    }
+
+    // Entity channel. The additive path gives a flat bonus to the top-scoring
+    // member of each wing cluster with >=2 members; without this, enabling RRF
+    // would silently *drop* a signal the additive path applies, and an
+    // RRF-vs-additive comparison would be measuring two changes at once.
+    //
+    // "Top member" is resolved by BM25 rank here because the composite score
+    // the additive path ranks by does not exist yet at this point.
+    if config.apply_entity_boost {
+        let mut wing_top: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut wing_size: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for (i, hit) in candidates.iter().enumerate() {
+            // Wingless hits are skipped for the same reason as the additive
+            // path: grouping them under "" forms a phantom cluster.
+            let Some(wing) = hit.wing.as_deref().filter(|w| !w.is_empty()) else {
+                continue;
+            };
+            *wing_size.entry(wing).or_insert(0) += 1;
+            wing_top.entry(wing).or_insert(i); // candidates arrive in BM25 order
+        }
+        let mut vals = vec![0.0_f64; n];
+        for (wing, &i) in &wing_top {
+            if wing_size.get(wing).copied().unwrap_or(0) >= 2 {
+                // Flat: the additive signal is binary, so every cluster leader
+                // ties and the `id` tiebreak orders them reproducibly.
+                vals[i] = 1.0;
+            }
+        }
+        add_channel(vals, config.rrf_entity_weight, &mut fused);
     }
 
     let mut indexed: Vec<(MemoryHit, f64)> = candidates.into_iter().zip(fused).collect();
@@ -1706,5 +1750,212 @@ mod proximity_tests {
         let a = apply_reranking_pipeline(cands.clone(), &cfg, &ctx, &empty);
         let b = apply_reranking_pipeline_with_query(cands, &cfg, &ctx, &empty, &[]);
         assert_eq!(a.len(), b.len());
+    }
+
+    // ── RRF composition (R22) ───────────────────────────────────────
+
+    fn rrf_config() -> RerankingConfig {
+        RerankingConfig {
+            use_rrf: true,
+            // Isolate one channel at a time: everything else off.
+            apply_signal_score: false,
+            apply_recency: false,
+            apply_entity_boost: false,
+            apply_declarative_boost: false,
+            apply_proximity: false,
+            apply_context_dedup: false,
+            ..Default::default()
+        }
+    }
+
+    fn empty_co_boosts() -> std::collections::HashMap<String, f64> {
+        std::collections::HashMap::new()
+    }
+
+    fn rrf_hit(id: &str, wing: Option<&str>, density: Option<f64>) -> MemoryHit {
+        MemoryHit {
+            id: id.into(),
+            key: id.into(),
+            content: "content".into(),
+            wing: wing.map(|w| w.into()),
+            hall: None,
+            signal_score: 0.0,
+            visibility: "private".into(),
+            hits: 0,
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            declarative_density: density,
+            description: None,
+            source_brain_id: None,
+            signature: None,
+        }
+    }
+
+    fn declarative_hit(id: &str, density: f64) -> MemoryHit {
+        rrf_hit(id, None, Some(density))
+    }
+
+    #[test]
+    fn rrf_promotes_deep_evidence_that_additive_boosts_structurally_cannot() {
+        // The whole premise of R22. A candidate BM25 ranks 99th but the signal
+        // ranks 1st must beat one BM25 ranks 1st and the signal ranks last.
+        // Additive boosts cannot do this at the shipped pool: promoting rank 99
+        // into the top 40 needs delta 0.49, and every boost summed is 0.40.
+        let mut candidates: Vec<MemoryHit> = (0..120)
+            .map(|i| {
+                // Declarative density descends with BM25 rank except at 99,
+                // which is the deep evidence turn.
+                let d = if i == 99 { 1.0 } else { 0.001 };
+                declarative_hit(&format!("m{i:03}"), d)
+            })
+            .collect();
+        // The shallow distractor: BM25 rank 1, worst declarative.
+        candidates[0].declarative_density = Some(0.0005);
+
+        let config = RerankingConfig {
+            apply_declarative_boost: true,
+            ..rrf_config()
+        };
+        let ranked = apply_reranking_pipeline(
+            candidates,
+            &config,
+            &RecognitionContext::empty(),
+            &empty_co_boosts(),
+        );
+        let pos = |id: &str| ranked.iter().position(|h| h.id == id).unwrap();
+        assert!(
+            pos("m099") < pos("m000"),
+            "deep evidence (BM25 99, signal 1) must outrank the shallow \
+             distractor (BM25 1, signal last); got {} vs {}",
+            pos("m099"),
+            pos("m000")
+        );
+    }
+
+    #[test]
+    fn rrf_channel_ignores_candidates_the_signal_scores_zero() {
+        // R22 amendment (a). Candidates a signal has no opinion about must get
+        // NO channel mass. Ranking them anyway orders them by the `id`
+        // tiebreak and pays them real 1/(K+rank) — a channel that is mostly
+        // memory-id order wearing a signal's name. Our signals are sparse
+        // (proximity is exactly 0 for 91.8% of non-evidence turns), so this
+        // dominated the fused score before it was fixed.
+        //
+        // Setup: BM25 order is m000..m003. Only m003 has any declarative
+        // signal. If the zero-valued tail were ranked, m000 would collect the
+        // rank-1 slot of the declarative channel purely on its id and stay on
+        // top; with the fix, only m003 is paid and it is promoted.
+        let candidates = vec![
+            declarative_hit("m000", 0.0),
+            declarative_hit("m001", 0.0),
+            declarative_hit("m002", 0.0),
+            declarative_hit("m003", 0.9),
+        ];
+        let config = RerankingConfig {
+            apply_declarative_boost: true,
+            ..rrf_config()
+        };
+        let ranked = apply_reranking_pipeline(
+            candidates,
+            &config,
+            &RecognitionContext::empty(),
+            &empty_co_boosts(),
+        );
+        assert_eq!(
+            ranked[0].id, "m003",
+            "the only candidate the signal scores must be promoted; \
+             zero-scored candidates must not collect channel mass by id order"
+        );
+        // And the inert candidates must retain BM25 order among themselves.
+        let rest: Vec<&str> = ranked[1..].iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(rest, vec!["m000", "m001", "m002"]);
+    }
+
+    #[test]
+    fn rrf_applies_the_entity_signal_the_additive_path_applies() {
+        // R22 amendment (b). apply_entity_boost is ON by default on the topk
+        // path. If RRF ignored it, switching composition would silently drop a
+        // signal and an RRF-vs-additive comparison would move two things at
+        // once. The leader of a >=2-member wing cluster must be promoted.
+        let candidates = vec![
+            rrf_hit("m000", Some("solo"), None), // cluster of 1: no boost
+            rrf_hit("m001", Some("pair"), None), // cluster leader
+            rrf_hit("m002", Some("pair"), None),
+        ];
+        let config = RerankingConfig {
+            apply_entity_boost: true,
+            ..rrf_config()
+        };
+        let ranked = apply_reranking_pipeline(
+            candidates,
+            &config,
+            &RecognitionContext::empty(),
+            &empty_co_boosts(),
+        );
+        assert_eq!(
+            ranked[0].id, "m001",
+            "the >=2-member wing cluster leader must be promoted over the \
+             BM25-first wingless-cluster hit"
+        );
+    }
+
+    #[test]
+    fn rrf_single_member_wing_clusters_are_not_boosted() {
+        // Mirrors the additive path's guard: a cluster of one is not an entity
+        // cluster, so its member must not be promoted over BM25 order.
+        let candidates = vec![
+            rrf_hit("m000", Some("a"), None),
+            rrf_hit("m001", Some("b"), None),
+        ];
+        let config = RerankingConfig {
+            apply_entity_boost: true,
+            ..rrf_config()
+        };
+        let ranked = apply_reranking_pipeline(
+            candidates,
+            &config,
+            &RecognitionContext::empty(),
+            &empty_co_boosts(),
+        );
+        assert_eq!(ranked[0].id, "m000", "BM25 order must survive");
+    }
+
+    #[test]
+    fn rrf_is_byte_reproducible_under_input_permutation_of_ties() {
+        // Ties must break by id, not by arrival order, or the same query
+        // returns different context on different days — the R16/R20 failure
+        // mode. All candidates carry an identical signal value here.
+        let config = RerankingConfig {
+            apply_declarative_boost: true,
+            ..rrf_config()
+        };
+        let ids = |v: Vec<MemoryHit>| -> Vec<String> {
+            apply_reranking_pipeline(v, &config, &RecognitionContext::empty(), &empty_co_boosts())
+                .into_iter()
+                .map(|h| h.id)
+                .collect()
+        };
+        let a = ids(vec![
+            declarative_hit("m000", 0.5),
+            declarative_hit("m001", 0.5),
+            declarative_hit("m002", 0.5),
+        ]);
+        let b = ids(vec![
+            declarative_hit("m000", 0.5),
+            declarative_hit("m001", 0.5),
+            declarative_hit("m002", 0.5),
+        ]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn rrf_is_off_by_default_so_shipped_ranking_is_unchanged() {
+        // The measurement is not shipped until it passes. Guards against RRF
+        // becoming the default by an unrelated edit to RerankingConfig.
+        assert!(!RerankingConfig::default().use_rrf);
     }
 }

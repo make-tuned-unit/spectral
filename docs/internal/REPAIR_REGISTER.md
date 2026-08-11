@@ -781,3 +781,480 @@ actor path already applies via `strip_actor_continuation`.
 after seeing the result and re-running is a re-roll, which the baseline's
 prereg forbids. It lands after, and the next run that uses it says so.
 Ref: `bm25-locomo-baseline-result-2026-08-07.md`.
+
+---
+
+## R22 — RRF composition · REFUTED (2026-08-09)
+
+**The composition was never the binding constraint.** The failure analysis
+named reciprocal rank fusion "the fix we already own" and the highest-value
+untested lever, on the argument that additive boosts structurally cannot
+promote deep evidence (48 ranks of budget where 59 are needed). The arithmetic
+was right. The conclusion drawn from it was not.
+
+Preregistered before any arm ran (`a3b241d`), $0, 250 LoCoMo questions,
+`topk_fts`, R19 labels. Primary arm A2 (RRF + declarative) scored **−3.65pp**
+evidence-turn micro-recall (p=0.0525) against a prespecified PASS gate of
+p<0.05 **and** ≥+2.0pp. A1 (RRF, default channels) is refuted outright at
+**−5.90pp, p=0.0004**. The additive control A3 scored **+0.84pp**, reproducing
+the previously measured +3 evidence turns — so A2 is **16 evidence turns worse
+than the additive composition it was supposed to beat**.
+
+**The mechanism worked and the hypothesis still failed.** RRF promoted the
+first evidence turn in 82 questions and rescued 5 questions that had zero
+evidence — exactly the class additive boosts provably could not reach. It also
+newly broke 17, losing 21 evidence turns to gain 8. Weighting BM25 up (A5)
+returns recall to baseline with the most rank movement and almost no damage:
+the best thing RRF does is stop being RRF, and the frontier runs monotonically
+back toward BM25-only.
+
+This **confirms** the failure analysis §3 (BM25 ranks correctly by its own
+criterion; missed evidence has 0.46× query-term overlap) and **refutes** §4–§5.
+The residue is not a composition problem. We do not have a signal that
+identifies answer-bearing turns, and no arrangement of the signals we have will
+manufacture one. Remaining $0 levers are about *acquiring* a signal:
+`query_aliases` vocabulary bridging (never tested) and query-conditioned
+answer-shape matching.
+
+**Default stays OFF on both paths.** `recall_cascade` — the only path Permagent
+calls — was not measured, so nothing here licenses a cascade change.
+
+Two `rrf_fuse` defects were found by audit **before any arm produced a row**
+(`b0ed077`): `add_channel` paid channel mass to candidates a signal scores 0,
+ordered by the `id` tiebreak (proximity is exactly 0 for 91.8% of non-evidence
+turns, so A4 would have been measuring memory-id order), and RRF silently
+dropped the entity signal the additive path applies, making an RRF-vs-additive
+arm a two-variable change. `rrf_fuse` had shipped with **no tests**; six added
+at `59fbdb4`.
+
+The prereg also contradicted itself on retrieval path (Amendment 3): it
+specified shape routing while naming G4's k40 arm as the precondition, and
+`SPECTRAL_TOPK_DECLARATIVE` is read only on the topk path — under shape routing
+the primary arm's single variable would have been inert on ~80% of questions
+and produced a meaningless result that looked like a clean null.
+
+**Side observation, R16.** A0 is metric-identical to G4's archived arm but not
+byte-identical: 64/181 shared context hashes differ, **63 of them pure
+reorderings** of an identical key set, 1 a genuine set change. That is the R16
+tiebreak signature, and R16 landed between the runs. R16 was validated 0/500 on
+LongMemEval; LoCoMo is the first corpus where it visibly moves ordering. It
+does not affect R22 — all six arms share one binary.
+
+Ref: `rrf-composition-result-2026-08-09.md`,
+`rrf-composition-prereg-2026-08-08.md`.
+
+---
+
+## R23 — Speaker attribution · NULL (2026-08-09), gate underpowered
+
+**$0, preregistered at `6c2e32a` before implementation.** LoCoMo, 250
+questions, `topk_fts`, R19 labels. A0' precondition passed exactly (a full
+re-ingest reproduced 231/356, 53 zero-evidence, 0 discordant vs R22's A0), so
+arm B is interpretable.
+
+Arm B (turn content prefixed with the speaker's name) scored **+1.69pp**
+evidence-turn micro-recall (231 → 237 turns), **p = 0.2500**, discordant 0/3,
+against a prespecified gate of p<0.05 **and** ≥+2.0pp. **It fails both clauses
+and is recorded as a NULL.**
+
+**The gate could not have passed.** With 3 discordant pairs the smallest
+attainable two-sided exact McNemar p is `2 × 0.5³ = 0.25`; significance needed
+≥6 discordant pairs one-way. The all-or-nothing "all evidence turns retrieved"
+indicator discards most of the signal — arm B gained 6 evidence turns but only
+3 questions crossed the threshold. **The prereg was underpowered for the effect
+it was built to detect, and that was not checked before running.** The result
+stands as preregistered; re-scoring under a statistic chosen after seeing the
+data would be the forking path the prereg exists to prevent. The fix (paired
+Wilcoxon on per-question evidence-turn counts, power computed in advance)
+belongs to the next prereg and is NOT applied retroactively.
+
+**Direction and mechanism both went the right way, uniquely in this series.**
+Prespecified mechanism check: retrieved top-40 turns containing the queried
+name fell **36.4% → 19.2%**, narrowing the inversion 8.5× → 5.9%; missed
+evidence shrank 70 → 62. The dilution risk the prereg warned about did **not**
+materialise: 65 promotions vs 30 demotions (RRF churned 71/76), **zero
+questions lost full-evidence status**, zero-evidence improved 53 → 51, and
+**multi-session improved +2.27pp** — the slice every RRF arm made worse.
+
+Small capture of a large opportunity: prefixing makes the name *present* in the
+right turns but also in every other turn by that speaker, so the signal is
+admitted rather than made discriminative. That is what **arm C** (speaker as a
+separate indexed field) was preregistered to test; it is **deferred, not
+dropped**, and is cheaper than first assessed — `memories_fts` already indexes
+`key, content, description` separately, so no schema change is needed, only
+plumbing `description` through `RememberOpts`.
+
+Ref: `speaker-attribution-result-2026-08-09.md`,
+`speaker-attribution-prereg-2026-08-09.md`,
+`speaker-attribution-diagnostic-2026-08-09.md`.
+
+---
+
+## R24 — Speaker attribution · **PASS** (2026-08-09)
+
+**The first PASS in this retrieval series, and it replicates.** $0,
+preregistered at `aaba5a9` before implementation, full N=1438, `topk_fts`,
+model-free.
+
+Evidence-turn micro **59.86% → 62.62% (+2.76pp, +59 turns)**, Wilcoxon on
+per-question counts **72 nonzero pairs [+64/−8], p<0.0001**, both prespecified
+clauses met with the power floor cleared ~5×. Zero-evidence 357→329. Context
+cost **+0.3%**. Multi-session — the weakest slice, and the one every RRF arm
+made worse — gained most at **+4.58pp**.
+
+Both preconditions passed; the stronger one validates against the *published*
+record: A0″ at full N reproduces R19's corpus figures exactly (59.86% / 68.63%
+/ 357).
+
+**Mechanism confirmed, not merely outcome:** retrieved turns containing the
+queried name fell 38.4% → 20.8%, cutting the coreference inversion 4.8× → 1.9×.
+
+**Two things went wrong and are recorded:** (a) the prereg predicted arm C
+(separate FTS column) would beat arm B′ (prefix into content); they are
+**identical on every question's evidence count**, so the dilution argument was
+wrong — FTS5 matches across all indexed columns, so a separate column is not a
+separate channel, and dilution lives in the *attachment*, not the *placement*.
+The choice is a token decision only (+0.3% vs +3.8%). (b) R23's null was
+**underpowered, not absent** — same lever, +1.69pp/p=0.25 at N=250 versus
++2.76pp/p<0.0001 at N=1438.
+
+**Bounded by measurement:** does **not** replicate on LongMemEval, because that
+corpus has no named speakers — a structural absence, not a failed test. The
+no-lexical-bridge failure family does generalize (72.1% there vs 62.9% on
+LoCoMo); the specific pathology is ~half as strong (18.9% vs 38.4%).
+
+**Does NOT follow:** no accuracy claim (retrieval only, no end-to-end arm), no
+cascade change (`recall_cascade` unmeasured and it is the only path Permagent
+calls), bench-scoped implementation, corpus-shaped result. Defaults stay OFF.
+
+Ref: `speaker-field-result-2026-08-09.md`, `speaker-field-prereg-2026-08-09.md`,
+`longmemeval-replication-2026-08-09.md`,
+`speaker-attribution-diagnostic-2026-08-09.md`.
+
+---
+
+## R26 — Do the N=250 verdicts survive at full N? · IN FLIGHT (2026-08-09)
+
+**A repair of our own record, designed so it can embarrass us.** Preregistered
+before running: `full-n-recheck-prereg-2026-08-09.md`.
+
+R24 established that the sample, not the statistic, was the constraint. **Every
+retrieval verdict in this series was measured at N=250** — a subset inherited
+from G4, never justified, and **~5pp easier than the corpus** it was drawn from
+(64.89% vs 59.86%). Those verdicts are published in `MEASURED_RECORD.md` as
+measured results, and **at least one is now known to have been wrong**.
+
+Re-tests A3′ (additive declarative, was NULL +0.84pp — **runs first, most likely
+to flip**), A2′ (RRF+declarative, R22's primary, was NULL at p=0.0525, the same
+just-above-α profile R23 had), and A1′ (RRF, was **REFUTED** −5.90pp p=0.0004),
+against the existing full-N A0″ baseline. Gates identical to R22's, so N is the
+only variable.
+
+If a verdict flips, `MEASURED_RECORD.md` is corrected with the prominence the
+original claim received, and R22's numbers stay put with the correction beside
+them — the treatment R19 gave the BM25 baseline.
+
+Ref: `full-n-recheck-prereg-2026-08-09.md`.
+
+### R26 — RESULT (2026-08-09)
+
+**The RRF refutation survives full N and is stronger.** A1′: −5.90pp at N=250
+becomes **−6.96pp (−149 turns), p<0.0001, 211 nonzero pairs [+40/−171]**;
+multi-session collapses 40.91% → 32.69%. Our most consequential negative claim
+is now verified at 5.75× the data rather than asserted from a subset.
+
+**A2′ changed verdict — toward R22, not away.** R22's *primary* arm sat at
+p=0.0525, the same just-above-α profile that made R23's null wrong. At full N it
+resolves to **REFUTED (−2.71pp, p=0.0015, 224 pairs)**. It was a real harm the
+sample was too small to confirm, not "no effect".
+
+**A3′ is the correction the record needs.** My prereg predicted it would flip to
+PASS; **it did not, and that prediction was wrong.** But it is not a null either:
+at full N the additive declarative boost is statistically unambiguous
+(**p=0.0001**, 33 improved vs 6 worsened) and practically marginal
+(**+1.36pp, +29 turns** — under the prespecified +2.0pp bar). **The effect-size
+clause is what preserves that distinction**; without it this reads as a win on
+p<0.001. So "six lexical levers, six nulls" needs amending: declarative is a
+*small real gain*, not an absence — though +1.36pp against a +23.34pp
+opportunity is still a rounding error, and it is the family's best member.
+
+**Not repaired:** G4 proximity, the k-admission rejection, and porter/widening/
+ACT-R/spreading remain measured at N=250 or on the pre-R19 diluted metric.
+**They are not settled.**
+
+Ref: `full-n-recheck-result-2026-08-09.md`.
+
+---
+
+## R25 — Turn adjacency · **PASS on the token-matched control** (2026-08-10)
+
+$0, preregistered before implementation, full N=1438, `topk_fts`, model-free.
+
+**PRIMARY (ADJ1 vs KMATCH, both ~2.5–2.62× tokens): +6.73pp (+144 turns), 303
+nonzero pairs [+219/−84], p<0.0001 — PASS.** At an identical token budget,
+spending context on the *neighbours of what you found* beats spending it on
+*more of what BM25 ranked next*.
+
+The flattering comparison (ADJ1 vs k=40) is **+18.93pp**. Reporting that as the
+headline would have claimed ~3× the entitled effect; the token-matched primary
+is what the prereg fixed and what this row reports.
+
+**Zero-evidence questions 357 → 119 (±1) → 63 (±2), an 82% reduction.**
+
+**Mechanism confirmed:** of 859 turns missed at k=40, **272 (31.7%) are reached
+ONLY by adjacency** and just 15.5% overlap with k=105 — structurally different
+populations, as the discourse-pair account predicts. **Speaker attribution (R24)
+contributes ZERO exclusively** (all 68 of its turns are also caught by k=105),
+so R24 is a cheap win at fixed k but **subsumed by k-raising, not
+complementary** — a material narrowing of how R24 should be described.
+
+**A prereg prediction was made and held:** ADJ2 was predicted "real but
+diminishing, ~a third of ADJ1's increment"; measured **+123 = 30%**. The
+diagnostic-then-predict method is two-for-two (it also predicted the 2.62× token
+cost from archived data; measured 2.50×).
+
+**Diminishing returns:** 270 turns/unit-context for ±1, 109 for ±2, ~31 for
+priced-but-unrun session-completion. The cliff is past ±2.
+
+**Does NOT follow:** no accuracy claim (no end-to-end arm, none budgeted; 3.63×
+context could dilute the reader); ADJ2-vs-ADJ1 is cost-unmatched (R27's k=150
+supplies the control); `recall_cascade` unmeasured (R28 tests transfer);
+bench-scoped implementation; corpus-shaped (two-party strictly-alternating
+dialogue is adjacency's ideal case).
+
+Ref: `turn-adjacency-result-2026-08-10.md`, `turn-adjacency-prereg-2026-08-09.md`,
+`turn-adjacency-diagnostic-2026-08-09.md`.
+
+---
+
+## R27 — k-admission frontier · the whole axis is dominated (2026-08-10)
+
+$0, preregistered, full N=1438, `topk_fts`. **No PASS verdict and no adoption
+recommendation, by design** — "recall rises with k" is arithmetic, so this is a
+priced curve rather than a hypothesis test.
+
+**The k curve has no knee:** marginal return decays smoothly 110.8 → 28.8 turns
+per 1k extra tokens across k=60→200, with no inflection. No measurement says
+"stop here", which is why the 2026-07-20 decision was always a cost judgment.
+
+**The prereg's falsifiable prediction held decisively.** Same lever, two
+corpora: k=40→80 gives **+1.00pp on LongMemEval** (where k was rejected, 11.5pp
+headroom) and **+8.83pp on LoCoMo** (where the verdict was applied, 40.1pp
+headroom) — **8.8× the effect, 7× the efficiency.** The 2026-08-08 re-test was
+sound and simply does not generalise off its corpus.
+
+**The entire k axis is dominated by adjacency.** ADJ1 reaches k=200's recall
+(78.79% vs 79.25%) at **half the tokens** (2.50× vs 4.84×) and is far ahead on
+zero-evidence (**119 vs 153**). At matched budgets: ADJ1 vs k=105 **+6.73pp**,
+ADJ2 vs k=150 **+8.32pp** — the margin **widens** with budget, which is the
+opposite of what an efficiency story predicts. It buys *different* evidence,
+confirmed by R25's 272 adjacency-only turns at 15.5% overlap.
+
+**This dissolves the k-admission decision rather than reversing it.** The 2026-
+07-20 rejection reached the right operational conclusion — do not buy recall by
+raising k — and this run supports it at every point. Only the *reason* was
+corpus-specific. **No correction to the original verdict is required.**
+
+**Does NOT follow:** no k and no adjacency is adopted on this evidence. Token
+cost lands on the reader, there is no accuracy budget, and at 2.5–4.8× context
+higher recall could plausibly produce worse answers (an 11.69pp reader-side
+residual is already priced). A frontier is a menu, not a decision. `recall_
+cascade` is unmeasured and its k is not set by `--max-results`, so this curve may
+have no cascade analogue — R28 tests transfer.
+
+Ref: `k-admission-frontier-result-2026-08-10.md`.
+
+---
+
+## R28 — Adjacency transfers to `recall_cascade` · **PASS** (2026-08-10)
+
+$0, preregistered, full N=1438, cascade path. **The run most likely to
+invalidate the session, and it did not.**
+
+Adjacency gives **+18.22pp (58.60% → 76.82%)** on cascade against **+18.93pp**
+on topk — essentially intact, at slightly *lower* relative token cost (2.27× vs
+2.50×). **331 nonzero pairs, all positive**, p<0.0001; zero-evidence 371 → 143.
+Both prereg concerns (episode diversity fighting in-session expansion; cascade's
+session-grouped formatting making adjacency redundant) did not bind.
+
+**Cascade's own baseline, measured for the first time at full N:** 58.60% micro,
+371 zero-evidence, 34.2 turns, 1,500 tokens — **1.26pp worse than topk on recall
+but 24% cheaper**, ≈29% more token-efficient per unit of evidence. A point in
+favour of the path Permagent already uses.
+
+**This is the COST-UNMATCHED number**, as the prereg declared: cascade k is not
+settable via `--max-results`, so no token-matched control exists. +18.22pp is the
+analogue of topk's flattering +18.93pp, **not** of the +6.73pp that survived
+token-matching. A `SPECTRAL_CASCADE_K` sweep is a separate prereg and is not done.
+
+**`c_spk` never ran** — the disk guard halted the queue at 4Gi. Least valuable
+arm (R25 showed speaker attribution is subsumed by k-raising). Recorded as **not
+run**, not as a null.
+
+**Does NOT follow:** no accuracy claim, no default change on any path. A cascade
+PASS licenses a proposal to Permagent, not a flipped default — registered before
+the result was known.
+
+Ref: `cascade-transfer-result-2026-08-10.md`.
+
+---
+
+## Track C — the ingest gap is classification, and my hypothesis was wrong (2026-08-10)
+
+$0, `SPECTRAL_INGEST_PROFILE=1`, 14,900 memory writes.
+
+| stage | share |
+|---|---:|
+| **`ingest_call`** (classify + score + hash + episode) | **85.6%** |
+| `sig_write` | 6.5% |
+| `density_write` | 5.4% |
+| `readback` | 1.7% |
+| `sign` (Ed25519) | 0.7% |
+
+**H1 (signing dominates) is REFUTED** — Ed25519 is 0.7%; the claim that "the
+auditability edge shows up as a throughput cost" is false. **H4 is CONFIRMED at
+85.6%: the 2026-08-03 decomposition called this a black box and guessed its
+contents correctly. I read the code, found four extra round trips, and inferred
+the guess was wrong. The measurement says otherwise.** Removing every round trip
+buys ~13%, not the majority predicted.
+
+**Surviving finding:** `session_assoc` fired **zero times** in 14,900 writes —
+the bench sets `episode_id` but not `session_id`, so a production write path has
+never been exercised by any benchmark here. A coverage blind spot.
+
+**NOT entered in `MEASURED_RECORD.md` as measured.** The run violated its own
+"idle machine" precondition (99% full volume, ~14GB swap); total measured 1.94
+ms/event against the decomposition's 0.233 ms/event is an 8× discrepancy it
+cannot reconcile. Shares are robust enough for the qualitative verdict; absolutes
+are not. Clean re-run required.
+
+Ref: `ingest-profile-result-2026-08-10.md`.
+
+---
+
+## Adjacency mechanism — the ±1 rule is confirmed, my framing is not (2026-08-11)
+
+$0, **offline re-read of the archived R28 arms**. No brains, no run, no new
+measurement. `scripts/diagnose_adjacency_mechanism.py`, full N = 1,438.
+
+R28 established *that* adjacency works on the production path. It never
+established *why*, and an effect without a mechanism is a corpus fit nobody has
+found yet.
+
+**Confirmed: 390/390 (100%)** of the evidence turns adjacency recovers sit next
+to a turn the baseline already retrieved. Not one arrived from a wider candidate
+pool — the +18.22pp is attributable to the stated structural rule. **252 of
+them share zero content words with their question**, so no BM25 re-ranking could
+ever have surfaced them.
+
+**Refuted (mine): adjacency does NOT target the coreference class.** I predicted
+enrichment for zero-overlap turns. Recovery rate by class says the opposite:
+
+| overlap | recovered / missed | rate |
+|---|---:|---:|
+| **0 (no lexical bridge)** | 252/622 | **40.5%** |
+| 1 | 124/240 | **51.7%** |
+| 2 | 13/23 | 56.5% |
+
+Adjacency is **indifferent to lexical overlap**, slightly biased *against* the
+coreference class. It helps because it is **orthogonal to the lexical channel**,
+not because it attacks that channel's failures. That is a weaker and more
+structural story, and it should replace the mechanism sentence everywhere.
+
+**It also weakens generalisation.** A lever that worked *by* attacking the
+coreference inversion would transfer to any corpus with that inversion. An
+overlap-indifferent one depends on **dialogue geometry** — question and answer
+in adjacent turns — and LoCoMo's two-party strict alternation is its best case.
+
+**ADJ2 priced offline and disfavoured:** of the 496 evidence turns neither arm
+reached, ±2 reaches at most **+119 (a +5.6pp ceiling)** for a predicted ~30%
+token increment, then +55, +35, +26, +19 — decaying fast, and the marginal
+turns are the ones ±1 declined. **242/496 (48.8%) are unreachable at any window
+≤6**, and 370/496 have no lexical bridge: **neither channel we own reaches them
+at any setting.** That is the frontier, and it argues for a second modality
+rather than a wider window.
+
+Ref: `adjacency-mechanism-diagnostic-2026-08-11.md`.
+
+---
+
+## Adjacency on a second corpus — priced for $0, magnitude does not travel (2026-08-11)
+
+$0, offline. Archived `r12-baseline.jsonl` (LongMemEval, shipped config) + the
+corpus's own `has_answer` labels. No brains, no run.
+`scripts/price_adjacency_longmemeval.py`.
+
+**Instrument check:** the script derives evidence keys from the dataset
+independently of the oracle and reproduces the archived **793/896 = 88.50%**
+exactly, so the key arithmetic and corpus join are right.
+
+| | LongMemEval | LoCoMo (cascade) |
+|---|---:|---:|
+| evidence turns | 896 | 2,140 |
+| baseline recall | **88.50%** | 58.60% |
+| missed | 103 | 886 |
+| ±1 ceiling | **+5.80pp** | +18.22pp *(measured)* |
+
+**The geometry IS present — this is not R24.** 50.5% of missed evidence turns
+sit directly beside a retrieved one, so adjacency should work directionally
+here, unlike speaker attribution which had nothing to grab.
+
+**But the magnitude does not travel.** +5.80pp *ceiling* against +18.22pp
+*measured* — under a third. Not because the lever is weaker, but because
+LongMemEval's baseline is already at 88.50% with 103 turns left to win against
+LoCoMo's 886. **Where the headroom is small, so is the prize — by construction.**
+Cost is worse too: 2.27× off a ~14,200-token base for at most 52 turns.
+
+**Consequences:** the R28 headline must not be stated corpus-neutrally, and a
+LongMemEval adjacency run is low-value at high cost and should not be scheduled
+next. Ceiling, not forecast — real adjacency also displaces and admits
+distractors.
+
+Ref: `adjacency-second-corpus-pricing-2026-08-11.md`.
+
+---
+
+## R29 — Adjacency vs equal-budget k-raising on cascade · **PASS** (2026-08-11)
+
+$0, retrieval-only, LoCoMo, full N = 1,438, `--retrieval-path cascade`, R19
+labels. Preregistered at `1eb7c39`; grid amendment at `5c9ba77`, before any
+recall number was read. **The comparison R28 could not make.**
+
+| arm | recall | tokens |
+|---|---:|---:|
+| `c0` defaults | 58.60% | 1,500 |
+| `c_kmult` (K_MULT=2.5) | **69.25%** | 3,493 (2.33×) |
+| `c_adj` | **76.82%** | 3,401 (2.27×) |
+
+**Primary: `c_adj` vs `c_kmult` = +7.57pp, p < 0.0001, discordant 169 for / 46
+against, tokens −2.6% (inside ±10%). PASS on the registered rule.**
+Multi-session +5.15pp. Zero-evidence 143 vs 257.
+
+**Replicates topk.** R25's token-matched control gave +6.73pp; cascade gives
++7.57pp. The honest cost-matched value is **~+7pp on both paths**, marginally
+stronger on the production one.
+
+**Both prereg predictions were right** (`c_kmult` 68–72% → 69.25%; adjacency
++5–9pp → +7.57pp). Recorded because the same day's mechanism prediction was
+wrong, and a register that only notes hits is worthless.
+
+**Two things that must travel with the number:**
+1. **Plain k-raising is worth +10.65pp on cascade for 2.33×** — never measured
+   before today. Adjacency's claim is **+7.57pp on top of a dumber, cheaper
+   lever**, not +18.22pp. A k=40 baseline shows the flattering number.
+2. **The Pareto property does not survive token-matching.** R28's "not one
+   question got worse" becomes **46 questions worse** under adjacency than under
+   equal-budget k-raising (169 better). It wins decisively; it is a trade now.
+
+**Preconditions verified:** 0/100 `context_hash` diffs vs archived `c0` (the R28
+arms were reused, not re-run); calibration blind to recall by construction;
+`m=2.5` interior at +2.7% off target, so the endpoint rule never fired and the
+refinement amendment was never needed. `SPECTRAL_CASCADE_K_MULT` scales each
+shape's own k rather than flattening the profile — the flat `SPECTRAL_CASCADE_K`
+would have confounded the control in our own favour.
+
+**Does NOT follow:** no accuracy claim, no default change, retrieval only,
+mean-matched not per-question-matched. **And it is a LoCoMo number** — the
+same-day pricing puts the LongMemEval ceiling at +5.80pp.
+
+Ref: `cascade-token-match-result-2026-08-11.md`.
