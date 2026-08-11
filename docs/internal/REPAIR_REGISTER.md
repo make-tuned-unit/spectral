@@ -1175,3 +1175,39 @@ at any setting.** That is the frontier, and it argues for a second modality
 rather than a wider window.
 
 Ref: `adjacency-mechanism-diagnostic-2026-08-11.md`.
+
+---
+
+## Adjacency on a second corpus — priced for $0, magnitude does not travel (2026-08-11)
+
+$0, offline. Archived `r12-baseline.jsonl` (LongMemEval, shipped config) + the
+corpus's own `has_answer` labels. No brains, no run.
+`scripts/price_adjacency_longmemeval.py`.
+
+**Instrument check:** the script derives evidence keys from the dataset
+independently of the oracle and reproduces the archived **793/896 = 88.50%**
+exactly, so the key arithmetic and corpus join are right.
+
+| | LongMemEval | LoCoMo (cascade) |
+|---|---:|---:|
+| evidence turns | 896 | 2,140 |
+| baseline recall | **88.50%** | 58.60% |
+| missed | 103 | 886 |
+| ±1 ceiling | **+5.80pp** | +18.22pp *(measured)* |
+
+**The geometry IS present — this is not R24.** 50.5% of missed evidence turns
+sit directly beside a retrieved one, so adjacency should work directionally
+here, unlike speaker attribution which had nothing to grab.
+
+**But the magnitude does not travel.** +5.80pp *ceiling* against +18.22pp
+*measured* — under a third. Not because the lever is weaker, but because
+LongMemEval's baseline is already at 88.50% with 103 turns left to win against
+LoCoMo's 886. **Where the headroom is small, so is the prize — by construction.**
+Cost is worse too: 2.27× off a ~14,200-token base for at most 52 turns.
+
+**Consequences:** the R28 headline must not be stated corpus-neutrally, and a
+LongMemEval adjacency run is low-value at high cost and should not be scheduled
+next. Ceiling, not forecast — real adjacency also displaces and admits
+distractors.
+
+Ref: `adjacency-second-corpus-pricing-2026-08-11.md`.
