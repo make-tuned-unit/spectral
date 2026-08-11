@@ -84,6 +84,35 @@ the floor, no improvement is detectable.** If A0 scores below ~10%, the run is
 Both metrics are computed on the same runs and **both are reported**, whichever
 direction each points.
 
+### AMENDMENT, 2026-08-11 16:20 — registered while arm A0 was still running and
+### BEFORE arm A_ADJ existed at all
+
+**A0 lands at 11.9% on both metrics** — barely above the 10% floor this prereg
+registered as UNINFORMATIVE. Inspecting A0's own predictions (the treatment arm
+does not exist yet, so nothing here can be steered by the comparison) shows why,
+and it is a **design flaw of mine, not a property of the lever**:
+
+multi-session ground truths are **multi-item lists** — *"swimming, catching
+frisbees, balancing on a skateboard, sit, …"* — and both registered metrics are
+**all-or-nothing**. A model that recovers 4 of 8 items scores exactly the same
+as one that recovers none. I chose the slice for its retrieval headroom without
+noticing it is also the slice with the least gradable answers.
+
+**Amendment: add a third metric — item-level recall.** Fraction of the
+comma-separated ground-truth items present in the prediction, per question,
+averaged. Statistic: **Wilcoxon signed-rank** on the paired per-question
+fractions.
+
+- The binary containment metric **remains primary and unchanged**. No goalposts
+  move: whatever it says will be reported as the primary result.
+- Item recall is registered as a **graded secondary that carries the
+  information when the binary metrics sit at the floor**, which they do.
+- It is strictly better powered here: it uses the 88% of questions where a
+  partial answer currently registers as an unqualified zero.
+
+Registered now, in the open, rather than added after seeing A_ADJ — at which
+point it would be indefensible.
+
 ## Verdict rules — fixed now
 
 | condition | verdict |

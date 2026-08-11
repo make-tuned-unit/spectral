@@ -66,6 +66,42 @@ def exact_two_sided_p(b, c):
     return min(1.0, sum(pmf(k) for k in range(n + 1) if pmf(k) <= obs + 1e-12))
 
 
+def wilcoxon_p(diffs):
+    """Two-sided Wilcoxon signed-rank, normal approximation with tie handling.
+
+    Non-zero paired differences only, per the standard definition. Falls back to
+    1.0 below n=10, where the normal approximation is not trustworthy and the
+    honest answer is 'no evidence' rather than a fabricated p.
+    """
+    # Zero differences are dropped by definition. Guarding here as well as at
+    # the call site: passing an all-zero vector must mean "no evidence of a
+    # difference", and without this it reported p ~ 9e-05 for exactly that.
+    diffs = [d for d in diffs if d != 0]
+    n = len(diffs)
+    if n < 10:
+        return 1.0
+    order = sorted(range(n), key=lambda i: abs(diffs[i]))
+    ranks = [0.0] * n
+    i = 0
+    while i < n:                       # average ranks within ties
+        j = i
+        while j + 1 < n and abs(diffs[order[j + 1]]) == abs(diffs[order[i]]):
+            j += 1
+        avg = (i + j) / 2 + 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    w_plus = sum(r for r, d in zip(ranks, diffs) if d > 0)
+    mu = n * (n + 1) / 4
+    sigma = (n * (n + 1) * (2 * n + 1) / 24) ** 0.5
+    if sigma == 0:
+        return 1.0
+    z = (w_plus - mu) / sigma
+    # Two-sided normal tail via erfc.
+    from math import erfc
+    return min(1.0, erfc(abs(z) / (2 ** 0.5)))
+
+
 def wilson(k, n):
     if n == 0:
         return (0.0, 0.0)
@@ -88,6 +124,30 @@ def main():
     ids = sorted(set(a) & set(b))
     if not ids:
         raise SystemExit("no shared question_ids")
+
+    # Graded metric, added by the prereg amendment while A0 was still running
+    # and before A_ADJ existed. The binary metrics sit at ~12% because
+    # multi-session answers are multi-item lists and all-or-nothing scoring
+    # gives 4-of-8 the same credit as 0-of-8; this uses those partial answers.
+    def item_recall(r):
+        reqs = items(r["ground_truth"])
+        if not reqs:
+            return None
+        p = normalize(r["predicted"])
+        return sum(1 for q in reqs if q in p) / len(reqs)
+
+    graded = [(item_recall(a[q]), item_recall(b[q])) for q in ids]
+    graded = [(x, y) for x, y in graded if x is not None and y is not None]
+    if graded:
+        ma = sum(x for x, _ in graded) / len(graded)
+        mb = sum(y for _, y in graded) / len(graded)
+        diffs = [y - x for x, y in graded if y != x]
+        w_p = wilcoxon_p(diffs)
+        print(f"\n=== item-level recall (graded secondary)  (n={len(graded)}) ===")
+        print(f"  {args.label_a:<8} {ma:6.2%}")
+        print(f"  {args.label_b:<8} {mb:6.2%}")
+        print(f"  delta {mb - ma:+.2%}   changed on {len(diffs)} questions   "
+              f"Wilcoxon p={w_p:.4f}")
 
     for metric, get in (("containment (PRIMARY, deterministic)",
                          lambda r: contained(r["predicted"], r["ground_truth"])),
