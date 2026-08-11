@@ -65,7 +65,13 @@ def build_turn_index(dataset_path):
     return idx
 
 
-def neighbours(key):
+# How wide a window to price offline. Beyond this the "neighbour" framing
+# stops meaning anything -- it is just a session dump.
+MAX_WINDOW = 6
+
+
+def neighbours(key, dist=1):
+    """Keys exactly `dist` turns either side of `key`."""
     m = KEY_RE.match(key)
     if not m:
         return []
@@ -73,7 +79,7 @@ def neighbours(key):
     # Role alternates, and we do not know the neighbour's role from the key
     # alone, so emit both candidates per offset and let membership decide.
     return [f"{m.group('sess')}:turn:{j}:{r}"
-            for j in (i - 1, i + 1) if j >= 0
+            for j in (i - dist, i + dist) if j >= 0
             for r in ("user", "assistant")]
 
 
@@ -88,7 +94,7 @@ def main():
     turns = build_turn_index(args.dataset)
     ids = sorted(set(base) & set(treat) & set(turns))
 
-    recovered, already, still_missed = [], [], []
+    recovered, still_missed, residual_reach = [], [], []
     adj_explained = 0
     key_parse_fail = 0
 
@@ -114,8 +120,16 @@ def main():
                 adj_explained += 1
         for k in b_missed & t_missed:            # nobody got it
             txt = turn_text.get(k)
-            if txt is not None:
-                still_missed.append(len(qw & words(txt)))
+            if txt is None:
+                continue
+            still_missed.append(len(qw & words(txt)))
+            # Price a wider window offline, before anyone builds it: how far
+            # from a turn the BASELINE already had does this residual turn sit?
+            # Unreachable at any window means no ±N rule will ever get it.
+            residual_reach.append(min(
+                (d for d in range(2, MAX_WINDOW + 1)
+                 if any(n in b_keys for n in neighbours(k, d))),
+                default=None))
 
     def dist(v, name):
         if not v:
@@ -146,6 +160,23 @@ def main():
         if tot:
             name = "0 (no lexical bridge)" if cls == 0 else ("3+" if cls == 3 else str(cls))
             print(f"  overlap {name:<22} {rec_c[cls]:>4}/{tot:<5} {rec_c[cls] / tot:6.1%}")
+
+    # What a wider window could buy, priced from archived rows -- no run.
+    if residual_reach:
+        print(f"\n=== the residual: {len(residual_reach)} evidence turns neither arm reached ===")
+        print("  distance from the nearest turn the BASELINE already retrieved:")
+        cum = 0
+        for d in range(2, MAX_WINDOW + 1):
+            hit = sum(1 for x in residual_reach if x == d)
+            cum += hit
+            if hit:
+                print(f"    within +/-{d}   +{hit:<4} cumulative {cum:>4}/{len(residual_reach)} "
+                      f"({cum / len(residual_reach):5.1%} of the residual)")
+        unreachable = sum(1 for x in residual_reach if x is None)
+        print(f"    unreachable at any window <= {MAX_WINDOW}: {unreachable}/{len(residual_reach)} "
+              f"({unreachable / len(residual_reach):.1%})")
+        print("  NB: a ceiling, not a forecast -- widening also adds distractors,")
+        print("  and every extra turn is paid for in context.")
 
     n = len(recovered)
     if n:

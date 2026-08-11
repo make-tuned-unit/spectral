@@ -79,7 +79,38 @@ should replace the mechanism sentence wherever adjacency gets written up.
 - **496 evidence turns remain missed by both arms**, 370 of them with no lexical
   bridge. That residual is untouched by everything measured in this programme.
 
-## 5. Limits
+## 5. Pricing the next lever without running it
+
+The same archived rows price a wider window (±2, ±3, …) for $0. For each of the
+496 residual evidence turns: how far is it from a turn the **baseline** already
+retrieved?
+
+| window | new turns | cumulative | share of residual |
+|---|---:|---:|---:|
+| ±2 | +119 | 119 | 24.0% |
+| ±3 | +55 | 174 | 35.1% |
+| ±4 | +35 | 209 | 42.1% |
+| ±5 | +26 | 235 | 47.4% |
+| ±6 | +19 | 254 | 51.2% |
+| **unreachable at any window ≤6** | — | **242** | **48.8%** |
+
+Two things follow.
+
+**ADJ2 is worth at most +119 turns — a +5.6pp ceiling on micro recall** (119 of
+2,140 evidence turns), for a previously-predicted ~30% token increment. That is
+a *ceiling*, not a forecast: widening also admits distractors, and the marginal
+turns are the ones the ±1 rule already declined to reach. Compare adjacency's
+own +390. **The window axis is decaying fast** and ADJ2 does not look like the
+next experiment.
+
+**Half the residual is structurally unreachable by any ±N rule.** 242 evidence
+turns sit more than six turns from anything the lexical channel retrieved, and
+370 of the 496 have no lexical bridge either. **Neither channel we own can
+reach them at any setting.** That, not ADJ2, is the honest description of the
+frontier — and it is an argument for a second modality rather than a wider
+window on the one we have.
+
+## 6. Limits
 
 - Retrieval only. Nothing here says answers improve.
 - The overlap tokenizer is crude by design and fixed before use; it is a
