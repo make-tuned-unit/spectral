@@ -1024,3 +1024,42 @@ dialogue is adjacency's ideal case).
 
 Ref: `turn-adjacency-result-2026-08-10.md`, `turn-adjacency-prereg-2026-08-09.md`,
 `turn-adjacency-diagnostic-2026-08-09.md`.
+
+---
+
+## R27 — k-admission frontier · the whole axis is dominated (2026-08-10)
+
+$0, preregistered, full N=1438, `topk_fts`. **No PASS verdict and no adoption
+recommendation, by design** — "recall rises with k" is arithmetic, so this is a
+priced curve rather than a hypothesis test.
+
+**The k curve has no knee:** marginal return decays smoothly 110.8 → 28.8 turns
+per 1k extra tokens across k=60→200, with no inflection. No measurement says
+"stop here", which is why the 2026-07-20 decision was always a cost judgment.
+
+**The prereg's falsifiable prediction held decisively.** Same lever, two
+corpora: k=40→80 gives **+1.00pp on LongMemEval** (where k was rejected, 11.5pp
+headroom) and **+8.83pp on LoCoMo** (where the verdict was applied, 40.1pp
+headroom) — **8.8× the effect, 7× the efficiency.** The 2026-08-08 re-test was
+sound and simply does not generalise off its corpus.
+
+**The entire k axis is dominated by adjacency.** ADJ1 reaches k=200's recall
+(78.79% vs 79.25%) at **half the tokens** (2.50× vs 4.84×) and is far ahead on
+zero-evidence (**119 vs 153**). At matched budgets: ADJ1 vs k=105 **+6.73pp**,
+ADJ2 vs k=150 **+8.32pp** — the margin **widens** with budget, which is the
+opposite of what an efficiency story predicts. It buys *different* evidence,
+confirmed by R25's 272 adjacency-only turns at 15.5% overlap.
+
+**This dissolves the k-admission decision rather than reversing it.** The 2026-
+07-20 rejection reached the right operational conclusion — do not buy recall by
+raising k — and this run supports it at every point. Only the *reason* was
+corpus-specific. **No correction to the original verdict is required.**
+
+**Does NOT follow:** no k and no adjacency is adopted on this evidence. Token
+cost lands on the reader, there is no accuracy budget, and at 2.5–4.8× context
+higher recall could plausibly produce worse answers (an 11.69pp reader-side
+residual is already priced). A frontier is a menu, not a decision. `recall_
+cascade` is unmeasured and its k is not set by `--max-results`, so this curve may
+have no cascade analogue — R28 tests transfer.
+
+Ref: `k-admission-frontier-result-2026-08-10.md`.
