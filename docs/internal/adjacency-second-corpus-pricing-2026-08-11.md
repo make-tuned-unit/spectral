@@ -87,4 +87,4 @@ comparison R29 is running on LoCoMo.
 
 **Refs:** `adjacency-mechanism-diagnostic-2026-08-11.md`,
 `cascade-transfer-result-2026-08-10.md` (R28),
-`r24-longmemeval-nonreplication-2026-08-09.md`.
+`longmemeval-replication-2026-08-09.md`.
