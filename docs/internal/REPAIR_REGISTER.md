@@ -1063,3 +1063,69 @@ cascade` is unmeasured and its k is not set by `--max-results`, so this curve ma
 have no cascade analogue — R28 tests transfer.
 
 Ref: `k-admission-frontier-result-2026-08-10.md`.
+
+---
+
+## R28 — Adjacency transfers to `recall_cascade` · **PASS** (2026-08-10)
+
+$0, preregistered, full N=1438, cascade path. **The run most likely to
+invalidate the session, and it did not.**
+
+Adjacency gives **+18.22pp (58.60% → 76.82%)** on cascade against **+18.93pp**
+on topk — essentially intact, at slightly *lower* relative token cost (2.27× vs
+2.50×). **331 nonzero pairs, all positive**, p<0.0001; zero-evidence 371 → 143.
+Both prereg concerns (episode diversity fighting in-session expansion; cascade's
+session-grouped formatting making adjacency redundant) did not bind.
+
+**Cascade's own baseline, measured for the first time at full N:** 58.60% micro,
+371 zero-evidence, 34.2 turns, 1,500 tokens — **1.26pp worse than topk on recall
+but 24% cheaper**, ≈29% more token-efficient per unit of evidence. A point in
+favour of the path Permagent already uses.
+
+**This is the COST-UNMATCHED number**, as the prereg declared: cascade k is not
+settable via `--max-results`, so no token-matched control exists. +18.22pp is the
+analogue of topk's flattering +18.93pp, **not** of the +6.73pp that survived
+token-matching. A `SPECTRAL_CASCADE_K` sweep is a separate prereg and is not done.
+
+**`c_spk` never ran** — the disk guard halted the queue at 4Gi. Least valuable
+arm (R25 showed speaker attribution is subsumed by k-raising). Recorded as **not
+run**, not as a null.
+
+**Does NOT follow:** no accuracy claim, no default change on any path. A cascade
+PASS licenses a proposal to Permagent, not a flipped default — registered before
+the result was known.
+
+Ref: `cascade-transfer-result-2026-08-10.md`.
+
+---
+
+## Track C — the ingest gap is classification, and my hypothesis was wrong (2026-08-10)
+
+$0, `SPECTRAL_INGEST_PROFILE=1`, 14,900 memory writes.
+
+| stage | share |
+|---|---:|
+| **`ingest_call`** (classify + score + hash + episode) | **85.6%** |
+| `sig_write` | 6.5% |
+| `density_write` | 5.4% |
+| `readback` | 1.7% |
+| `sign` (Ed25519) | 0.7% |
+
+**H1 (signing dominates) is REFUTED** — Ed25519 is 0.7%; the claim that "the
+auditability edge shows up as a throughput cost" is false. **H4 is CONFIRMED at
+85.6%: the 2026-08-03 decomposition called this a black box and guessed its
+contents correctly. I read the code, found four extra round trips, and inferred
+the guess was wrong. The measurement says otherwise.** Removing every round trip
+buys ~13%, not the majority predicted.
+
+**Surviving finding:** `session_assoc` fired **zero times** in 14,900 writes —
+the bench sets `episode_id` but not `session_id`, so a production write path has
+never been exercised by any benchmark here. A coverage blind spot.
+
+**NOT entered in `MEASURED_RECORD.md` as measured.** The run violated its own
+"idle machine" precondition (99% full volume, ~14GB swap); total measured 1.94
+ms/event against the decomposition's 0.233 ms/event is an 8× discrepancy it
+cannot reconcile. Shares are robust enough for the qualitative verdict; absolutes
+are not. Clean re-run required.
+
+Ref: `ingest-profile-result-2026-08-10.md`.
