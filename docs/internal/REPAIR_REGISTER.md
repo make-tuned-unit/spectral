@@ -1211,3 +1211,50 @@ next. Ceiling, not forecast — real adjacency also displaces and admits
 distractors.
 
 Ref: `adjacency-second-corpus-pricing-2026-08-11.md`.
+
+---
+
+## R29 — Adjacency vs equal-budget k-raising on cascade · **PASS** (2026-08-11)
+
+$0, retrieval-only, LoCoMo, full N = 1,438, `--retrieval-path cascade`, R19
+labels. Preregistered at `1eb7c39`; grid amendment at `5c9ba77`, before any
+recall number was read. **The comparison R28 could not make.**
+
+| arm | recall | tokens |
+|---|---:|---:|
+| `c0` defaults | 58.60% | 1,500 |
+| `c_kmult` (K_MULT=2.5) | **69.25%** | 3,493 (2.33×) |
+| `c_adj` | **76.82%** | 3,401 (2.27×) |
+
+**Primary: `c_adj` vs `c_kmult` = +7.57pp, p < 0.0001, discordant 169 for / 46
+against, tokens −2.6% (inside ±10%). PASS on the registered rule.**
+Multi-session +5.15pp. Zero-evidence 143 vs 257.
+
+**Replicates topk.** R25's token-matched control gave +6.73pp; cascade gives
++7.57pp. The honest cost-matched value is **~+7pp on both paths**, marginally
+stronger on the production one.
+
+**Both prereg predictions were right** (`c_kmult` 68–72% → 69.25%; adjacency
++5–9pp → +7.57pp). Recorded because the same day's mechanism prediction was
+wrong, and a register that only notes hits is worthless.
+
+**Two things that must travel with the number:**
+1. **Plain k-raising is worth +10.65pp on cascade for 2.33×** — never measured
+   before today. Adjacency's claim is **+7.57pp on top of a dumber, cheaper
+   lever**, not +18.22pp. A k=40 baseline shows the flattering number.
+2. **The Pareto property does not survive token-matching.** R28's "not one
+   question got worse" becomes **46 questions worse** under adjacency than under
+   equal-budget k-raising (169 better). It wins decisively; it is a trade now.
+
+**Preconditions verified:** 0/100 `context_hash` diffs vs archived `c0` (the R28
+arms were reused, not re-run); calibration blind to recall by construction;
+`m=2.5` interior at +2.7% off target, so the endpoint rule never fired and the
+refinement amendment was never needed. `SPECTRAL_CASCADE_K_MULT` scales each
+shape's own k rather than flattening the profile — the flat `SPECTRAL_CASCADE_K`
+would have confounded the control in our own favour.
+
+**Does NOT follow:** no accuracy claim, no default change, retrieval only,
+mean-matched not per-question-matched. **And it is a LoCoMo number** — the
+same-day pricing puts the LongMemEval ceiling at +5.80pp.
+
+Ref: `cascade-token-match-result-2026-08-11.md`.
