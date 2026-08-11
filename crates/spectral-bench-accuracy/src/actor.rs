@@ -222,10 +222,20 @@ impl Actor for OpenAiActor {
             .replace("{memories_text}", &memories_text)
             .replace("{question}", question);
 
+        // A local 7B model spends most of its wall clock generating, and an
+        // unbounded cap lets one rambling answer cost 3x a normal question
+        // (measured: 214s vs 64s on the same machine). Bounding it makes an
+        // on-device accuracy A/B feasible at all. Default is unchanged, and any
+        // A/B must apply the same bound to both arms or it is comparing two
+        // different actors.
+        let max_tokens = std::env::var("SPECTRAL_ACTOR_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(4096);
         let body = serde_json::json!({
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
             "temperature": 0,
             "stream": false,
         });
