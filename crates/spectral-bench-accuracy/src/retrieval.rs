@@ -934,6 +934,19 @@ pub fn retrieve_cascade(
     {
         pipeline_config.k = k;
     }
+    // R29 token-matched control. SPECTRAL_CASCADE_K flattens every question
+    // shape to one k, which would confound a k-raising control: a deficit could
+    // be blamed on destroying the tuned per-shape profile rather than on
+    // k-raising itself — a confound that flatters our own lever. This scales
+    // each shape's own k instead, preserving the profile. Applied after the
+    // flat override so the two compose predictably (flat sets the base).
+    if let Some(mult) = std::env::var("SPECTRAL_CASCADE_K_MULT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|m| *m > 0.0 && m.is_finite())
+    {
+        pipeline_config.k = ((pipeline_config.k as f64) * mult).round().max(1.0) as usize;
+    }
     if let Some(mpe) = std::env::var("SPECTRAL_CASCADE_MAX_PER_EPISODE")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
