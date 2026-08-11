@@ -1129,3 +1129,49 @@ cannot reconcile. Shares are robust enough for the qualitative verdict; absolute
 are not. Clean re-run required.
 
 Ref: `ingest-profile-result-2026-08-10.md`.
+
+---
+
+## Adjacency mechanism — the ±1 rule is confirmed, my framing is not (2026-08-11)
+
+$0, **offline re-read of the archived R28 arms**. No brains, no run, no new
+measurement. `scripts/diagnose_adjacency_mechanism.py`, full N = 1,438.
+
+R28 established *that* adjacency works on the production path. It never
+established *why*, and an effect without a mechanism is a corpus fit nobody has
+found yet.
+
+**Confirmed: 390/390 (100%)** of the evidence turns adjacency recovers sit next
+to a turn the baseline already retrieved. Not one arrived from a wider candidate
+pool — the +18.22pp is attributable to the stated structural rule. **252 of
+them share zero content words with their question**, so no BM25 re-ranking could
+ever have surfaced them.
+
+**Refuted (mine): adjacency does NOT target the coreference class.** I predicted
+enrichment for zero-overlap turns. Recovery rate by class says the opposite:
+
+| overlap | recovered / missed | rate |
+|---|---:|---:|
+| **0 (no lexical bridge)** | 252/622 | **40.5%** |
+| 1 | 124/240 | **51.7%** |
+| 2 | 13/23 | 56.5% |
+
+Adjacency is **indifferent to lexical overlap**, slightly biased *against* the
+coreference class. It helps because it is **orthogonal to the lexical channel**,
+not because it attacks that channel's failures. That is a weaker and more
+structural story, and it should replace the mechanism sentence everywhere.
+
+**It also weakens generalisation.** A lever that worked *by* attacking the
+coreference inversion would transfer to any corpus with that inversion. An
+overlap-indifferent one depends on **dialogue geometry** — question and answer
+in adjacent turns — and LoCoMo's two-party strict alternation is its best case.
+
+**ADJ2 priced offline and disfavoured:** of the 496 evidence turns neither arm
+reached, ±2 reaches at most **+119 (a +5.6pp ceiling)** for a predicted ~30%
+token increment, then +55, +35, +26, +19 — decaying fast, and the marginal
+turns are the ones ±1 declined. **242/496 (48.8%) are unreachable at any window
+≤6**, and 370/496 have no lexical bridge: **neither channel we own reaches them
+at any setting.** That is the frontier, and it argues for a second modality
+rather than a wider window.
+
+Ref: `adjacency-mechanism-diagnostic-2026-08-11.md`.
