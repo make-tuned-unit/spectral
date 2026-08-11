@@ -66,6 +66,26 @@ Calibration is **not a result** and will not be reported as one. If the chosen
 `m` fails the ±10% token match at full N, the run is **INCONCLUSIVE** and gets
 re-calibrated — it is not reported as a PASS.
 
+### AMENDMENT, 2026-08-11, registered before any recall number was read
+
+**The grid above is too coarse and I should have seen it when I wrote it.** The
+target is 2.28×. If tokens scale near-linearly in `m` — which R27 found on topk,
+where k=40→105 (2.62× k) cost 2.62× tokens — then `m=2.0` lands ≈−12% and
+`m=2.5` lands ≈+10%, i.e. **both candidates straddle the ±10% band and the grid
+may contain no admissible point at all**. A prereg that can only return
+INCONCLUSIVE is a badly designed prereg.
+
+**Amendment:** after the grid runs, a **refinement point** may be interpolated
+on the token axis — fit `m` against measured mean tokens from the completed
+arms, solve for the target, run that single `m` as one further calibration arm,
+and apply the same nearest-token rule over the enlarged set.
+
+This stays outcome-blind by construction: `calibrate_token_match.py` reads
+`context_tokens_est` and **never reads recall**, so no refinement can be steered
+by the answer. What is amended is the *grid*, not the selection rule, the
+metric, the statistic, or any verdict threshold. Recorded here rather than
+applied silently.
+
 ## Primary comparison
 
 **`c_adj` vs `c_kmult`.** Both at ~3,400 mean tokens.
