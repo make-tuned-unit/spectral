@@ -1258,3 +1258,51 @@ mean-matched not per-question-matched. **And it is a LoCoMo number** — the
 same-day pricing puts the LongMemEval ceiling at +5.80pp.
 
 Ref: `cascade-token-match-result-2026-08-11.md`.
+
+---
+
+## R30 — Does adjacency improve ANSWERS? · **NULL on the primary** (2026-08-11)
+
+$0, **fully on-device** (ollama `qwen25-16k` 7.6B Q4, actor + judge, temp 0, no
+cloud calls). LoCoMo multi-session, **n = 280** (complete category), cascade,
+single variable. Prereg `9ffd8cd` before any arm; graded-metric amendment
+`648781f` while A0 ran and **before A_ADJ existed**.
+
+| metric | A0 | A_ADJ | Δ | p | verdict |
+|---|---:|---:|---:|---:|---|
+| **containment (PRIMARY)** | 11.79% | 13.57% | +1.79pp | **0.3833** | **NULL** |
+| local judge (secondary) | 12.14% | 13.21% | +1.07pp | 0.7111 | null |
+| item recall (graded) | 22.99% | 26.71% | +3.73pp | 0.0280 | nominally + |
+
+Context 1,492 → 3,361 tok (2.25×), matching R29's 2.27×.
+
+**+18.22pp of evidence recall — and +7.57pp over the token-matched control —
+does not demonstrably convert to answers.** This is the assumption the entire
+retrieval programme rests on, tested for the first time, and it is **not
+established**.
+
+**The graded metric is NOT a rescue.** It is a mid-flight secondary; **three
+metrics were tested, so Bonferroni puts p = 0.0280 at ~0.084**; and it is the
+most favourable framing on the most favourable slice. Reading: a small
+consistent positive trend, none of it clearing its own bar.
+
+**The registered risk did NOT materialise: 2.25× context did not hurt** on any
+metric. That removes the main *objection* to spending the context without
+supplying a *reason* to.
+
+**Weak evidence in both directions.** A0 at 11.79% is just above the 10% line
+registered as UNINFORMATIVE (cloud actors score 39.64% on this category). The
+prereg's detectable effect was ~8pp; the observed effect is 1.79pp — **the run
+could not have detected the effect it found**. Correct phrasing is "no
+detectable effect at this N with this reader", **never "no effect"**.
+
+**Hygiene:** 280/280 both arms, 0 empty, 0 transport failures; 4/5 judge-parse
+failures (R21 class) touch only the secondary — the deterministic primary is
+immune, which is why it was made primary. A0's 1,492 mean tokens independently
+reproduces R29's 1,500 cascade baseline.
+
+**Follows:** no accuracy claim for adjacency; R29's retrieval PASS stands on its
+own terms. **Next test is a stronger reader** — needs the key rotated and a
+budget, the one thing $0 cannot buy. No post-hoc subgroups were run.
+
+Ref: `adjacency-accuracy-result-2026-08-11.md`.
