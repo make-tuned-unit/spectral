@@ -1174,6 +1174,22 @@ are not. Clean re-run required.
 
 Ref: `ingest-profile-result-2026-08-10.md`.
 
+### Track C — CLEAN RE-RUN DONE (2026-08-13), shares replicate to the decimal
+
+Preconditions held (149 Gi free, 2.9 GB swap, load 2.93, no competing work) and
+were recorded, not assumed. **Every share replicates within 0.5pp**
+(`ingest_call` 85.5% vs 85.6%; `sign` 0.8% vs 0.7%), so H4-confirmed /
+H1-refuted now stands on a valid run. Clean total **1.16 ms/event** — but on a
+**different host** than every prior run, so the 8× discrepancy against the
+2026-08-03 decomposition **stays open** (5× here, cross-hardware, reconciles
+nothing) and may stay open permanently: the original machine is no longer in
+this environment. Also flagged, unresolved: this run profiled 71,379 writes
+where the 08-10 doc says 14,900 for nominally the same command; per-question
+brain keying in today's `oracle.rs` accounts for 71,379, and the old
+dataset/tree needed to explain 14,900 are not on this machine. Shares are
+per-event and unaffected.
+Ref: `ingest-profile-rerun-2026-08-13.md`.
+
 ---
 
 ## Adjacency mechanism — the ±1 rule is confirmed, my framing is not (2026-08-11)
