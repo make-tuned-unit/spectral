@@ -617,7 +617,19 @@ Ref: `r16-baseline-shift-2026-08-07.md`, `landscape-research-2026-08-07.md`
 
 ---
 
-## R17 — `list_memories_by_signal` has no tiebreak, on a guaranteed tie key · READY
+## R17 — `list_memories_by_signal` has no tiebreak, on a guaranteed tie key · DONE (2026-08-13)
+
+**Shipped with the R18 sweep** — `, id` added, pinned by
+`r17_signal_score_tie_is_broken_by_id` (both insertion orders on independent
+stores; verified to FAIL with the clause reverted). Paired oracle run: **0/400
+context diffs on both `topk_fts` and `cascade`** — see
+`tiebreak-paired-verification-result-2026-08-13.md`. The "very likely a larger
+exposure than R16" guess was **not** borne out on the bench path: the boundary
+is a guaranteed tie block, but no bench route reads it. Production reachability
+(`brain.rs` `aaak` and five other callers) is unmeasured and the determinism
+rationale stands regardless of the zero.
+
+Original row:
 
 `sqlite_store.rs:1779`: `ORDER BY signal_score DESC LIMIT ?2`.
 `signal_score` **defaults to 0.5**, so unlike R16 the LIMIT boundary sits
@@ -631,7 +643,39 @@ into R16's clean 10/500 attribution.
 
 ---
 
-## R18 — **Twelve** more untiebroken product `ORDER BY … LIMIT` sites · READY
+## R18 — **Twelve** more untiebroken product `ORDER BY … LIMIT` sites · DONE (2026-08-13)
+
+**All twelve sites tiebroken in one sweep, the DELETE first as this row
+ordered.** Conventions follow the already-tiebroken sites: `id DESC` after
+`datetime(created_at) DESC` (matches `list_wing_memories_capped` and
+`idx_memories_wing_recency`'s own trailing key), ascending `id`/`m.id`/
+`memory_id`/`related_id`/`n.rid` after score-shaped keys (matches R16).
+Pinned by three tests covering the family's severity classes (DELETE
+boundary, guaranteed tie block, LIMIT-1 pick), each verified to FAIL with
+the clauses reverted.
+
+**A test-construction finding that amends R16's method:** tied-key emission
+order differs by plan on this build — an index scan emits the index's own
+trailing-key order (so the untiebroken prune subquery *happened* to agree
+with the pinned order via `idx_memories_wing_recency`'s `id DESC`), while a
+temp sort emits insertion order. A single adversarial insertion order is
+therefore NOT sufficient to pin index-served sites; the committed tests run
+both insertion orders, and the prune test exercises both plans.
+
+**Paired oracle run (preregistered): 0/400 context diffs on both paths**,
+evidence turns and tokens identical — recorded as "no measurable bench-path
+effect at N=400", not as unreachability. The per-site paired-run requirement
+in the original row was satisfied collectively by this sweep because the
+observed effect is exactly zero; had any diff appeared, attribution would
+have required splitting. Ref:
+`tiebreak-paired-verification-prereg-2026-08-13.md`,
+`tiebreak-paired-verification-result-2026-08-13.md`.
+
+Original row follows.
+
+---
+
+## R18 (original) — **Twelve** more untiebroken product `ORDER BY … LIMIT` sites · READY
 
 > **CORRECTED 2026-08-07.** This row and `r16-baseline-shift-2026-08-07.md`
 > § Scope both said "five more" / "six further sites, verified by grep". That

@@ -1912,7 +1912,7 @@ impl MemoryStore for SqliteStore {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let sql = format!(
                 "SELECT {MEMORY_COLUMNS} FROM memories WHERE signal_score >= ?1 \
-                 ORDER BY signal_score DESC LIMIT ?2"
+                 ORDER BY signal_score DESC, id LIMIT ?2"
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![min_signal, limit as i64], memory_from_row)?;
@@ -1976,13 +1976,13 @@ impl MemoryStore for SqliteStore {
                         WHERE key IN (SELECT source_key FROM consolidation_edges)
                     )
                     GROUP BY memory_id
-                    ORDER BY hits DESC
+                    ORDER BY hits DESC, memory_id
                     LIMIT ?{limit_param}
                 )
                 SELECT m.{cols}, ms.hits
                 FROM memory_scores ms
                 JOIN memories m ON m.id = ms.memory_id
-                ORDER BY ms.hits DESC",
+                ORDER BY ms.hits DESC, m.id",
                 hash_placeholders = hash_placeholders,
                 cols = MEMORY_COLUMNS.replace(", ", ", m."),
                 limit_param = hashes.len() + 3,
@@ -2595,7 +2595,7 @@ impl MemoryStore for SqliteStore {
             let sql = format!(
                 "SELECT {MEMORY_COLUMNS} FROM memories \
                  WHERE wing = ?1 AND datetime(created_at) > datetime(?2) \
-                 ORDER BY datetime(created_at) DESC LIMIT ?3"
+                 ORDER BY datetime(created_at) DESC, id DESC LIMIT ?3"
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![wing, since, limit as i64], memory_from_row)?;
@@ -2817,9 +2817,12 @@ impl MemoryStore for SqliteStore {
                 // mixed created_at formats — otherwise "keep the N most recent"
                 // keeps/deletes the wrong rows at a day boundary (a DELETE).
                 let mut del_stmt = tx.prepare(
+                    // `id DESC` tiebreak: without it, which rows survive a
+                    // same-second tie is decided by SQLite's plan — an unpinned
+                    // boundary on a DELETE (R18).
                     "DELETE FROM memories WHERE wing = ?1 AND source = ?2 AND id NOT IN (\
                          SELECT id FROM memories WHERE wing = ?1 AND source = ?2 \
-                         ORDER BY datetime(created_at) DESC LIMIT ?3\
+                         ORDER BY datetime(created_at) DESC, id DESC LIMIT ?3\
                      )",
                 )?;
                 for source in &sources {
@@ -2877,7 +2880,7 @@ impl MemoryStore for SqliteStore {
             let mut stmt = conn.prepare(
                 "SELECT id, started_at, ended_at, memory_count, wing, summary_preview
                  FROM episodes WHERE wing = ?1 AND ended_at > ?2
-                 ORDER BY ended_at DESC LIMIT 1",
+                 ORDER BY ended_at DESC, id LIMIT 1",
             )?;
             let episode = stmt
                 .query_row(params![wing, since], |row| {
@@ -2918,7 +2921,7 @@ impl MemoryStore for SqliteStore {
             let episodes = if let Some(ref w) = wing {
                 let mut stmt = conn.prepare(
                     "SELECT id, started_at, ended_at, memory_count, wing, summary_preview
-                     FROM episodes WHERE wing = ?1 ORDER BY ended_at DESC LIMIT ?2",
+                     FROM episodes WHERE wing = ?1 ORDER BY ended_at DESC, id LIMIT ?2",
                 )?;
                 let v: Vec<Episode> = stmt
                     .query_map(params![w, limit as i64], episode_from_row)?
@@ -2928,7 +2931,7 @@ impl MemoryStore for SqliteStore {
             } else {
                 let mut stmt = conn.prepare(
                     "SELECT id, started_at, ended_at, memory_count, wing, summary_preview
-                     FROM episodes ORDER BY ended_at DESC LIMIT ?1",
+                     FROM episodes ORDER BY ended_at DESC, id LIMIT ?1",
                 )?;
                 let v: Vec<Episode> = stmt
                     .query_map(params![limit as i64], episode_from_row)?
@@ -3591,7 +3594,7 @@ impl MemoryStore for SqliteStore {
             let sql = format!(
                 "SELECT {MEMORY_COLUMNS} FROM memories \
                  WHERE description IS NULL \
-                 ORDER BY created_at DESC LIMIT ?1"
+                 ORDER BY created_at DESC, id DESC LIMIT ?1"
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows: Vec<Memory> = stmt
@@ -3617,7 +3620,7 @@ impl MemoryStore for SqliteStore {
                  UNION ALL \
                  SELECT memory_id_a AS related_id, co_count FROM co_retrieval_pairs \
                      WHERE memory_id_b = ?1 \
-                 ORDER BY co_count DESC LIMIT ?2",
+                 ORDER BY co_count DESC, related_id LIMIT ?2",
             )?;
             let rows: Vec<RelatedMemory> = stmt
                 .query_map(params![memory_id, limit as i64], |row| {
@@ -3702,7 +3705,7 @@ impl MemoryStore for SqliteStore {
                          NULLIF((SELECT occ FROM occ WHERE id = n.rid), 0)) AS lift
                  FROM neighbors n
                  WHERE n.co_count >= ?2
-                 ORDER BY lift DESC, n.co_count DESC
+                 ORDER BY lift DESC, n.co_count DESC, n.rid
                  LIMIT ?3",
             )?;
             let rows: Vec<RelatedMemory> = stmt
@@ -3909,7 +3912,7 @@ impl MemoryStore for SqliteStore {
             let mut stmt = conn.prepare(
                 "SELECT query_hash, timestamp, memory_ids_json, method, wing, question_type, session_id \
                  FROM retrieval_events WHERE session_id = ?1 \
-                 ORDER BY timestamp ASC LIMIT ?2",
+                 ORDER BY timestamp ASC, id ASC LIMIT ?2",
             )?;
             let rows: Vec<RetrievalEvent> = stmt
                 .query_map(params![session_id, limit as i64], |row| {
@@ -4206,7 +4209,7 @@ impl MemoryStore for SqliteStore {
                  WHERE NOT EXISTS (
                      SELECT 1 FROM consolidation_edges ce WHERE ce.source_key = m.key
                  )
-                 ORDER BY m.created_at DESC LIMIT ?1",
+                 ORDER BY m.created_at DESC, m.id DESC LIMIT ?1",
             )?;
             let keys: Vec<String> = stmt
                 .query_map(params![limit as i64], |row| row.get(0))?
@@ -8185,6 +8188,129 @@ mod tests {
             top[0].id, TIE_ID_LOW,
             "fusion channel ranks must be tiebroken by memory id before RRF"
         );
+    }
+
+    // ── R17/R18: tiebreaks on the remaining ORDER BY … LIMIT sites ──
+    //
+    // Unlike the R16 tests, one adversarial insertion order is NOT enough
+    // here: measured on this build, tied-key emission order differs by plan
+    // (an index scan emits rowid-DESC ties, a temp sort emits insertion
+    // order), so a single arrangement can coincide with the pinned winner.
+    // Each test therefore runs BOTH insertion orders on independent stores
+    // and asserts the same winner: any untiebroken plan whose tie order
+    // tracks insertion/rowid must fail one of the two arrangements.
+    // Three tests pin the three severity classes of the family — a DELETE
+    // boundary, a guaranteed tie block (signal_score defaults to 0.5), and a
+    // LIMIT-1 single pick. The other sites carry the identical clause shape.
+
+    /// Insert a row with a caller-chosen id, created_at, and source, for
+    /// exercising time-ordered ties.
+    fn insert_timed_row(store: &SqliteStore, id: &str, key: &str, created_at: &str, source: &str) {
+        let conn = store.conn();
+        conn.execute(
+            "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility,
+                                   created_at, source)
+             VALUES (?1, ?2, 'timed tie content', 'w', 'fact', 0.5, 'private', ?3, ?4)",
+            params![id, key, created_at, source],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn r18_prune_delete_tie_is_broken_by_id() {
+        let ts = "2026-01-01 12:00:00";
+        // Which row is DESTROYED must be decided by our SQL, not the query
+        // plan: the `id DESC` tiebreak keeps the largest id in both
+        // insertion orders. The `drop_index` arm matters: with
+        // `idx_memories_wing_recency` present the planner's index walk
+        // happens to emit ties in `id DESC` order anyway (the index's own
+        // trailing key), so only the sorter plan can distinguish the pinned
+        // clause from planner luck.
+        for drop_index in [false, true] {
+            for order in [[TIE_ID_LOW, TIE_ID_HIGH], [TIE_ID_HIGH, TIE_ID_LOW]] {
+                let store = SqliteStore::open_in_memory().unwrap();
+                if drop_index {
+                    store
+                        .conn()
+                        .execute("DROP INDEX idx_memories_wing_recency", [])
+                        .unwrap();
+                }
+                for (i, id) in order.iter().enumerate() {
+                    insert_timed_row(&store, id, &format!("key-{i}"), ts, "src");
+                }
+
+                let deleted = store
+                    .prune_wing_keeping_recent_per_source("w", 1)
+                    .await
+                    .unwrap();
+                assert_eq!(deleted, 1, "exactly one of the tied pair must be pruned");
+
+                let survivor: String = {
+                    let conn = store.conn();
+                    conn.query_row("SELECT id FROM memories", [], |r| r.get(0))
+                        .unwrap()
+                };
+                assert_eq!(
+                    survivor, TIE_ID_HIGH,
+                    "the survivor of a same-second prune tie must be the largest \
+                     id regardless of plan (inserted {order:?}, dropped index: \
+                     {drop_index})"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn r17_signal_score_tie_is_broken_by_id() {
+        // signal_score defaults to 0.5, so the LIMIT boundary sits inside a
+        // tie block BY CONSTRUCTION (R17).
+        for order in [[TIE_ID_LOW, TIE_ID_HIGH], [TIE_ID_HIGH, TIE_ID_LOW]] {
+            let store = SqliteStore::open_in_memory().unwrap();
+            for (i, id) in order.iter().enumerate() {
+                insert_tie_row(&store, id, &format!("key-{i}"), "shared tie content");
+            }
+
+            let top = store.list_memories_by_signal(0.0, 1).await.unwrap();
+            assert_eq!(top.len(), 1);
+            assert_eq!(
+                top[0].id, TIE_ID_LOW,
+                "LIMIT-1 winner of a signal_score tie must be the smallest \
+                 id in either insertion order (inserted {order:?})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn r18_episode_ended_at_tie_is_broken_by_id() {
+        let make = |id: &str| Episode {
+            id: id.into(),
+            started_at: "2026-01-01 10:00:00".into(),
+            ended_at: "2026-01-01 10:30:00".into(),
+            memory_count: 1,
+            wing: "w".into(),
+            summary_preview: None,
+        };
+        for order in [["aa-episode", "zz-episode"], ["zz-episode", "aa-episode"]] {
+            let store = SqliteStore::open_in_memory().unwrap();
+            for id in order {
+                store.write_episode(&make(id)).await.unwrap();
+            }
+
+            let recent = store
+                .find_recent_episode("w", "2026-01-01 00:00:00")
+                .await
+                .unwrap()
+                .expect("an episode matches");
+            assert_eq!(
+                recent.id, "aa-episode",
+                "a LIMIT-1 pick between episodes tied on ended_at must be \
+                 pinned in either insertion order (inserted {order:?})"
+            );
+
+            let listed = store.list_episodes(None, 1).await.unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].id, "aa-episode");
+        }
     }
 }
 
