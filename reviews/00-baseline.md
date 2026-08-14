@@ -100,9 +100,10 @@ Consequences, stated plainly:
 - The register's "missed by all three" bullet about 11 empty binaries is
   **retracted** — it was an artifact of my truncation, not a property of the
   repo.
-- What survives unchanged: coverage is still not measured (no tool), and
-  OP-14's finding that two specific invariant tests cannot fail is about
-  test *quality*, not test count, and is unaffected.
+- What survives unchanged: OP-14's finding that two specific invariant tests
+  cannot fail is about test *quality*, not test count, and is unaffected.
+  (Coverage was also unmeasured at the time of this correction; it has since
+  been measured — see the Coverage row above.)
 
 Notes for reviewers:
 - A long-running benchmark process (R31) is active on this machine; it touches
