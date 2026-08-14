@@ -1406,3 +1406,28 @@ reads: bridging measured-and-small; answer-shape matching is the one untested
 $0 idea left; then the frontier is a second modality.
 
 Ref: `query-aliases-prereg-2026-08-13.md`, `query-aliases-result-2026-08-13.md`.
+
+---
+
+## R31 — Answer-shape matching, priced for $0 · NOT BUILT (2026-08-13)
+
+**Offline, from the archived R30 baseline + dataset labels. No code, no run.**
+The signal is REAL — query-conditioned shape (digits/date-words for
+"when/how many" questions) has **6.08× lift** on date-time evidence vs
+distractors, 3.84× on count — the discriminative signal declarative density
+never was. **And the prize is too small anyway:** the two classes cover 13.2%
+of all missed evidence; the addressable (shape-bearing) misses are **61 turns
+= +2.85pp absolute ceiling**, before pool truncation (the R22 arithmetic) and
+distractor competition (~13% of every haystack carries the shape; the R30
+dilution mechanism). A perfect ceiling under the erosion of two measured
+mechanisms cannot honestly target the ≥+2.0pp corpus gate → **not built**.
+
+Recorded escape hatches: a class-scoped prereg (date-time alone has a +13.1pp
+class-recall ceiling) with its gate declared in advance, or a second admission
+modality — boosting only reorders what admission provides.
+
+**This closes R22's residue.** Both queued $0 ideas are measured (R30) or
+priced under the gate (R31). The $0 lexical/structural family on LoCoMo is
+exhausted; the frontier is a second modality.
+
+Ref: `answer-shape-pricing-2026-08-13.md`.
