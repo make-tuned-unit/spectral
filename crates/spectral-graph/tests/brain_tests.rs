@@ -2753,3 +2753,65 @@ fn fingerprints_have_valid_time_delta_bucket() {
         "2-hour delta should produce 'same_day' bucket, got '{bucket}'"
     );
 }
+
+/// R-22: a write API on a read-only brain must fail with `Error::ReadOnly`,
+/// the error callers match on — not a driver-level `Error::Schema("attempt to
+/// write a readonly database")` leaking up from SQLite.
+#[test]
+fn write_apis_report_read_only_not_a_driver_error() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    brain
+        .remember("seed", "a memory to reclassify", Visibility::Private)
+        .unwrap();
+    drop(brain);
+
+    let ro = Brain::open(BrainConfig {
+        read_only: true,
+        ..brain_config(&tmp)
+    })
+    .unwrap();
+
+    let eid = spectral_core::entity_id::entity_id("person", "Ada");
+    let err = ro
+        .set_entity_field(
+            &eid,
+            "title",
+            "engineer",
+            spectral_ingest::FieldSource::Manual,
+            None,
+        )
+        .expect_err("set_entity_field must fail on a read-only brain");
+    assert!(
+        matches!(err, spectral_graph::error::Error::ReadOnly(_)),
+        "set_entity_field gave {err:?}, want Error::ReadOnly"
+    );
+
+    let err = ro
+        .reclassify_wings_in(&["general"], true)
+        .expect_err("reclassify_wings_in(apply=true) must fail on a read-only brain");
+    assert!(
+        matches!(err, spectral_graph::error::Error::ReadOnly(_)),
+        "reclassify_wings_in gave {err:?}, want Error::ReadOnly"
+    );
+
+    // The dry-run form is a report, not a write, and stays available.
+    assert!(
+        ro.reclassify_wings_in(&["general"], false).is_ok(),
+        "dry-run reclassify must remain available read-only"
+    );
+
+    // consolidate_extractive was reported as unguarded; it is in fact guarded
+    // via consolidate_with. Pinned so the delegation is not lost.
+    let err = ro
+        .consolidate_extractive(
+            &["seed".to_string()],
+            "target",
+            spectral_ingest::CompactionTier::DailyRollup,
+        )
+        .expect_err("consolidate_extractive must fail on a read-only brain");
+    assert!(
+        matches!(err, spectral_graph::error::Error::ReadOnly(_)),
+        "consolidate_extractive gave {err:?}, want Error::ReadOnly"
+    );
+}

@@ -229,6 +229,7 @@ pub struct LabeledHit {
 /// Result of a fan-out recall: one merged, provenance-ranked list plus
 /// per-brain receipts.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct FanoutResult {
     /// All hits from all children, provenance-ranked best-first.
     pub ranked: Vec<LabeledHit>,
@@ -245,6 +246,17 @@ pub struct FanoutResult {
     /// that require a complete result must check this is empty; the common case
     /// (all children healthy) leaves it empty.
     pub failed: Vec<(BrainId, String)>,
+}
+
+impl FanoutResult {
+    /// True if every member answered. `fan_out_recall` returns `Ok` even when
+    /// *every* child failed, so a caller that never inspects [`Self::failed`]
+    /// cannot tell a healthy empty result from a total outage — most dangerous
+    /// for a schema-drifted read-only peer, which is never migrated by design
+    /// and so degrades to "contributes nothing, reports success".
+    pub fn is_complete(&self) -> bool {
+        self.failed.is_empty()
+    }
 }
 
 /// One child brain held by the coordinator: the live handle plus the
@@ -411,6 +423,11 @@ impl FederationCoordinator {
                 {
                     Ok(result) => result,
                     Err(e) => {
+                        tracing::warn!(
+                            brain = %origin,
+                            error = %e,
+                            "federation member failed to answer; excluded from this fan-out"
+                        );
                         failed.push((origin, e.to_string()));
                         continue;
                     }
@@ -1609,7 +1626,7 @@ mod tests {
         coord.add_brain(a, a_dir.clone());
 
         for _ in 0..3 {
-            coord
+            let result = coord
                 .fan_out_recall(
                     "shared topic memory",
                     &RecognitionContext::empty(),
@@ -1617,6 +1634,7 @@ mod tests {
                     Visibility::Team,
                 )
                 .unwrap();
+            assert!(result.is_complete(), "member failed: {:?}", result.failed);
         }
         drop(coord);
 

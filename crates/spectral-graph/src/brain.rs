@@ -2632,6 +2632,7 @@ impl Brain {
         source: spectral_ingest::FieldSource,
         source_url: Option<&str>,
     ) -> Result<bool, Error> {
+        self.ensure_writable("set_entity_field")?;
         self.rt
             .block_on(self.memory_store.set_entity_field(
                 &entity_id.to_string(),
@@ -3638,7 +3639,13 @@ impl Brain {
 
     /// Perform the recall write-back (auto-reinforce returned keys + log the
     /// retrieval event). Synchronous by default; spawned on the runtime when
-    /// async write-back is enabled. Best-effort — errors are swallowed.
+    /// async write-back is enabled.
+    ///
+    /// Best-effort by design — a feedback write must never fail a recall that
+    /// already succeeded — but failures are *reported*, not swallowed. They
+    /// were previously discarded entirely, so a full disk or a read-only
+    /// filesystem silently stopped the adaptive loop with recall still
+    /// returning `Ok`.
     pub(crate) fn write_back(
         &self,
         keys: Vec<String>,
@@ -3648,15 +3655,23 @@ impl Brain {
         if self.async_writeback {
             let store = Arc::clone(&self.memory_store);
             self.rt.spawn(async move {
-                let _ = store.reinforce_batch(&keys, strength).await;
-                let _ = store.log_retrieval_event(&event).await;
+                if let Err(error) = store.reinforce_batch(&keys, strength).await {
+                    tracing::warn!(%error, "recall write-back: reinforce failed");
+                }
+                if let Err(error) = store.log_retrieval_event(&event).await {
+                    tracing::warn!(%error, "recall write-back: event log failed");
+                }
             });
         } else {
             // One block_on for both writes (was two separate runtime round-trips).
             let store = &self.memory_store;
             self.rt.block_on(async move {
-                let _ = store.reinforce_batch(&keys, strength).await;
-                let _ = store.log_retrieval_event(&event).await;
+                if let Err(error) = store.reinforce_batch(&keys, strength).await {
+                    tracing::warn!(%error, "recall write-back: reinforce failed");
+                }
+                if let Err(error) = store.log_retrieval_event(&event).await {
+                    tracing::warn!(%error, "recall write-back: event log failed");
+                }
             });
         }
     }
@@ -4320,6 +4335,11 @@ impl Brain {
         only_wings: &[&str],
         apply: bool,
     ) -> Result<WingReclassifyReport, Error> {
+        // Only the applying form is a write; `apply == false` is a dry-run
+        // report and stays available on a read-only brain.
+        if apply {
+            self.ensure_writable("reclassify_wings_in")?;
+        }
         let memories = self
             .rt
             .block_on(self.memory_store.list_memories_by_signal(0.0, usize::MAX))
