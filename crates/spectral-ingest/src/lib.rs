@@ -76,8 +76,10 @@ pub struct Memory {
     /// authenticated origin for multi-contributor federation.
     #[serde(default)]
     pub source_brain_id: Option<[u8; 32]>,
-    /// Ed25519 signature over `(source_brain_id, content_hash, created_at,
-    /// visibility)` (see `spectral_core::identity::memory_signing_payload`).
+    /// Ed25519 signature over `(source_brain_id, key, content_hash,
+    /// created_at, visibility)` (see
+    /// `spectral_core::identity::memory_signing_payload_v2`). Binding the key
+    /// is what stops a signed memory being re-served under a different key.
     /// `None` for unsigned/legacy memories. 64 bytes when present.
     #[serde(default)]
     pub signature: Option<Vec<u8>>,

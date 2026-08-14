@@ -1210,7 +1210,14 @@ impl Brain {
     /// Verify a memory hit's signed provenance against a contributor's public
     /// key. Returns `true` only if the hit carries a signature and
     /// source-brain id, the key matches that id, and the signature is valid
-    /// over the hit's content hash, creation time, and visibility.
+    /// over the hit's **memory key**, content hash, creation time, and
+    /// visibility.
+    ///
+    /// Binding the memory key is what stops a peer re-serving a genuinely
+    /// signed memory under a different key — i.e. as the answer to a question
+    /// it never answered. Signatures written before the v2 scheme are still
+    /// accepted via a narrow legacy fallback (see
+    /// [`verify_memory_signature`](spectral_core::identity::verify_memory_signature)).
     ///
     /// `pubkey` must be resolved from the hit's `source_brain_id` out of band
     /// (via the contributor grant set) — a `BrainId` cannot be inverted to
@@ -1234,6 +1241,7 @@ impl Brain {
         spectral_core::identity::verify_memory_signature(
             &source_id,
             pubkey,
+            &hit.key,
             &content_hash,
             created_at,
             &hit.visibility,
@@ -1772,7 +1780,7 @@ impl Brain {
             {
                 let sig = crate::ingest_profile::time("sign", || {
                     self.identity
-                        .sign_memory(content_hash, created_at, &stored.visibility)
+                        .sign_memory(&stored.key, content_hash, created_at, &stored.visibility)
                 });
                 let sbid = *self.identity.brain_id().as_bytes();
                 if let Err(error) = crate::ingest_profile::time("sig_write", || {
@@ -3247,7 +3255,7 @@ impl Brain {
                 {
                     let signature =
                         self.identity
-                            .sign_memory(content_hash, created_at, &memory.visibility);
+                            .sign_memory(&memory.key, content_hash, created_at, &memory.visibility);
                     let brain_id = *self.identity.brain_id().as_bytes();
                     report.signatures_repaired += self
                         .rt
