@@ -375,6 +375,20 @@ impl FederationCoordinator {
         let mut recognition_token_cost = 0usize;
         let mut failed: Vec<(BrainId, String)> = Vec::new();
 
+        // A federated READ must not write to the brain it reads. The cascade's
+        // `write_back` defaults to true, so without this every fan-out would
+        // reinforce each member's returned hits and log a retrieval event
+        // carrying the *coordinator's* query hash and session id into the
+        // member's own store — a peer's ranking drifting because someone else
+        // asked it a question, plus another party's query trail accumulating
+        // in it. Members are not required to be opened read-only (and the
+        // in-tree poisoning bench opens them writable), so the coordinator
+        // enforces it here rather than trusting how the caller opened them.
+        let config = &CascadePipelineConfig {
+            write_back: false,
+            ..config.clone()
+        };
+
         for child in &self.children {
             let origin = *child.brain.brain_id();
             // Degrade gracefully: a child whose recall errors (locked/corrupt/
@@ -1546,6 +1560,130 @@ mod tests {
         assert!(
             a_count <= 2,
             "per-child cap should bound a's contribution to 2, got {a_count}"
+        );
+    }
+
+    /// R-02: a federated READ must not write to the brain it reads.
+    ///
+    /// The default cascade config auto-reinforces every returned hit and logs a
+    /// retrieval event carrying the *querying* coordinator's session metadata.
+    /// Applied through fan-out that is a peer mutating its own ranking (and
+    /// accumulating another party's query trail) every time it is asked a
+    /// question.
+    #[test]
+    fn fan_out_does_not_mutate_a_writable_member() {
+        let tmp = TempDir::new().unwrap();
+        let (a, a_dir) = open_child(&tmp, "a");
+        a.remember(
+            "m-a",
+            "shared topic memory about deployment runbooks",
+            Visibility::Team,
+        )
+        .unwrap();
+        let before = a
+            .get_memory_by_key("m-a")
+            .unwrap()
+            .expect("memory exists")
+            .signal_score;
+        drop(a);
+
+        let a = Brain::open(child_config(a_dir.clone())).unwrap();
+        assert!(!a.is_read_only(), "this test is about a WRITABLE member");
+        let a_id = *a.brain_id();
+        let mut coord = FederationCoordinator::new();
+        coord.add_brain(a, a_dir.clone());
+
+        for _ in 0..3 {
+            coord
+                .fan_out_recall(
+                    "shared topic memory",
+                    &RecognitionContext::empty(),
+                    &CascadePipelineConfig::default(),
+                    Visibility::Team,
+                )
+                .unwrap();
+        }
+        drop(coord);
+
+        let a = Brain::open(child_config(a_dir)).unwrap();
+        let after = a
+            .get_memory_by_key("m-a")
+            .unwrap()
+            .expect("memory exists")
+            .signal_score;
+        assert_eq!(
+            before, after,
+            "fan-out reinforced a member's memory: {before} -> {after}"
+        );
+        let events = a.count_retrieval_events().unwrap();
+        assert_eq!(
+            events, 0,
+            "fan-out wrote the coordinator's query trail into a member's store"
+        );
+        let _ = a_id;
+    }
+
+    /// R-01: visibility must bound what a member RETRIEVES, not merely what the
+    /// coordinator keeps. With the boundary applied only after the fact, the
+    /// member truncates to `k` over its *whole* corpus and the coordinator then
+    /// discards the inadmissible ones — so a member holding mostly Private
+    /// content contributes far less than the admissible content it actually has.
+    #[test]
+    fn member_top_k_is_filled_from_admissible_hits_only() {
+        let tmp = TempDir::new().unwrap();
+        let (a, a_dir) = open_child(&tmp, "a");
+
+        // Private content that matches the query *better* (extra query terms),
+        // plus Team content that also matches but less strongly.
+        for i in 0..20 {
+            a.remember(
+                &format!("p-{i}"),
+                "deployment rollout runbook staging canary deployment rollout",
+                Visibility::Private,
+            )
+            .unwrap();
+        }
+        for i in 0..5 {
+            a.remember(
+                &format!("t-{i}"),
+                "deployment rollout notes",
+                Visibility::Team,
+            )
+            .unwrap();
+        }
+
+        let mut coord = FederationCoordinator::new();
+        coord.add_brain(a, a_dir.clone());
+
+        let config = CascadePipelineConfig {
+            k: 5,
+            write_back: false,
+            ..Default::default()
+        };
+
+        let result = coord
+            .fan_out_recall(
+                "deployment rollout",
+                &RecognitionContext::empty(),
+                &config,
+                Visibility::Team,
+            )
+            .unwrap();
+
+        assert!(
+            result
+                .ranked
+                .iter()
+                .all(|h| crate::brain::str_to_vis(&h.hit.visibility).allows(Visibility::Team)),
+            "a Private hit escaped a Team fan-out"
+        );
+        assert_eq!(
+            result.ranked.len(),
+            5,
+            "member had 5 admissible Team memories and k=5, but the Team fan-out \
+             returned {} — Private hits consumed the member's top-k before the \
+             coordinator filtered them out",
+            result.ranked.len()
         );
     }
 }
