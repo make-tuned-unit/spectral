@@ -704,6 +704,17 @@ pub struct RecallTopKConfig {
     /// Callers scoring historical data (bench, import replay, time-travel
     /// queries) **must** set this to the question/query date.
     pub now: Option<chrono::DateTime<chrono::Utc>>,
+    /// When `now` is `None`, anchor recency to the corpus's own latest
+    /// `created_at` ([`Brain::latest_interaction_time`]) instead of the wall
+    /// clock. Default **false** (wall clock — the historical behaviour).
+    ///
+    /// The additive recency term makes default top-k ranking a function of
+    /// the wall clock: the same brain and query can return a different SET
+    /// as time passes (R20). Anchoring to the corpus makes ranking a pure
+    /// function of the brain's content — the byte-reproducibility the README
+    /// claims. Opt-in until the default flip is measured on a corpus where
+    /// the difference manifests; an explicit `now` always wins.
+    pub anchor_to_corpus: bool,
 }
 
 impl Default for RecallTopKConfig {
@@ -727,6 +738,7 @@ impl Default for RecallTopKConfig {
             apply_declarative_boost: false,
             apply_context_dedup: true,
             now: None,
+            anchor_to_corpus: false,
         }
     }
 }
@@ -2176,6 +2188,12 @@ impl Brain {
         };
         let ctx = match config.now {
             Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
+            // R20 seam: an empty corpus falls through to the wall clock —
+            // there is nothing to anchor to and no ranking to destabilize.
+            None if config.anchor_to_corpus => match self.latest_interaction_time()? {
+                Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
+                None => spectral_cascade::RecognitionContext::empty(),
+            },
             None => spectral_cascade::RecognitionContext::empty(),
         };
         // Skip the co-retrieval DB queries (one per anchor) unless the boost is

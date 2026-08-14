@@ -778,6 +778,20 @@ term provably cannot reorder anything. The property was never held; it was
 never tested.
 Ref: `research-alignment-2026-08-07.md` §2, `r16-baseline-shift-2026-08-07.md`.
 
+**SEAM SHIPPED 2026-08-14 (option (c), opt-in, default unchanged).**
+`RecallTopKConfig::anchor_to_corpus` (default **false**): when `now` is `None`,
+the top-k anchor becomes `latest_interaction_time()` instead of the wall
+clock; explicit `now` always wins; an empty corpus falls through to the wall
+clock. Pinned by `anchor_to_corpus_makes_the_default_ranking_clock_free` on a
+5-years-stale fixture where the corpus anchor and wall clock provably disagree
+— verified to FAIL with the seam neutered, so an inert flag cannot pass.
+**The row stays open on the DEFAULT question:** flipping the default is a
+product/consumer decision, and no oracle A/B can inform it — the bench passes
+`now = question_date`, so the disease is invisible there by construction (a
+fact worth recording: every bench number ever published is already anchored).
+The default-path drift test (`topk_additive_recency_reorders_under_a_clock_
+shift`) stays red-pinned exactly as Rule 5 requires.
+
 ---
 
 ## R21 — Judge JSON parse rejects trailing content · DONE (2026-08-08)

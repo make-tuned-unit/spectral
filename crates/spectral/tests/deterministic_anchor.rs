@@ -259,3 +259,79 @@ fn empty_brain_falls_back_to_wall_clock() {
     let plan = RetrievePlan::reproducible(&brain, "anything", Visibility::Private).unwrap();
     assert_eq!(plan.topk.now, None, "should fall back, not fabricate");
 }
+
+/// R20 seam: `anchor_to_corpus` pins the DEFAULT (`now: None`) top-k anchor
+/// to the corpus's newest memory instead of the wall clock.
+///
+/// The fixture's newest memory is FIVE YEARS old, so the corpus anchor and
+/// the wall clock sit on opposite sides of the drift the test above pins: at
+/// wall clock every freshness term is ≈0 (ranking collapses toward FTS
+/// order), at the corpus anchor the newest memory carries freshness 1.0
+/// (+0.1 against rank gaps of 1/24). An inert flag therefore CANNOT pass —
+/// the flag-on ranking must equal the explicit-corpus-anchor ranking and
+/// differ from the flag-off default.
+#[test]
+fn anchor_to_corpus_makes_the_default_ranking_clock_free() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(tmp.path()).unwrap();
+    let base = Utc::now() - Duration::days(365 * 5 + 3000);
+    for i in 0..24i64 {
+        brain
+            .remember_with(
+                &format!("s{i}:turn:0:user"),
+                &format!(
+                    "deployment note {i}: the platform rollout was reviewed by the team on schedule"
+                ),
+                RememberOpts {
+                    visibility: Visibility::Private,
+                    created_at: Some(base + Duration::days(i * 120)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let q = "platform rollout reviewed team";
+
+    let keys = |cfg: &RecallTopKConfig| -> Vec<String> {
+        brain
+            .recall_topk_fts(q, cfg, Visibility::Private)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.key)
+            .collect()
+    };
+
+    let anchored = keys(&RecallTopKConfig {
+        k: 20,
+        anchor_to_corpus: true,
+        ..RecallTopKConfig::default()
+    });
+    let wall_clock_default = keys(&RecallTopKConfig {
+        k: 20,
+        ..RecallTopKConfig::default()
+    });
+    let explicit_corpus = keys(&RecallTopKConfig {
+        k: 20,
+        now: Some(brain.latest_interaction_time().unwrap().expect("non-empty")),
+        ..RecallTopKConfig::default()
+    });
+
+    assert_eq!(
+        anchored, explicit_corpus,
+        "the flag must route the default anchor to latest_interaction_time"
+    );
+    assert_ne!(
+        anchored, wall_clock_default,
+        "on a 5-years-stale corpus the corpus anchor and the wall clock must \
+         disagree; equality means the flag is inert"
+    );
+
+    // Explicit `now` always wins over the flag.
+    let explicit_wins = keys(&RecallTopKConfig {
+        k: 20,
+        now: Some(Utc::now()),
+        anchor_to_corpus: true,
+        ..RecallTopKConfig::default()
+    });
+    assert_eq!(explicit_wins, wall_clock_default);
+}
