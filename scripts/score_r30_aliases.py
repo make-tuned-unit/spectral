@@ -26,9 +26,12 @@ def load(path):
 
 
 def half(rows, derivation):
+    # Unlabelled rows (no `has_answer` in the source) are excluded from every
+    # mean, matching the oracle's own refusal semantics (R15).
     return {
         q: r for q, r in rows.items()
-        if (q.rsplit("_", 1)[0] in DERIVATION_CONVS) == derivation
+        if r["evidence_turns_total"] is not None
+        and (q.rsplit("_", 1)[0] in DERIVATION_CONVS) == derivation
     }
 
 

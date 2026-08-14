@@ -1366,3 +1366,43 @@ own terms. **Next test is a stronger reader** — needs the key rotated and a
 budget, the one thing $0 cannot buy. No post-hoc subgroups were run.
 
 Ref: `adjacency-accuracy-result-2026-08-11.md`.
+
+---
+
+## R32 — Query-alias vocabulary bridging · FAIL on the gate, small real transfer (2026-08-13)
+
+> Registered and run as "R30" on a parallel branch before main's R30
+> (adjacency conversion) was visible from this machine; renumbered R32 on
+> rebase, content unchanged.
+
+**$0, preregistered at `71cb543` — committed BEFORE any arm ran.** LoCoMo full
+N=1438, `topk_fts`, R19 labels, split-half by conversation (derivation
+0/2/4/6/8, test 1/3/5/7/9). The last untested $0 lexical lever, queued by R22.
+
+A 51-key generic-English alias table (no proper nouns, no numbers), authored
+from derivation-half misses only — the extractor refuses to emit test-half
+rows, so the split is enforced in code, not by promise.
+
+**Test half (PRIMARY): +1.70pp (+18 turns), p=0.0045, 23 pairs [+19/−4] —
+FAIL** on the prespecified gate (p<0.05 AND ≥+2.0pp): significant, under the
+effect bar. Derivation half (fitted, no verdict): +3.24pp. Zero-evidence
+178→166 on the test half. Churn: 386/1438 contexts changed for +53 net turns.
+
+**The A3′ profile again: statistically unambiguous, practically marginal** —
+though this one is the family's best held-out number (+1.70pp beats
+declarative's fitted +1.36pp) and the first to transfer across conversations.
+All four test-half regressions are alias dilution (added terms admitting
+competitors; one question fell to zero). Prediction recorded in the prereg was
+half right: gate FAIL called correctly, magnitude wrong (+1.70pp vs "<+1.0pp")
+— the argument ignored that one RARE bridged term ranks a turn high.
+
+**Preconditions:** A0 reproduced the published corpus record to the digit
+(59.86%/68.63%/357) on the new host + regenerated dataset + `fa5763d` binary,
+and matched the tiebreak-verification rows 0/400. Lever proven-on (4/10 probe).
+
+**Defaults stay off everywhere.** The table is an experimental artifact
+(`r30-aliases-table-2026-08-13.json`) and must not ship. R22's residue now
+reads: bridging measured-and-small; answer-shape matching is the one untested
+$0 idea left; then the frontier is a second modality.
+
+Ref: `query-aliases-prereg-2026-08-13.md`, `query-aliases-result-2026-08-13.md`.
