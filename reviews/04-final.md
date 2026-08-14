@@ -38,6 +38,30 @@ were briefed with the wrong number).
 | 5+11 | R-07 / OP-06, R-14 / CX-06 | `056bea2` | `RememberResult::is_fully_derived()`; torn-write cycle pinned end to end; `Brain::recognition_degraded()` for the empty-sidecar fallback. |
 | 12 | R-03, R-26, R-28, R-29 | `3945c4f` | Copy corrected to match the code, each correction added to the pitch's honesty guardrails; NOTICE attribution fixed. |
 
+## Per-finding disposition (all 29 register rows)
+
+**Fully fixed (17):** R-02, R-06, R-08, R-09, R-10, R-13, R-14, R-15, R-16,
+R-19, R-21, R-22, R-25, R-26, R-28, R-29, and the security half of R-01.
+
+**Partly fixed — the risky half closed, the rest deliberately deferred (6):**
+
+| Row | Done | Left |
+|---|---|---|
+| R-01 | no inadmissible hit escapes | completeness — blocked on R-20 |
+| R-03 | copy corrected | physical single-file consolidation |
+| R-05 | swallowed errors surfaced | `write_back=false` default flip |
+| R-07 | torn write detectable + repairable | true cross-database atomicity |
+| R-11 | signature binds the key | `verify_hit` wired into the merge path |
+| R-04 | claim scoped to anchored opens | corpus-anchored `now` default |
+
+**Not fixed, by decision (6):** R-12 (Sybil — deployment trust, copy now says
+so), R-17 (claim corrected; no decay policy shipped), R-18, R-20, R-23, R-24,
+R-27 (accepted-risk dependency advisories).
+
+So: **every P1 that was fixable inside this pass is fixed.** The one P1-class
+item still open is R-20, which was a P2 in the register and which this pass
+*promoted* after measuring it.
+
 ## Findings that did not survive contact with the code
 
 Reported honestly rather than silently fixed:
@@ -50,6 +74,16 @@ Reported honestly rather than silently fixed:
   already existed (`derivation_warnings`; unconditional re-enrollment). The
   real gap was ergonomic, not structural.
 - **The Phase 0 "thin test suite" observation** — my own error, retracted.
+
+## Self-audit correction
+
+The first pass of item 12 fixed only the NOTICE half of R-29 and left the
+other half — all 11 `run_*.sh` scripts defaulting to
+`/Users/jessesharratt/dev/spectral`, a directory that does not exist on this
+host — untouched, while this report listed R-29 as done. Caught on review,
+fixed in `b043492` (defaults now resolve via `git rev-parse --show-toplevel`).
+This was the reason R31's resumed arm had to be driven by hand rather than
+through `run_accuracy_replication.sh`.
 
 ## Stopped and reported (protocol rule: >2× the estimate)
 
