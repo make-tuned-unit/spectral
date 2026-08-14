@@ -2753,3 +2753,185 @@ fn fingerprints_have_valid_time_delta_bucket() {
         "2-hour delta should produce 'same_day' bucket, got '{bucket}'"
     );
 }
+
+/// R-22: a write API on a read-only brain must fail with `Error::ReadOnly`,
+/// the error callers match on — not a driver-level `Error::Schema("attempt to
+/// write a readonly database")` leaking up from SQLite.
+#[test]
+fn write_apis_report_read_only_not_a_driver_error() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    brain
+        .remember("seed", "a memory to reclassify", Visibility::Private)
+        .unwrap();
+    drop(brain);
+
+    let ro = Brain::open(BrainConfig {
+        read_only: true,
+        ..brain_config(&tmp)
+    })
+    .unwrap();
+
+    let eid = spectral_core::entity_id::entity_id("person", "Ada");
+    let err = ro
+        .set_entity_field(
+            &eid,
+            "title",
+            "engineer",
+            spectral_ingest::FieldSource::Manual,
+            None,
+        )
+        .expect_err("set_entity_field must fail on a read-only brain");
+    assert!(
+        matches!(err, spectral_graph::error::Error::ReadOnly(_)),
+        "set_entity_field gave {err:?}, want Error::ReadOnly"
+    );
+
+    let err = ro
+        .reclassify_wings_in(&["general"], true)
+        .expect_err("reclassify_wings_in(apply=true) must fail on a read-only brain");
+    assert!(
+        matches!(err, spectral_graph::error::Error::ReadOnly(_)),
+        "reclassify_wings_in gave {err:?}, want Error::ReadOnly"
+    );
+
+    // The dry-run form is a report, not a write, and stays available.
+    assert!(
+        ro.reclassify_wings_in(&["general"], false).is_ok(),
+        "dry-run reclassify must remain available read-only"
+    );
+
+    // consolidate_extractive was reported as unguarded; it is in fact guarded
+    // via consolidate_with. Pinned so the delegation is not lost.
+    let err = ro
+        .consolidate_extractive(
+            &["seed".to_string()],
+            "target",
+            spectral_ingest::CompactionTier::DailyRollup,
+        )
+        .expect_err("consolidate_extractive must fail on a read-only brain");
+    assert!(
+        matches!(err, spectral_graph::error::Error::ReadOnly(_)),
+        "consolidate_extractive gave {err:?}, want Error::ReadOnly"
+    );
+}
+
+/// R-07: `remember` spans memory.db and recognition.db without a shared
+/// transaction, so a crash or IO failure between them leaves a memory that
+/// RECALLS but does not RECOGNIZE. The torn state must be detectable and
+/// recoverable rather than permanent.
+///
+/// The tear is simulated by clearing the recognition sidecar's tables directly
+/// — the same end state a crash between the two commits produces.
+#[test]
+fn a_torn_remember_is_detectable_and_repairable() {
+    let tmp = TempDir::new().unwrap();
+    let content = "the deploy failed with exit 137 during the friday rollout";
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    let result = brain
+        .remember("incident", content, Visibility::Private)
+        .unwrap();
+    assert!(
+        result.is_fully_derived(),
+        "healthy write reported warnings: {:?}",
+        result.derivation_warnings
+    );
+    assert!(matches!(
+        brain.recognize(content).unwrap().verdict,
+        spectral_recognition::Verdict::Recognized { .. }
+    ));
+    drop(brain);
+
+    // Tear it: the memory row survives, its recognition enrollment does not.
+    {
+        let conn = rusqlite::Connection::open(tmp.path().join("recognition.db")).unwrap();
+        conn.execute_batch(
+            "DELETE FROM recognition_enrolled;
+             DELETE FROM recognition_pairs;",
+        )
+        .unwrap();
+    }
+
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    // The tear is real: still recallable, no longer recognizable.
+    assert!(
+        brain
+            .recall_topk_fts(content, &RecallTopKConfig::default(), Visibility::Private)
+            .unwrap()
+            .iter()
+            .any(|h| h.key == "incident"),
+        "the memory row should have survived the tear"
+    );
+    assert!(
+        !matches!(
+            brain.recognize(content).unwrap().verdict,
+            spectral_recognition::Verdict::Recognized { .. }
+        ),
+        "test precondition: the tear should have broken recognition"
+    );
+
+    // And it is recoverable.
+    let report = brain.repair_derivations(1000).unwrap();
+    assert!(
+        report.recognition_enrollments_refreshed >= 1,
+        "repair_derivations did not re-enroll the torn memory"
+    );
+    assert!(
+        matches!(
+            brain.recognize(content).unwrap().verdict,
+            spectral_recognition::Verdict::Recognized { .. }
+        ),
+        "repair_derivations did not restore recognition"
+    );
+}
+
+/// R-14: a read-only brain with no recognition sidecar answers `Novel` for
+/// everything, because it falls back to an empty in-memory index. That is a
+/// reasonable fallback but a degraded one, and "I have never seen this" is a
+/// dangerous thing to say when the truth is "I cannot tell" — so the handle
+/// must report the degradation.
+#[test]
+fn missing_recognition_sidecar_is_reported_not_silent() {
+    let tmp = TempDir::new().unwrap();
+    let content = "the deploy failed with exit 137 during the friday rollout";
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    brain
+        .remember("incident", content, Visibility::Private)
+        .unwrap();
+    assert!(
+        !brain.recognition_degraded(),
+        "healthy brain reported degraded"
+    );
+    drop(brain);
+
+    std::fs::remove_file(tmp.path().join("recognition.db")).unwrap();
+    let _ = std::fs::remove_file(tmp.path().join("recognition.db-wal"));
+    let _ = std::fs::remove_file(tmp.path().join("recognition.db-shm"));
+
+    let ro = Brain::open(BrainConfig {
+        read_only: true,
+        ..brain_config(&tmp)
+    })
+    .unwrap();
+
+    // The memory is still there ...
+    assert!(
+        ro.recall_topk_fts(content, &RecallTopKConfig::default(), Visibility::Private)
+            .unwrap()
+            .iter()
+            .any(|h| h.key == "incident"),
+        "the memory should still be recallable"
+    );
+    // ... but recognition cannot see it, and says so.
+    assert!(
+        ro.recognition_degraded(),
+        "a read-only brain with no sidecar must report a degraded recognition index"
+    );
+    assert!(
+        !matches!(
+            ro.recognize(content).unwrap().verdict,
+            spectral_recognition::Verdict::Recognized { .. }
+        ),
+        "test precondition: the empty index cannot recognize"
+    );
+}

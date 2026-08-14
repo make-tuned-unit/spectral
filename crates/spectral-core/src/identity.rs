@@ -174,15 +174,47 @@ impl BrainIdentity {
         self.signing_key.sign(msg)
     }
 
-    /// Sign a memory contribution: binds this brain's identity to the
-    /// memory's content, creation time, and visibility. The signature
-    /// authenticates *who* contributed the memory and that its content /
-    /// visibility have not been altered — the trust anchor for a shared,
-    /// multi-contributor project brain. The signed payload is produced by
-    /// [`memory_signing_payload`] with `source_brain_id = self.brain_id()`.
-    pub fn sign_memory(&self, content_hash: &str, created_at: &str, visibility: &str) -> Signature {
-        let payload = memory_signing_payload(&self.brain_id, content_hash, created_at, visibility);
+    /// Sign a memory contribution: binds this brain's identity to the memory's
+    /// key, content, creation time, and visibility. The signature
+    /// authenticates *who* contributed the memory, that its content /
+    /// visibility have not been altered, and *which key it was filed under* —
+    /// the trust anchor for a shared, multi-contributor project brain. The
+    /// signed payload is produced by [`memory_signing_payload_v2`] with
+    /// `source_brain_id = self.brain_id()`.
+    pub fn sign_memory(
+        &self,
+        key: &str,
+        content_hash: &str,
+        created_at: &str,
+        visibility: &str,
+    ) -> Signature {
+        let payload =
+            memory_signing_payload_v2(&self.brain_id, key, content_hash, created_at, visibility);
         self.sign(&payload)
+    }
+
+    /// Sign a federation object: an attestation over its content address.
+    /// The object hash already covers author, key, content, timestamp,
+    /// visibility, and supersedes, so signing it binds every source field at
+    /// once — see [`federation_object_signing_payload`].
+    pub fn sign_federation_object(&self, object_hash: &str) -> Signature {
+        self.sign(&federation_object_signing_payload(object_hash))
+    }
+
+    /// Sign a retraction. The wing is part of the payload because a tombstone
+    /// is wing-scoped: a retraction authorised for one wing must not be
+    /// replayable against another.
+    pub fn sign_federation_tombstone(
+        &self,
+        wing_id: &str,
+        target_hash: &str,
+        ts: &str,
+    ) -> Signature {
+        self.sign(&federation_tombstone_signing_payload(
+            wing_id,
+            target_hash,
+            ts,
+        ))
     }
 
     /// Returns the brain's unique identifier.
@@ -209,9 +241,18 @@ pub fn verify(brain_id: &BrainId, public_key: &VerifyingKey, msg: &[u8], sig: &S
     public_key.verify(msg, sig).is_ok()
 }
 
-/// Domain-separated version tag for the memory-signing payload. Bumping this
-/// invalidates old signatures — change only on a deliberate scheme change.
+/// Domain-separated version tag for the **legacy** memory-signing payload,
+/// which did not bind the memory's key. Retained only so signatures written
+/// before the v2 scheme still verify; never used for new signatures.
 pub const MEMORY_SIG_DOMAIN: &[u8] = b"spectral-memory-sig-v1";
+
+/// Current memory-signing domain. v2 adds the memory **key** to the payload.
+///
+/// Without the key, a signature authenticates only *what* was said, never
+/// *what question it answers*: a peer could re-serve a genuinely signed
+/// memory under any key — as the answer to a different question — and
+/// verification would still succeed.
+pub const MEMORY_SIG_DOMAIN_V2: &[u8] = b"spectral-memory-sig-v2";
 
 /// Build the canonical byte payload signed for a memory contribution.
 ///
@@ -243,6 +284,70 @@ pub fn memory_signing_payload(
     buf
 }
 
+/// Build the canonical v2 payload, which additionally binds the memory `key`:
+/// `DOMAIN_V2 ‖ source_brain_id(32) ‖ len(key)‖key ‖ len(content_hash)‖…`.
+///
+/// The key is length-prefixed like every other field, so a key/content
+/// boundary cannot be shifted to forge an equivalent payload.
+pub fn memory_signing_payload_v2(
+    source_brain_id: &BrainId,
+    key: &str,
+    content_hash: &str,
+    created_at: &str,
+    visibility: &str,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(
+        MEMORY_SIG_DOMAIN_V2.len()
+            + 32
+            + key.len()
+            + content_hash.len()
+            + created_at.len()
+            + visibility.len()
+            + 16,
+    );
+    buf.extend_from_slice(MEMORY_SIG_DOMAIN_V2);
+    buf.extend_from_slice(source_brain_id.as_bytes());
+    for field in [key, content_hash, created_at, visibility] {
+        buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        buf.extend_from_slice(field.as_bytes());
+    }
+    buf
+}
+
+/// Domain tag for a federation object attestation.
+pub const FEDERATION_OBJ_SIG_DOMAIN: &[u8] = b"spectral-federation-obj-sig-v1";
+/// Domain tag for a federation retraction (tombstone) attestation.
+pub const FEDERATION_TOMBSTONE_SIG_DOMAIN: &[u8] = b"spectral-federation-tombstone-sig-v1";
+
+fn length_prefixed(domain: &[u8], fields: &[&str]) -> Vec<u8> {
+    let mut buf =
+        Vec::with_capacity(domain.len() + fields.iter().map(|f| f.len() + 4).sum::<usize>());
+    buf.extend_from_slice(domain);
+    for field in fields {
+        buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        buf.extend_from_slice(field.as_bytes());
+    }
+    buf
+}
+
+/// Canonical payload for a federation object attestation: `DOMAIN ‖
+/// len(object_hash)‖object_hash`.
+///
+/// Signing the content address rather than the individual fields is what makes
+/// authorship unforgeable here: `object_hash` is computed over the author id
+/// together with every source field, so re-claiming another brain's authorship
+/// changes the hash and invalidates the signature.
+pub fn federation_object_signing_payload(object_hash: &str) -> Vec<u8> {
+    length_prefixed(FEDERATION_OBJ_SIG_DOMAIN, &[object_hash])
+}
+
+/// Canonical payload for a retraction: `DOMAIN ‖ wing ‖ target ‖ ts`, each
+/// length-prefixed. Wing-scoped so a retraction cannot be replayed into a
+/// different wing.
+pub fn federation_tombstone_signing_payload(wing_id: &str, target_hash: &str, ts: &str) -> Vec<u8> {
+    length_prefixed(FEDERATION_TOMBSTONE_SIG_DOMAIN, &[wing_id, target_hash, ts])
+}
+
 /// Verify a memory contribution's signature.
 ///
 /// Returns `true` only if `public_key` matches `source_brain_id` (so the
@@ -254,16 +359,25 @@ pub fn memory_signing_payload(
 /// The caller supplies `public_key` — resolve it from `source_brain_id` via
 /// the contributor grant set (a `BrainId` is `blake3(public_key)` and cannot
 /// be inverted, so the key must be known out of band).
+/// Accepts the current v2 scheme (key-bound) and, for rows signed before v2
+/// existed, falls back to the legacy v1 payload. The fallback is deliberately
+/// *narrow*: it is tried only after v2 fails, so a v2-signed memory can never
+/// be downgraded by stripping the key from the verification request.
 pub fn verify_memory_signature(
     source_brain_id: &BrainId,
     public_key: &VerifyingKey,
+    key: &str,
     content_hash: &str,
     created_at: &str,
     visibility: &str,
     sig: &Signature,
 ) -> bool {
-    let payload = memory_signing_payload(source_brain_id, content_hash, created_at, visibility);
-    verify(source_brain_id, public_key, &payload, sig)
+    let v2 = memory_signing_payload_v2(source_brain_id, key, content_hash, created_at, visibility);
+    if verify(source_brain_id, public_key, &v2, sig) {
+        return true;
+    }
+    let v1 = memory_signing_payload(source_brain_id, content_hash, created_at, visibility);
+    verify(source_brain_id, public_key, &v1, sig)
 }
 
 #[cfg(test)]
@@ -273,10 +387,11 @@ mod memory_sig_tests {
     #[test]
     fn sign_and_verify_memory_roundtrip() {
         let id = BrainIdentity::generate();
-        let sig = id.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
+        let sig = id.sign_memory("mem-key", "abc123", "2026-07-10T12:00:00Z", "team");
         assert!(verify_memory_signature(
             id.brain_id(),
             id.verifying_key(),
+            "mem-key",
             "abc123",
             "2026-07-10T12:00:00Z",
             "team",
@@ -287,11 +402,12 @@ mod memory_sig_tests {
     #[test]
     fn tampering_any_signed_field_fails() {
         let id = BrainIdentity::generate();
-        let sig = id.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
+        let sig = id.sign_memory("mem-key", "abc123", "2026-07-10T12:00:00Z", "team");
         // Wrong content hash (content was altered).
         assert!(!verify_memory_signature(
             id.brain_id(),
             id.verifying_key(),
+            "mem-key",
             "TAMPERED",
             "2026-07-10T12:00:00Z",
             "team",
@@ -301,6 +417,7 @@ mod memory_sig_tests {
         assert!(!verify_memory_signature(
             id.brain_id(),
             id.verifying_key(),
+            "mem-key",
             "abc123",
             "2026-07-11T00:00:00Z",
             "team",
@@ -310,9 +427,61 @@ mod memory_sig_tests {
         assert!(!verify_memory_signature(
             id.brain_id(),
             id.verifying_key(),
+            "mem-key",
             "abc123",
             "2026-07-10T12:00:00Z",
             "public",
+            &sig,
+        ));
+    }
+
+    /// R-11: the signature must bind the memory KEY, not only its content.
+    /// Otherwise a genuinely signed memory can be re-served under any key —
+    /// as the answer to a question it never answered — and still verify.
+    #[test]
+    fn resigning_under_a_different_key_fails() {
+        let id = BrainIdentity::generate();
+        let sig = id.sign_memory("q-refund-policy", "abc123", "2026-07-10T12:00:00Z", "team");
+        assert!(verify_memory_signature(
+            id.brain_id(),
+            id.verifying_key(),
+            "q-refund-policy",
+            "abc123",
+            "2026-07-10T12:00:00Z",
+            "team",
+            &sig,
+        ));
+        // Same brain, same content, same everything — filed under a different
+        // key. This must NOT verify.
+        assert!(
+            !verify_memory_signature(
+                id.brain_id(),
+                id.verifying_key(),
+                "q-security-policy",
+                "abc123",
+                "2026-07-10T12:00:00Z",
+                "team",
+                &sig,
+            ),
+            "a signed memory verified under a key it was never signed for"
+        );
+    }
+
+    /// Rows signed before v2 existed keep verifying, so enabling key-binding
+    /// does not invalidate an existing brain's provenance.
+    #[test]
+    fn legacy_v1_signatures_still_verify() {
+        let id = BrainIdentity::generate();
+        let legacy_payload =
+            memory_signing_payload(id.brain_id(), "abc123", "2026-07-10T12:00:00Z", "team");
+        let sig = id.sign(&legacy_payload);
+        assert!(verify_memory_signature(
+            id.brain_id(),
+            id.verifying_key(),
+            "any-key-at-all",
+            "abc123",
+            "2026-07-10T12:00:00Z",
+            "team",
             &sig,
         ));
     }
@@ -321,12 +490,13 @@ mod memory_sig_tests {
     fn foreign_key_cannot_impersonate_origin() {
         let alice = BrainIdentity::generate();
         let mallory = BrainIdentity::generate();
-        let sig = alice.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
+        let sig = alice.sign_memory("mem-key", "abc123", "2026-07-10T12:00:00Z", "team");
         // Mallory presents Alice's brain_id but her own key: pubkey doesn't
         // match the claimed origin -> reject.
         assert!(!verify_memory_signature(
             alice.brain_id(),
             mallory.verifying_key(),
+            "mem-key",
             "abc123",
             "2026-07-10T12:00:00Z",
             "team",
@@ -334,10 +504,11 @@ mod memory_sig_tests {
         ));
         // Mallory re-signs under her own identity but claims Alice's id ->
         // brain_id/pubkey mismatch -> reject.
-        let forged = mallory.sign_memory("abc123", "2026-07-10T12:00:00Z", "team");
+        let forged = mallory.sign_memory("mem-key", "abc123", "2026-07-10T12:00:00Z", "team");
         assert!(!verify_memory_signature(
             alice.brain_id(),
             mallory.verifying_key(),
+            "mem-key",
             "abc123",
             "2026-07-10T12:00:00Z",
             "team",

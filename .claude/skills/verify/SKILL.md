@@ -9,18 +9,21 @@ Spectral is a library; its surface is the public `spectral` umbrella crate.
 Verify by driving sample code through `use spectral::...`, never internal
 `spectral-*` imports.
 
-## Machine constraints (Intel Mac)
+## Machine constraints
+
+This machine (since 2026-08-13): **Apple M4 Mac mini, 16 GB** — note the
+default shell may report `x86_64` under Rosetta; the hardware is arm64.
+The old Intel machine's `ort-sys` prohibition does NOT apply here:
+`cargo test --workspace` was run green on 2026-08-13 (verified, all crates).
 
 - `cargo` needs `export PATH="$HOME/.cargo/bin:$PATH"`.
-- **Never `cargo test --workspace` or build any dev-target of the `spectral`
-  or `spectral-recognition` crates** (examples/benches/tests of those two):
-  their `fastembed`→`ort-sys` dev-dependency has no prebuilt ONNX binaries
-  for x86_64-apple-darwin and always fails. CI (ubuntu/ARM) covers them.
-- Always set `CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0` — kuzu debug
-  artifacts overflow the disk (a debug libkuzu rlib is ~2 GB; the cmake
+- Still set `CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0` for dev builds —
+  kuzu debug artifacts are huge (a debug libkuzu rlib is ~2 GB; the cmake
   build dir is ~4 GB). If ENOSPC hits, check for duplicate
   `target/debug/build/kuzu-*` dirs from profile changes and delete stale
   ones (by mtime) — but never while a build is running.
+- Ollama serves local models on :11434 (`brew services start ollama`);
+  `qwen25-16k` = qwen2.5:7b + `num_ctx 16384, temperature 0` via Modelfile.
 
 ## Test what you changed
 

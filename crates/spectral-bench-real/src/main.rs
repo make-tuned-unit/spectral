@@ -71,14 +71,66 @@ struct QuerySpec {
 }
 
 impl QuerySpec {
-    fn visibility(&self) -> Visibility {
+    /// Parse the spec's visibility label.
+    ///
+    /// A typo used to fall through to `Private`, which silently changed what
+    /// the benchmark measured — `Private` is the *admits-everything* context,
+    /// so `visibility = "piblic"` quietly widened the query instead of
+    /// failing. Unknown labels are now an error.
+    fn visibility(&self) -> Result<Visibility> {
         match self.visibility.to_lowercase().as_str() {
-            "private" => Visibility::Private,
-            "team" => Visibility::Team,
-            "org" => Visibility::Org,
-            "public" => Visibility::Public,
-            _ => Visibility::Private,
+            "private" => Ok(Visibility::Private),
+            "team" => Ok(Visibility::Team),
+            "org" => Ok(Visibility::Org),
+            "public" => Ok(Visibility::Public),
+            other => bail!(
+                "query '{}': unknown visibility '{other}' \
+                 (expected private, team, org, or public)",
+                self.name
+            ),
         }
+    }
+
+    /// Reject a spec that cannot express the check it claims to make.
+    ///
+    /// Each of these previously produced a *silent* wrong answer rather than
+    /// an error: an unparseable visibility widened the query, and
+    /// `expected_top_n = 0` made `take(0)` compare against nothing, so a
+    /// keyword check could never pass and the query reported an accuracy
+    /// failure that was really a spec bug.
+    fn validate(&self) -> Result<()> {
+        self.visibility()?;
+        if self.name.trim().is_empty() {
+            bail!("a query has an empty name");
+        }
+        if self.text.trim().is_empty() {
+            bail!("query '{}': empty query text", self.name);
+        }
+        if self.expected_top_n == 0 {
+            bail!(
+                "query '{}': expected_top_n = 0 examines no results, so its \
+                 accuracy check can never pass",
+                self.name
+            );
+        }
+        if self.latency_budget_p95_ms <= 0.0 || self.latency_budget_p99_ms <= 0.0 {
+            bail!("query '{}': latency budgets must be positive", self.name);
+        }
+        if self.latency_budget_p99_ms < self.latency_budget_p95_ms {
+            bail!(
+                "query '{}': p99 budget ({}) is below its p95 budget ({})",
+                self.name,
+                self.latency_budget_p99_ms,
+                self.latency_budget_p95_ms
+            );
+        }
+        Ok(())
+    }
+
+    /// Is this an adversarial spec — one asserting that *few or no* results
+    /// come back, rather than that a keyword appears?
+    fn is_adversarial(&self) -> bool {
+        self.expected_keywords.is_empty()
     }
 
     fn pattern(&self) -> &str {
@@ -168,6 +220,12 @@ struct PatternBreakdown {
 
 // ── Statistics helpers ─────────────────────────────────────────────
 
+/// Nearest-rank percentile on a zero-based scale: index
+/// `round(p/100 * (n-1))`, clamped. Input must already be sorted ascending.
+///
+/// Note this puts p50 of an even-sized sample on the upper of the two middle
+/// values (p50 of 1..=100 is 51). Published bench figures use this
+/// definition; see the test that pins it.
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -188,6 +246,33 @@ fn mean_stddev(values: &[u64]) -> (u64, u64) {
         .sum::<f64>()
         / n;
     (mean.round() as u64, variance.sqrt().round() as u64)
+}
+
+// ── Accuracy rule ──────────────────────────────────────────────────
+
+/// Decide whether a query's results satisfy its spec.
+///
+/// Two rules, one per spec shape:
+/// - **Keyword specs** pass when at least one expected keyword appears
+///   (case-insensitive substring) in the content of any top-N result.
+/// - **Adversarial specs** (no expected keywords) assert that the query
+///   matches *few or no* results. They now actually check that: the query
+///   passes only if it returned at most `expected_top_n` hits.
+///
+/// The adversarial branch previously returned `true` unconditionally, so an
+/// adversarial query that matched the entire corpus still "passed" — the
+/// check the spec file documents ("should return zero results") was never
+/// performed. `expected_top_n` is reused as the threshold rather than
+/// inventing a magic number, since that is the field the spec already uses
+/// to say how many results it considers relevant.
+fn evaluate_accuracy(spec: &QuerySpec, top_n_content: &[String], num_results: usize) -> bool {
+    if spec.is_adversarial() {
+        return num_results <= spec.expected_top_n;
+    }
+    spec.expected_keywords.iter().any(|kw| {
+        let kw_lower = kw.to_lowercase();
+        top_n_content.iter().any(|c| c.contains(&kw_lower))
+    })
 }
 
 // ── Brain helpers ──────────────────────────────────────────────────
@@ -225,7 +310,12 @@ fn open_brain(path: &std::path::Path) -> Result<Brain> {
 // ── Benchmark runner ───────────────────────────────────────────────
 
 fn run_query_bench(brain: &Brain, spec: &QuerySpec, iterations: usize) -> Result<QueryResult> {
-    let vis = spec.visibility();
+    // `iterations == 0` used to reach `last_result.unwrap()` below and panic
+    // with no context. Refuse it up front instead.
+    if iterations == 0 {
+        bail!("iterations must be at least 1");
+    }
+    let vis = spec.visibility()?;
 
     // Warm-cache iterations
     let mut durations_us: Vec<u64> = Vec::with_capacity(iterations);
@@ -245,8 +335,9 @@ fn run_query_bench(brain: &Brain, spec: &QuerySpec, iterations: usize) -> Result
     let p95 = percentile(&durations_us, 95.0);
     let p99 = percentile(&durations_us, 99.0);
 
-    // Accuracy check against last result
-    let result = last_result.unwrap();
+    // Accuracy check against last result. `iterations >= 1` is enforced at
+    // entry, so this is populated.
+    let result = last_result.expect("iterations >= 1 guarantees a result");
     let top_n_content: Vec<String> = result
         .memory_hits
         .iter()
@@ -254,15 +345,7 @@ fn run_query_bench(brain: &Brain, spec: &QuerySpec, iterations: usize) -> Result
         .map(|h| h.content.to_lowercase())
         .collect();
 
-    let pass = if spec.expected_keywords.is_empty() {
-        // Adversarial: pass if few or no results
-        true
-    } else {
-        spec.expected_keywords.iter().any(|kw| {
-            let kw_lower = kw.to_lowercase();
-            top_n_content.iter().any(|c| c.contains(&kw_lower))
-        })
-    };
+    let pass = evaluate_accuracy(spec, &top_n_content, result.memory_hits.len());
 
     let top_score = result
         .memory_hits
@@ -386,7 +469,25 @@ fn main() -> Result<()> {
         .with_context(|| format!("reading queries from {}", cli.queries.display()))?;
     let query_file: QueryFile = toml::from_str(&query_toml).context("parsing queries TOML")?;
 
+    if cli.iterations == 0 {
+        bail!("--iterations must be at least 1");
+    }
+
     let mut specs: Vec<QuerySpec> = query_file.queries;
+    if specs.is_empty() {
+        bail!("{} defines no queries", cli.queries.display());
+    }
+    // Validate BEFORE opening a brain or running anything: a malformed spec
+    // should fail in milliseconds, not after a cold pass over 30 queries.
+    // Duplicate names silently produced two rows that could not be told apart
+    // in the report.
+    let mut seen = std::collections::HashSet::new();
+    for spec in &specs {
+        spec.validate()?;
+        if !seen.insert(spec.name.as_str()) {
+            bail!("duplicate query name '{}'", spec.name);
+        }
+    }
     if let Some(ref filter) = cli.filter {
         specs.retain(|q| q.name.contains(filter.as_str()));
     }
@@ -409,7 +510,7 @@ fn main() -> Result<()> {
         let brain = open_brain(&cli.brain)?;
         for spec in &specs {
             let start = Instant::now();
-            let _ = brain.recall(&spec.text, spec.visibility());
+            let _ = brain.recall(&spec.text, spec.visibility()?);
             cold_latencies.push(start.elapsed().as_micros() as u64);
         }
     }
@@ -424,7 +525,7 @@ fn main() -> Result<()> {
 
     // Warm up: run each query once (discarded) to populate caches
     for spec in &specs {
-        let _ = brain.recall(&spec.text, spec.visibility());
+        let _ = brain.recall(&spec.text, spec.visibility()?);
     }
 
     let mut results: Vec<QueryResult> = Vec::with_capacity(specs.len());
@@ -523,4 +624,237 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── Tests ──────────────────────────────────────────────────────────
+//
+// This crate had no tests at all. The logic worth pinning is the pure part:
+// the statistics helpers, the accuracy rule, and spec validation. Everything
+// else needs a populated brain on disk and belongs in the harness, not here.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(name: &str, keywords: &[&str], top_n: usize) -> QuerySpec {
+        QuerySpec {
+            name: name.into(),
+            text: "some query text".into(),
+            description: "d".into(),
+            expected_keywords: keywords.iter().map(|s| s.to_string()).collect(),
+            expected_top_n: top_n,
+            latency_budget_p95_ms: 5.0,
+            latency_budget_p99_ms: 10.0,
+            visibility: "private".into(),
+        }
+    }
+
+    // ── percentile ──
+
+    #[test]
+    fn percentile_is_empty_safe_and_clamped() {
+        assert_eq!(percentile(&[], 50.0), 0, "empty input must not panic");
+        assert_eq!(percentile(&[7], 99.0), 7, "single sample is every quantile");
+        // Out-of-range p must clamp rather than index out of bounds.
+        assert_eq!(percentile(&[1, 2, 3], 1000.0), 3);
+        assert_eq!(percentile(&[1, 2, 3], 0.0), 1);
+    }
+
+    /// Pins the convention rather than asserting a preferred one: the index
+    /// is `round(p/100 * (n-1))`, i.e. nearest-rank on a zero-based scale.
+    /// For 1..=100 that puts p50 at 51, not 50, because the true median of an
+    /// even-sized sample lies between two values and this rounds up.
+    ///
+    /// Deliberately NOT "corrected" — published bench numbers were produced
+    /// with this definition, and changing it would silently move every
+    /// historical latency figure. Documented instead.
+    #[test]
+    fn percentile_uses_the_p_times_n_minus_one_convention() {
+        let s: Vec<u64> = (1..=100).collect();
+        assert_eq!(percentile(&s, 50.0), 51);
+        assert_eq!(percentile(&s, 95.0), 95);
+        assert_eq!(percentile(&s, 99.0), 99);
+        assert_eq!(percentile(&s, 100.0), 100);
+        // Odd-sized samples land exactly on the middle element.
+        assert_eq!(percentile(&[1, 2, 3, 4, 5], 50.0), 3);
+    }
+
+    // ── mean_stddev ──
+
+    #[test]
+    fn mean_stddev_is_empty_safe() {
+        assert_eq!(mean_stddev(&[]), (0, 0));
+    }
+
+    #[test]
+    fn mean_stddev_matches_hand_computed_values() {
+        // mean 4, population variance 8 -> stddev 2.83 -> rounds to 3
+        assert_eq!(mean_stddev(&[2, 4, 4, 4, 5, 5, 7, 9]).0, 5);
+        assert_eq!(mean_stddev(&[10, 10, 10]), (10, 0));
+        let (m, sd) = mean_stddev(&[1, 3]);
+        assert_eq!((m, sd), (2, 1));
+    }
+
+    // ── accuracy rule ──
+
+    #[test]
+    fn keyword_spec_passes_on_case_insensitive_substring() {
+        let s = spec("concept_x", &["Runbook"], 5);
+        let hits = vec!["the deploy runbook lives in notion".to_string()];
+        assert!(evaluate_accuracy(&s, &hits, 1));
+    }
+
+    #[test]
+    fn keyword_spec_fails_when_no_keyword_appears() {
+        let s = spec("concept_x", &["runbook"], 5);
+        let hits = vec!["entirely unrelated content".to_string()];
+        assert!(!evaluate_accuracy(&s, &hits, 1));
+    }
+
+    /// The regression this rule exists for: an adversarial spec asserts
+    /// "few or no results", and the old code returned `true` unconditionally,
+    /// so a nonsense query matching the whole corpus still passed.
+    #[test]
+    fn adversarial_spec_fails_when_it_matches_too_much() {
+        let s = spec("adversarial_gibberish", &[], 5);
+        assert!(
+            evaluate_accuracy(&s, &[], 0),
+            "zero results is the ideal adversarial outcome"
+        );
+        assert!(
+            evaluate_accuracy(&s, &[], 5),
+            "at the threshold, still a pass"
+        );
+        assert!(
+            !evaluate_accuracy(&s, &[], 6),
+            "an adversarial query matching more than expected_top_n must FAIL; \
+             returning true unconditionally made this check vacuous"
+        );
+        assert!(!evaluate_accuracy(&s, &[], 500));
+    }
+
+    // ── spec validation ──
+
+    #[test]
+    fn unknown_visibility_is_rejected_not_silently_private() {
+        let mut s = spec("q", &["k"], 5);
+        s.visibility = "piblic".into();
+        let err = s.validate().unwrap_err().to_string();
+        assert!(err.contains("unknown visibility"), "got: {err}");
+    }
+
+    #[test]
+    fn every_known_visibility_label_parses() {
+        for (label, want) in [
+            ("private", Visibility::Private),
+            ("TEAM", Visibility::Team),
+            ("Org", Visibility::Org),
+            ("public", Visibility::Public),
+        ] {
+            let mut s = spec("q", &["k"], 5);
+            s.visibility = label.into();
+            assert_eq!(s.visibility().unwrap(), want, "label {label}");
+        }
+    }
+
+    #[test]
+    fn zero_expected_top_n_is_rejected() {
+        // take(0) compares against nothing, so the check could never pass —
+        // it reported an accuracy failure that was really a spec bug.
+        let s = spec("q", &["k"], 0);
+        assert!(s
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("expected_top_n"));
+    }
+
+    #[test]
+    fn empty_name_or_text_is_rejected() {
+        let mut s = spec("", &["k"], 5);
+        assert!(s.validate().is_err());
+        s = spec("q", &["k"], 5);
+        s.text = "   ".into();
+        assert!(s
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("empty query text"));
+    }
+
+    #[test]
+    fn inverted_or_nonpositive_latency_budgets_are_rejected() {
+        let mut s = spec("q", &["k"], 5);
+        s.latency_budget_p99_ms = 1.0; // below p95
+        assert!(s
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("below its p95"));
+
+        s = spec("q", &["k"], 5);
+        s.latency_budget_p95_ms = 0.0;
+        assert!(s.validate().unwrap_err().to_string().contains("positive"));
+    }
+
+    #[test]
+    fn a_wellformed_spec_validates() {
+        assert!(spec("single_word_agent", &["agent"], 5).validate().is_ok());
+        assert!(spec("adversarial_gibberish", &[], 5).validate().is_ok());
+    }
+
+    // ── pattern classification ──
+
+    #[test]
+    fn pattern_classifies_by_name_prefix_and_defaults_to_other() {
+        for (name, want) in [
+            ("single_word_agent", "single_word"),
+            ("multi_word_thing", "multi_word"),
+            ("concept_x", "concept"),
+            ("temporal_y", "temporal"),
+            ("cross_domain_z", "cross_domain"),
+            ("adversarial_gibberish", "adversarial"),
+            ("something_else", "other"),
+        ] {
+            assert_eq!(spec(name, &["k"], 5).pattern(), want, "name {name}");
+        }
+    }
+
+    // ── the shipped query file ──
+
+    /// The committed `queries.toml` must satisfy the validator it is run
+    /// through, so a malformed spec is caught here rather than after a cold
+    /// pass over 30 queries against a real brain.
+    #[test]
+    fn shipped_queries_toml_is_valid() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/queries.toml");
+        let toml_src = std::fs::read_to_string(path).expect("queries.toml is committed");
+        let file: QueryFile = toml::from_str(&toml_src).expect("queries.toml parses");
+        assert!(!file.queries.is_empty());
+        let mut seen = std::collections::HashSet::new();
+        for spec in &file.queries {
+            spec.validate()
+                .unwrap_or_else(|e| panic!("shipped spec '{}' is invalid: {e}", spec.name));
+            assert!(
+                seen.insert(spec.name.as_str()),
+                "duplicate query name '{}' in queries.toml",
+                spec.name
+            );
+        }
+    }
+
+    // ── output format parsing ──
+
+    #[test]
+    fn output_format_parses_case_insensitively_and_rejects_junk() {
+        assert!(matches!(
+            "TEXT".parse::<OutputFormat>(),
+            Ok(OutputFormat::Text)
+        ));
+        assert!(matches!(
+            "json".parse::<OutputFormat>(),
+            Ok(OutputFormat::Json)
+        ));
+        assert!("yaml".parse::<OutputFormat>().is_err());
+    }
 }

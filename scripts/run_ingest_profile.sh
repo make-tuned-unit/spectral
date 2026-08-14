@@ -13,7 +13,7 @@
 # See docs/internal/ingest-per-event-hypotheses-2026-08-09.md.
 set -euo pipefail
 
-REPO=/Users/jessesharratt/dev/spectral
+REPO="${REPO:-$(git rev-parse --show-toplevel)}"
 BENCH="$HOME/spectral-local-bench"
 LAST="$BENCH/cascade-2026-08-10/c_spk.jsonl"
 N=1438

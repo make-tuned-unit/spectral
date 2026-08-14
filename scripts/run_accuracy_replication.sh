@@ -11,10 +11,10 @@
 # This is the LAST slice -- the prereg fixes that stopping rule.
 set -euo pipefail
 
-BIN="${BIN:-/Users/jessesharratt/dev/spectral/target/release/spectral-bench-accuracy}"
+BIN="${BIN:-$(git rev-parse --show-toplevel)/target/release/spectral-bench-accuracy}"
 BENCH="${BENCH:-$HOME/spectral-local-bench}"
 DS="${DS:-$BENCH/locomo_full_answerable_labelled.json}"
-IDS="${IDS:-/Users/jessesharratt/dev/spectral/docs/internal/r31-sample-ids.txt}"
+IDS="${IDS:-$(git rev-parse --show-toplevel)/docs/internal/r31-sample-ids.txt}"
 OUT="${OUT:-$BENCH/accuracy-repl-2026-08-11}"
 MODEL="${MODEL:-qwen25-16k}"
 

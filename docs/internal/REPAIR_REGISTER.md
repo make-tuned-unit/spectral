@@ -617,7 +617,19 @@ Ref: `r16-baseline-shift-2026-08-07.md`, `landscape-research-2026-08-07.md`
 
 ---
 
-## R17 — `list_memories_by_signal` has no tiebreak, on a guaranteed tie key · READY
+## R17 — `list_memories_by_signal` has no tiebreak, on a guaranteed tie key · DONE (2026-08-13)
+
+**Shipped with the R18 sweep** — `, id` added, pinned by
+`r17_signal_score_tie_is_broken_by_id` (both insertion orders on independent
+stores; verified to FAIL with the clause reverted). Paired oracle run: **0/400
+context diffs on both `topk_fts` and `cascade`** — see
+`tiebreak-paired-verification-result-2026-08-13.md`. The "very likely a larger
+exposure than R16" guess was **not** borne out on the bench path: the boundary
+is a guaranteed tie block, but no bench route reads it. Production reachability
+(`brain.rs` `aaak` and five other callers) is unmeasured and the determinism
+rationale stands regardless of the zero.
+
+Original row:
 
 `sqlite_store.rs:1779`: `ORDER BY signal_score DESC LIMIT ?2`.
 `signal_score` **defaults to 0.5**, so unlike R16 the LIMIT boundary sits
@@ -631,7 +643,39 @@ into R16's clean 10/500 attribution.
 
 ---
 
-## R18 — **Twelve** more untiebroken product `ORDER BY … LIMIT` sites · READY
+## R18 — **Twelve** more untiebroken product `ORDER BY … LIMIT` sites · DONE (2026-08-13)
+
+**All twelve sites tiebroken in one sweep, the DELETE first as this row
+ordered.** Conventions follow the already-tiebroken sites: `id DESC` after
+`datetime(created_at) DESC` (matches `list_wing_memories_capped` and
+`idx_memories_wing_recency`'s own trailing key), ascending `id`/`m.id`/
+`memory_id`/`related_id`/`n.rid` after score-shaped keys (matches R16).
+Pinned by three tests covering the family's severity classes (DELETE
+boundary, guaranteed tie block, LIMIT-1 pick), each verified to FAIL with
+the clauses reverted.
+
+**A test-construction finding that amends R16's method:** tied-key emission
+order differs by plan on this build — an index scan emits the index's own
+trailing-key order (so the untiebroken prune subquery *happened* to agree
+with the pinned order via `idx_memories_wing_recency`'s `id DESC`), while a
+temp sort emits insertion order. A single adversarial insertion order is
+therefore NOT sufficient to pin index-served sites; the committed tests run
+both insertion orders, and the prune test exercises both plans.
+
+**Paired oracle run (preregistered): 0/400 context diffs on both paths**,
+evidence turns and tokens identical — recorded as "no measurable bench-path
+effect at N=400", not as unreachability. The per-site paired-run requirement
+in the original row was satisfied collectively by this sweep because the
+observed effect is exactly zero; had any diff appeared, attribution would
+have required splitting. Ref:
+`tiebreak-paired-verification-prereg-2026-08-13.md`,
+`tiebreak-paired-verification-result-2026-08-13.md`.
+
+Original row follows.
+
+---
+
+## R18 (original) — **Twelve** more untiebroken product `ORDER BY … LIMIT` sites · READY
 
 > **CORRECTED 2026-08-07.** This row and `r16-baseline-shift-2026-08-07.md`
 > § Scope both said "five more" / "six further sites, verified by grep". That
@@ -733,6 +777,20 @@ order agree with age order, the one arrangement in which an additive freshness
 term provably cannot reorder anything. The property was never held; it was
 never tested.
 Ref: `research-alignment-2026-08-07.md` §2, `r16-baseline-shift-2026-08-07.md`.
+
+**SEAM SHIPPED 2026-08-14 (option (c), opt-in, default unchanged).**
+`RecallTopKConfig::anchor_to_corpus` (default **false**): when `now` is `None`,
+the top-k anchor becomes `latest_interaction_time()` instead of the wall
+clock; explicit `now` always wins; an empty corpus falls through to the wall
+clock. Pinned by `anchor_to_corpus_makes_the_default_ranking_clock_free` on a
+5-years-stale fixture where the corpus anchor and wall clock provably disagree
+— verified to FAIL with the seam neutered, so an inert flag cannot pass.
+**The row stays open on the DEFAULT question:** flipping the default is a
+product/consumer decision, and no oracle A/B can inform it — the bench passes
+`now = question_date`, so the disease is invisible there by construction (a
+fact worth recording: every bench number ever published is already anchored).
+The default-path drift test (`topk_additive_recency_reorders_under_a_clock_
+shift`) stays red-pinned exactly as Rule 5 requires.
 
 ---
 
@@ -1130,6 +1188,22 @@ are not. Clean re-run required.
 
 Ref: `ingest-profile-result-2026-08-10.md`.
 
+### Track C — CLEAN RE-RUN DONE (2026-08-13), shares replicate to the decimal
+
+Preconditions held (149 Gi free, 2.9 GB swap, load 2.93, no competing work) and
+were recorded, not assumed. **Every share replicates within 0.5pp**
+(`ingest_call` 85.5% vs 85.6%; `sign` 0.8% vs 0.7%), so H4-confirmed /
+H1-refuted now stands on a valid run. Clean total **1.16 ms/event** — but on a
+**different host** than every prior run, so the 8× discrepancy against the
+2026-08-03 decomposition **stays open** (5× here, cross-hardware, reconciles
+nothing) and may stay open permanently: the original machine is no longer in
+this environment. Also flagged, unresolved: this run profiled 71,379 writes
+where the 08-10 doc says 14,900 for nominally the same command; per-question
+brain keying in today's `oracle.rs` accounts for 71,379, and the old
+dataset/tree needed to explain 14,900 are not on this machine. Shares are
+per-event and unaffected.
+Ref: `ingest-profile-rerun-2026-08-13.md`.
+
 ---
 
 ## Adjacency mechanism — the ±1 rule is confirmed, my framing is not (2026-08-11)
@@ -1306,3 +1380,131 @@ own terms. **Next test is a stronger reader** — needs the key rotated and a
 budget, the one thing $0 cannot buy. No post-hoc subgroups were run.
 
 Ref: `adjacency-accuracy-result-2026-08-11.md`.
+
+---
+
+## R31 — Does adjacency improve ANSWERS, on an instrument that can see? · **PASS** (2026-08-11 prereg, run 2026-08-14)
+
+$0, fully on-device (ollama `qwen25-16k`, actor + judge, temp 0). LoCoMo
+**single-session-user**, **n = 300** sampled at seed 20260811 (IDs committed
+before the run), cascade, single variable. Prereg `3af07e8`; slice chosen for
+a stated *instrument* reason, with adjacency's retrieval gain verified
+equivalent to multi-session's (+19.44 vs +19.77pp) BEFORE the prereg was
+written, and declared the LAST slice.
+
+| metric | B0 | B_ADJ | Δ | p | verdict |
+|---|---:|---:|---:|---:|---|
+| **containment (PRIMARY)** | 42.00% | 48.00% | **+6.00pp** | **0.0175** | **PASS** |
+| local judge (secondary) | 51.33% | 64.00% | +12.67pp | <0.0001 (×3 <0.0003) | + |
+| item recall (graded) | 43.33% | 49.31% | +5.97pp | 0.0286 (**×3 = 0.0858**) | n.s. corrected |
+
+Context 1,437 → 3,266 tok (2.27×). B0 sits mid-band (42%/51%), far from the
+20% floor and 80% ceiling — **this instrument could see**, which is exactly
+what R30's could not do at 11.79%.
+
+**R30's null is explained, not retracted.** R30 measured a real effect on an
+instrument that could not detect it, and said so in its own writeup before
+this run existed. Re-asking the same question with a readable dial answers it:
+**retrieval improvement does convert to answers** at $0 on this slice with a
+local reader. Prediction from the prereg (+3 to +7pp, "genuinely unsure
+whether it clears p < 0.05") — **HIT** at +6.00pp, p = 0.0175. The prediction
+register is now 4 hits / 1 half / 2 misses.
+
+**Disclosed deviation:** the 2026-08-14 crash split the treatment arm across
+two hosts — 46 answers here, 254 re-run with the actor served from the other
+mini over the tailnet (same weights blob, temp 0); B0 ran entirely here. A
+5-prompt probe found 4/5 byte-identical across hosts, 1 divergent on a long
+generation. Since containment rewards verbosity, this was checked rather than
+assumed: the effect holds on both subsets (+4.35pp here on n=46, underpowered;
++6.30pp on mini-2, p = 0.0226) and on the mini-2 subset the treatment arm is
+**not** more verbose than its own baseline (0.99×). Read as
+PASS-with-a-disclosed-deviation; the direction is not in doubt, the exact
+magnitude carries more uncertainty than the p-value alone implies.
+
+**Defaults unchanged.** `SPECTRAL_ADJACENCY` stays off: one slice, one local
+reader, in-sample, at 2.27× context. Nothing here licenses multi-session (the
+blind slice) or a cloud actor.
+
+Ref: `adjacency-accuracy-replication-result-2026-08-11.md`.
+
+---
+
+## R32 — Query-alias vocabulary bridging · FAIL on the gate, small real transfer (2026-08-13)
+
+> Registered and run as "R30" on a parallel branch before main's R30
+> (adjacency conversion) was visible from this machine; renumbered R32 on
+> rebase, content unchanged.
+
+**$0, preregistered at `71cb543` — committed BEFORE any arm ran.** LoCoMo full
+N=1438, `topk_fts`, R19 labels, split-half by conversation (derivation
+0/2/4/6/8, test 1/3/5/7/9). The last untested $0 lexical lever, queued by R22.
+
+A 51-key generic-English alias table (no proper nouns, no numbers), authored
+from derivation-half misses only — the extractor refuses to emit test-half
+rows, so the split is enforced in code, not by promise.
+
+**Test half (PRIMARY): +1.70pp (+18 turns), p=0.0045, 23 pairs [+19/−4] —
+FAIL** on the prespecified gate (p<0.05 AND ≥+2.0pp): significant, under the
+effect bar. Derivation half (fitted, no verdict): +3.24pp. Zero-evidence
+178→166 on the test half. Churn: 386/1438 contexts changed for +53 net turns.
+
+**The A3′ profile again: statistically unambiguous, practically marginal** —
+though this one is the family's best held-out number (+1.70pp beats
+declarative's fitted +1.36pp) and the first to transfer across conversations.
+All four test-half regressions are alias dilution (added terms admitting
+competitors; one question fell to zero). Prediction recorded in the prereg was
+half right: gate FAIL called correctly, magnitude wrong (+1.70pp vs "<+1.0pp")
+— the argument ignored that one RARE bridged term ranks a turn high.
+
+**Preconditions:** A0 reproduced the published corpus record to the digit
+(59.86%/68.63%/357) on the new host + regenerated dataset + `fa5763d` binary,
+and matched the tiebreak-verification rows 0/400. Lever proven-on (4/10 probe).
+
+**Defaults stay off everywhere.** The table is an experimental artifact
+(`r30-aliases-table-2026-08-13.json`) and must not ship. R22's residue now
+reads: bridging measured-and-small; answer-shape matching is the one untested
+$0 idea left; then the frontier is a second modality.
+
+Ref: `query-aliases-prereg-2026-08-13.md`, `query-aliases-result-2026-08-13.md`.
+
+---
+
+## R33 — Answer-shape matching, priced for $0 · NOT BUILT (2026-08-13)
+
+> Written as "R31" before main's R31 (accuracy replication) was visible
+> from this machine; renumbered R33 on rebase, content unchanged.
+
+**Offline, from the archived R30 baseline + dataset labels. No code, no run.**
+The signal is REAL — query-conditioned shape (digits/date-words for
+"when/how many" questions) has **6.08× lift** on date-time evidence vs
+distractors, 3.84× on count — the discriminative signal declarative density
+never was. **And the prize is too small anyway:** the two classes cover 13.2%
+of all missed evidence; the addressable (shape-bearing) misses are **61 turns
+= +2.85pp absolute ceiling**, before pool truncation (the R22 arithmetic) and
+distractor competition (~13% of every haystack carries the shape; the R30
+dilution mechanism). A perfect ceiling under the erosion of two measured
+mechanisms cannot honestly target the ≥+2.0pp corpus gate → **not built**.
+
+Recorded escape hatches: a class-scoped prereg (date-time alone has a +13.1pp
+class-recall ceiling) with its gate declared in advance, or a second admission
+modality — boosting only reorders what admission provides.
+
+**This closes R22's residue.** Both queued $0 ideas are measured (R32) or
+priced under the gate (R33). The $0 lexical/structural family on LoCoMo is
+exhausted; the frontier is a second modality.
+
+Ref: `answer-shape-pricing-2026-08-13.md`.
+
+---
+
+## R34 — G4 proximity at full N · NULL, refutation stands (2026-08-14)
+
+$0, preregistered before the arm ran, full N=1438, `topk_fts`, vs the R32
+baseline. The sweep's BEST arm (w=0.40): **+0.33pp (+7 turns), p=0.1435 —
+NULL on both clauses.** The prediction ("refutation stands, |Δ|<1.0pp, not
+significant") held in full. First item on R26's "not repaired" list, now
+settled at 5.75× the data. Porter/widening/ACT-R/spreading remain unsettled
+at N=250 — all members of the static-rerank family this series has closed
+from four directions (R22, R26, R32, R33, R34). Proximity stays default-off.
+
+Ref: `g4-proximity-fulln-result-2026-08-14.md`.

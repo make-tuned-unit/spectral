@@ -443,7 +443,28 @@ pub struct RememberResult {
     pub recurrence: Option<Recurrence>,
     /// Non-fatal failures while deriving secondary indexes or metadata. The
     /// primary memory is committed; call `repair_derivations` to reconcile.
+    ///
+    /// Check [`is_fully_derived`](RememberResult::is_fully_derived) rather
+    /// than ignoring this: a `remember` that returns `Ok` with warnings has
+    /// written the memory to `memory.db` but may have failed to enroll it in
+    /// `recognition.db`, leaving content that recalls but does not recognize.
     pub derivation_warnings: Vec<String>,
+}
+
+impl RememberResult {
+    /// True when every secondary index and piece of metadata was derived.
+    ///
+    /// `remember` spans more than one database and is **not** atomic across
+    /// them: the memory row commits first, then density, signature, and
+    /// recognition enrollment follow as separate transactions. A crash or an
+    /// IO failure in between leaves the memory recallable but not
+    /// recognizable. That state is recoverable —
+    /// [`Brain::repair_derivations`](crate::brain::Brain::repair_derivations)
+    /// re-derives everything, including recognition enrollment — but nothing
+    /// detects it for you, so a caller that cares should check this.
+    pub fn is_fully_derived(&self) -> bool {
+        self.derivation_warnings.is_empty()
+    }
 }
 
 /// A detected content recurrence: the incoming memory re-encountered a prior
@@ -704,6 +725,17 @@ pub struct RecallTopKConfig {
     /// Callers scoring historical data (bench, import replay, time-travel
     /// queries) **must** set this to the question/query date.
     pub now: Option<chrono::DateTime<chrono::Utc>>,
+    /// When `now` is `None`, anchor recency to the corpus's own latest
+    /// `created_at` ([`Brain::latest_interaction_time`]) instead of the wall
+    /// clock. Default **false** (wall clock — the historical behaviour).
+    ///
+    /// The additive recency term makes default top-k ranking a function of
+    /// the wall clock: the same brain and query can return a different SET
+    /// as time passes (R20). Anchoring to the corpus makes ranking a pure
+    /// function of the brain's content — the byte-reproducibility the README
+    /// claims. Opt-in until the default flip is measured on a corpus where
+    /// the difference manifests; an explicit `now` always wins.
+    pub anchor_to_corpus: bool,
 }
 
 impl Default for RecallTopKConfig {
@@ -727,6 +759,7 @@ impl Default for RecallTopKConfig {
             apply_declarative_boost: false,
             apply_context_dedup: true,
             now: None,
+            anchor_to_corpus: false,
         }
     }
 }
@@ -859,6 +892,11 @@ pub struct Brain {
     /// and recall paths skip their ambient writes (auto-reinforce,
     /// retrieval-event logging).
     read_only: bool,
+    /// Set when this handle fell back to an empty in-memory recognition index
+    /// because a read-only open found no `recognition.db`. Recognition answers
+    /// are meaningless (always Novel) while true. See
+    /// [`recognition_degraded`](Self::recognition_degraded).
+    recognition_degraded: bool,
     /// When true, the recall write-back (auto-reinforce + event log) is spawned
     /// on the runtime instead of blocked on, so recall returns at its retrieval
     /// floor (~15ms vs ~21ms) without waiting on the ambient bookkeeping.
@@ -1072,6 +1110,21 @@ impl Brain {
         // predates the sidecar gets an empty in-memory index (recognize()
         // returns Novel) rather than a file created in someone else's brain.
         let recognition_db = config.data_dir.join("recognition.db");
+        // A read-only brain whose sidecar is absent falls back to an EMPTY
+        // in-memory index, so `recognize()` answers Novel for content the
+        // brain demonstrably holds. That is a defensible fallback (better
+        // than creating a file inside someone else's brain) but it is a
+        // DEGRADED state, and answering "I have never seen this" when the
+        // truth is "I cannot tell" must not be silent — it is recorded on the
+        // handle and exposed via `recognition_degraded()`.
+        let recognition_degraded = config.read_only && !recognition_db.exists();
+        if recognition_degraded {
+            tracing::warn!(
+                path = %recognition_db.display(),
+                "recognition sidecar missing on a read-only open; recognize() will \
+                 report Novel for everything (see Brain::recognition_degraded)"
+            );
+        }
         let recognition_store = if config.read_only {
             if recognition_db.exists() {
                 spectral_recognition::SqliteRecognitionStore::open_read_only(&recognition_db)
@@ -1122,6 +1175,7 @@ impl Brain {
                 .unwrap_or_else(|| Box::new(crate::activity::DefaultRedactionPolicy::default())),
             recognition,
             read_only: config.read_only,
+            recognition_degraded,
             // Off by default; opt in per-brain via `set_async_writeback`.
             async_writeback: false,
             // Off by default; opt in per-brain via `set_async_turn_delivery`.
@@ -1145,6 +1199,28 @@ impl Brain {
     }
 
     /// Whether this brain was opened read-only.
+    /// True when this handle's recognition index is not the brain's real one.
+    ///
+    /// A read-only open of a brain with no `recognition.db` substitutes an
+    /// empty in-memory index, so `recognize()` reports `Novel` for content the
+    /// brain actually holds. Callers that act on a novelty verdict — dedup,
+    /// "have I seen this?", ingestion gating — must treat a degraded handle as
+    /// "unknown", not as "new".
+    pub fn recognition_degraded(&self) -> bool {
+        self.recognition_degraded
+    }
+
+    /// Whether an LLM client is wired into this brain at all.
+    ///
+    /// The "$0, no model call on the recall path" guarantee is structural —
+    /// `llm_client` has exactly one call site, on the *write* path
+    /// (`ingest_text`) — and this accessor lets a test assert the structural
+    /// fact rather than only the reported token counter, which is a hardcoded
+    /// literal and so proves nothing on its own.
+    pub fn has_llm_client(&self) -> bool {
+        self.llm_client.is_some()
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
@@ -1198,7 +1274,14 @@ impl Brain {
     /// Verify a memory hit's signed provenance against a contributor's public
     /// key. Returns `true` only if the hit carries a signature and
     /// source-brain id, the key matches that id, and the signature is valid
-    /// over the hit's content hash, creation time, and visibility.
+    /// over the hit's **memory key**, content hash, creation time, and
+    /// visibility.
+    ///
+    /// Binding the memory key is what stops a peer re-serving a genuinely
+    /// signed memory under a different key — i.e. as the answer to a question
+    /// it never answered. Signatures written before the v2 scheme are still
+    /// accepted via a narrow legacy fallback (see
+    /// [`verify_memory_signature`](spectral_core::identity::verify_memory_signature)).
     ///
     /// `pubkey` must be resolved from the hit's `source_brain_id` out of band
     /// (via the contributor grant set) — a `BrainId` cannot be inverted to
@@ -1222,6 +1305,7 @@ impl Brain {
         spectral_core::identity::verify_memory_signature(
             &source_id,
             pubkey,
+            &hit.key,
             &content_hash,
             created_at,
             &hit.visibility,
@@ -1759,8 +1843,12 @@ impl Brain {
                 (stored.content_hash.as_deref(), stored.created_at.as_deref())
             {
                 let sig = crate::ingest_profile::time("sign", || {
-                    self.identity
-                        .sign_memory(content_hash, created_at, &stored.visibility)
+                    self.identity.sign_memory(
+                        &stored.key,
+                        content_hash,
+                        created_at,
+                        &stored.visibility,
+                    )
                 });
                 let sbid = *self.identity.brain_id().as_bytes();
                 if let Err(error) = crate::ingest_profile::time("sig_write", || {
@@ -2027,12 +2115,23 @@ impl Brain {
         query: &str,
         k: usize,
         wing_hint: Option<&str>,
+        visibility: Visibility,
     ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
         let mut hits = self.tact_retrieve_with_k_scoped(query, k, wing_hint)?;
+        // Drop inadmissible TACT hits BEFORE the shortfall check, so they do
+        // not occupy budget that admissible content should fill. Without this,
+        // TACT returning k private hits suppressed the FTS backfill entirely
+        // and a scoped query got nothing.
+        hits.retain(|h| str_to_vis(&h.visibility).allows(visibility));
         if hits.len() < k {
             let words = self.fts_query_words(query);
             if !words.is_empty() {
-                let fts_hits = self.fts_search_direct(&words, k)?;
+                // Scoped in SQL, so the backfill draws from admissible rows
+                // rather than being filtered down to nothing afterwards.
+                let fts_hits = self
+                    .rt
+                    .block_on(self.memory_store.fts_search_scoped(&words, k, visibility))
+                    .map_err(|e| Error::Schema(e.to_string()))?;
                 let existing: std::collections::HashSet<String> =
                     hits.iter().map(|h| h.key.clone()).collect();
                 for fts_hit in fts_hits {
@@ -2138,12 +2237,20 @@ impl Brain {
         }
 
         let fetch_k = config.k.saturating_mul(config.fetch_mult.max(1));
+        // Scoped in SQL, before the LIMIT. Filtering afterwards let
+        // inadmissible rows consume the candidate budget, so a brain whose
+        // best-matching rows are Private returned NOTHING for a Team query
+        // even when it held matching Team content.
         let mut candidates = self
             .rt
-            .block_on(self.memory_store.fts_search(&words, fetch_k))
+            .block_on(
+                self.memory_store
+                    .fts_search_scoped(&words, fetch_k, visibility),
+            )
             .map_err(|e| Error::Schema(e.to_string()))?;
 
-        // Filter by visibility
+        // Defence in depth: the SQL predicate is authoritative, this catches
+        // any label the rank expression does not know about.
         candidates.retain(|m| str_to_vis(&m.visibility).allows(visibility));
 
         // Unified re-ranking pipeline
@@ -2176,6 +2283,12 @@ impl Brain {
         };
         let ctx = match config.now {
             Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
+            // R20 seam: an empty corpus falls through to the wall clock —
+            // there is nothing to anchor to and no ranking to destabilize.
+            None if config.anchor_to_corpus => match self.latest_interaction_time()? {
+                Some(dt) => spectral_cascade::RecognitionContext::empty().with_now(dt),
+                None => spectral_cascade::RecognitionContext::empty(),
+            },
             None => spectral_cascade::RecognitionContext::empty(),
         };
         // Skip the co-retrieval DB queries (one per anchor) unless the boost is
@@ -2430,6 +2543,7 @@ impl Brain {
                     entities: vec![],
                     triples: vec![],
                     documents: vec![],
+                    truncated: false,
                 },
             });
         }
@@ -2440,9 +2554,13 @@ impl Brain {
         let mut seen_edges: HashSet<(EntityId, EntityId, String)> = HashSet::new();
         let mut seen_docs: HashSet<[u8; 32]> = HashSet::new();
         let mut all_documents = Vec::new();
+        // Any seed hitting its traversal budget makes the merged result
+        // partial, so the flag is sticky across seeds.
+        let mut neighborhood_truncated = false;
 
         for seed in &seed_entities {
             let hood = self.store.neighborhood(seed, 2)?;
+            neighborhood_truncated |= hood.truncated;
             for entity in hood.entities {
                 if all_entity_ids.insert(entity.id) {
                     all_entities.push(entity);
@@ -2483,6 +2601,7 @@ impl Brain {
                 entities: all_entities,
                 triples: all_triples,
                 documents: all_documents,
+                truncated: neighborhood_truncated,
             },
         })
     }
@@ -2606,6 +2725,7 @@ impl Brain {
         source: spectral_ingest::FieldSource,
         source_url: Option<&str>,
     ) -> Result<bool, Error> {
+        self.ensure_writable("set_entity_field")?;
         self.rt
             .block_on(self.memory_store.set_entity_field(
                 &entity_id.to_string(),
@@ -3227,9 +3347,12 @@ impl Brain {
                 if let (Some(content_hash), Some(created_at)) =
                     (memory.content_hash.as_deref(), memory.created_at.as_deref())
                 {
-                    let signature =
-                        self.identity
-                            .sign_memory(content_hash, created_at, &memory.visibility);
+                    let signature = self.identity.sign_memory(
+                        &memory.key,
+                        content_hash,
+                        created_at,
+                        &memory.visibility,
+                    );
                     let brain_id = *self.identity.brain_id().as_bytes();
                     report.signatures_repaired += self
                         .rt
@@ -3612,7 +3735,13 @@ impl Brain {
 
     /// Perform the recall write-back (auto-reinforce returned keys + log the
     /// retrieval event). Synchronous by default; spawned on the runtime when
-    /// async write-back is enabled. Best-effort — errors are swallowed.
+    /// async write-back is enabled.
+    ///
+    /// Best-effort by design — a feedback write must never fail a recall that
+    /// already succeeded — but failures are *reported*, not swallowed. They
+    /// were previously discarded entirely, so a full disk or a read-only
+    /// filesystem silently stopped the adaptive loop with recall still
+    /// returning `Ok`.
     pub(crate) fn write_back(
         &self,
         keys: Vec<String>,
@@ -3622,15 +3751,23 @@ impl Brain {
         if self.async_writeback {
             let store = Arc::clone(&self.memory_store);
             self.rt.spawn(async move {
-                let _ = store.reinforce_batch(&keys, strength).await;
-                let _ = store.log_retrieval_event(&event).await;
+                if let Err(error) = store.reinforce_batch(&keys, strength).await {
+                    tracing::warn!(%error, "recall write-back: reinforce failed");
+                }
+                if let Err(error) = store.log_retrieval_event(&event).await {
+                    tracing::warn!(%error, "recall write-back: event log failed");
+                }
             });
         } else {
             // One block_on for both writes (was two separate runtime round-trips).
             let store = &self.memory_store;
             self.rt.block_on(async move {
-                let _ = store.reinforce_batch(&keys, strength).await;
-                let _ = store.log_retrieval_event(&event).await;
+                if let Err(error) = store.reinforce_batch(&keys, strength).await {
+                    tracing::warn!(%error, "recall write-back: reinforce failed");
+                }
+                if let Err(error) = store.log_retrieval_event(&event).await {
+                    tracing::warn!(%error, "recall write-back: event log failed");
+                }
             });
         }
     }
@@ -4294,6 +4431,11 @@ impl Brain {
         only_wings: &[&str],
         apply: bool,
     ) -> Result<WingReclassifyReport, Error> {
+        // Only the applying form is a write; `apply == false` is a dry-run
+        // report and stays available on a read-only brain.
+        if apply {
+            self.ensure_writable("reclassify_wings_in")?;
+        }
         let memories = self
             .rt
             .block_on(self.memory_store.list_memories_by_signal(0.0, usize::MAX))

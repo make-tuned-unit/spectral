@@ -7,7 +7,7 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 ## One-liner
 
 > Deterministic, embedding-free memory for AI agents — recall, recognition, and
-> adaptive feedback, on one SQLite file. No vector DB, no GPU, no LLM on the
+> adaptive feedback, in one SQLite-backed folder. No vector DB, no GPU, no LLM on the
 > recall path.
 
 ## Elevator pitch (≈60 words)
@@ -16,7 +16,8 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 > to run, and results that drift with the model. Spectral is the opposite — an
 > embedded Rust library that recalls (FTS + BM25), recognizes ("have I seen this
 > before?"), and adapts to use, all deterministically and embedding-free. One
-> SQLite file you own. Federation-ready, poisoning-resistant — 98.6%
+> SQLite-backed brain folder you own. Federation-ready, resistant to
+> score-flooding — 98.6%
 > session-recall and 81.5% end-to-end accuracy on LongMemEval-S.
 
 ## The six kinds of memory (the taxonomy)
@@ -46,9 +47,9 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 **Body:**
 > Spectral is an embedded memory library for AI agents that skips embeddings and
 > vector databases entirely. It gives an agent six kinds of memory behind one
-> `Brain` handle on a single SQLite file:
+> `Brain` handle over a single local brain folder:
 >
-> - Recall (FTS5 + BM25) — "what do I know about X?"
+> - Recall (FTS5 + BM25, plus deterministic local rerank tiers) — "what do I know about X?"
 > - Recognition — "have I seen this before, and is it new?" — via landmark
 >   fingerprinting (Shazam-style) + winnowed k-grams (MOSS) + cognitive-psych
 >   scoring, returning a familiarity/novelty verdict with the exact features
@@ -56,13 +57,15 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 >   above the noise floor.)
 > - A typed knowledge graph (2-hop, ontology-validated)
 > - Episodic / temporal recall
-> - An adaptive feedback loop — used memories strengthen, unused ones decay
+> - An adaptive feedback loop — used memories strengthen; unused-ness is
+>   tracked, and decay is opt-in (the Archivist), not ambient
 > - Read-time federation across brains (provenance-ranked, visibility-scoped,
->   poisoning-resistant)
+>   resistant to score-flooding)
 >
 > The point is cost and control: recall and recognition make zero model calls
 > (`recognition_token_cost == 0` is structural), so the memory layer is free to
-> query and byte-reproducible, and everything lives in one SQLite file you own.
+> query and byte-reproducible (under a read-only or time-anchored open —
+> see the guardrails), and everything lives in one local folder you own.
 >
 > On LongMemEval-S it reaches 98.6% session-recall — 81.5% end-to-end accuracy
 > (401/492) — across all six memory-question types, embedding-free. It's v0.0.1 and experimental; the retrieval numbers are
@@ -102,3 +105,17 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 - Recognition is strong at near-duplicate/verbatim, **not** a paraphrase matcher.
 - Sybil resistance in an *untrusted* federation is a deployment-trust property,
   not a code guarantee.
+- "Poisoning-resistant" means **score-flood resistant**: RRF over ranks plus a
+  per-child cap. It is not a claim about authorship. Federation members are
+  unauthenticated by default; the sync layer authenticates objects and
+  retractions only under `ImportPolicy::RequireSigned`.
+- A brain is a **folder of SQLite databases** (`memory.db`, `graph.sqlite`,
+  `recognition.db`), not one file, and writes are not atomic across them —
+  never say "a single SQLite file".
+- "Deterministic/byte-reproducible" holds for a read-only or time-anchored
+  open. The default recall path anchors recency to the wall clock and
+  auto-reinforces what it returns, so repeated queries can reorder.
+- "Recall = FTS5 + BM25" understates it: the live path is TACT
+  (fingerprint -> wing -> FTS) plus deterministic reranking. All still $0.
+- "Unused memories decay" is not ambient behaviour: use strengthens, and decay
+  runs only via the opt-in Archivist.

@@ -225,7 +225,22 @@ fn episode_fill(
         if !seen_eps.insert(ep.clone()) {
             continue;
         }
-        if let Ok(mems) = brain.list_memories_by_episode(&ep) {
+        // A storage error here previously vanished into `if let Ok`, turning a
+        // failing episode read into silently incomplete recall. Spreading is
+        // an optional enrichment, so it still degrades rather than aborting —
+        // but the degradation is now visible.
+        let mems = match brain.list_memories_by_episode(&ep) {
+            Ok(mems) => mems,
+            Err(error) => {
+                tracing::warn!(
+                    episode = %ep,
+                    %error,
+                    "associative spreading: episode read failed; results are incomplete"
+                );
+                continue;
+            }
+        };
+        {
             for mem in mems {
                 if existing.contains(&mem.key) || !cand_keys.insert(mem.key.clone()) {
                     continue;
@@ -277,7 +292,22 @@ fn rerank_displace(
         if !seen_eps.insert(ep.clone()) {
             continue;
         }
-        if let Ok(mems) = brain.list_memories_by_episode(&ep) {
+        // A storage error here previously vanished into `if let Ok`, turning a
+        // failing episode read into silently incomplete recall. Spreading is
+        // an optional enrichment, so it still degrades rather than aborting —
+        // but the degradation is now visible.
+        let mems = match brain.list_memories_by_episode(&ep) {
+            Ok(mems) => mems,
+            Err(error) => {
+                tracing::warn!(
+                    episode = %ep,
+                    %error,
+                    "associative spreading: episode read failed; results are incomplete"
+                );
+                continue;
+            }
+        };
+        {
             for mem in mems {
                 if existing.contains(&mem.key) || !cand_keys.insert(mem.key.clone()) {
                     continue;

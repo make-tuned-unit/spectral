@@ -76,8 +76,10 @@ pub struct Memory {
     /// authenticated origin for multi-contributor federation.
     #[serde(default)]
     pub source_brain_id: Option<[u8; 32]>,
-    /// Ed25519 signature over `(source_brain_id, content_hash, created_at,
-    /// visibility)` (see `spectral_core::identity::memory_signing_payload`).
+    /// Ed25519 signature over `(source_brain_id, key, content_hash,
+    /// created_at, visibility)` (see
+    /// `spectral_core::identity::memory_signing_payload_v2`). Binding the key
+    /// is what stops a signed memory being re-served under a different key.
     /// `None` for unsigned/legacy memories. 64 bytes when present.
     #[serde(default)]
     pub signature: Option<Vec<u8>>,
@@ -468,10 +470,31 @@ pub trait MemoryStore: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>>;
 
     /// Full-text search fallback.
+    /// Full-text search with **no** visibility boundary (equivalently a
+    /// `Private` context, which admits every label).
     fn fts_search(
         &self,
         query_words: &[String],
         max_results: usize,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>> {
+        self.fts_search_scoped(
+            query_words,
+            max_results,
+            spectral_core::visibility::Visibility::Private,
+        )
+    }
+
+    /// Full-text search restricted to labels admissible in `visibility`.
+    ///
+    /// The predicate is applied in SQL **before** `LIMIT`, so `max_results` is
+    /// filled from admissible rows. Filtering after the limit lets
+    /// inadmissible rows consume the budget and can return zero hits from a
+    /// store that holds matching admissible content.
+    fn fts_search_scoped(
+        &self,
+        query_words: &[String],
+        max_results: usize,
+        visibility: spectral_core::visibility::Visibility,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>>;
 
     /// Fetch full memory records by ID.
