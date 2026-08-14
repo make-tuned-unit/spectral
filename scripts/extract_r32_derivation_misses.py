@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R30: dump the DERIVATION-half misses the alias table may be authored from.
+"""R32: dump the DERIVATION-half misses the alias table may be authored from.
 
 Split fixed in `query-aliases-prereg-2026-08-13.md`: derivation =
 conversations locomo_{0,2,4,6,8}. This script refuses to emit anything from

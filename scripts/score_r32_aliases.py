@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R30 scorer: split-half paired comparison, gate on the TEST half only.
+"""R32 scorer: split-half paired comparison, gate on the TEST half only.
 
 Reuses score_r24's Wilcoxon (exact <=20 nonzero pairs, normal approx above).
 Split fixed in the prereg: derivation = locomo_{0,2,4,6,8}, test = the rest.

@@ -1,4 +1,9 @@
-# R30 — query-alias vocabulary bridging · **FAIL on the gate, small real transfer** (2026-08-13)
+# R32 — query-alias vocabulary bridging · **FAIL on the gate, small real transfer** (2026-08-13)
+
+> **Renumbering note:** registered under the number "R30"/"R31" on a
+> parallel branch; renumbered R32/R33 on rebase after main's same-numbered
+> rows became visible. Content otherwise unchanged.
+
 
 **$0. Retrieval-only oracle, LoCoMo full N = 1438, `topk_fts`, R19 labels,
 binary `fa5763d`. Preregistered at `71cb543` before any arm ran** —
@@ -76,7 +81,7 @@ frontier is a second modality, as the adjacency mechanism diagnostic argued.
   on a real brain are a different, plausibly stronger use of the same
   channel — this measures generic-English bridging on LoCoMo only.
 - The alias table (committed beside this doc as
-  `r30-aliases-table-2026-08-13.json`) is an experimental artifact fitted to
+  `r32-aliases-table-2026-08-13.json`) is an experimental artifact fitted to
   LoCoMo's derivation half. **It must not ship as a default table.**
 
 ## The table, with its motivations

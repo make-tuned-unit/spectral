@@ -1,6 +1,11 @@
-# R31 — answer-shape matching, priced for $0 · NOT BUILT (2026-08-13)
+# R33 — answer-shape matching, priced for $0 · NOT BUILT (2026-08-13)
 
-**$0, offline re-read of the R30 baseline arm (`a0.jsonl`, full N, `topk_fts`)
+> **Renumbering note:** registered under the number "R30"/"R31" on a
+> parallel branch; renumbered R32/R33 on rebase after main's same-numbered
+> rows became visible. Content otherwise unchanged.
+
+
+**$0, offline re-read of the R32 baseline arm (`a0.jsonl`, full N, `topk_fts`)
 plus the dataset's own labels. No implementation, no run.**
 `scripts/price_answer_shape.py`.
 
@@ -30,7 +35,7 @@ misses**, of which only the shape-bearing ones are addressable: **20 + 41 =
    regardless of boost (the R22 arithmetic);
 2. **distractor competition** — ~13% of every haystack carries the shape,
    so a boost also promotes dozens of non-evidence turns per question (the
-   R30 dilution mechanism, measured 4/23 there).
+   R32 dilution mechanism, measured 4/23 there).
 
 The prespecified house gate for this series is **≥ +2.0pp corpus micro plus
 significance**. A lever whose *perfect* ceiling is +2.85pp, eroded by two
@@ -55,10 +60,10 @@ adjacency run).
 ## Verdict
 
 **NOT BUILT, by its own pricing.** This closes R22's residue: both queued
-$0 ideas are now measured (R30: +1.70pp held-out, FAIL) or priced under the
+$0 ideas are now measured (R32: +1.70pp held-out, FAIL) or priced under the
 gate (this). The $0 lexical/structural family on this corpus is exhausted;
 the frontier is a second modality.
 
 **Refs:** `rrf-composition-result-2026-08-09.md` (R22, which queued it),
-`query-aliases-result-2026-08-13.md` (R30),
+`query-aliases-result-2026-08-13.md` (R32),
 `adjacency-mechanism-diagnostic-2026-08-11.md` (the frontier argument).

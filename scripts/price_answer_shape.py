@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R31 pricing: is the answer-shape signal discriminative BEFORE building it?
+"""R33 pricing: is the answer-shape signal discriminative BEFORE building it?
 
 R22 queued "answer-shape matching" — 'how many' preferring quantity-bearing
 turns — as the one remaining query-conditioned $0 idea. Before implementing a

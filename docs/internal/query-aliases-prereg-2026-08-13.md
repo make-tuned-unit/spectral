@@ -1,4 +1,9 @@
-# R30 — query-alias vocabulary bridging · PREREG (2026-08-13)
+# R32 — query-alias vocabulary bridging · PREREG (2026-08-13)
+
+> **Renumbering note:** registered under the number "R30"/"R31" on a
+> parallel branch; renumbered R32/R33 on rebase after main's same-numbered
+> rows became visible. Content otherwise unchanged.
+
 
 **$0, retrieval-only oracle, LoCoMo full N = 1438, `topk_fts`, R19 labels.
 Registered and committed before any arm runs.**

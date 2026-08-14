@@ -1409,7 +1409,10 @@ Ref: `query-aliases-prereg-2026-08-13.md`, `query-aliases-result-2026-08-13.md`.
 
 ---
 
-## R31 — Answer-shape matching, priced for $0 · NOT BUILT (2026-08-13)
+## R33 — Answer-shape matching, priced for $0 · NOT BUILT (2026-08-13)
+
+> Written as "R31" before main's R31 (accuracy replication) was visible
+> from this machine; renumbered R33 on rebase, content unchanged.
 
 **Offline, from the archived R30 baseline + dataset labels. No code, no run.**
 The signal is REAL — query-conditioned shape (digits/date-words for
@@ -1426,8 +1429,8 @@ Recorded escape hatches: a class-scoped prereg (date-time alone has a +13.1pp
 class-recall ceiling) with its gate declared in advance, or a second admission
 modality — boosting only reorders what admission provides.
 
-**This closes R22's residue.** Both queued $0 ideas are measured (R30) or
-priced under the gate (R31). The $0 lexical/structural family on LoCoMo is
+**This closes R22's residue.** Both queued $0 ideas are measured (R32) or
+priced under the gate (R33). The $0 lexical/structural family on LoCoMo is
 exhausted; the frontier is a second modality.
 
 Ref: `answer-shape-pricing-2026-08-13.md`.
