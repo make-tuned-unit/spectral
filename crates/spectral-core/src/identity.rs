@@ -185,6 +185,30 @@ impl BrainIdentity {
         self.sign(&payload)
     }
 
+    /// Sign a federation object: an attestation over its content address.
+    /// The object hash already covers author, key, content, timestamp,
+    /// visibility, and supersedes, so signing it binds every source field at
+    /// once — see [`federation_object_signing_payload`].
+    pub fn sign_federation_object(&self, object_hash: &str) -> Signature {
+        self.sign(&federation_object_signing_payload(object_hash))
+    }
+
+    /// Sign a retraction. The wing is part of the payload because a tombstone
+    /// is wing-scoped: a retraction authorised for one wing must not be
+    /// replayable against another.
+    pub fn sign_federation_tombstone(
+        &self,
+        wing_id: &str,
+        target_hash: &str,
+        ts: &str,
+    ) -> Signature {
+        self.sign(&federation_tombstone_signing_payload(
+            wing_id,
+            target_hash,
+            ts,
+        ))
+    }
+
     /// Returns the brain's unique identifier.
     pub fn brain_id(&self) -> &BrainId {
         &self.brain_id
@@ -241,6 +265,46 @@ pub fn memory_signing_payload(
         buf.extend_from_slice(field.as_bytes());
     }
     buf
+}
+
+/// Domain tag for a federation object attestation.
+pub const FEDERATION_OBJ_SIG_DOMAIN: &[u8] = b"spectral-federation-obj-sig-v1";
+/// Domain tag for a federation retraction (tombstone) attestation.
+pub const FEDERATION_TOMBSTONE_SIG_DOMAIN: &[u8] = b"spectral-federation-tombstone-sig-v1";
+
+fn length_prefixed(domain: &[u8], fields: &[&str]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(domain.len() + fields.iter().map(|f| f.len() + 4).sum::<usize>());
+    buf.extend_from_slice(domain);
+    for field in fields {
+        buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        buf.extend_from_slice(field.as_bytes());
+    }
+    buf
+}
+
+/// Canonical payload for a federation object attestation: `DOMAIN ‖
+/// len(object_hash)‖object_hash`.
+///
+/// Signing the content address rather than the individual fields is what makes
+/// authorship unforgeable here: `object_hash` is computed over the author id
+/// together with every source field, so re-claiming another brain's authorship
+/// changes the hash and invalidates the signature.
+pub fn federation_object_signing_payload(object_hash: &str) -> Vec<u8> {
+    length_prefixed(FEDERATION_OBJ_SIG_DOMAIN, &[object_hash])
+}
+
+/// Canonical payload for a retraction: `DOMAIN ‖ wing ‖ target ‖ ts`, each
+/// length-prefixed. Wing-scoped so a retraction cannot be replayed into a
+/// different wing.
+pub fn federation_tombstone_signing_payload(
+    wing_id: &str,
+    target_hash: &str,
+    ts: &str,
+) -> Vec<u8> {
+    length_prefixed(
+        FEDERATION_TOMBSTONE_SIG_DOMAIN,
+        &[wing_id, target_hash, ts],
+    )
 }
 
 /// Verify a memory contribution's signature.

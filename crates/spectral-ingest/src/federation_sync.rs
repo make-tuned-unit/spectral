@@ -20,6 +20,7 @@ use crate::sqlite_store::SqliteStore;
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use spectral_core::identity::{BrainId, Signature, VerifyingKey};
 
 /// A memory object as it travels on the wire — source fields only. The importer
 /// re-derives all indexes. Content-addressed by [`object_hash`].
@@ -33,6 +34,13 @@ pub struct MemoryObject {
     pub visibility: String,
     /// Prior object-hash this version supersedes (same-author chain), if any.
     pub supersedes: Option<String>,
+    /// Detached Ed25519 attestation over [`object_hash`], from the brain named
+    /// by `author_id`. **Not** part of the content address — the signature
+    /// covers the hash, so including it would be circular, and stripping it
+    /// leaves the hash intact (an [`ImportPolicy`], not the hash, is what
+    /// makes a signature mandatory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<Vec<u8>>,
 }
 
 /// A retraction: itself replicated like any object (OR-Set remove).
@@ -41,6 +49,104 @@ pub struct Tombstone {
     pub target_hash: String,
     pub author_id: Option<[u8; 32]>,
     pub ts: String,
+    /// Detached attestation over `(wing_id, target_hash, ts)`. A tombstone is
+    /// a *destructive* primitive — it hard-deletes the local copy — so this is
+    /// the field that separates a retraction from a remote delete request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<Vec<u8>>,
+}
+
+/// How much an importer trusts the pack it was handed.
+///
+/// This module never resolves keys on its own (see the module docs: identity
+/// and transport belong to the caller), so authentication is expressed as a
+/// policy the caller supplies together with the pack.
+#[derive(Debug, Clone, Default)]
+pub enum ImportPolicy {
+    /// Accept whatever arrives. Authorship and retractions are **not**
+    /// authenticated: anyone who can hand you a pack can claim any
+    /// `author_id` and can retract any object they can name the hash of.
+    /// Only sound when the transport itself authenticates the peer and the
+    /// peer is trusted with delete authority over this wing.
+    #[default]
+    TrustedTransport,
+    /// Require a valid attestation on every object and every tombstone, from
+    /// an author whose `BrainId` is present in `keys`. Anything unsigned,
+    /// mis-signed, or from an unknown author is skipped and counted.
+    RequireSigned {
+        keys: std::collections::HashMap<[u8; 32], VerifyingKey>,
+    },
+}
+
+/// What an import actually did — merged objects plus anything the policy
+/// turned away, so a caller can alert on rejections instead of inferring
+/// silence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[must_use]
+pub struct ImportOutcome {
+    pub merged: usize,
+    pub rejected_objects: usize,
+    pub rejected_tombstones: usize,
+}
+
+impl ImportOutcome {
+    /// True if the policy turned anything away.
+    pub fn had_rejections(&self) -> bool {
+        self.rejected_objects > 0 || self.rejected_tombstones > 0
+    }
+}
+
+fn to_signature(bytes: &[u8]) -> Option<Signature> {
+    let arr: [u8; 64] = bytes.try_into().ok()?;
+    Some(Signature::from_bytes(&arr))
+}
+
+impl ImportPolicy {
+    /// Does this object carry a valid attestation from the author it claims?
+    fn accepts_object(&self, obj: &MemoryObject, object_hash: &str) -> bool {
+        let keys = match self {
+            ImportPolicy::TrustedTransport => return true,
+            ImportPolicy::RequireSigned { keys } => keys,
+        };
+        let (Some(author), Some(sig_bytes)) = (obj.author_id, obj.signature.as_deref()) else {
+            return false;
+        };
+        let (Some(vk), Some(sig)) = (keys.get(&author), to_signature(sig_bytes)) else {
+            return false;
+        };
+        // `verify` re-derives the BrainId from the key, so a key registered
+        // under the wrong id cannot vouch for it.
+        spectral_core::identity::verify(
+            &BrainId::from_bytes(author),
+            vk,
+            &spectral_core::identity::federation_object_signing_payload(object_hash),
+            &sig,
+        )
+    }
+
+    /// Does this retraction carry a valid attestation for this wing?
+    fn accepts_tombstone(&self, wing_id: &str, t: &Tombstone) -> bool {
+        let keys = match self {
+            ImportPolicy::TrustedTransport => return true,
+            ImportPolicy::RequireSigned { keys } => keys,
+        };
+        let (Some(author), Some(sig_bytes)) = (t.author_id, t.signature.as_deref()) else {
+            return false;
+        };
+        let (Some(vk), Some(sig)) = (keys.get(&author), to_signature(sig_bytes)) else {
+            return false;
+        };
+        spectral_core::identity::verify(
+            &BrainId::from_bytes(author),
+            vk,
+            &spectral_core::identity::federation_tombstone_signing_payload(
+                wing_id,
+                &t.target_hash,
+                &t.ts,
+            ),
+            &sig,
+        )
+    }
 }
 
 /// A pack for one shared wing — the "have you got these objects" payload the
@@ -135,6 +241,12 @@ pub fn ensure_sync_tables(store: &SqliteStore) -> Result<()> {
         "ALTER TABLE shared_wing_members ADD COLUMN supersedes TEXT",
         [],
     );
+    // Attestations are persisted so a relayed object (A→B→C) keeps the
+    // authorship proof C needs; without this, every hop would strip the
+    // signature and only a direct peer could ever verify anything.
+    let _ = conn.execute("ALTER TABLE shared_wing_members ADD COLUMN sig BLOB", []);
+    let _ = conn.execute("ALTER TABLE sync_tombstones ADD COLUMN sig BLOB", []);
+    let _ = conn.execute("ALTER TABLE sync_tombstones ADD COLUMN author_id BLOB", []);
     Ok(())
 }
 
@@ -155,6 +267,7 @@ fn object_for_key(store: &SqliteStore, mem_key: &str) -> Result<Option<MemoryObj
                     created_at: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                     visibility: r.get(4)?,
                     supersedes: None,
+                    signature: None,
                 })
             },
         )
@@ -214,7 +327,7 @@ pub fn export_pack(store: &SqliteStore, wing_id: &str) -> Result<Pack> {
     let objects = {
         let mut stmt = conn.prepare(
             "SELECT s.object_hash, COALESCE(s.orig_key, s.mem_key), s.supersedes,
-                    m.content, m.source_brain_id, m.created_at, m.visibility
+                    m.content, m.source_brain_id, m.created_at, m.visibility, s.sig
              FROM shared_wing_members s
              JOIN memories m ON m.key = s.mem_key
              WHERE s.wing_id = ?1
@@ -231,6 +344,7 @@ pub fn export_pack(store: &SqliteStore, wing_id: &str) -> Result<Pack> {
                 created_at: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
                 visibility: r.get(6)?,
                 supersedes: r.get(2)?,
+                signature: r.get::<_, Option<Vec<u8>>>(7)?,
             };
             Ok((expected_hash, obj))
         })?;
@@ -246,13 +360,16 @@ pub fn export_pack(store: &SqliteStore, wing_id: &str) -> Result<Pack> {
         objects
     };
     let tombstones = {
-        let mut stmt =
-            conn.prepare("SELECT target_hash, ts FROM sync_tombstones WHERE wing_id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT target_hash, ts, author_id, sig FROM sync_tombstones WHERE wing_id = ?1",
+        )?;
         let rows = stmt.query_map(rusqlite::params![wing_id], |r| {
+            let author: Option<Vec<u8>> = r.get(2)?;
             Ok(Tombstone {
                 target_hash: r.get(0)?,
-                author_id: None,
+                author_id: author.and_then(|v| v.try_into().ok()),
                 ts: r.get(1)?,
+                signature: r.get::<_, Option<Vec<u8>>>(3)?,
             })
         })?;
         rows.filter_map(Result::ok).collect()
@@ -270,17 +387,54 @@ pub fn export_pack(store: &SqliteStore, wing_id: &str) -> Result<Pack> {
 /// shared into several wings still maps to one local row (`id = object_hash`
 /// dedups). FTS re-indexing happens via the memories AFTER-INSERT trigger.
 /// Returns the number of new objects merged.
+///
+/// **Trust:** this entry point applies [`ImportPolicy::TrustedTransport`] —
+/// authorship and retractions are taken on faith, so the caller's transport
+/// must authenticate the peer and the peer must be trusted with delete
+/// authority over this wing (a tombstone hard-deletes the local copy). Use
+/// [`import_pack_with_policy`] with [`ImportPolicy::RequireSigned`] when the
+/// peer is not trusted to that degree.
 pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
+    Ok(import_pack_with_policy(store, pack, &ImportPolicy::TrustedTransport)?.merged)
+}
+
+/// Merge a pack under an explicit trust policy. See [`import_pack`] for the
+/// merge semantics and [`ImportPolicy`] for what each policy admits.
+pub fn import_pack_with_policy(
+    store: &SqliteStore,
+    pack: &Pack,
+    policy: &ImportPolicy,
+) -> Result<ImportOutcome> {
     ensure_sync_tables(store)?;
+    let mut outcome = ImportOutcome::default();
     let mut merged = 0usize;
+    // Authenticate BEFORE anything is written: a rejected tombstone must not
+    // even suppress the object it targets (below), or a forged retraction
+    // would still deny the content without deleting it.
+    let admitted_tombstones: Vec<&Tombstone> = pack
+        .tombstones
+        .iter()
+        .filter(|t| {
+            let ok = policy.accepts_tombstone(&pack.wing_id, t);
+            if !ok {
+                tracing::warn!(
+                    wing = %pack.wing_id,
+                    target = %t.target_hash,
+                    author = %author_short(&t.author_id),
+                    "rejected an unauthenticated retraction"
+                );
+            }
+            ok
+        })
+        .collect();
+    outcome.rejected_tombstones = pack.tombstones.len() - admitted_tombstones.len();
     // Re-derive classification locally, exactly as native ingest does — the
     // design's "ship source, re-derive on import" rule. Wing/hall/signal are
     // corpus/config-relative and are never shipped in the pack.
     let ingest_cfg = crate::ingest::IngestConfig::default();
     // Hashes this pack retracts — an object and its tombstone can ride in the same
     // pack, and the tombstone must win regardless of loop order.
-    let pack_retracted: std::collections::HashSet<&str> = pack
-        .tombstones
+    let pack_retracted: std::collections::HashSet<&str> = admitted_tombstones
         .iter()
         .map(|t| t.target_hash.as_str())
         .collect();
@@ -300,11 +454,21 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
             )?;
             let mut man_stmt = tx.prepare(
                 "INSERT OR IGNORE INTO shared_wing_members
-                    (wing_id, object_hash, mem_key, orig_key, supersedes)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                    (wing_id, object_hash, mem_key, orig_key, supersedes, sig)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for obj in &pack.objects {
                 let oh = obj.object_hash();
+                if !policy.accepts_object(obj, &oh) {
+                    tracing::warn!(
+                        wing = %pack.wing_id,
+                        key = %obj.key,
+                        author = %author_short(&obj.author_id),
+                        "rejected an object with absent or invalid authorship proof"
+                    );
+                    outcome.rejected_objects += 1;
+                    continue;
+                }
                 // A tombstone dominates: skip an object retracted in this pack or
                 // already retracted locally. Otherwise re-importing an object from
                 // a peer that hasn't seen the tombstone resurrects it — the memory
@@ -336,6 +500,7 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
                         existing_key,
                         obj.key,
                         obj.supersedes,
+                        obj.signature,
                     ])?;
                     continue;
                 }
@@ -387,14 +552,26 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
                     local_key,
                     obj.key,
                     obj.supersedes,
+                    obj.signature,
                 ])?;
             }
         }
         // Apply the pack's tombstones inside the same transaction (was: after
         // commit, as separate autocommits — a crash between left objects merged
-        // and retractions unapplied).
-        for t in &pack.tombstones {
+        // and retractions unapplied). Only policy-admitted retractions reach
+        // here; the rejected ones were counted and logged above.
+        for t in &admitted_tombstones {
             apply_tombstone_tx(&tx, &pack.wing_id, &t.target_hash)?;
+            tx.execute(
+                "UPDATE sync_tombstones SET author_id = ?3, sig = ?4
+                 WHERE wing_id = ?1 AND target_hash = ?2",
+                rusqlite::params![
+                    pack.wing_id,
+                    t.target_hash,
+                    t.author_id.map(|a| a.to_vec()),
+                    t.signature,
+                ],
+            )?;
         }
         tx.commit()?;
     }
@@ -402,7 +579,8 @@ pub fn import_pack(store: &SqliteStore, pack: &Pack) -> Result<usize> {
     // methods), so the wing read-cache would otherwise keep serving pre-import
     // rows — or a tombstoned row that was just deleted.
     store.invalidate_wing_cache();
-    Ok(merged)
+    outcome.merged = merged;
+    Ok(outcome)
 }
 
 /// Retract an object from a shared wing (OR-Set remove): record the tombstone,
@@ -613,6 +791,7 @@ pub fn wings_for_keys(
 mod tests {
     use super::*;
     use crate::MemoryStore; // fts_search (trait method)
+    use spectral_core::identity::BrainIdentity;
 
     fn insert_local(store: &SqliteStore, key: &str, content: &str, author: Option<[u8; 32]>) {
         let conn = store.conn();
@@ -940,6 +1119,7 @@ mod tests {
             created_at: "2026/01/01 (Thu) 10:00".into(),
             visibility: "team".into(),
             supersedes: None,
+            signature: None,
         };
         let o2 = MemoryObject {
             key: "policy".into(),
@@ -948,6 +1128,7 @@ mod tests {
             created_at: "2026/01/01 (Thu) 10:00".into(),
             visibility: "team".into(),
             supersedes: None,
+            signature: None,
         };
         let pack = Pack {
             wing_id: "team".into(),
@@ -1045,5 +1226,179 @@ mod tests {
             "wing-a's tombstone destroyed the copy wing-b still shares"
         );
         assert!(pack_b2.objects[0].content.contains("rotate creds"));
+    }
+
+    // ---- R-08: authorship and retraction authentication -------------------
+    //
+    // This module is documented as never seeing keys, so authentication is a
+    // POLICY the caller supplies: `TrustedTransport` keeps the historical
+    // behaviour (and names the assumption it makes), while `RequireSigned`
+    // resolves the claimed author to a key and rejects anything that does not
+    // verify. Both directions are pinned below.
+
+    fn signed_object(id: &BrainIdentity, key: &str, content: &str) -> MemoryObject {
+        let mut obj = MemoryObject {
+            key: key.into(),
+            content: content.into(),
+            author_id: Some(*id.brain_id().as_bytes()),
+            created_at: "2026/01/01 (Thu) 10:00".into(),
+            visibility: "team".into(),
+            supersedes: None,
+            signature: None,
+        };
+        obj.signature = Some(id.sign_federation_object(&obj.object_hash()).to_bytes().to_vec());
+        obj
+    }
+
+    fn keyring(ids: [&BrainIdentity; 1]) -> ImportPolicy {
+        let mut keys = std::collections::HashMap::new();
+        for id in ids {
+            keys.insert(*id.brain_id().as_bytes(), *id.verifying_key());
+        }
+        ImportPolicy::RequireSigned { keys }
+    }
+
+    /// An attacker cannot claim another brain's authorship: the object hash
+    /// binds `author_id`, so a forged claim has no valid signature under the
+    /// key the victim's `BrainId` resolves to.
+    #[tokio::test]
+    async fn forged_authorship_is_rejected_under_require_signed() {
+        let victim = BrainIdentity::generate();
+        let attacker = BrainIdentity::generate();
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        // Attacker signs with its OWN key but claims the victim authored it.
+        let mut forged = signed_object(&attacker, "advice", "wire the funds to 12345");
+        forged.author_id = Some(*victim.brain_id().as_bytes());
+
+        let pack = Pack {
+            wing_id: "team".into(),
+            objects: vec![forged],
+            tombstones: vec![],
+        };
+        let outcome = import_pack_with_policy(&store, &pack, &keyring([&victim])).unwrap();
+        assert_eq!(outcome.merged, 0, "forged authorship was merged");
+        assert_eq!(outcome.rejected_objects, 1);
+    }
+
+    /// An unauthenticated tombstone is a remote hard-delete primitive: under
+    /// `RequireSigned` an unsigned retraction must not destroy a local row.
+    #[tokio::test]
+    async fn unsigned_tombstone_cannot_delete_under_require_signed() {
+        let owner = BrainIdentity::generate();
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        let obj = signed_object(&owner, "runbook", "the deploy runbook lives in notion");
+        let oh = obj.object_hash();
+        let pack = Pack {
+            wing_id: "team".into(),
+            objects: vec![obj],
+            tombstones: vec![],
+        };
+        assert_eq!(
+            import_pack_with_policy(&store, &pack, &keyring([&owner]))
+                .unwrap()
+                .merged,
+            1
+        );
+
+        // An unsigned retraction of that object, from nobody in particular.
+        let attack = Pack {
+            wing_id: "team".into(),
+            objects: vec![],
+            tombstones: vec![Tombstone {
+                target_hash: oh.clone(),
+                author_id: None,
+                ts: "2026/01/02 (Fri) 10:00".into(),
+                signature: None,
+            }],
+        };
+        let outcome = import_pack_with_policy(&store, &attack, &keyring([&owner])).unwrap();
+        assert_eq!(outcome.rejected_tombstones, 1);
+
+        let still_there: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE id = ?1",
+                rusqlite::params![oh],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            still_there, 1,
+            "an unauthenticated tombstone hard-deleted a local memory"
+        );
+    }
+
+    /// The happy path still works: a properly signed object merges, and a
+    /// properly signed retraction from the same author still retracts.
+    #[tokio::test]
+    async fn signed_object_and_signed_tombstone_still_apply() {
+        let owner = BrainIdentity::generate();
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        let obj = signed_object(&owner, "runbook", "the deploy runbook lives in notion");
+        let oh = obj.object_hash();
+        let ts = "2026/01/02 (Fri) 10:00";
+        let mut tomb = Tombstone {
+            target_hash: oh.clone(),
+            author_id: Some(*owner.brain_id().as_bytes()),
+            ts: ts.into(),
+            signature: None,
+        };
+        tomb.signature = Some(owner.sign_federation_tombstone("team", &oh, ts).to_bytes().to_vec());
+
+        let pack = Pack {
+            wing_id: "team".into(),
+            objects: vec![obj],
+            tombstones: vec![],
+        };
+        let policy = keyring([&owner]);
+        assert_eq!(
+            import_pack_with_policy(&store, &pack, &policy).unwrap().merged,
+            1
+        );
+
+        let retract = Pack {
+            wing_id: "team".into(),
+            objects: vec![],
+            tombstones: vec![tomb],
+        };
+        let outcome = import_pack_with_policy(&store, &retract, &policy).unwrap();
+        assert_eq!(outcome.rejected_tombstones, 0);
+        let gone: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE id = ?1",
+                rusqlite::params![oh],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gone, 0, "a correctly signed retraction did not apply");
+    }
+
+    /// `TrustedTransport` is the documented legacy behaviour — unsigned packs
+    /// still merge. This is pinned so the trust assumption is a deliberate,
+    /// visible choice rather than an accident of the default.
+    #[tokio::test]
+    async fn trusted_transport_still_accepts_unsigned_packs() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let pack = Pack {
+            wing_id: "team".into(),
+            objects: vec![MemoryObject {
+                key: "note".into(),
+                content: "an unsigned legacy object".into(),
+                author_id: None,
+                created_at: "2026/01/01 (Thu) 10:00".into(),
+                visibility: "team".into(),
+                supersedes: None,
+                signature: None,
+            }],
+            tombstones: vec![],
+        };
+        let outcome =
+            import_pack_with_policy(&store, &pack, &ImportPolicy::TrustedTransport).unwrap();
+        assert_eq!(outcome.merged, 1);
+        assert_eq!(outcome.rejected_objects, 0);
     }
 }
