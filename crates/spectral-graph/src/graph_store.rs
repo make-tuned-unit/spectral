@@ -454,7 +454,7 @@ impl GraphStore {
                    GROUP BY from_id, predicate
                    HAVING COUNT(*) > 1
                )
-             ORDER BY from_id, predicate, asserted_at",
+             ORDER BY from_id, predicate, asserted_at, rowid",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((

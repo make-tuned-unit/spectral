@@ -292,6 +292,14 @@ pub fn score_candidates(
             .partial_cmp(&a.weight)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.feature.cmp(&b.feature))
+            // `acc` is a HashMap, so its iteration order is randomly seeded.
+            // Two memories sharing a pair hash yield Evidence rows with equal
+            // `weight` (doc frequency is per-hash) AND equal `feature`, so
+            // without a total order the stable sort preserves that random
+            // order and the `truncate` below drops a nondeterministic subset
+            // of the audit trail. `traces` above already tiebreaks on
+            // memory_id for the same reason.
+            .then_with(|| a.memory_id.cmp(&b.memory_id))
     });
     evidence.truncate(config.max_evidence);
     traces.truncate(config.max_traces);

@@ -1868,7 +1868,7 @@ impl MemoryStore for SqliteStore {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let sql = format!(
                 "SELECT {MEMORY_COLUMNS} FROM memories WHERE wing = ?1 AND signal_score >= ?2
-                 ORDER BY signal_score DESC"
+                 ORDER BY signal_score DESC, id"
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![wing, min_signal], memory_from_row)?;
@@ -2057,7 +2057,7 @@ impl MemoryStore for SqliteStore {
                         let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
                         let sql = format!(
                             "SELECT {MEMORY_COLUMNS} FROM memories WHERE wing = ?1
-                             ORDER BY signal_score DESC"
+                             ORDER BY signal_score DESC, id"
                         );
                         let mut stmt = conn.prepare(&sql)?;
                         let rows =
@@ -2963,7 +2963,7 @@ impl MemoryStore for SqliteStore {
         Box::pin(async move {
             let conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let sql = format!(
-                "SELECT {MEMORY_COLUMNS} FROM memories WHERE episode_id = ?1 ORDER BY created_at"
+                "SELECT {MEMORY_COLUMNS} FROM memories WHERE episode_id = ?1 ORDER BY created_at, id"
             );
             let mut stmt = conn.prepare(&sql)?;
             let mems = stmt
@@ -4175,7 +4175,7 @@ impl MemoryStore for SqliteStore {
                 let mut stmt = conn.prepare(
                     "SELECT source_key, target_key, consolidated_at
                      FROM consolidation_edges WHERE target_key = ?1
-                     ORDER BY consolidated_at DESC",
+                     ORDER BY consolidated_at DESC, source_key, target_key",
                 )?;
                 let rows = stmt.query_map(params![target], |row| {
                     Ok(ConsolidationEdge {
@@ -4191,7 +4191,7 @@ impl MemoryStore for SqliteStore {
                 let mut stmt = conn.prepare(
                     "SELECT source_key, target_key, consolidated_at
                      FROM consolidation_edges
-                     ORDER BY consolidated_at DESC",
+                     ORDER BY consolidated_at DESC, source_key, target_key",
                 )?;
                 let rows = stmt.query_map([], |row| {
                     Ok(ConsolidationEdge {
@@ -5077,6 +5077,72 @@ mod tests {
     }
 
     // ── Wing cache tests ─────────────────────────────────────────────
+
+    /// R-06/R-13/R-16: every ORDER BY that feeds a truncation must carry a
+    /// unique tiebreak, or SQLite is free to return equal-ranked rows in any
+    /// order and the selected subset changes between runs/query plans. These
+    /// are the sites the review found still untied after the R17/R18 sweep.
+    #[tokio::test]
+    async fn tied_orderings_are_deterministic() {
+        // Identical signal scores in one wing, identical created_at in one
+        // episode — the exact tie the tiebreaks exist for.
+        let build = || async {
+            let store = SqliteStore::open_in_memory().unwrap();
+            let ep = Episode {
+                id: "ep-tie".into(),
+                started_at: "2023-06-15 10:00:00".into(),
+                ended_at: "2023-06-15 10:30:00".into(),
+                memory_count: 8,
+                wing: "general".into(),
+                summary_preview: None,
+            };
+            store.write_episode(&ep).await.unwrap();
+            for i in 0..8 {
+                let mut m = make_mem(&format!("tie{i}"), &format!("tie-key-{i}"), "general");
+                m.signal_score = 0.5; // all equal
+                m.created_at = Some("2023-06-15 10:00:00".into()); // all equal
+                m.episode_id = Some("ep-tie".into());
+                store.write(&m, &[]).await.unwrap();
+            }
+            store
+        };
+
+        let a = build().await;
+        let b = build().await;
+
+        let wing_a: Vec<String> = a
+            .list_wing_memories("general", 0.0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        let wing_b: Vec<String> = b
+            .list_wing_memories("general", 0.0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(wing_a, wing_b, "tied wing ordering is not deterministic");
+        let mut sorted = wing_a.clone();
+        sorted.sort();
+        assert_eq!(wing_a, sorted, "tied wing ordering is not the id order");
+
+        let ep_a: Vec<String> = a
+            .list_memories_by_episode("ep-tie")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        let mut ep_sorted = ep_a.clone();
+        ep_sorted.sort();
+        assert_eq!(
+            ep_a, ep_sorted,
+            "same-timestamp episode ordering is not tiebroken by id"
+        );
+    }
 
     fn make_mem(id: &str, key: &str, wing: &str) -> Memory {
         Memory {
