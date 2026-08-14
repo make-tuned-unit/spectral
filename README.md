@@ -44,7 +44,7 @@ free to query:
 | **Relational** | "How does X relate to Y?" | Typed knowledge graph with ontology validation and 2-hop traversal | **$0**, deterministic |
 | **Episodic / temporal** | "What happened around then?" | Session episodes + time-anchored recency ranking and decay | **$0**, deterministic |
 | **Adaptive** | "What matters *now*?" | Use-driven reinforcement, disuse decay, and lift-based anticipation (the feedback loop below) | **$0**, deterministic |
-| **Federated** | "What do *we* collectively know?" | Read-time fan-out across brains, provenance-ranked, visibility-scoped, poisoning-resistant | **$0**, deterministic |
+| **Federated** | "What do *we* collectively know?" | Read-time fan-out across brains, provenance-ranked, visibility-scoped, score-flood resistant (RRF + per-member cap) | **$0**, deterministic |
 
 Vector databases answer the first row well and struggle with the rest —
 retrieving a fact by embedding similarity gives you neither the two-hop chain
@@ -142,7 +142,10 @@ cheap:
 - **Latency:** sub-millisecond recall on 1k memories; ~15–21 ms on
   LongMemEval-scale haystacks (the adaptive write-back is batched, and optionally
   moved off the recall path entirely).
-- **Storage:** a single SQLite file you own — copy it, back it up, delete it.
+- **Storage:** a folder of SQLite databases you own (`memory.db`,
+  `graph.sqlite`, `recognition.db`) — copy it, back it up, delete it. Note the
+  three databases have no shared transaction, so a crash mid-write can leave a
+  memory recallable but not yet recognizable (`repair_derivations` reconciles).
   Local-first by construction, so "retain control of all your data" is the
   default, not a setting.
 

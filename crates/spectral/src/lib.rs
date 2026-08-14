@@ -244,10 +244,16 @@ impl std::fmt::Debug for Brain {
 impl Brain {
     /// Open or create a brain at the given path with sensible defaults.
     ///
-    /// Uses `<path>/memory.db` for graph, memories, and full-text indexes,
-    /// plus `<path>/recognition.db` for the recognition sidecar,
+    /// A brain is a *directory*, not a single file. It uses
+    /// `<path>/memory.db` for memories and full-text indexes,
+    /// `<path>/graph.sqlite` for the entity/knowledge graph, and
+    /// `<path>/recognition.db` for the recognition sidecar, plus
     /// `<path>/ontology.toml` if present (empty ontology otherwise),
     /// default wing/hall rules, and no LLM client.
+    ///
+    /// These are separate SQLite databases with **no cross-database
+    /// transaction**: see
+    /// [`RememberResult::is_fully_derived`](spectral_graph::brain::RememberResult::is_fully_derived).
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         BrainBuilder::new()
             .data_dir(path.as_ref())
