@@ -1448,3 +1448,17 @@ priced under the gate (R33). The $0 lexical/structural family on LoCoMo is
 exhausted; the frontier is a second modality.
 
 Ref: `answer-shape-pricing-2026-08-13.md`.
+
+---
+
+## R34 — G4 proximity at full N · NULL, refutation stands (2026-08-14)
+
+$0, preregistered before the arm ran, full N=1438, `topk_fts`, vs the R32
+baseline. The sweep's BEST arm (w=0.40): **+0.33pp (+7 turns), p=0.1435 —
+NULL on both clauses.** The prediction ("refutation stands, |Δ|<1.0pp, not
+significant") held in full. First item on R26's "not repaired" list, now
+settled at 5.75× the data. Porter/widening/ACT-R/spreading remain unsettled
+at N=250 — all members of the static-rerank family this series has closed
+from four directions (R22, R26, R32, R33, R34). Proximity stays default-off.
+
+Ref: `g4-proximity-fulln-result-2026-08-14.md`.
