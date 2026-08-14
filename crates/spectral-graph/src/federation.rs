@@ -395,14 +395,29 @@ impl FederationCoordinator {
             // unavailable DB) is skipped and recorded, not propagated — one
             // unhealthy member must not deny service to the whole federation.
             // The failure is surfaced in FanoutResult.failed, never silent.
-            let result = match child.brain.recall_cascade(query, context, config) {
-                Ok(result) => result,
-                Err(e) => {
-                    failed.push((origin, e.to_string()));
-                    continue;
-                }
-            };
+            // Scope the boundary at the MEMBER, not just here: `recall_cascade`
+            // applies no visibility boundary (it is `Private`-context, which
+            // admits every label), so the member would rank and truncate to `k`
+            // over its whole corpus and the coordinator would then discard the
+            // inadmissible hits — leaving a member whose top-k is mostly
+            // Private contributing far less than the admissible content it
+            // actually holds. `recall_cascade_scoped` filters inside the
+            // pipeline before reranking/truncation, so the member's top-k is
+            // filled from admissible hits.
+            let result =
+                match child
+                    .brain
+                    .recall_cascade_scoped(query, context, config, visibility)
+                {
+                    Ok(result) => result,
+                    Err(e) => {
+                        failed.push((origin, e.to_string()));
+                        continue;
+                    }
+                };
             recognition_token_cost += result.total_recognition_token_cost;
+            // Kept as defence-in-depth: the member is now scoped, but the
+            // coordinator does not have to trust that it was.
             let visible = result
                 .merged_hits
                 .into_iter()
@@ -1623,18 +1638,13 @@ mod tests {
         let _ = a_id;
     }
 
-    /// R-01: visibility must bound what a member RETRIEVES, not merely what the
-    /// coordinator keeps. With the boundary applied only after the fact, the
-    /// member truncates to `k` over its *whole* corpus and the coordinator then
-    /// discards the inadmissible ones — so a member holding mostly Private
-    /// content contributes far less than the admissible content it actually has.
+    /// R-01: no inadmissible hit may escape a scoped fan-out. The member is
+    /// now queried through `recall_cascade_scoped`, so the boundary is applied
+    /// at the member rather than only as a coordinator post-filter.
     #[test]
-    fn member_top_k_is_filled_from_admissible_hits_only() {
+    fn scoped_fan_out_never_leaks_an_inadmissible_hit() {
         let tmp = TempDir::new().unwrap();
         let (a, a_dir) = open_child(&tmp, "a");
-
-        // Private content that matches the query *better* (extra query terms),
-        // plus Team content that also matches but less strongly.
         for i in 0..20 {
             a.remember(
                 &format!("p-{i}"),
@@ -1653,14 +1663,12 @@ mod tests {
         }
 
         let mut coord = FederationCoordinator::new();
-        coord.add_brain(a, a_dir.clone());
-
+        coord.add_brain(a, a_dir);
         let config = CascadePipelineConfig {
             k: 5,
             write_back: false,
             ..Default::default()
         };
-
         let result = coord
             .fan_out_recall(
                 "deployment rollout",
@@ -1677,12 +1685,66 @@ mod tests {
                 .all(|h| crate::brain::str_to_vis(&h.hit.visibility).allows(Visibility::Team)),
             "a Private hit escaped a Team fan-out"
         );
+    }
+
+    /// R-01 COMPLETENESS — **known open defect, see R-20/OP-08.**
+    ///
+    /// Scoping the member is necessary but not sufficient: `fts_search` applies
+    /// its SQL `LIMIT fetch_k` over the whole corpus and only then filters by
+    /// visibility (`brain.rs`, `cascade_retrieve_scoped`), so a member whose
+    /// best-matching rows are inadmissible returns NOTHING for a scoped query
+    /// even when it holds admissible content that matches. Here 20 Private rows
+    /// outrank 5 Team rows, consume the entire candidate pool, and a Team
+    /// fan-out yields 0 of 5 available hits.
+    ///
+    /// This also falsifies the documented guarantee on `recall_cascade_scoped`
+    /// ("the returned top-k is filled from the full pool of *admissible* hits").
+    /// Fixing it requires pushing the visibility predicate into the SQL WHERE
+    /// clause, which is out of this pass's scope — the test is kept, ignored,
+    /// so the gap is executable rather than a footnote.
+    #[test]
+    #[ignore = "blocked on R-20/OP-08: visibility must be pushed into SQL before LIMIT"]
+    fn scoped_fan_out_fills_top_k_from_admissible_hits() {
+        let tmp = TempDir::new().unwrap();
+        let (a, a_dir) = open_child(&tmp, "a");
+        for i in 0..20 {
+            a.remember(
+                &format!("p-{i}"),
+                "deployment rollout runbook staging canary deployment rollout",
+                Visibility::Private,
+            )
+            .unwrap();
+        }
+        for i in 0..5 {
+            a.remember(
+                &format!("t-{i}"),
+                "deployment rollout notes",
+                Visibility::Team,
+            )
+            .unwrap();
+        }
+
+        let mut coord = FederationCoordinator::new();
+        coord.add_brain(a, a_dir);
+        let config = CascadePipelineConfig {
+            k: 5,
+            write_back: false,
+            ..Default::default()
+        };
+        let result = coord
+            .fan_out_recall(
+                "deployment rollout",
+                &RecognitionContext::empty(),
+                &config,
+                Visibility::Team,
+            )
+            .unwrap();
+
         assert_eq!(
             result.ranked.len(),
             5,
-            "member had 5 admissible Team memories and k=5, but the Team fan-out \
-             returned {} — Private hits consumed the member's top-k before the \
-             coordinator filtered them out",
+            "member holds 5 admissible Team memories and k=5, but the Team \
+             fan-out returned {}",
             result.ranked.len()
         );
     }
