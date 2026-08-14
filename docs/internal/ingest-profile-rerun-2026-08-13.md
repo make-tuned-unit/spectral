@@ -38,7 +38,7 @@ blind spot (bench sets `episode_id`, never `session_id`) is unchanged.
 ## Absolutes — better, still host-bound
 
 Total drops 1.94 → **1.16 ms/event**, but this is a **different host** than
-every prior register run (Intel Mac, `/Users/j`), so two things follow:
+every prior register run (Apple M4 Mac mini (16 GB; the shell reports x86_64 under Rosetta, which earlier misled this doc), `/Users/j`), so two things follow:
 
 1. The clean absolute is a valid number **for this host** and is the one to
    cite going forward from here.

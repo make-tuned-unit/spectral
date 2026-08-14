@@ -55,7 +55,7 @@ prereg gets committed first.
 
 ## Environment
 
-Different host from all prior register runs (Intel Mac, `/Users/j`). Both
+Different host from all prior register runs (Apple M4 Mac mini (16 GB; the shell reports x86_64 under Rosetta, which earlier misled this doc), `/Users/j`). Both
 binaries built from the same tree and target dir (baseline at `b3375e8`,
 arm = baseline + the tiebreak commit); dataset regenerated on this machine
 with `locomo_to_oracle.py --all`. Paired comparisons are internally valid;

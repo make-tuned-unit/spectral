@@ -95,5 +95,5 @@ why this is written down now.
 ## Environment
 
 Same host and apparatus as `tiebreak-paired-verification-result-2026-08-13.md`
-(Intel Mac, regenerated dataset matching R19 membership 1438/2140, binary
+(Apple M4 Mac mini (16 GB; the shell reports x86_64 under Rosetta, which earlier misled this doc), regenerated dataset matching R19 membership 1438/2140, binary
 `fa5763d`). Arms archived under `~/spectral-local-bench/r30-aliases-2026-08-13/`.

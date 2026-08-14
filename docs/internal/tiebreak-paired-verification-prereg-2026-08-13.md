@@ -71,6 +71,6 @@ DELETE site decides what is *destroyed*.
 ## Environment caveat
 
 Different host than every prior run in the register (previous sessions ran
-under `/Users/jessesharratt`; this machine is an Intel Mac under `/Users/j`).
+under `/Users/jessesharratt`; this machine is an Apple M4 Mac mini (16 GB; the shell reports x86_64 under Rosetta, which earlier misled this doc) under `/Users/j`).
 Paired arms are internally valid (both binaries, one machine); cross-session
 absolute comparisons are not, and none will be made.
