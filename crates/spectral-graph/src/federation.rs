@@ -720,8 +720,20 @@ mod tests {
         );
         assert!(overlap_origins.contains(&a_id) && overlap_origins.contains(&b_id));
 
-        // No LLM cost added by the federation path.
+        // No LLM cost added by the federation path. Asserting the returned
+        // counter alone is near-tautological — it is a hardcoded 0 literal at
+        // its source — so the STRUCTURAL fact is asserted alongside it: the
+        // recall path cannot reach a model because no LLM client is wired
+        // into these brains at all, mirroring
+        // spectral-recognition's c3_default_features_are_inference_free.
         assert_eq!(result.recognition_token_cost, 0);
+        for child in &henry.children {
+            assert!(
+                !child.brain.has_llm_client(),
+                "a federation member has an LLM client wired in; the $0 recall \
+                 claim would no longer be structural"
+            );
+        }
     }
 
     /// Provenance + deterministic tiebreak: every hit carries its origin

@@ -255,53 +255,62 @@ fn concurrent_reads_during_writes() {
 /// or fail. SQLite handles this correctly via WAL file locking.
 ///
 /// This test documents the observed behavior. If it passes, both
-/// instances can coexist. If it panics, the error is documented.
+/// R-24: two `Brain` handles on the same data directory must coexist AND
+/// both writes must land.
+///
+/// This test previously wrapped the second open in a `match` whose Err arm
+/// only `eprintln!`d, so it passed whichever way the code behaved — it could
+/// not fail, and the multi-handle invariant that the storage claims depend on
+/// was untested in either direction. It is now a decided contract, which the
+/// WAL + busy_timeout work (R-10/R-09) is what makes safely assertable: the
+/// two handles genuinely contend here, from separate threads.
 #[test]
 fn concurrent_brain_opens_same_path() {
     let tmp = TempDir::new().unwrap();
 
-    let brain1 = Brain::open(brain_config(&tmp)).unwrap();
+    let brain1 = Arc::new(Brain::open(brain_config(&tmp)).unwrap());
+    let brain2 = Arc::new(
+        Brain::open(brain_config(&tmp))
+            .expect("a second Brain handle on the same data dir must open"),
+    );
 
-    // Attempt to open a second instance on the same path.
-    // LIMITATION: Kuzu may or may not allow this. We test what happens.
-    let brain2_result = Brain::open(brain_config(&tmp));
-
-    match brain2_result {
-        Ok(brain2) => {
-            // Both opened successfully. Verify basic operations work.
-            brain1
-                .remember(
-                    "from-brain1",
-                    "Apollo weather data from instance 1",
+    // Contend for real: both handles write concurrently, rather than the old
+    // open-then-write-sequentially shape that never overlapped.
+    let h1 = {
+        let b = Arc::clone(&brain1);
+        thread::spawn(move || {
+            for i in 0..10 {
+                b.remember(
+                    &format!("from-brain1-{i}"),
+                    "apollo weather data from instance one",
                     Visibility::Private,
                 )
-                .unwrap();
-            brain2
-                .remember(
-                    "from-brain2",
-                    "Apollo weather data from instance 2",
+                .expect("handle 1 write");
+            }
+        })
+    };
+    let h2 = {
+        let b = Arc::clone(&brain2);
+        thread::spawn(move || {
+            for i in 0..10 {
+                b.remember(
+                    &format!("from-brain2-{i}"),
+                    "apollo weather data from instance two",
                     Visibility::Private,
                 )
-                .unwrap();
+                .expect("handle 2 write");
+            }
+        })
+    };
+    h1.join().expect("handle 1 thread panicked");
+    h2.join().expect("handle 2 thread panicked");
 
-            // Both memories should be visible (they share the SQLite file).
-            let r = brain1
-                .recall("apollo weather data from instance", Visibility::Private)
-                .unwrap();
-            // SQLite WAL handles concurrent access, so both should land.
-            // Note: Kuzu graph data may not be shared correctly between
-            // two instances — this only tests the memory store.
+    // Both handles' writes are durable and visible through either handle.
+    for (label, brain) in [("handle 1", &brain1), ("handle 2", &brain2)] {
+        for key in ["from-brain1-9", "from-brain2-9"] {
             assert!(
-                !r.memory_hits.is_empty(),
-                "At least one memory should be visible after concurrent writes"
-            );
-        }
-        Err(e) => {
-            // Second open failed. This is the "fails loudly" case.
-            // Document it but don't panic — this is a known limitation.
-            eprintln!(
-                "LIMITATION: Second Brain::open on same path failed: {e}\n\
-                 This means only one Brain instance can use a data directory at a time."
+                brain.get_memory_by_key(key).unwrap().is_some(),
+                "{label} cannot see {key} after concurrent writes"
             );
         }
     }

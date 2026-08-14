@@ -1817,7 +1817,7 @@ impl MemoryStore for SqliteStore {
         Box::pin(async move {
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let (outcome, stored_wing) = write_memory_in_tx(&tx, &memory, &fingerprints)?;
             tx.commit()?;
 
@@ -1851,7 +1851,7 @@ impl MemoryStore for SqliteStore {
             // the call site: a crash loses the batch, not one event. Probes
             // inside the transaction see earlier writes of the same batch, so
             // intra-batch duplicate keys behave exactly as sequential writes.
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut outcomes = Vec::with_capacity(items.len());
             let mut wings_to_pop: Vec<String> = Vec::new();
             for (memory, fingerprints) in &items {
@@ -2701,7 +2701,7 @@ impl MemoryStore for SqliteStore {
                 return Ok(ForgetReceipt::default());
             };
 
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut receipt = ForgetReceipt {
                 existed: true,
                 ..Default::default()
@@ -3256,7 +3256,7 @@ impl MemoryStore for SqliteStore {
         let conn = self.conn.clone();
         Box::pin(async move {
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             // INSERT OR IGNORE: re-recording the same occurrence is a no-op
             // rather than an error, so a retrying caller cannot duplicate a
             // delivery or reset already-committed outcomes.
@@ -3310,7 +3310,7 @@ impl MemoryStore for SqliteStore {
         let conn = self.conn.clone();
         Box::pin(async move {
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
             // Idempotence gate: if this occurrence was already committed, do
             // nothing at all. Reinforcement is additive, so a second pass would
@@ -3375,7 +3375,7 @@ impl MemoryStore for SqliteStore {
         let conn = self.conn.clone();
         Box::pin(async move {
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let row: Option<(Option<String>, Option<String>)> = tx
                 .query_row(
                     "SELECT committed_at, voided_at FROM turn_events WHERE occurrence_id = ?1",
@@ -3871,7 +3871,7 @@ impl MemoryStore for SqliteStore {
             }
 
             // Atomic truncate-and-rewrite
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
             tx.execute("DELETE FROM co_retrieval_pairs", [])?;
 
@@ -3904,7 +3904,7 @@ impl MemoryStore for SqliteStore {
         let conn = self.conn.clone();
         Box::pin(async move {
             let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let inserted = tx.execute(
                 "INSERT OR IGNORE INTO memory_sessions (memory_id, session_id) VALUES (?1, ?2)",
                 params![memory_id, session_id],

@@ -1210,6 +1210,17 @@ impl Brain {
         self.recognition_degraded
     }
 
+    /// Whether an LLM client is wired into this brain at all.
+    ///
+    /// The "$0, no model call on the recall path" guarantee is structural —
+    /// `llm_client` has exactly one call site, on the *write* path
+    /// (`ingest_text`) — and this accessor lets a test assert the structural
+    /// fact rather than only the reported token counter, which is a hardcoded
+    /// literal and so proves nothing on its own.
+    pub fn has_llm_client(&self) -> bool {
+        self.llm_client.is_some()
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
@@ -2531,6 +2542,7 @@ impl Brain {
                     entities: vec![],
                     triples: vec![],
                     documents: vec![],
+                    truncated: false,
                 },
             });
         }
@@ -2541,9 +2553,13 @@ impl Brain {
         let mut seen_edges: HashSet<(EntityId, EntityId, String)> = HashSet::new();
         let mut seen_docs: HashSet<[u8; 32]> = HashSet::new();
         let mut all_documents = Vec::new();
+        // Any seed hitting its traversal budget makes the merged result
+        // partial, so the flag is sticky across seeds.
+        let mut neighborhood_truncated = false;
 
         for seed in &seed_entities {
             let hood = self.store.neighborhood(seed, 2)?;
+            neighborhood_truncated |= hood.truncated;
             for entity in hood.entities {
                 if all_entity_ids.insert(entity.id) {
                     all_entities.push(entity);
@@ -2584,6 +2600,7 @@ impl Brain {
                 entities: all_entities,
                 triples: all_triples,
                 documents: all_documents,
+                truncated: neighborhood_truncated,
             },
         })
     }

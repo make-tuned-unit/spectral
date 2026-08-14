@@ -97,6 +97,10 @@ pub struct Neighborhood {
     pub triples: Vec<Triple>,
     /// Documents that mention entities in the neighborhood (terminal — not further expanded).
     pub documents: Vec<DocumentNode>,
+    /// True when traversal stopped at a budget rather than exhausting the
+    /// reachable set, so callers can tell a complete neighborhood from a
+    /// clipped one instead of assuming completeness.
+    pub truncated: bool,
 }
 
 /// SQLite-backed knowledge-graph store.
@@ -300,7 +304,7 @@ impl GraphStore {
         agent: Option<&str>,
     ) -> Result<usize, Error> {
         let mut conn = self.lock()?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let from = triple.from.as_bytes().to_vec();
         let to = triple.to.as_bytes().to_vec();
         let now = triple.asserted_at.to_rfc3339();
@@ -369,7 +373,7 @@ impl GraphStore {
         agent: &str,
     ) -> Result<usize, Error> {
         let mut conn = self.lock()?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let from_blob = from.as_bytes().to_vec();
         let keep_blob = keep.as_bytes().to_vec();
 
@@ -416,7 +420,7 @@ impl GraphStore {
     /// Returns the number of assertions reinstated.
     pub fn undo_supersession(&self, superseding_rowid: i64) -> Result<usize, Error> {
         let mut conn = self.lock()?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let reinstated = tx.execute(
             "UPDATE triple
                 SET valid_to = NULL, superseded_by = NULL, superseded_by_agent = NULL
@@ -597,11 +601,25 @@ impl GraphStore {
         Ok(out)
     }
 
+    /// Largest frontier a single BFS hop will expand, and the ceiling on
+    /// accumulated edges. A hub entity at 2 hops can otherwise reach O(E) and
+    /// materialise every edge into memory while holding the graph lock, so a
+    /// single pathological seed stalls every other graph reader and writer.
+    /// Expansion stops at the budget and reports truncation rather than
+    /// silently returning a partial neighborhood.
+    const MAX_FRONTIER: usize = 512;
+    const MAX_TRIPLES: usize = 10_000;
+
     /// BFS up to `max_hops` from a starting entity. Returns visited entities and
     /// the triples that connect them, plus documents mentioning any visited
     /// entity (terminal, capped).
+    ///
+    /// Bounded by [`MAX_FRONTIER`](Self::MAX_FRONTIER) per hop and
+    /// [`MAX_TRIPLES`](Self::MAX_TRIPLES) overall; [`Neighborhood::truncated`]
+    /// reports whether a budget was hit.
     pub fn neighborhood(&self, start: &EntityId, max_hops: u32) -> Result<Neighborhood, Error> {
         let conn = self.lock()?;
+        let mut truncated = false;
         let mut visited = HashSet::new();
         let mut seen_edges: HashSet<(EntityId, EntityId, String)> = HashSet::new();
         let mut all_entities = Vec::new();
@@ -618,7 +636,7 @@ impl GraphStore {
                 break;
             }
             let mut next_frontier = Vec::new();
-            for id in &frontier {
+            'hop: for id in &frontier {
                 for triple in find_triples_directed(&conn, id, true)? {
                     if visited.insert(triple.to) {
                         next_frontier.push(triple.to);
@@ -629,6 +647,12 @@ impl GraphStore {
                     let key = (triple.from, triple.to, triple.predicate.clone());
                     if seen_edges.insert(key) {
                         all_triples.push(triple);
+                    }
+                    if all_triples.len() >= Self::MAX_TRIPLES
+                        || next_frontier.len() >= Self::MAX_FRONTIER
+                    {
+                        truncated = true;
+                        break 'hop;
                     }
                 }
                 for triple in find_triples_directed(&conn, id, false)? {
@@ -642,16 +666,34 @@ impl GraphStore {
                     if seen_edges.insert(key) {
                         all_triples.push(triple);
                     }
+                    if all_triples.len() >= Self::MAX_TRIPLES
+                        || next_frontier.len() >= Self::MAX_FRONTIER
+                    {
+                        truncated = true;
+                        break 'hop;
+                    }
                 }
             }
             frontier = next_frontier;
+        }
+        if truncated {
+            tracing::warn!(
+                start = %start,
+                triples = all_triples.len(),
+                "neighborhood hit its traversal budget; result is truncated"
+            );
         }
 
         // Documents mentioning any visited entity (terminal — not expanded).
         const MAX_DOCUMENTS: usize = 100;
         let mut seen_docs: HashSet<[u8; 32]> = HashSet::new();
         let mut all_documents = Vec::new();
-        'doc_scan: for entity_id in &visited {
+        // `visited` is a HashSet, so iterating it directly made WHICH documents
+        // survive the MAX_DOCUMENTS cap depend on randomly-seeded hash order.
+        // Sort first: same graph, same documents, every run.
+        let mut visited_ordered: Vec<EntityId> = visited.iter().copied().collect();
+        visited_ordered.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        'doc_scan: for entity_id in &visited_ordered {
             for doc in find_mentioning_documents(&conn, entity_id)? {
                 if seen_docs.insert(doc.id) {
                     all_documents.push(doc);
@@ -666,6 +708,7 @@ impl GraphStore {
             entities: all_entities,
             triples: all_triples,
             documents: all_documents,
+            truncated,
         })
     }
 
