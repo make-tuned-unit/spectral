@@ -183,6 +183,7 @@ impl SqliteRecognitionStore {
         // fingerprint tables grow. IO settings only — enrolled rows, hashes,
         // and match results are byte-identical, so recognition output is
         // unchanged.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous  = NORMAL;

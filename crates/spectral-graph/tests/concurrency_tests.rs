@@ -306,3 +306,73 @@ fn concurrent_brain_opens_same_path() {
         }
     }
 }
+
+/// R-10: every SQLite file a Brain opens must run in WAL mode.
+///
+/// `graph.sqlite` previously ran on the default rollback journal while
+/// `memory.db` and `recognition.db` ran WAL. That silently made the two
+/// `PRAGMA wal_checkpoint(TRUNCATE)` calls in `GraphStore::vacuum` no-ops —
+/// the calls the D4 deletion guarantee depends on — and made every graph
+/// write take an EXCLUSIVE lock blocking graph readers.
+#[test]
+fn every_brain_database_runs_in_wal_mode() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    brain
+        .remember("k", "a memory so every store file exists", Visibility::Private)
+        .unwrap();
+    drop(brain);
+
+    for db in ["graph.sqlite", "memory.db", "recognition.db"] {
+        let path = tmp.path().join(db);
+        assert!(path.exists(), "{db} was not created");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            mode.to_lowercase(),
+            "wal",
+            "{db} is in {mode} mode, not WAL — wal_checkpoint on it is a no-op"
+        );
+    }
+}
+
+/// R-09: a second writer must WAIT for the first rather than failing
+/// immediately. SQLite defaults busy_timeout to 0, so without an explicit
+/// timeout the first contention returns SQLITE_BUSY.
+#[test]
+fn a_second_writer_waits_instead_of_failing_busy() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    brain.remember("seed", "seed memory", Visibility::Private).unwrap();
+
+    // Hold a write transaction open on memory.db from an independent
+    // connection, then have the Brain write while it is held.
+    let blocker = rusqlite::Connection::open(tmp.path().join("memory.db")).unwrap();
+    blocker.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let handle = thread::spawn({
+        let dir = tmp.path().to_path_buf();
+        move || {
+            let conn = rusqlite::Connection::open(dir.join("memory.db")).unwrap();
+            conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+            // Would return SQLITE_BUSY instantly with the default timeout of 0.
+            conn.execute(
+                "INSERT INTO memories (id, key, content, visibility, created_at)
+                 VALUES ('x','x','x','private','2026/01/01 (Thu) 10:00')",
+                [],
+            )
+        }
+    });
+
+    thread::sleep(std::time::Duration::from_millis(150));
+    blocker.execute_batch("COMMIT").unwrap();
+
+    let result = handle.join().unwrap();
+    assert!(
+        result.is_ok(),
+        "second writer failed instead of waiting: {result:?}"
+    );
+}

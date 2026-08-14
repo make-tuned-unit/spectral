@@ -110,14 +110,39 @@ impl std::fmt::Debug for GraphStore {
     }
 }
 
+/// How long a connection waits for a competing writer before returning
+/// SQLITE_BUSY. SQLite's default is 0 — the first contention fails outright.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl GraphStore {
     /// Open or create a graph database at the given path. Runs schema creation.
     pub fn open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path)?;
+        // `graph.sqlite` previously ran on SQLite's default rollback journal
+        // while `memory.db` and `recognition.db` ran WAL. Two consequences,
+        // both silent: every graph write took an EXCLUSIVE lock that blocked
+        // graph readers, and the `wal_checkpoint(TRUNCATE)` calls in `vacuum`
+        // — which the D4 deletion guarantee depends on — were no-ops on a
+        // non-WAL file. `journal_mode` is persistent, so an existing DELETE-mode
+        // database is migrated to WAL by this statement on first open.
+        Self::apply_pragmas(&conn)?;
         create_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Connection pragmas shared by every writable open. `busy_timeout` is set
+    /// on read-only handles too: SQLite defaults it to 0, so any contention
+    /// returns SQLITE_BUSY immediately instead of waiting.
+    fn apply_pragmas(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous  = NORMAL;
+             PRAGMA temp_store   = MEMORY;",
+        )?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        Ok(())
     }
 
     /// Open an existing graph database read-only. No DDL runs; writes fail at
@@ -130,6 +155,7 @@ impl GraphStore {
             )));
         }
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -138,6 +164,7 @@ impl GraphStore {
     /// Create an in-memory graph database (useful for tests).
     pub fn in_memory() -> Result<Self, Error> {
         let conn = Connection::open_in_memory()?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         create_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),

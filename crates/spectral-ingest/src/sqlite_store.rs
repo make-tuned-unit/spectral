@@ -180,6 +180,10 @@ impl std::fmt::Debug for SqliteStore {
     }
 }
 
+/// How long a connection waits for a competing writer before returning
+/// SQLITE_BUSY. SQLite's default is 0 — the first contention fails outright.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl SqliteStore {
     /// Compute an adaptive mmap size based on database file size.
     fn compute_mmap_size(db_path: &Path) -> u64 {
@@ -221,6 +225,7 @@ impl SqliteStore {
                      PRAGMA mmap_size  = {mmap_size};
                      PRAGMA query_only = ON;"
                 ))
+                .and_then(|_| c.busy_timeout(BUSY_TIMEOUT))
                 .map(|_| c)
             });
             match opened {
@@ -280,6 +285,10 @@ impl SqliteStore {
              PRAGMA temp_store   = MEMORY;
              PRAGMA mmap_size    = {mmap_size};"
         ))?;
+        // SQLite defaults busy_timeout to 0: without this a second writer —
+        // another Brain handle, or the archivist binary opening memory.db
+        // directly — fails on first contention instead of waiting.
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         let fts_tokenizer = Self::resolve_fts_tokenizer(config);
         Self::init_schema(&conn, fts_tokenizer.as_deref())?;
         Self::migrate_provenance_columns(&conn, fts_tokenizer.as_deref())?;
@@ -336,6 +345,7 @@ impl SqliteStore {
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         let mmap_size = match config.mmap_size {
             Some(explicit) => explicit,
             None => Self::compute_mmap_size(path),
@@ -366,6 +376,7 @@ impl SqliteStore {
     /// Create an in-memory database (useful for tests).
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         let fts_tokenizer = Self::resolve_fts_tokenizer(&SqliteStoreConfig::default());
         Self::init_schema(&conn, fts_tokenizer.as_deref())?;
         Self::migrate_provenance_columns(&conn, fts_tokenizer.as_deref())?;
