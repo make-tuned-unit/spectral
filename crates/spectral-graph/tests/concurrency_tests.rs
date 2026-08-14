@@ -328,7 +328,11 @@ fn every_brain_database_runs_in_wal_mode() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
     brain
-        .remember("k", "a memory so every store file exists", Visibility::Private)
+        .remember(
+            "k",
+            "a memory so every store file exists",
+            Visibility::Private,
+        )
         .unwrap();
     drop(brain);
 
@@ -354,19 +358,24 @@ fn every_brain_database_runs_in_wal_mode() {
 fn a_second_writer_waits_instead_of_failing_busy() {
     let tmp = TempDir::new().unwrap();
     let brain = Brain::open(brain_config(&tmp)).unwrap();
-    brain.remember("seed", "seed memory", Visibility::Private).unwrap();
+    brain
+        .remember("seed", "seed memory", Visibility::Private)
+        .unwrap();
 
     // Hold a write transaction open on memory.db from an independent
     // connection, then have the Brain write while it is held.
     let blocker = rusqlite::Connection::open(tmp.path().join("memory.db")).unwrap();
-    blocker.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    blocker
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
     blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
 
     let handle = thread::spawn({
         let dir = tmp.path().to_path_buf();
         move || {
             let conn = rusqlite::Connection::open(dir.join("memory.db")).unwrap();
-            conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+            conn.busy_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
             // Would return SQLITE_BUSY instantly with the default timeout of 0.
             conn.execute(
                 "INSERT INTO memories (id, key, content, visibility, created_at)

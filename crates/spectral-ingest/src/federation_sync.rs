@@ -1246,7 +1246,11 @@ mod tests {
             supersedes: None,
             signature: None,
         };
-        obj.signature = Some(id.sign_federation_object(&obj.object_hash()).to_bytes().to_vec());
+        obj.signature = Some(
+            id.sign_federation_object(&obj.object_hash())
+                .to_bytes()
+                .to_vec(),
+        );
         obj
     }
 
@@ -1346,7 +1350,12 @@ mod tests {
             ts: ts.into(),
             signature: None,
         };
-        tomb.signature = Some(owner.sign_federation_tombstone("team", &oh, ts).to_bytes().to_vec());
+        tomb.signature = Some(
+            owner
+                .sign_federation_tombstone("team", &oh, ts)
+                .to_bytes()
+                .to_vec(),
+        );
 
         let pack = Pack {
             wing_id: "team".into(),
@@ -1355,7 +1364,9 @@ mod tests {
         };
         let policy = keyring([&owner]);
         assert_eq!(
-            import_pack_with_policy(&store, &pack, &policy).unwrap().merged,
+            import_pack_with_policy(&store, &pack, &policy)
+                .unwrap()
+                .merged,
             1
         );
 

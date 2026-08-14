@@ -320,7 +320,8 @@ pub const FEDERATION_OBJ_SIG_DOMAIN: &[u8] = b"spectral-federation-obj-sig-v1";
 pub const FEDERATION_TOMBSTONE_SIG_DOMAIN: &[u8] = b"spectral-federation-tombstone-sig-v1";
 
 fn length_prefixed(domain: &[u8], fields: &[&str]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(domain.len() + fields.iter().map(|f| f.len() + 4).sum::<usize>());
+    let mut buf =
+        Vec::with_capacity(domain.len() + fields.iter().map(|f| f.len() + 4).sum::<usize>());
     buf.extend_from_slice(domain);
     for field in fields {
         buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
@@ -343,15 +344,8 @@ pub fn federation_object_signing_payload(object_hash: &str) -> Vec<u8> {
 /// Canonical payload for a retraction: `DOMAIN ‖ wing ‖ target ‖ ts`, each
 /// length-prefixed. Wing-scoped so a retraction cannot be replayed into a
 /// different wing.
-pub fn federation_tombstone_signing_payload(
-    wing_id: &str,
-    target_hash: &str,
-    ts: &str,
-) -> Vec<u8> {
-    length_prefixed(
-        FEDERATION_TOMBSTONE_SIG_DOMAIN,
-        &[wing_id, target_hash, ts],
-    )
+pub fn federation_tombstone_signing_payload(wing_id: &str, target_hash: &str, ts: &str) -> Vec<u8> {
+    length_prefixed(FEDERATION_TOMBSTONE_SIG_DOMAIN, &[wing_id, target_hash, ts])
 }
 
 /// Verify a memory contribution's signature.
@@ -378,8 +372,7 @@ pub fn verify_memory_signature(
     visibility: &str,
     sig: &Signature,
 ) -> bool {
-    let v2 =
-        memory_signing_payload_v2(source_brain_id, key, content_hash, created_at, visibility);
+    let v2 = memory_signing_payload_v2(source_brain_id, key, content_hash, created_at, visibility);
     if verify(source_brain_id, public_key, &v2, sig) {
         return true;
     }
@@ -448,12 +441,7 @@ mod memory_sig_tests {
     #[test]
     fn resigning_under_a_different_key_fails() {
         let id = BrainIdentity::generate();
-        let sig = id.sign_memory(
-            "q-refund-policy",
-            "abc123",
-            "2026-07-10T12:00:00Z",
-            "team",
-        );
+        let sig = id.sign_memory("q-refund-policy", "abc123", "2026-07-10T12:00:00Z", "team");
         assert!(verify_memory_signature(
             id.brain_id(),
             id.verifying_key(),

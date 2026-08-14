@@ -180,7 +180,6 @@ impl std::fmt::Debug for SqliteStore {
     }
 }
 
-
 /// SQL rank for a stored visibility label, mirroring `str_to_vis` exactly:
 /// anything unrecognised is Private (rank 0), matching the `_ => Private` arm.
 /// Ordering is Private(0) < Team(1) < Org(2) < Public(3), so

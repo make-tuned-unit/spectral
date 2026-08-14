@@ -1843,8 +1843,12 @@ impl Brain {
                 (stored.content_hash.as_deref(), stored.created_at.as_deref())
             {
                 let sig = crate::ingest_profile::time("sign", || {
-                    self.identity
-                        .sign_memory(&stored.key, content_hash, created_at, &stored.visibility)
+                    self.identity.sign_memory(
+                        &stored.key,
+                        content_hash,
+                        created_at,
+                        &stored.visibility,
+                    )
                 });
                 let sbid = *self.identity.brain_id().as_bytes();
                 if let Err(error) = crate::ingest_profile::time("sig_write", || {
@@ -2126,10 +2130,7 @@ impl Brain {
                 // rather than being filtered down to nothing afterwards.
                 let fts_hits = self
                     .rt
-                    .block_on(
-                        self.memory_store
-                            .fts_search_scoped(&words, k, visibility),
-                    )
+                    .block_on(self.memory_store.fts_search_scoped(&words, k, visibility))
                     .map_err(|e| Error::Schema(e.to_string()))?;
                 let existing: std::collections::HashSet<String> =
                     hits.iter().map(|h| h.key.clone()).collect();
@@ -3346,9 +3347,12 @@ impl Brain {
                 if let (Some(content_hash), Some(created_at)) =
                     (memory.content_hash.as_deref(), memory.created_at.as_deref())
                 {
-                    let signature =
-                        self.identity
-                            .sign_memory(&memory.key, content_hash, created_at, &memory.visibility);
+                    let signature = self.identity.sign_memory(
+                        &memory.key,
+                        content_hash,
+                        created_at,
+                        &memory.visibility,
+                    );
                     let brain_id = *self.identity.brain_id().as_bytes();
                     report.signatures_repaired += self
                         .rt

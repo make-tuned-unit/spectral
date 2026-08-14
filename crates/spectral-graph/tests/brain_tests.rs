@@ -2828,7 +2828,9 @@ fn a_torn_remember_is_detectable_and_repairable() {
     let tmp = TempDir::new().unwrap();
     let content = "the deploy failed with exit 137 during the friday rollout";
     let brain = Brain::open(brain_config(&tmp)).unwrap();
-    let result = brain.remember("incident", content, Visibility::Private).unwrap();
+    let result = brain
+        .remember("incident", content, Visibility::Private)
+        .unwrap();
     assert!(
         result.is_fully_derived(),
         "healthy write reported warnings: {:?}",
@@ -2893,8 +2895,13 @@ fn missing_recognition_sidecar_is_reported_not_silent() {
     let tmp = TempDir::new().unwrap();
     let content = "the deploy failed with exit 137 during the friday rollout";
     let brain = Brain::open(brain_config(&tmp)).unwrap();
-    brain.remember("incident", content, Visibility::Private).unwrap();
-    assert!(!brain.recognition_degraded(), "healthy brain reported degraded");
+    brain
+        .remember("incident", content, Visibility::Private)
+        .unwrap();
+    assert!(
+        !brain.recognition_degraded(),
+        "healthy brain reported degraded"
+    );
     drop(brain);
 
     std::fs::remove_file(tmp.path().join("recognition.db")).unwrap();

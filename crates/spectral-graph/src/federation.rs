@@ -435,22 +435,21 @@ impl FederationCoordinator {
             // actually holds. `recall_cascade_scoped` filters inside the
             // pipeline before reranking/truncation, so the member's top-k is
             // filled from admissible hits.
-            let result =
-                match child
-                    .brain
-                    .recall_cascade_scoped(query, context, config, visibility)
-                {
-                    Ok(result) => result,
-                    Err(e) => {
-                        tracing::warn!(
-                            brain = %origin,
-                            error = %e,
-                            "federation member failed to answer; excluded from this fan-out"
-                        );
-                        failed.push((origin, e.to_string()));
-                        continue;
-                    }
-                };
+            let result = match child
+                .brain
+                .recall_cascade_scoped(query, context, config, visibility)
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    tracing::warn!(
+                        brain = %origin,
+                        error = %e,
+                        "federation member failed to answer; excluded from this fan-out"
+                    );
+                    failed.push((origin, e.to_string()));
+                    continue;
+                }
+            };
             recognition_token_cost += result.total_recognition_token_cost;
             // Kept as defence-in-depth: the member is now scoped, but the
             // coordinator does not have to trust that it was.
