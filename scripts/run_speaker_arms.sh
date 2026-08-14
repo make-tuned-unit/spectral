@@ -9,7 +9,7 @@
 # See docs/internal/speaker-attribution-prereg-2026-08-09.md.
 set -euo pipefail
 
-BIN="${BIN:-/Users/jessesharratt/dev/spectral/target/release/spectral-bench-accuracy}"
+BIN="${BIN:-$(git rev-parse --show-toplevel)/target/release/spectral-bench-accuracy}"
 BENCH="${BENCH:-$HOME/spectral-local-bench}"
 OUT="${OUT:-$BENCH/speaker-2026-08-09}"
 N="${N:-250}"

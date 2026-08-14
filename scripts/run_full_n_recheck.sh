@@ -10,7 +10,7 @@
 # See docs/internal/full-n-recheck-prereg-2026-08-09.md.
 set -euo pipefail
 
-BIN="${BIN:-/Users/jessesharratt/dev/spectral/target/release/spectral-bench-accuracy}"
+BIN="${BIN:-$(git rev-parse --show-toplevel)/target/release/spectral-bench-accuracy}"
 BENCH="${BENCH:-$HOME/spectral-local-bench}"
 OUT="${OUT:-$BENCH/full-n-recheck-2026-08-09}"
 DS="${DS:-$BENCH/locomo_full_answerable_labelled.json}"

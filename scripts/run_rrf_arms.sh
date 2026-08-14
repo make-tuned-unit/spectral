@@ -6,7 +6,7 @@
 # docs/internal/rrf-composition-prereg-2026-08-08.md.
 set -euo pipefail
 
-BIN="${BIN:-/Users/jessesharratt/dev/spectral/target/release/spectral-bench-accuracy}"
+BIN="${BIN:-$(git rev-parse --show-toplevel)/target/release/spectral-bench-accuracy}"
 DS="${DS:-$HOME/spectral-local-bench/locomo_full_answerable_labelled.json}"
 OUT="${OUT:-$HOME/spectral-local-bench/rrf-2026-08-08}"
 N="${N:-250}"
