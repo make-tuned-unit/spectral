@@ -402,14 +402,16 @@ pub fn run_cascade_pipeline_scoped(
     // — only the ones that name a project. `None` reproduces prior behaviour
     // exactly, so an empty context changes nothing.
     let mut candidates = brain
-        .cascade_retrieve_scoped(query, fetch_k, context.focus_wing.as_deref())
+        .cascade_retrieve_scoped(query, fetch_k, context.focus_wing.as_deref(), visibility)
         .map_err(|e| crate::Error::Schema(e.to_string()))?;
 
-    // Visibility boundary: keep only hits whose own label admits this context
-    // (`content >= context`). Applied here — before reranking/truncation, as
-    // recall_topk_fts does — so the visible top-k is filled from the full pool
-    // rather than diluted by filtered-out private hits. A Private context
-    // admits everything, so the unscoped entry point is unaffected.
+    // Visibility boundary. The retrieval above is now scoped *in SQL, before
+    // its LIMIT*, so the candidate pool is filled from admissible rows — this
+    // retain is defence-in-depth over a pool that should already be clean.
+    // (It previously ran against an UNSCOPED pool that had already truncated,
+    // so a brain whose best-matching rows were Private returned nothing.)
+    // A Private context admits everything, so the unscoped entry point is
+    // unaffected.
     candidates.retain(|h| crate::brain::str_to_vis(&h.visibility).allows(visibility));
 
     if candidates.is_empty() {

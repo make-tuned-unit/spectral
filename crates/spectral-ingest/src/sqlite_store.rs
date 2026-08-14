@@ -180,6 +180,26 @@ impl std::fmt::Debug for SqliteStore {
     }
 }
 
+
+/// SQL rank for a stored visibility label, mirroring `str_to_vis` exactly:
+/// anything unrecognised is Private (rank 0), matching the `_ => Private` arm.
+/// Ordering is Private(0) < Team(1) < Org(2) < Public(3), so
+/// `VIS_RANK_SQL >= n` is precisely `content_visibility.allows(context)`.
+pub(crate) const VIS_RANK_SQL: &str =
+    "(CASE m.visibility WHEN 'team' THEN 1 WHEN 'org' THEN 2 WHEN 'public' THEN 3 ELSE 0 END)";
+
+/// Rank of the *context* a caller is reading in. `Private` is 0, which admits
+/// every label — so a Private-context query needs no predicate at all.
+pub(crate) fn visibility_rank(v: spectral_core::visibility::Visibility) -> i64 {
+    use spectral_core::visibility::Visibility as V;
+    match v {
+        V::Private => 0,
+        V::Team => 1,
+        V::Org => 2,
+        V::Public => 3,
+    }
+}
+
 /// How long a connection waits for a competing writer before returning
 /// SQLITE_BUSY. SQLite's default is 0 — the first contention fails outright.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -2102,10 +2122,11 @@ impl MemoryStore for SqliteStore {
         })
     }
 
-    fn fts_search(
+    fn fts_search_scoped(
         &self,
         query_words: &[String],
         max_results: usize,
+        visibility: spectral_core::visibility::Visibility,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<MemoryHit>>> + Send + '_>> {
         // FTS5 MATCH is superlinear in term count and runs under the connection
         // lock, so an unbounded term list stalls the whole store. Cap here — the
@@ -2148,6 +2169,18 @@ impl MemoryStore for SqliteStore {
             .join(" OR ");
         let conn = self.read_conn();
         let fusion = self.fusion;
+        // The visibility predicate lives in SQL, BEFORE the LIMIT. Filtering
+        // after the limit (as the callers used to) means inadmissible rows
+        // consume the candidate budget: a brain whose best-matching rows are
+        // Private returns NOTHING to a Team query even when it holds matching
+        // Team content. A Private context admits every label, so it needs no
+        // predicate and the plan is unchanged for the common case.
+        let vis_rank = visibility_rank(visibility);
+        let vis_clause = if vis_rank == 0 {
+            String::new()
+        } else {
+            format!(" AND {VIS_RANK_SQL} >= {vis_rank}")
+        };
 
         Box::pin(async move {
             if query.is_empty() {
@@ -2168,6 +2201,7 @@ impl MemoryStore for SqliteStore {
                      JOIN memories m ON m.rowid = fts.rowid
                      WHERE memories_fts MATCH ?1
                        AND m.key NOT IN (SELECT source_key FROM consolidation_edges)
+                       {vis_clause}
                      ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5), m.id LIMIT ?2",
                     cols = MEMORY_COLUMNS.replace(", ", ", m."),
                 );
@@ -2199,6 +2233,7 @@ impl MemoryStore for SqliteStore {
                      JOIN memories m ON m.rowid = f.rowid
                      WHERE {table} MATCH ?1
                        AND m.key NOT IN (SELECT source_key FROM consolidation_edges)
+                       {vis_clause}
                      ORDER BY bm25({table}{weights}), m.id LIMIT ?2"
                     );
                     let mut stmt = conn.prepare(&sql)?;

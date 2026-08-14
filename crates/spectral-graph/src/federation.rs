@@ -1705,23 +1705,17 @@ mod tests {
         );
     }
 
-    /// R-01 COMPLETENESS — **known open defect, see R-20/OP-08.**
+    /// R-01 COMPLETENESS (R-20/OP-08 fixed): a scoped fan-out fills its top-k
+    /// from admissible rows.
     ///
-    /// Scoping the member is necessary but not sufficient: `fts_search` applies
-    /// its SQL `LIMIT fetch_k` over the whole corpus and only then filters by
-    /// visibility (`brain.rs`, `cascade_retrieve_scoped`), so a member whose
-    /// best-matching rows are inadmissible returns NOTHING for a scoped query
-    /// even when it holds admissible content that matches. Here 20 Private rows
-    /// outrank 5 Team rows, consume the entire candidate pool, and a Team
-    /// fan-out yields 0 of 5 available hits.
-    ///
-    /// This also falsifies the documented guarantee on `recall_cascade_scoped`
-    /// ("the returned top-k is filled from the full pool of *admissible* hits").
-    /// Fixing it requires pushing the visibility predicate into the SQL WHERE
-    /// clause, which is out of this pass's scope — the test is kept, ignored,
-    /// so the gap is executable rather than a footnote.
+    /// Previously `fts_search` applied its SQL `LIMIT` over the whole corpus
+    /// and only then filtered by visibility, so a member whose best-matching
+    /// rows were inadmissible returned NOTHING for a scoped query even when it
+    /// held matching admissible content — here 20 Private rows outranked 5
+    /// Team rows and a Team fan-out yielded 0 of 5. The predicate now runs in
+    /// SQL before the LIMIT, which is what `recall_cascade_scoped`'s doc
+    /// always claimed.
     #[test]
-    #[ignore = "blocked on R-20/OP-08: visibility must be pushed into SQL before LIMIT"]
     fn scoped_fan_out_fills_top_k_from_admissible_hits() {
         let tmp = TempDir::new().unwrap();
         let (a, a_dir) = open_child(&tmp, "a");

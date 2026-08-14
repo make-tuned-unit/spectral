@@ -2100,12 +2100,26 @@ impl Brain {
         query: &str,
         k: usize,
         wing_hint: Option<&str>,
+        visibility: Visibility,
     ) -> Result<Vec<spectral_ingest::MemoryHit>, Error> {
         let mut hits = self.tact_retrieve_with_k_scoped(query, k, wing_hint)?;
+        // Drop inadmissible TACT hits BEFORE the shortfall check, so they do
+        // not occupy budget that admissible content should fill. Without this,
+        // TACT returning k private hits suppressed the FTS backfill entirely
+        // and a scoped query got nothing.
+        hits.retain(|h| str_to_vis(&h.visibility).allows(visibility));
         if hits.len() < k {
             let words = self.fts_query_words(query);
             if !words.is_empty() {
-                let fts_hits = self.fts_search_direct(&words, k)?;
+                // Scoped in SQL, so the backfill draws from admissible rows
+                // rather than being filtered down to nothing afterwards.
+                let fts_hits = self
+                    .rt
+                    .block_on(
+                        self.memory_store
+                            .fts_search_scoped(&words, k, visibility),
+                    )
+                    .map_err(|e| Error::Schema(e.to_string()))?;
                 let existing: std::collections::HashSet<String> =
                     hits.iter().map(|h| h.key.clone()).collect();
                 for fts_hit in fts_hits {
@@ -2211,12 +2225,20 @@ impl Brain {
         }
 
         let fetch_k = config.k.saturating_mul(config.fetch_mult.max(1));
+        // Scoped in SQL, before the LIMIT. Filtering afterwards let
+        // inadmissible rows consume the candidate budget, so a brain whose
+        // best-matching rows are Private returned NOTHING for a Team query
+        // even when it held matching Team content.
         let mut candidates = self
             .rt
-            .block_on(self.memory_store.fts_search(&words, fetch_k))
+            .block_on(
+                self.memory_store
+                    .fts_search_scoped(&words, fetch_k, visibility),
+            )
             .map_err(|e| Error::Schema(e.to_string()))?;
 
-        // Filter by visibility
+        // Defence in depth: the SQL predicate is authoritative, this catches
+        // any label the rank expression does not know about.
         candidates.retain(|m| str_to_vis(&m.visibility).allows(visibility));
 
         // Unified re-ranking pipeline
