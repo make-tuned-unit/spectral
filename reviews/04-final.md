@@ -193,8 +193,29 @@ project's own process requires, or a product decision.
    is a product decision with a measurable cost. *Recommendation: prereg it if
    the adaptive story needs it; otherwise the corrected copy is sufficient.*
 
+## Coverage — the last baseline gap, now measured
+
+Phase 0 recorded coverage as "not measured (no tool installed)" and no
+reviewer could speak to it. Measured with `cargo llvm-cov --workspace`
+(v0.8.7):
+
+| | lines | regions | functions |
+|---|---:|---:|---:|
+| **Workspace total** | **67.34%** | **66.56%** | **67.69%** |
+
+Most modules sit in the 90s (`policy.rs` 99.6%, `answerability.rs` 98.9%,
+`render.rs` 96.7%). One outlier dominates the shortfall:
+**`spectral/src/lib.rs` at 47.9%** — the public facade. That is where the
+thin coverage is, and it is worth knowing that the crate's *front door* is
+its least-exercised file even though the engines behind it are well covered.
+
+Not turned into a finding here (no reviewer raised it and it is outside the
+approved plan), but it is the obvious next test target, and `cargo llvm-cov`
+in CI would keep the number honest.
+
 ## Final state
 
 Every review finding is now either fixed, or on the three-item list above with
-a stated reason and a recommendation. `cargo audit` is clean, the ignored-test
-count is back to its pre-existing 3, and the suite is at 930 passing.
+a stated reason and a recommendation. `cargo audit` exits 0, coverage is
+measured at 67.34% lines, the ignored-test count is back to its pre-existing
+3, and the suite is at 930 passing.

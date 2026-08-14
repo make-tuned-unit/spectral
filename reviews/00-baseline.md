@@ -68,7 +68,7 @@ Raw log: `reviews/baseline-raw.log`. Run at HEAD `0422094`, 2026-08-14.
 | Build (also typecheck) | `cargo build --workspace --all-targets` | Finished dev profile, 45.79s | 0 |
 | Tests | `cargo test --workspace` | **914 passed, 0 failed, 0 ignored** across 106 test binaries (57 contain 0 tests — bin targets and integration files without unit tests) | 0 |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | clean | 0 |
-| Coverage | — | **NOT MEASURED** — no tool installed (tarpaulin/llvm-cov absent); recorded as a baseline gap, not silently skipped | n/a |
+| Coverage | `cargo llvm-cov --workspace` | Originally **NOT MEASURED** (no tool installed) — measured after the fact at **67.34% lines / 66.56% regions / 67.69% functions**; lowest file is the public facade `spectral/src/lib.rs` at 47.9% | n/a |
 | Dependency audit | `cargo audit` (cargo-audit v0.22.2, installed for this baseline) | **2 vulnerabilities, 1 unmaintained warning** — details below | 1 |
 
 ### Dependency audit detail
