@@ -1383,6 +1383,52 @@ Ref: `adjacency-accuracy-result-2026-08-11.md`.
 
 ---
 
+## R31 — Does adjacency improve ANSWERS, on an instrument that can see? · **PASS** (2026-08-11 prereg, run 2026-08-14)
+
+$0, fully on-device (ollama `qwen25-16k`, actor + judge, temp 0). LoCoMo
+**single-session-user**, **n = 300** sampled at seed 20260811 (IDs committed
+before the run), cascade, single variable. Prereg `3af07e8`; slice chosen for
+a stated *instrument* reason, with adjacency's retrieval gain verified
+equivalent to multi-session's (+19.44 vs +19.77pp) BEFORE the prereg was
+written, and declared the LAST slice.
+
+| metric | B0 | B_ADJ | Δ | p | verdict |
+|---|---:|---:|---:|---:|---|
+| **containment (PRIMARY)** | 42.00% | 48.00% | **+6.00pp** | **0.0175** | **PASS** |
+| local judge (secondary) | 51.33% | 64.00% | +12.67pp | <0.0001 (×3 <0.0003) | + |
+| item recall (graded) | 43.33% | 49.31% | +5.97pp | 0.0286 (**×3 = 0.0858**) | n.s. corrected |
+
+Context 1,437 → 3,266 tok (2.27×). B0 sits mid-band (42%/51%), far from the
+20% floor and 80% ceiling — **this instrument could see**, which is exactly
+what R30's could not do at 11.79%.
+
+**R30's null is explained, not retracted.** R30 measured a real effect on an
+instrument that could not detect it, and said so in its own writeup before
+this run existed. Re-asking the same question with a readable dial answers it:
+**retrieval improvement does convert to answers** at $0 on this slice with a
+local reader. Prediction from the prereg (+3 to +7pp, "genuinely unsure
+whether it clears p < 0.05") — **HIT** at +6.00pp, p = 0.0175. The prediction
+register is now 4 hits / 1 half / 2 misses.
+
+**Disclosed deviation:** the 2026-08-14 crash split the treatment arm across
+two hosts — 46 answers here, 254 re-run with the actor served from the other
+mini over the tailnet (same weights blob, temp 0); B0 ran entirely here. A
+5-prompt probe found 4/5 byte-identical across hosts, 1 divergent on a long
+generation. Since containment rewards verbosity, this was checked rather than
+assumed: the effect holds on both subsets (+4.35pp here on n=46, underpowered;
++6.30pp on mini-2, p = 0.0226) and on the mini-2 subset the treatment arm is
+**not** more verbose than its own baseline (0.99×). Read as
+PASS-with-a-disclosed-deviation; the direction is not in doubt, the exact
+magnitude carries more uncertainty than the p-value alone implies.
+
+**Defaults unchanged.** `SPECTRAL_ADJACENCY` stays off: one slice, one local
+reader, in-sample, at 2.27× context. Nothing here licenses multi-session (the
+blind slice) or a cloud actor.
+
+Ref: `adjacency-accuracy-replication-result-2026-08-11.md`.
+
+---
+
 ## R32 — Query-alias vocabulary bridging · FAIL on the gate, small real transfer (2026-08-13)
 
 > Registered and run as "R30" on a parallel branch before main's R30
