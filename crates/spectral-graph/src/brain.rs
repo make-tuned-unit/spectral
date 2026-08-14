@@ -443,7 +443,28 @@ pub struct RememberResult {
     pub recurrence: Option<Recurrence>,
     /// Non-fatal failures while deriving secondary indexes or metadata. The
     /// primary memory is committed; call `repair_derivations` to reconcile.
+    ///
+    /// Check [`is_fully_derived`](RememberResult::is_fully_derived) rather
+    /// than ignoring this: a `remember` that returns `Ok` with warnings has
+    /// written the memory to `memory.db` but may have failed to enroll it in
+    /// `recognition.db`, leaving content that recalls but does not recognize.
     pub derivation_warnings: Vec<String>,
+}
+
+impl RememberResult {
+    /// True when every secondary index and piece of metadata was derived.
+    ///
+    /// `remember` spans more than one database and is **not** atomic across
+    /// them: the memory row commits first, then density, signature, and
+    /// recognition enrollment follow as separate transactions. A crash or an
+    /// IO failure in between leaves the memory recallable but not
+    /// recognizable. That state is recoverable —
+    /// [`Brain::repair_derivations`](crate::brain::Brain::repair_derivations)
+    /// re-derives everything, including recognition enrollment — but nothing
+    /// detects it for you, so a caller that cares should check this.
+    pub fn is_fully_derived(&self) -> bool {
+        self.derivation_warnings.is_empty()
+    }
 }
 
 /// A detected content recurrence: the incoming memory re-encountered a prior
@@ -871,6 +892,11 @@ pub struct Brain {
     /// and recall paths skip their ambient writes (auto-reinforce,
     /// retrieval-event logging).
     read_only: bool,
+    /// Set when this handle fell back to an empty in-memory recognition index
+    /// because a read-only open found no `recognition.db`. Recognition answers
+    /// are meaningless (always Novel) while true. See
+    /// [`recognition_degraded`](Self::recognition_degraded).
+    recognition_degraded: bool,
     /// When true, the recall write-back (auto-reinforce + event log) is spawned
     /// on the runtime instead of blocked on, so recall returns at its retrieval
     /// floor (~15ms vs ~21ms) without waiting on the ambient bookkeeping.
@@ -1084,6 +1110,21 @@ impl Brain {
         // predates the sidecar gets an empty in-memory index (recognize()
         // returns Novel) rather than a file created in someone else's brain.
         let recognition_db = config.data_dir.join("recognition.db");
+        // A read-only brain whose sidecar is absent falls back to an EMPTY
+        // in-memory index, so `recognize()` answers Novel for content the
+        // brain demonstrably holds. That is a defensible fallback (better
+        // than creating a file inside someone else's brain) but it is a
+        // DEGRADED state, and answering "I have never seen this" when the
+        // truth is "I cannot tell" must not be silent — it is recorded on the
+        // handle and exposed via `recognition_degraded()`.
+        let recognition_degraded = config.read_only && !recognition_db.exists();
+        if recognition_degraded {
+            tracing::warn!(
+                path = %recognition_db.display(),
+                "recognition sidecar missing on a read-only open; recognize() will \
+                 report Novel for everything (see Brain::recognition_degraded)"
+            );
+        }
         let recognition_store = if config.read_only {
             if recognition_db.exists() {
                 spectral_recognition::SqliteRecognitionStore::open_read_only(&recognition_db)
@@ -1134,6 +1175,7 @@ impl Brain {
                 .unwrap_or_else(|| Box::new(crate::activity::DefaultRedactionPolicy::default())),
             recognition,
             read_only: config.read_only,
+            recognition_degraded,
             // Off by default; opt in per-brain via `set_async_writeback`.
             async_writeback: false,
             // Off by default; opt in per-brain via `set_async_turn_delivery`.
@@ -1157,6 +1199,17 @@ impl Brain {
     }
 
     /// Whether this brain was opened read-only.
+    /// True when this handle's recognition index is not the brain's real one.
+    ///
+    /// A read-only open of a brain with no `recognition.db` substitutes an
+    /// empty in-memory index, so `recognize()` reports `Novel` for content the
+    /// brain actually holds. Callers that act on a novelty verdict — dedup,
+    /// "have I seen this?", ingestion gating — must treat a degraded handle as
+    /// "unknown", not as "new".
+    pub fn recognition_degraded(&self) -> bool {
+        self.recognition_degraded
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
