@@ -126,6 +126,19 @@ pub struct MergePolicy {
     /// **Defaults to [`DEFAULT_PER_CHILD_CAP`]** (`Some(20)`); set `None` for an
     /// uncapped, fully-trusted federation.
     pub per_child_cap: Option<usize>,
+    /// Contributor grant set. When `Some`, every hit must carry a signature
+    /// that verifies against the key registered for its `source_brain_id`
+    /// (see [`Brain::verify_hit`](crate::brain::Brain::verify_hit)); hits that
+    /// are unsigned, mis-signed, or from an unregistered brain are dropped
+    /// before fusion and counted in [`FanoutResult::unverified`].
+    ///
+    /// `None` (the default) keeps the historical behaviour: provenance is
+    /// self-asserted origin metadata, ranked but never authenticated. The
+    /// registry is supplied by the caller because a `BrainId` is
+    /// `blake3(public_key)` and cannot be inverted — keys must come from out
+    /// of band, which is exactly the "contributor grant set" the module docs
+    /// have always referred to.
+    pub grants: Option<HashMap<[u8; 32], spectral_core::identity::VerifyingKey>>,
 }
 
 impl Default for MergePolicy {
@@ -133,6 +146,7 @@ impl Default for MergePolicy {
         Self {
             fusion: FusionMethod::Rrf { k: DEFAULT_RRF_K },
             per_child_cap: Some(DEFAULT_PER_CHILD_CAP),
+            grants: None,
         }
     }
 }
@@ -146,6 +160,7 @@ impl MergePolicy {
         Self {
             fusion: FusionMethod::RawScore,
             per_child_cap: None,
+            grants: None,
         }
     }
 }
@@ -246,6 +261,9 @@ pub struct FanoutResult {
     /// that require a complete result must check this is empty; the common case
     /// (all children healthy) leaves it empty.
     pub failed: Vec<(BrainId, String)>,
+    /// Hits dropped because they failed verification under
+    /// [`MergePolicy::grants`]. Always `0` when no grant set is supplied.
+    pub unverified: usize,
 }
 
 impl FanoutResult {
@@ -386,6 +404,7 @@ impl FederationCoordinator {
             Vec::with_capacity(self.children.len());
         let mut recognition_token_cost = 0usize;
         let mut failed: Vec<(BrainId, String)> = Vec::new();
+        let mut unverified = 0usize;
 
         // A federated READ must not write to the brain it reads. The cascade's
         // `write_back` defaults to true, so without this every fan-out would
@@ -435,11 +454,30 @@ impl FederationCoordinator {
             recognition_token_cost += result.total_recognition_token_cost;
             // Kept as defence-in-depth: the member is now scoped, but the
             // coordinator does not have to trust that it was.
-            let visible = result
+            let mut visible = result
                 .merged_hits
                 .into_iter()
                 .filter(|hit| crate::brain::str_to_vis(&hit.visibility).allows(visibility))
                 .collect::<Vec<_>>();
+            // Authenticate provenance BEFORE fusion, so an unverifiable hit
+            // cannot contribute corroboration to anything.
+            if let Some(grants) = policy.grants.as_ref() {
+                let before = visible.len();
+                visible.retain(|hit| {
+                    hit.source_brain_id
+                        .and_then(|id| grants.get(&id))
+                        .is_some_and(|key| Brain::verify_hit(hit, key))
+                });
+                let dropped = before - visible.len();
+                if dropped > 0 {
+                    tracing::warn!(
+                        brain = %origin,
+                        dropped,
+                        "federation member returned hits with unverifiable provenance"
+                    );
+                    unverified += dropped;
+                }
+            }
             contributions.push((origin, child.weight, visible));
         }
 
@@ -449,6 +487,7 @@ impl FederationCoordinator {
             per_brain,
             recognition_token_cost,
             failed,
+            unverified,
         })
     }
 }
@@ -1771,5 +1810,93 @@ mod tests {
              fan-out returned {}",
             result.ranked.len()
         );
+    }
+
+    /// R-11 remainder: `verify_hit` is the mechanism the module docs name as
+    /// what makes federated provenance trustworthy, and it had no non-test
+    /// caller. With a grant set supplied, hits whose provenance does not
+    /// verify against the registered key are dropped before fusion, so they
+    /// cannot contribute corroboration.
+    #[test]
+    fn grant_set_drops_hits_with_unverifiable_provenance() {
+        let tmp = TempDir::new().unwrap();
+        let (a, a_dir) = open_child(&tmp, "a");
+        a.remember(
+            "m-a",
+            "shared topic memory about deployment runbooks",
+            Visibility::Team,
+        )
+        .unwrap();
+        let a_id = *a.brain_id();
+        let a_key = *a.verifying_key();
+
+        let mut coord = FederationCoordinator::new();
+        coord.add_brain(a, a_dir);
+        let config = CascadePipelineConfig {
+            write_back: false,
+            ..Default::default()
+        };
+        let query = "shared topic memory deployment";
+
+        // Baseline: no grant set, provenance is self-asserted and everything
+        // is admitted.
+        let open = coord
+            .fan_out_recall_with_policy(
+                query,
+                &RecognitionContext::empty(),
+                &config,
+                Visibility::Team,
+                &MergePolicy::default(),
+            )
+            .unwrap();
+        assert!(!open.ranked.is_empty(), "baseline fan-out returned nothing");
+        assert_eq!(open.unverified, 0, "no grant set means no verification");
+
+        // Correct key registered -> hits verify and survive.
+        let mut grants = HashMap::new();
+        grants.insert(*a_id.as_bytes(), a_key);
+        let trusted = MergePolicy {
+            grants: Some(grants),
+            ..MergePolicy::default()
+        };
+        let ok = coord
+            .fan_out_recall_with_policy(
+                query,
+                &RecognitionContext::empty(),
+                &config,
+                Visibility::Team,
+                &trusted,
+            )
+            .unwrap();
+        assert_eq!(
+            ok.ranked.len(),
+            open.ranked.len(),
+            "correctly signed hits were dropped: {} unverified",
+            ok.unverified
+        );
+        assert_eq!(ok.unverified, 0);
+
+        // A DIFFERENT brain's key registered under a's id -> nothing verifies.
+        let impostor = spectral_core::identity::BrainIdentity::generate();
+        let mut bad = HashMap::new();
+        bad.insert(*a_id.as_bytes(), *impostor.verifying_key());
+        let untrusted = MergePolicy {
+            grants: Some(bad),
+            ..MergePolicy::default()
+        };
+        let blocked = coord
+            .fan_out_recall_with_policy(
+                query,
+                &RecognitionContext::empty(),
+                &config,
+                Visibility::Team,
+                &untrusted,
+            )
+            .unwrap();
+        assert!(
+            blocked.ranked.is_empty(),
+            "hits survived verification against the wrong key"
+        );
+        assert_eq!(blocked.unverified, open.ranked.len());
     }
 }
