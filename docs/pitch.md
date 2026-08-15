@@ -103,6 +103,15 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
   accuracy uses an optional Haiku query-expansion call (≈$0.25/1k). Disclose it.
 - Retrieval numbers are **in-sample**; held-out expected lower.
 - Recognition is strong at near-duplicate/verbatim, **not** a paraphrase matcher.
+- Recognition's verbatim claim is **whitespace-dependent**. Feature extraction
+  tokenizes on spaces, so a short passage in an unspaced script (Japanese,
+  Chinese) returns `Familiar` rather than `Recognized` even for byte-identical
+  input — measured: English recognizes at 34 characters, Japanese does not at
+  41, and the same Japanese text with spaces inserted does. Longer CJK
+  passages do recognize. Space-separated scripts are unaffected (Russian,
+  Arabic, Korean and Thai all verify). Consumers keying dedup off
+  `Recognized` will not dedupe short CJK content. See
+  `crates/spectral-recognition/tests/script_coverage.rs`.
 - Sybil resistance in an *untrusted* federation is a deployment-trust property,
   not a code guarantee.
 - "Poisoning-resistant" means **score-flood resistant**: RRF over ranks plus a
