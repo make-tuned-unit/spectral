@@ -109,9 +109,15 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
   input — measured: English recognizes at 34 characters, Japanese does not at
   41, and the same Japanese text with spaces inserted does. Longer CJK
   passages do recognize. Space-separated scripts are unaffected (Russian,
-  Arabic, Korean and Thai all verify). Consumers keying dedup off
-  `Recognized` will not dedupe short CJK content. See
-  `crates/spectral-recognition/tests/script_coverage.rs`.
+  Arabic, Korean and Thai all verify). **This is not only a consumer
+  concern:** the library's own ambient-recurrence loop requires an
+  identity-bearing `Recognized` verdict before it will reinforce a prior and
+  populate `RememberResult.recurrence` (`brain.rs`, `remember_with`), so that
+  loop is silently inert for short CJK — re-encounters never reinforce and
+  `recurrence` stays `None`, with no error. `forget()`'s `recognize_clear`
+  probe is likewise vacuously true for such content, so `fully_forgotten()`
+  reports clean without the probe having proven anything (the deletion itself
+  is unaffected). See `crates/spectral-recognition/tests/script_coverage.rs`.
 - Sybil resistance in an *untrusted* federation is a deployment-trust property,
   not a code guarantee.
 - "Poisoning-resistant" means **score-flood resistant**: RRF over ranks plus a
