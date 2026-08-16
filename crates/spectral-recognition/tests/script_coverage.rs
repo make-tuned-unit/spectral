@@ -67,9 +67,20 @@ fn verbatim_recognition_holds_for_space_separated_scripts() {
 /// sentence, the common case for a single memory — is only `Familiar` when
 /// recognised verbatim, never `Recognized`.
 ///
-/// This matters because `recognize()` is the dedup / "have I seen this?"
-/// primitive: a consumer keying dedup off `Recognized` will fail to dedupe
-/// short CJK content and will store duplicates.
+/// This matters beyond the consumer's own dedup choice, because the
+/// `Recognized`/`Familiar` boundary is load-bearing INSIDE the library. Two
+/// call sites branch on it outside this crate, and both degrade silently for
+/// short CJK:
+///
+/// - `brain.rs`'s ambient recurrence in `remember_with` requires an
+///   identity-bearing `Recognized` verdict — deliberately, so that "a
+///   same-domain, different event" cannot reinforce the wrong prior — so for
+///   short CJK a re-encounter never reinforces and `RememberResult.recurrence`
+///   stays `None`. Nothing errors; the adaptive loop is simply inert.
+/// - `forget()`'s `recognize_clear` probe checks the verdict is *not*
+///   `Recognized` for that id, which is vacuously true here, so
+///   `fully_forgotten()` reports clean without having proven anything. The
+///   deletion itself is unaffected — only its verification is weaker.
 ///
 /// Pinned rather than fixed: the fix is a script-aware tokenizer (or a
 /// character-n-gram fallback for unspaced scripts), which changes what every
