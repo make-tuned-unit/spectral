@@ -435,6 +435,23 @@ fn probe_recent_forwards_its_opts_to_probe() {
     b.ingest_activity(&[episode("e1", "deploy runbook notion", Utc::now())])
         .unwrap();
 
+    // The cap must be BINDING, or `len() <= 2` is satisfied by returning
+    // nothing and proves no forwarding at all. Establish that the uncapped
+    // call exceeds the cap first — confirmed by mutation: without this the
+    // test passed with probe returning an empty vec.
+    let uncapped = b
+        .probe_recent(
+            ProbeWindow::Duration(Duration::hours(1)),
+            ProbeOpts::default(),
+        )
+        .unwrap();
+    assert!(
+        uncapped.len() > 2,
+        "precondition: the uncapped call returned {} hits, so a cap of 2 \
+         would not be binding and this test could not detect a dropped opt",
+        uncapped.len()
+    );
+
     let hits = b
         .probe_recent(
             ProbeWindow::Duration(Duration::hours(1)),
@@ -444,9 +461,10 @@ fn probe_recent_forwards_its_opts_to_probe() {
             },
         )
         .unwrap();
-    assert!(
-        hits.len() <= 2,
-        "probe_recent ignored max_results and returned {}",
+    assert_eq!(
+        hits.len(),
+        2,
+        "probe_recent ignored max_results: expected exactly the cap, got {}",
         hits.len()
     );
 }

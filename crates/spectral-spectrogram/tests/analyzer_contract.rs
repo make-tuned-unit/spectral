@@ -226,15 +226,25 @@ fn peak_names_are_drawn_from_the_known_dimension_set() {
         "novelty",
     ];
     let a = SpectrogramAnalyzer::new(AnalyzerConfig::default());
+    // Counts names actually checked. Without it this passes over an
+    // always-empty peak list, having verified nothing — confirmed by
+    // mutation: forcing `.take(0)` left this test green while five siblings
+    // failed.
+    let mut checked = 0usize;
     for (i, content) in CORPUS.iter().enumerate() {
         let fp = a.analyze(&memory("m", content), &AnalysisContext::default());
         for name in &fp.peak_dimensions {
+            checked += 1;
             assert!(
                 known.contains(&name.as_str()),
                 "unknown peak dimension {name:?} on input {i}"
             );
         }
     }
+    assert!(
+        checked > 0,
+        "no peak name was ever examined, so the known-set check proved nothing"
+    );
 }
 
 // ── novelty and the wing corpus ────────────────────────────────────
