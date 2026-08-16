@@ -157,6 +157,11 @@ fn queries() -> Vec<String> {
 /// a single-point regression, and this test does detect a total one.
 #[test]
 fn no_scoped_recall_ever_returns_an_inadmissible_hit() {
+    // Counts hits actually inspected. Without it this test passes having
+    // asserted nothing if recall returns empty for every query — the loop
+    // body simply never runs. The floor keys on something the test controls
+    // (its own corpus and queries), not on ranking or page composition.
+    let mut examined = 0usize;
     for seed in 1..=12u64 {
         let mut rng = Rng::new(seed * 0x9E37_79B9);
         let corpus = gen_corpus(&mut rng, 12);
@@ -169,6 +174,7 @@ fn no_scoped_recall_ever_returns_an_inadmissible_hit() {
                     .recall_topk_fts(&q, &RecallTopKConfig::default(), *scope)
                     .unwrap();
                 for h in &hits {
+                    examined += 1;
                     let label = parse_vis(&h.visibility);
                     assert!(
                         label.allows(*scope),
@@ -181,6 +187,11 @@ fn no_scoped_recall_ever_returns_an_inadmissible_hit() {
             }
         }
     }
+    assert!(
+        examined > 0,
+        "the invariant held over ZERO hits — recall returned nothing across \
+         every seed, scope and query, so this test proved nothing"
+    );
 }
 
 /// The complement, so the scoping is not vacuously satisfied by returning
@@ -188,6 +199,7 @@ fn no_scoped_recall_ever_returns_an_inadmissible_hit() {
 /// at least as many distinct keys as any stricter scope.
 #[test]
 fn a_private_scope_is_never_narrower_than_a_stricter_one() {
+    let mut nonempty_private = 0usize;
     for seed in 1..=12u64 {
         let mut rng = Rng::new(seed * 0x85EB_CA6B);
         let corpus = gen_corpus(&mut rng, 12);
@@ -200,6 +212,9 @@ fn a_private_scope_is_never_narrower_than_a_stricter_one() {
                 .recall_topk_fts(&q, &cfg, Visibility::Private)
                 .unwrap()
                 .len();
+            if private > 0 {
+                nonempty_private += 1;
+            }
             for scope in [Visibility::Team, Visibility::Org, Visibility::Public] {
                 let scoped = b.recall_topk_fts(&q, &cfg, scope).unwrap().len();
                 assert!(
@@ -210,6 +225,11 @@ fn a_private_scope_is_never_narrower_than_a_stricter_one() {
             }
         }
     }
+    assert!(
+        nonempty_private > 0,
+        "every Private recall was empty, so `private >= scoped` held only \
+         because both sides were zero"
+    );
 }
 
 // ── determinism ────────────────────────────────────────────────────
@@ -233,6 +253,9 @@ fn a_private_scope_is_never_narrower_than_a_stricter_one() {
 /// determinism story.
 #[test]
 fn repeated_recall_is_byte_stable_on_an_unchanged_brain() {
+    // Comparing two empty results is trivially equal, so stability would hold
+    // over a brain that recalls nothing. Count the non-empty comparisons.
+    let mut compared_nonempty = 0usize;
     for seed in 1..=10u64 {
         let mut rng = Rng::new(seed * 0xC2B2_AE35);
         let corpus = gen_corpus(&mut rng, 16);
@@ -253,6 +276,9 @@ fn repeated_recall_is_byte_stable_on_an_unchanged_brain() {
                 .into_iter()
                 .map(|h| h.key)
                 .collect();
+            if !first.is_empty() {
+                compared_nonempty += 1;
+            }
             for attempt in 0..3 {
                 let again: Vec<String> = ro
                     .recall_topk_fts(&q, &cfg, Visibility::Private)
@@ -268,6 +294,11 @@ fn repeated_recall_is_byte_stable_on_an_unchanged_brain() {
             }
         }
     }
+    assert!(
+        compared_nonempty > 0,
+        "every comparison was between two EMPTY results, so stability held \
+         trivially and nothing was actually shown to be stable"
+    );
 }
 
 /// **Two brains built from the same corpus in the same order return the same
@@ -276,6 +307,7 @@ fn repeated_recall_is_byte_stable_on_an_unchanged_brain() {
 /// ranking within one process.
 #[test]
 fn two_brains_from_the_same_corpus_agree() {
+    let mut compared_nonempty = 0usize;
     for seed in 1..=8u64 {
         let mut rng = Rng::new(seed * 0x27D4_EB2F);
         let corpus = gen_corpus(&mut rng, 14);
@@ -310,6 +342,9 @@ fn two_brains_from_the_same_corpus_agree() {
                 .into_iter()
                 .map(|h| h.key)
                 .collect();
+            if !ka.is_empty() {
+                compared_nonempty += 1;
+            }
             assert_eq!(
                 ka, kb,
                 "seed {seed}, query {q:?}: two brains built from an identical \
@@ -317,6 +352,11 @@ fn two_brains_from_the_same_corpus_agree() {
             );
         }
     }
+    assert!(
+        compared_nonempty > 0,
+        "both brains returned nothing for every query, so agreement was \
+         trivial"
+    );
 }
 
 // ── forget ─────────────────────────────────────────────────────────
@@ -327,6 +367,11 @@ fn two_brains_from_the_same_corpus_agree() {
 /// radius.
 #[test]
 fn forgetting_a_subset_removes_exactly_that_subset() {
+    // Both halves must actually occur across the run: something forgotten and
+    // something kept. A run that forgot nothing, or everything, would satisfy
+    // the per-key assertion while testing only one direction.
+    let mut total_forgotten = 0usize;
+    let mut total_kept = 0usize;
     for seed in 1..=10u64 {
         let mut rng = Rng::new(seed * 0x1656_67B1);
         let corpus = gen_corpus(&mut rng, 12);
@@ -339,6 +384,9 @@ fn forgetting_a_subset_removes_exactly_that_subset() {
         for k in &doomed_keys {
             b.forget(k).unwrap();
         }
+
+        total_forgotten += doomed_keys.len();
+        total_kept += corpus.len() - doomed_keys.len();
 
         for g in &corpus {
             let present = b.get_memory_by_key(&g.key).unwrap().is_some();
@@ -368,6 +416,11 @@ fn forgetting_a_subset_removes_exactly_that_subset() {
             }
         }
     }
+    assert!(
+        total_forgotten > 0 && total_kept > 0,
+        "the run forgot {total_forgotten} and kept {total_kept}; both must be \
+         non-zero or only one direction of the property was exercised"
+    );
 }
 
 // ── recall shape ───────────────────────────────────────────────────
@@ -377,6 +430,7 @@ fn forgetting_a_subset_removes_exactly_that_subset() {
 /// ranking change could violate without any fixture noticing.
 #[test]
 fn recall_results_are_bounded_unique_and_real() {
+    let mut examined = 0usize;
     for seed in 1..=10u64 {
         let mut rng = Rng::new(seed * 0x4F1B_BCDD);
         let corpus = gen_corpus(&mut rng, 20);
@@ -400,6 +454,7 @@ fn recall_results_are_bounded_unique_and_real() {
 
                 let mut seen = std::collections::HashSet::new();
                 for h in &hits {
+                    examined += 1;
                     assert!(
                         seen.insert(h.key.clone()),
                         "seed {seed}: duplicate key {} in one recall result",
@@ -414,4 +469,9 @@ fn recall_results_are_bounded_unique_and_real() {
             }
         }
     }
+    assert!(
+        examined > 0,
+        "no hit was ever inspected, so uniqueness and provenance were never \
+         actually checked"
+    );
 }
