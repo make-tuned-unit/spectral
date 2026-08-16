@@ -644,11 +644,20 @@ impl Brain {
     }
 
     /// Report bounded coverage of derived memory state without mutating it.
+    ///
+    /// **Does not cover recognition enrolment**, so a clean report is not
+    /// evidence that no memory is missing from the recognition index. Do not
+    /// use it to gate [`repair_derivations`](Self::repair_derivations).
     pub fn derivation_health(&self, limit: usize) -> Result<DerivationHealthReport, Error> {
         self.inner.derivation_health(limit)
     }
 
     /// Idempotently repair derived state after interrupted or legacy ingests.
+    ///
+    /// Run on a **schedule**, not gated behind
+    /// [`derivation_health`](Self::derivation_health): that report has no
+    /// missing-enrolment field, so gating would skip the repair exactly when a
+    /// crash tear needs it. The unconditional re-enrol is the repair.
     pub fn repair_derivations(&self, limit: usize) -> Result<DerivationRepairReport, Error> {
         self.inner.repair_derivations(limit)
     }
