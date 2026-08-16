@@ -253,7 +253,7 @@ impl Brain {
     ///
     /// These are separate SQLite databases with **no cross-database
     /// transaction**: see
-    /// [`RememberResult::is_fully_derived`](spectral_graph::brain::RememberResult::is_fully_derived).
+    /// [`RememberResult::has_no_reported_derivation_error`](spectral_graph::brain::RememberResult::has_no_reported_derivation_error).
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         BrainBuilder::new()
             .data_dir(path.as_ref())

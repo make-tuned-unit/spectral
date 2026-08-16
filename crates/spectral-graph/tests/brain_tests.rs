@@ -2832,7 +2832,7 @@ fn a_torn_remember_is_detectable_and_repairable() {
         .remember("incident", content, Visibility::Private)
         .unwrap();
     assert!(
-        result.is_fully_derived(),
+        result.has_no_reported_derivation_error(),
         "healthy write reported warnings: {:?}",
         result.derivation_warnings
     );
