@@ -444,25 +444,41 @@ pub struct RememberResult {
     /// Non-fatal failures while deriving secondary indexes or metadata. The
     /// primary memory is committed; call `repair_derivations` to reconcile.
     ///
-    /// Check [`is_fully_derived`](RememberResult::is_fully_derived) rather
-    /// than ignoring this: a `remember` that returns `Ok` with warnings has
-    /// written the memory to `memory.db` but may have failed to enroll it in
-    /// `recognition.db`, leaving content that recalls but does not recognize.
+    /// Check
+    /// [`has_no_reported_derivation_error`](RememberResult::has_no_reported_derivation_error)
+    /// rather than ignoring this: a `remember` that returns `Ok` with warnings
+    /// has written the memory to `memory.db` but may have failed to enroll it
+    /// in `recognition.db`, leaving content that recalls but does not
+    /// recognize.
     pub derivation_warnings: Vec<String>,
 }
 
 impl RememberResult {
-    /// True when every secondary index and piece of metadata was derived.
+    /// True when no derivation step **reported** an error.
     ///
-    /// `remember` spans more than one database and is **not** atomic across
-    /// them: the memory row commits first, then density, signature, and
-    /// recognition enrollment follow as separate transactions. A crash or an
-    /// IO failure in between leaves the memory recallable but not
-    /// recognizable. That state is recoverable —
-    /// [`Brain::repair_derivations`](crate::brain::Brain::repair_derivations)
-    /// re-derives everything, including recognition enrollment — but nothing
-    /// detects it for you, so a caller that cares should check this.
-    pub fn is_fully_derived(&self) -> bool {
+    /// Deliberately named for what it establishes rather than for what a
+    /// caller wants it to mean. It was briefly called `is_fully_derived`,
+    /// which asserted a stronger property than the code delivers and is
+    /// exactly the failure this codebase keeps finding elsewhere: a confident
+    /// short name is more pleasant to write than an accurate long one, and
+    /// nothing in the type system objects. The unwieldy name is the point —
+    /// an unwieldy name gets read.
+    ///
+    /// **What it catches:** an IO-failure tear. `remember` spans more than one
+    /// database and is *not* atomic across them — the memory row commits
+    /// first, then density, signature and recognition enrollment follow as
+    /// separate transactions — so a failing sidecar write shows up here.
+    ///
+    /// **What it cannot catch:** a crash tear. If the process dies between the
+    /// `memory.db` commit and the sidecar write, `remember` never returns and
+    /// there is no `RememberResult` to inspect at all. That is a property of
+    /// where the check sits, not a gap in the API, which is why only a
+    /// scheduled [`Brain::repair_derivations`](crate::brain::Brain::repair_derivations)
+    /// can cover it.
+    ///
+    /// So `true` here means "nothing was reported", never "fully derived", and
+    /// it must not be used as a durability claim.
+    pub fn has_no_reported_derivation_error(&self) -> bool {
         self.derivation_warnings.is_empty()
     }
 }
@@ -3338,7 +3354,8 @@ impl Brain {
     /// Gating it on `derivation_health` would skip the repair in precisely
     /// the case that needs it, while looking like diligence.
     ///
-    /// Note also that [`RememberResult::is_fully_derived`] cannot substitute:
+    /// Note also that [`RememberResult::has_no_reported_derivation_error`]
+    /// cannot substitute:
     /// it reports "no derivation error was *returned*", which catches an IO
     /// failure but not a crash — a crash leaves no `RememberResult` to
     /// inspect at all.
