@@ -3280,6 +3280,17 @@ impl Brain {
 
     /// Inspect bounded coverage of fields derived from primary memory rows.
     /// This is read-only and suitable for health checks.
+    ///
+    /// **It does not cover recognition enrolment.** The report carries
+    /// `missing_content_hash`, `missing_declarative_density` and
+    /// `missing_signature` — there is no field for a memory that is present in
+    /// `memory.db` but absent from the `recognition.db` index. That is exactly
+    /// the tear a crash between the two commits produces (the memory recalls
+    /// but does not recognize), so a clean report here is **not** evidence
+    /// that no tear exists.
+    ///
+    /// Consequently this must not be used to gate
+    /// [`repair_derivations`](Self::repair_derivations) — see that method.
     pub fn derivation_health(&self, limit: usize) -> Result<DerivationHealthReport, Error> {
         let memories = self
             .rt
@@ -3315,6 +3326,22 @@ impl Brain {
 
     /// Idempotently rebuild bounded derived state after a partial ingest or
     /// upgrade. Primary memory rows are never changed or deleted.
+    ///
+    /// Re-enrols **every** scanned memory into the recognition index rather
+    /// than diffing first. That looks wasteful and is deliberate:
+    /// [`derivation_health`](Self::derivation_health) has no
+    /// missing-enrolment field, so there is nothing to diff against — the
+    /// unconditional re-enrol is the only thing that repairs a crash tear
+    /// between the `memory.db` commit and the sidecar write.
+    ///
+    /// **Run this on a schedule; do not gate it behind a health check.**
+    /// Gating it on `derivation_health` would skip the repair in precisely
+    /// the case that needs it, while looking like diligence.
+    ///
+    /// Note also that [`RememberResult::is_fully_derived`] cannot substitute:
+    /// it reports "no derivation error was *returned*", which catches an IO
+    /// failure but not a crash — a crash leaves no `RememberResult` to
+    /// inspect at all.
     pub fn repair_derivations(&self, limit: usize) -> Result<DerivationRepairReport, Error> {
         self.ensure_writable("repair_derivations")?;
         let content_hashes_repaired = self
