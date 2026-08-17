@@ -97,6 +97,13 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 
 ## Honesty guardrails (don't cut these)
 
+**This list is copied downstream.** As of 2026-08-17 the permagent.ai site repo
+keeps a derived copy in `docs/design/POSITIONING-AND-DEMO-PLAN.md`. This file
+is the source of truth — it is tied to measurements, and CI cross-checks the
+recognition numbers against `recognition-benchmark-results.json`. When you edit
+a guardrail here, propagate it: the copies diverging is silent, and the failure
+shows up as a false claim on a public page rather than as a red test.
+
 - Never quote session-recall alone: pair 98.6% (retrieval stage) with 81.5%
   end-to-end accuracy (401/492) in the same sentence. No "~99%" rounding.
 - "No LLM on the recall path" is true for the library; the benchmarked 81.5%
@@ -134,3 +141,20 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
   (fingerprint -> wing -> FTS) plus deterministic reranking. All still $0.
 - "Unused memories decay" is not ambient behaviour: use strengthens, and decay
   runs only via the opt-in Archivist.
+- **Never say "frequency-domain", "spectrum", or "FFT".** There is no frequency
+  transform anywhere in Spectral. Three separate things share the
+  spectral/fingerprint vocabulary and none is one: the **TACT fingerprint** is a
+  deterministic hash of four categorical fields
+  (`make_fingerprint_hash(hall, target_hall, wing, time_bucket)`) used as a
+  routing key; **recognition** is MinHash plus winnowed k-grams
+  (Schleimer/MOSS); and `SpectralFingerprint` is seven hand-engineered cognitive
+  dimensions, **retired as a recall path** (enabling write-time spectrograms
+  changed 0/500 retrieval contexts) and now behind the `spectrogram-legacy`
+  feature. The name is branding. This reached a live permagent.ai page as
+  "frequency-domain recall" before being corrected on 2026-08-17, which is why
+  it is written down here.
+- Recognition's own benchmark table must keep its **adversarial-paraphrase row**
+  (PAWS: 0.4875 peak-pair, 0.4917 MinHash-128, 0.4853 BGE-small — every system
+  at chance) and the row where **plain MinHash-128 beats us** on lexical
+  re-encounter (0.9988 vs 0.9946). Cutting either turns a published trade-off
+  surface into a cherry-pick.
