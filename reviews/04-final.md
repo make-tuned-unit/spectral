@@ -286,3 +286,108 @@ A test whose oracle calls the function under test proves only self-consistency.
 Two of this project's guarantees were being checked that way. The check that
 catches it is cheap: invert the function and confirm *that specific test* goes
 red, not merely that some test somewhere does.
+
+---
+
+## Addendum 2: both sweeps run against Spectral, and what the detectors miss
+
+`permagent-runtime-87` ran two sweeps on its own codebase after the `allows`
+fix and reported both clean. Both were run here. Result: Spectral is clean on
+the first, and the second found a real gap one layer below the original bug.
+
+### Sweep 1 — self-oracle detector: 34 candidates, zero real
+
+Replicated the peer's construction (within one `assert_eq!`, split at the
+top-level comma, flag any non-trivial call on both sides): **34 hits across
+1446 assertion sites**, against its 35 across 4003. Every one is a false
+positive, in the same two shapes it identified:
+
+- **Determinism / discrimination properties** where calling the function twice
+  *is* the claim — `entity_id("person","a:b")` vs `entity_id("person:a","b")`
+  (a real pinned collision), `stem("boxes")` vs `stem("box")`,
+  `from_descriptor("Laptop")` vs `from_descriptor("laptop")`,
+  `scalar_bits(&a)` vs `scalar_bits(&b)`.
+- **Test-local helpers on both sides** — `d(2024,3,31)` date builders, `to_bits`
+  float comparisons.
+
+The peer's distinction is the load-bearing one and it holds here:
+*both-sides-same-call is only a self-oracle when one side is the pipeline and
+the other reaches inside it.* Both sides being the subject is a determinism
+test.
+
+### The detector cannot see the bug that motivated it
+
+Worth stating plainly, because "zero real" is easy to over-read. The bug this
+all started from was:
+
+```rust
+assert!(label.allows(*scope), ...)
+```
+
+A **single-argument predicate**. There are no two sides to compare, so a
+comma-splitting `assert_eq!` detector structurally cannot flag it. Both
+sweeps' clean results are therefore evidence about a different shape than the
+one that was actually broken.
+
+### Sweep 2 — the detector for the shape that *did* break
+
+Rebuilt around the real shape: a test asserting through a production
+**predicate** (`fn -> bool`) that production also uses to make the same
+decision. 38 such predicates outside `cfg(test)`, ranked by production call
+count. `allows` sits at the top with 23 — the ranking put the actual defect
+first, which is some evidence the metric is the right one.
+
+Every security-relevant predicate below it was then checked individually:
+
+| predicate | verdict |
+|---|---|
+| `allows` (23 calls) | **was the defect** — fixed in the previous addendum |
+| `fully_forgotten` | clean — has a hand-built *sabotaged* report asserted false, plus independent raw-SQL residue counts. Mutating it to `true` fails `d2_sabotaged_deletion_is_detected_by_probes` specifically |
+| `verify_memory_signature` | clean — round-trip is backed by real negatives (`tampering_any_signed_field_fails`, `resigning_under_a_different_key_fails`, `foreign_key_cannot_impersonate_origin`) |
+| `admits`, `accepts_object`, `accepts_tombstone`, `verify_hit`, `is_complete`, `predicate_is_single_valued` | clean — not used as oracles |
+
+A third shape neither detector covers is worth naming: the **round-trip
+oracle**, `assert!(verify(sign(x)))`, which passes if both halves are wrong
+compatibly. The defence is negative and known-answer tests, which
+`identity.rs` has.
+
+### Sweep 3 — doubled rules, triaged by whether violation is silent
+
+The peer's sharpening of my point is the better formulation: *the danger is
+not redundancy, it is redundancy over a rule whose violation is silent.* A
+doubled row cap fails visibly the moment anyone counts; a doubled visibility
+predicate fails invisibly, because the correct copy serves correct-looking
+results while the broken copy waits for someone to delete the other one.
+
+Spectral has exactly one instance of the dangerous variant: the visibility
+rule, stated as `Visibility::allows` in Rust and as `VIS_RANK_SQL >= n` in
+`spectral-ingest`. Everything else doubled in SQL is a bound or an ordering
+(`LIMIT`, `ORDER BY` tiebreaks), where a mismatch shows up as a wrong count.
+
+**This found a real gap.** The SQL copy — the one that actually enforces
+visibility for FTS recall, and the only one left if someone deletes the Rust
+`retain` as "obviously redundant" — had **no direct test**. Every existing
+visibility test went through `spectral-graph`, where the Rust `retain` would
+mask a bug in the SQL. So both copies were individually untested while the
+pair looked covered, symmetrically.
+
+Fixed: `sqlite_store::visibility_pushdown`, five tests placed in
+`spectral-ingest` *specifically* because the Rust `retain` lives in another
+crate and is not in that call path, so nothing there can be masked by it. They
+pin the hand-written admissible set per scope, the negative direction, that the
+predicate runs **before** `LIMIT` (the private row carries the top score, so
+filtering after a `LIMIT 1` would return nothing), that a Private context
+admits every label, and that an unknown label fails **closed**.
+
+Mutation-verified, four mutants, all killed: predicate inverted (4/5 fail),
+predicate removed entirely (4/5), unknown label defaulting to public (4/5),
+`team`/`org` ranks swapped (1/5 — the set-equality test).
+
+The Rust `retain` site now carries a comment saying why it must not be deleted
+as redundant, naming both copies' tests.
+
+### The triage question, as a standing check
+
+Not "is this rule stated twice" but: **if both copies were wrong, would anyone
+notice without a test?** If no, both copies need their own direct test, in a
+place the other cannot mask.

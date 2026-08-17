@@ -8562,3 +8562,173 @@ mod bitemporal_tests {
         assert!(!store.invalidate_at("nope", "2026-01-01T00:00:00Z").unwrap());
     }
 }
+
+/// Direct tests for the **SQL** copy of the visibility rule.
+///
+/// The admissibility rule is stated twice in this codebase: once in Rust as
+/// `Visibility::allows`, and once here as the `VIS_RANK_SQL >= {vis_rank}`
+/// predicate in [`fts_search_scoped`]. That redundancy is deliberate — the SQL
+/// copy must filter *before* `LIMIT`, or a scoped recall silently returns
+/// fewer than `k` admissible rows — but it had a cost that went unnoticed:
+///
+/// - Inverting `Visibility::allows` alone produces **no leak** through FTS
+///   recall, because this predicate has already removed the inadmissible rows
+///   before the Rust `retain` in `spectral-graph` runs. The correct copy masks
+///   the broken one.
+/// - Symmetrically, no test reached this predicate directly. Every existing
+///   visibility test went through `spectral-graph`, where the Rust `retain`
+///   would mask a bug *here*.
+///
+/// So both copies were individually untested while the pair looked covered.
+/// The dangerous refactor is not a bug in either one — it is deleting the Rust
+/// `retain` as "obviously redundant", which leaves this predicate solely
+/// load-bearing. These tests live in `spectral-ingest` on purpose: the Rust
+/// `retain` is in a different crate and is not in this call path, so nothing
+/// here can be masked by it.
+///
+/// The expectations are hand-written and must not be derived from
+/// `VIS_RANK_SQL`, `visibility_rank`, or `Visibility::allows`.
+#[cfg(test)]
+mod visibility_pushdown {
+    use super::*;
+    use spectral_core::visibility::Visibility;
+
+    /// One memory per label, all sharing a term so a single query matches all four.
+    const TERM: &str = "zephyrine";
+
+    fn store_with_one_memory_per_label() -> SqliteStore {
+        let store = SqliteStore::open_in_memory().unwrap();
+        {
+            let conn = store.conn();
+            for (i, label) in ["private", "team", "org", "public"].iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility)
+                     VALUES (?1, ?2, ?3, 'w', 'fact', ?4, ?5)",
+                    params![
+                        format!("id_{label}"),
+                        format!("key_{label}"),
+                        format!("a {TERM} note labelled {label}"),
+                        // Descending score by rank so a broken pushdown that
+                        // filtered AFTER `LIMIT 1` would keep the *private*
+                        // row and return nothing for a public scope.
+                        1.0 - (i as f64) * 0.1,
+                        label
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        store
+    }
+
+    async fn labels_visible_to(store: &SqliteStore, scope: Visibility, k: usize) -> Vec<String> {
+        let mut got: Vec<String> = store
+            .fts_search_scoped(&[TERM.to_string()], k, scope)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|h| h.visibility)
+            .collect();
+        got.sort();
+        got
+    }
+
+    /// The admissible set for each scope, written out by hand.
+    #[tokio::test]
+    async fn each_scope_sees_exactly_the_labels_it_should() {
+        let store = store_with_one_memory_per_label();
+
+        // (scope, exactly these labels) — the lower-left triangle, spelled out.
+        let expected: [(Visibility, &[&str]); 4] = [
+            (Visibility::Private, &["org", "private", "public", "team"]),
+            (Visibility::Team, &["org", "public", "team"]),
+            (Visibility::Org, &["org", "public"]),
+            (Visibility::Public, &["public"]),
+        ];
+
+        for (scope, want) in expected {
+            let got = labels_visible_to(&store, scope, 10).await;
+            let want: Vec<String> = want.iter().map(|s| s.to_string()).collect();
+            assert_eq!(
+                got, want,
+                "a {scope:?}-scoped store query returned the wrong label set"
+            );
+        }
+    }
+
+    /// The negative half, stated separately so a predicate that admitted
+    /// everything fails here loudly rather than only inside the set comparison.
+    #[tokio::test]
+    async fn a_public_scope_never_sees_private_team_or_org_content() {
+        let store = store_with_one_memory_per_label();
+        let got = labels_visible_to(&store, Visibility::Public, 10).await;
+        for leaked in ["private", "team", "org"] {
+            assert!(
+                !got.contains(&leaked.to_string()),
+                "{leaked} content leaked into a Public-scoped store query: {got:?}"
+            );
+        }
+    }
+
+    /// The reason the rule is pushed into SQL rather than applied afterwards.
+    ///
+    /// The private row carries the highest score, so filtering after `LIMIT 1`
+    /// would take the private row and then drop it, returning nothing. Getting
+    /// the public row proves the predicate ran inside the query.
+    #[tokio::test]
+    async fn the_predicate_is_applied_before_limit_not_after() {
+        let store = store_with_one_memory_per_label();
+        let got = labels_visible_to(&store, Visibility::Public, 1).await;
+        assert_eq!(
+            got,
+            vec!["public".to_string()],
+            "with k=1 a Public scope must still get its one admissible row — \
+             an empty result means visibility was filtered AFTER the LIMIT"
+        );
+    }
+
+    /// A Private-context read admits every label, which is why the code emits
+    /// no predicate at all in that case. Pinned so that optimisation cannot
+    /// quietly become "Private sees only private".
+    #[tokio::test]
+    async fn a_private_context_admits_every_label() {
+        let store = store_with_one_memory_per_label();
+        assert_eq!(
+            labels_visible_to(&store, Visibility::Private, 10)
+                .await
+                .len(),
+            4,
+            "a Private-context read should admit all four labels"
+        );
+    }
+
+    /// An unrecognised label must be treated as Private (the `ELSE 0` arm),
+    /// failing closed rather than defaulting to visible.
+    #[tokio::test]
+    async fn an_unknown_label_is_treated_as_private_not_public() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        {
+            let conn = store.conn();
+            conn.execute(
+                "INSERT INTO memories (id, key, content, wing, hall, signal_score, visibility)
+                 VALUES ('id_x', 'key_x', ?1, 'w', 'fact', 1.0, 'not-a-real-label')",
+                params![format!("a {TERM} note with a bogus label")],
+            )
+            .unwrap();
+        }
+        assert!(
+            labels_visible_to(&store, Visibility::Public, 10)
+                .await
+                .is_empty(),
+            "an unrecognised visibility label must fail closed (treated as \
+             Private), not become visible to a Public scope"
+        );
+        assert_eq!(
+            labels_visible_to(&store, Visibility::Private, 10)
+                .await
+                .len(),
+            1,
+            "it should still be readable in a Private context"
+        );
+    }
+}
