@@ -144,6 +144,15 @@ shows up as a false claim on a public page rather than as a red test.
   (fingerprint -> wing -> FTS) plus deterministic reranking. All still $0.
 - "Unused memories decay" is not ambient behaviour: use strengthens, and decay
   runs only via the opt-in Archivist.
+- **Querying the graph is $0 and deterministic; POPULATING it is not.** Triples
+  reach the graph exactly two ways: the caller asserts them
+  (`assert`/`assert_typed`), or they are extracted from free text by an
+  **LLM** (`spectral-graph/src/extract.rs` is titled "LLM-based triple
+  extraction"; there is no deterministic text-to-triple extractor). So the
+  taxonomy table's "Relational — $0, deterministic" is about *reads*. Never
+  caption a knowledge-graph screenshot with "deterministic, no LLM" or imply
+  the graph builds itself for free from conversation; say who asserted the
+  edges, or that extraction used a model.
 - **Never claim a frequency-domain mechanism** — no "frequency-domain recall",
   no "FFT", no "we transform text into a spectrum". There is no frequency
   transform anywhere in Spectral (no `rustfft`, no spectrum, nothing). Reached a
