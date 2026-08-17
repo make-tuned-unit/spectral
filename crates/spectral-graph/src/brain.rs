@@ -2267,6 +2267,15 @@ impl Brain {
 
         // Defence in depth: the SQL predicate is authoritative, this catches
         // any label the rank expression does not know about.
+        //
+        // Do NOT delete this as redundant. The admissibility rule is stated
+        // twice on purpose — here in Rust and as `VIS_RANK_SQL` in
+        // `spectral-ingest` — and each copy masks a bug in the other, which is
+        // why both went untested while the pair looked covered. Both now have
+        // direct tests (`visibility::allows_truth_table` and
+        // `sqlite_store::visibility_pushdown`); removing either copy makes the
+        // survivor solely load-bearing for a guarantee whose violation is
+        // silent.
         candidates.retain(|m| str_to_vis(&m.visibility).allows(visibility));
 
         // Unified re-ranking pipeline
