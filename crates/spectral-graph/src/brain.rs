@@ -3256,10 +3256,9 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
-    /// Whether the ontology declares this predicate as holding one object per
-    /// subject at a time. Unknown predicates accumulate, matching the
-    /// pre-existing behaviour.
     /// Whether `predicate` is functional *for a subject of this entity type*.
+    ///
+    /// Unknown predicates accumulate, matching the pre-existing behaviour.
     ///
     /// Cardinality is scoped by the ontology's `domain`, so `location` can be
     /// functional for `person` while still accumulating for `org`. A predicate
@@ -4901,6 +4900,23 @@ pub(crate) fn fts_query_words_opts(query: &str, drop_stopwords: bool) -> Vec<Str
     }
 }
 
+/// Parse a stored **content** visibility label.
+///
+/// Unknown labels fall to `Private`, which is fail-CLOSED *for content*: a row
+/// whose label is corrupt, hand-edited, or from a future schema becomes
+/// maximally restricted rather than maximally visible.
+///
+/// The direction matters and is easy to get backwards, because the same enum
+/// has the opposite safe default on the other side of the rule: `Private` as a
+/// **context** is the admits-everything clearance, so defaulting a *scope* to
+/// `Private` silently widens a query. That exact bug shipped once in
+/// `spectral-bench-real` (`visibility = "piblic"` quietly measured a wider
+/// query), which is why parsing a scope is an error there and lenient here.
+///
+/// Note the `_` arm does double duty: it is both the mapping for the literal
+/// `"private"` and the unknown-label fallback. Do NOT "tidy" this by adding an
+/// explicit `"private"` arm and changing the fallback — the arm's two jobs are
+/// what `str_to_vis_defaults` pins apart.
 pub(crate) fn str_to_vis(s: &str) -> Visibility {
     match s {
         "team" => Visibility::Team,
@@ -5311,6 +5327,96 @@ mod kuzu_schema_abort_repro {
         assert_eq!(drop_order.len(), N, "drop order must cover all N brains");
         for &i in &drop_order {
             drop(brains[i].take());
+        }
+    }
+}
+
+/// Direct tests for the content-label parser's **fallback arm**.
+///
+/// Found by mutation, and the way it hid is worth recording. Mutating
+/// `_ => Private` to `_ => Public` fails 9 tests, which looks like coverage.
+/// It is not: `"private"` is not a match arm, so the literal label flows
+/// through the same `_` arm as unknown input, and every one of those 9 tests
+/// was exercising the arm via the *known* label. Isolating the two jobs —
+/// adding an explicit `"private" => Private` and leaving `_ => Public` — the
+/// whole workspace passed, 1179 green, with unknown labels failing OPEN.
+///
+/// That mattered because the SQL copy of the rule cannot cover for this one on
+/// every path: federation fan-out, spreading activation and cascade retrieval
+/// filter in Rust with no SQL predicate ahead of them, so a fail-open default
+/// leaks there.
+#[cfg(test)]
+mod str_to_vis_defaults {
+    use super::{str_to_vis, visibility_to_str};
+    use spectral_core::visibility::Visibility;
+
+    /// The four labels the writer emits must read back as themselves.
+    #[test]
+    fn every_written_label_round_trips() {
+        for v in [
+            Visibility::Private,
+            Visibility::Team,
+            Visibility::Org,
+            Visibility::Public,
+        ] {
+            assert_eq!(
+                str_to_vis(&visibility_to_str(v)),
+                v,
+                "{v:?} does not survive write-then-read"
+            );
+        }
+    }
+
+    /// `"private"` specifically — it has no arm of its own and relies on the
+    /// fallback, so it is pinned separately from the other three.
+    #[test]
+    fn the_literal_private_label_parses_as_private() {
+        assert_eq!(str_to_vis("private"), Visibility::Private);
+    }
+
+    /// The fallback's OTHER job, which nothing covered: anything unrecognised
+    /// must become the most restricted label, never the most visible.
+    #[test]
+    fn every_unrecognised_label_fails_closed_to_private() {
+        for bogus in [
+            "", " ", "piblic", // the typo that shipped in bench-real
+            "publicc", "pub",
+            "PUBLIC", // case-sensitive: the writer only ever emits lowercase
+            "Public", "partner", // a plausible future label this build does not know
+            "world", "everyone", "null", "0",
+        ] {
+            assert_eq!(
+                str_to_vis(bogus),
+                Visibility::Private,
+                "an unrecognised label {bogus:?} must fail closed to Private, \
+                 not become visible to wider scopes"
+            );
+        }
+    }
+
+    /// Stated as the consequence rather than the mapping, so the test says why
+    /// it exists: an unknown-labelled row must not be admissible anywhere a
+    /// private row would not be.
+    #[test]
+    fn an_unknown_labelled_row_is_no_more_admissible_than_a_private_one() {
+        for scope in [
+            Visibility::Private,
+            Visibility::Team,
+            Visibility::Org,
+            Visibility::Public,
+        ] {
+            assert_eq!(
+                str_to_vis("partner").allows(scope),
+                str_to_vis("private").allows(scope),
+                "an unknown label must behave exactly like private in a \
+                 {scope:?} scope"
+            );
+            if scope != Visibility::Private {
+                assert!(
+                    !str_to_vis("partner").allows(scope),
+                    "an unknown-labelled row leaked into a {scope:?} scope"
+                );
+            }
         }
     }
 }

@@ -391,3 +391,93 @@ as redundant, naming both copies' tests.
 Not "is this rule stated twice" but: **if both copies were wrong, would anyone
 notice without a test?** If no, both copies need their own direct test, in a
 place the other cannot mask.
+
+---
+
+## Addendum 3: count implementations, not call sites — and a fallback arm that hid behind a known label
+
+`permagent-runtime-87` requalified its own sweep after the note that an
+`assert_eq!` splitter cannot see `assert!(pred(x))`, reran with the
+predicate-based detector (51 candidates, clean), and returned a sharper
+discriminator than the one in Addendum 2:
+
+> **Count implementations, not call sites.** N call sites of one function is
+> defence in depth with no masking — mutating the function kills all N at once.
+> Two *implementations* of one rule mask each other regardless of how few call
+> sites each has.
+
+That is correct and it reframes the `allows` case properly: the exposure came
+from the second implementation, not from the first's 23 call sites. It also
+means nothing about SQL was essential — two Rust functions encoding one rule
+would be identically dangerous. Addendum 2's sweep only looked for
+SQL-vs-Rust pairs, so it would have missed that.
+
+### Sweep 4 — duplicate *implementations* in Spectral
+
+Detector: a rule keyed on string literals leaves a fingerprint. Collect the
+literal set of every production `fn`/`const` (outside `cfg(test)`) and flag
+pairs in different items sharing most of their set. 282 items, 43 candidate
+pairs at Jaccard ≥ 0.55. Most are duplicated bench fixtures (identical query
+corpora across `recall_path_cost.rs` / `tact_tier_probe.rs`, verb lists across
+probe harnesses) — harmless. The rest resolved as:
+
+| candidate | verdict |
+|---|---|
+| `is_stopword` (recognition) vs `is_fts_stopword` (graph) | **two different rules, not two copies.** `FTS_STOPWORDS` deliberately excludes ambiguous content-homographs (`it`, `can`, `will`, `march`) that `STOPWORDS` includes. The divergence is load-bearing and *is* pinned: simulating the tempting "dedupe the two lists" refactor fails `does_not_drop_content_homographs` specifically |
+| `predicate_is_single_valued` vs `..._pub` | delegation — one implementation, two surfaces. Safe by the discriminator |
+| `visibility_to_str`/`str_to_vis` vs `str_to_visibility` (graph_store) vs `QuerySpec::visibility` (bench-real) | three label parsers, but on different data and with different strictness. See below |
+
+### The asymmetry that makes visibility labels tricky
+
+`Private` is the safe default in one direction and the dangerous one in the
+other, for the same enum:
+
+- as a **content** label, `Private` is maximally restricted → lenient parsing
+  is fail-**closed**;
+- as a **context**, `Private` is the admits-everything clearance → defaulting a
+  scope to `Private` silently **widens** the query.
+
+That is a real shipped bug, in `spectral-bench-real` (`visibility = "piblic"`
+quietly measured a wider query), which is why scope parsing errors there and
+content parsing is lenient in `str_to_vis`. All 11 `str_to_vis` call sites were
+checked: every one parses a stored content label, and the context always
+arrives as a typed enum. No lenient context fallback exists anywhere.
+
+### The real finding: a fallback arm hiding behind a known label
+
+`str_to_vis` matches `"team"`/`"org"`/`"public"` and sends everything else to
+`Private`. Mutating `_ => Private` into `_ => Public` fails **9 tests**, which
+reads as solid coverage.
+
+It is not. `"private"` has no arm of its own, so the literal label flows
+through the same `_` arm as unknown input, and all 9 catchers were exercising
+the arm via the *known* label. Isolating the arm's two jobs — adding an
+explicit `"private" => Private` and leaving `_ => Public` — the entire
+workspace passed: **1179 green, with unknown labels failing OPEN.**
+
+A corrupt, hand-edited, or future-schema label (`partner`) would have been
+readable in every scope. The SQL copy could not cover for it either: its
+`ELSE 0` arm only guards FTS recall, while federation fan-out, spreading
+activation and cascade retrieval filter in Rust with no SQL predicate ahead of
+them.
+
+Fixed: `brain::str_to_vis_defaults`, four tests pinning the write→read
+round-trip, `"private"` specifically, twelve unrecognised labels failing closed
+(including the `piblic` typo, `PUBLIC` for case-sensitivity, and a plausible
+future `partner`), and the consequence stated directly — an unknown-labelled
+row must be no more admissible than a private one, in every scope. The
+isolating mutant that previously passed 1179/0 now fails 2 of the 4.
+
+The SQL side's identical double-duty `ELSE 0` arm was re-checked with the same
+isolating mutant and **is** caught by `an_unknown_label_is_treated_as_private_not_public`
+from Addendum 2, so that claim holds.
+
+### Generalisable: mutation testing lies about catch-all arms
+
+A `_`/`else`/`default` arm that also serves a known input gives a false green.
+Mutating it appears covered, but the coverage comes from the known input, not
+the fallback. **To test a default arm, isolate it first** — give the known
+input its own arm, then mutate the fallback. If the suite still passes, the
+default was never tested. This is the same claim-substitution error as
+"the suite caught it": the mutation was caught, but not for the reason it
+appeared to be.
