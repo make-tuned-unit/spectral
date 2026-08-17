@@ -481,3 +481,128 @@ input its own arm, then mutate the fallback. If the suite still passes, the
 default was never tested. This is the same claim-substitution error as
 "the suite caught it": the mutation was caught, but not for the reason it
 appeared to be.
+
+---
+
+## Addendum 4: automating the thing we kept doing by hand — and what it found
+
+Every defect in Addenda 1–3 was found by mutation, and every one was found by
+mutating a target I picked by hand, with a throwaway script that patched the
+source and restored it afterwards. That process has two failure modes I hit in
+practice: an anchor string that silently stopped matching after `cargo fmt`, so
+a "mutation run" tested unmutated source and reported a false green; and a
+restore from a stale snapshot that reverted work I had just written. Both are
+eliminated by using a real tool.
+
+### The tool
+
+[`cargo-mutants`](https://mutants.rs/) v27.1.0. Adopted with:
+
+- **`.cargo/mutants.toml`** — excludes the benchmark harnesses (over half of all
+  mutants: `spectral-bench-real` alone is ~3,400 of ~8,800, and its correctness
+  rests on preregistered experiments, not unit tests), excludes the retired
+  spectrogram crate, sets a timeout floor so slow-but-correct SQLite suites are
+  not reported as TIMEOUT, and lists **provably equivalent mutants** with their
+  proofs.
+- **`.github/workflows/mutants.yml`** — `--in-diff` on every pull request, so
+  changed lines are mutation-tested automatically; plus a full run of
+  `spectral-core` (identity, Ed25519 signing payloads, the visibility
+  predicate), which is ~90 mutants in ~90 seconds and is expected to stay at
+  zero missed.
+
+Whole-workspace runs stay manual: ~8,800 mutants is hours, not minutes.
+
+### The finding: a total federation authentication bypass, invisible to 1,194 tests
+
+`cargo mutants -p spectral-core` took **two minutes** and reported 17 missed.
+Among them:
+
+```
+MISSED  identity.rs:323  replace length_prefixed -> Vec<u8> with vec![]
+MISSED  identity.rs:341  replace federation_object_signing_payload -> Vec<u8> with vec![]
+MISSED  identity.rs:348  replace federation_tombstone_signing_payload -> Vec<u8> with vec![]
+```
+
+Confirmed by hand against the full suite: with `length_prefixed` returning an
+empty vector, **1,194 tests passed, 0 failed.**
+
+That mutation removes both defences at once. `length_prefixed` provides domain
+separation (an object attestation must not be replayable as a retraction) and
+length-prefixed field encoding (so `("ab","c")` and `("a","bc")` cannot sign the
+same bytes). Neutered, every federation object and every tombstone signs
+**identical** bytes. Under `ImportPolicy::RequireSigned`, one valid signature
+from any accepted key would authenticate any object and any retraction in any
+wing — a complete bypass of the R-08 authentication work, including the
+tombstone-before-merge ordering that stops a rejected retraction suppressing its
+target.
+
+### Why nothing caught it — both causes are ones we had already named
+
+**The length-prefix rule is implemented twice.** `memory_signing_payload_v2`
+has its own inline length-prefixing loop; `length_prefixed` is a separate
+implementation used *only* by the two federation payloads. The existing
+`payload_is_unambiguous_across_field_boundaries` tests the inline copy. The
+federation copy had **no tests at all**. This is exactly
+`permagent-runtime-87`'s discriminator from Addendum 3 — *count
+implementations, not call sites* — landing in the highest-stakes place in the
+codebase.
+
+**And every federation test is a round trip.** Signing and verification both
+call the same payload function, so a compatibly-wrong pair verifies happily.
+That is the round-trip oracle named in Addendum 2 as a shape neither detector
+covers. It was named, and then not checked here.
+
+### Fixed
+
+Nine tests in `spectral-core::identity`, all attack-shaped or structural, none a
+round trip: a signature over one object must not authenticate another; an
+object attestation must not be replayable as a retraction; a retraction must not
+replay into another wing; each of the retraction's three fields must be bound
+independently; field boundaries must be unambiguous for the three-field payload;
+payloads must carry their domain tag and have exact expected lengths; distinct
+inputs must never collide; a foreign key must not attest as us.
+
+Also from the same run: `set_key_permissions` could be replaced with `Ok(())`
+with nothing failing — the private signing key's `0600` mode was never checked.
+Now asserted. And `BrainId::as_bytes`/`EntityId::as_bytes` could return
+constants, so the binding of the origin brain into the signing payload was
+untested; now pinned directly and through the payload.
+
+**`spectral-core` is now at zero missed mutants** (89 tested, 69 caught, 20
+unviable, 2 excluded as provably equivalent).
+
+### Second target: the LLM injection path
+
+`spectral-tact` was the worst crate at **42 of 77 missed**.
+`format_context_block` — whose doc claims it is "the single source of truth for
+the block's shape, so a caller that filters `memories` (e.g. by visibility) can
+rebuild `context_block` and be sure the formatted text can never contain a
+dropped memory" — could be replaced with `"xyzzy"` and nothing failed. Its one
+test asserted `result.len() <= 110`, which an empty string also satisfies.
+
+Twelve tests added, pinning the documented safety claim directly, the
+delimiters and content, budget accumulation across entries, and the multi-byte
+truncation path that carries a fixed panic. Note the first attempt was *still*
+too weak: asserting "no panic and valid UTF-8" did not kill walking the cut the
+wrong way, because that also produces valid UTF-8 — just over budget. Only a
+length bound caught it. **42 missed → 25**, the remainder being LLM prompt-text
+mutants with no unit-testable behaviour.
+
+`spectral-cascade`: 10 of 10 caught, already clean.
+
+### Equivalent mutants are documented, not chased
+
+Three are excluded with proofs, because leaving unkillable MISSED lines in the
+report trains you to skim past MISSED — the exact habit that lets a real one
+through. `hex_val` returns a nibble, so in `(hi << 4) | lo` the operands occupy
+disjoint bits and `|`/`^` are identical (verified by enumerating all 256 pairs).
+`cut` is a `usize` and `is_char_boundary(0)` is always true, so `cut > 0 && …`
+and `cut >= 0 && …` are the same loop.
+
+### The standing lesson
+
+Coverage says a line ran. Mutation testing says whether anything would have
+noticed if it were wrong. Three addenda of hand-rolled mutation found real
+defects; the automated pass found a worse one in two minutes, in a file we had
+already reviewed twice — and it was the exact shape we had already written down
+and not gone looking for.

@@ -524,4 +524,279 @@ mod memory_sig_tests {
         let b = memory_signing_payload(id.brain_id(), "a", "bc", "team");
         assert_ne!(a, b, "field boundaries must be unambiguous");
     }
+
+    /// `as_bytes` must return the id's real bytes: it is what
+    /// `memory_signing_payload_v2` splices into the signed payload to bind the
+    /// origin brain. Found by mutation — returning a constant array passed
+    /// every other test, because `verify` compares `BrainId` values directly
+    /// and never goes through `as_bytes`.
+    #[test]
+    fn brain_id_as_bytes_returns_the_real_bytes() {
+        let a = BrainIdentity::generate();
+        let b = BrainIdentity::generate();
+        assert_ne!(
+            a.brain_id().as_bytes(),
+            b.brain_id().as_bytes(),
+            "two independent brains share as_bytes output"
+        );
+        // And it agrees with the canonical hex rendering.
+        let hex: String = a
+            .brain_id()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(hex, a.brain_id().to_string());
+    }
+
+    /// The origin brain must actually reach the signed payload, so two brains
+    /// signing identical memory fields produce different payloads.
+    #[test]
+    fn the_signing_payload_binds_the_origin_brain() {
+        let a = BrainIdentity::generate();
+        let b = BrainIdentity::generate();
+        assert_ne!(
+            memory_signing_payload_v2(a.brain_id(), "k", "h", "t", "team"),
+            memory_signing_payload_v2(b.brain_id(), "k", "h", "t", "team"),
+            "the payload does not bind the origin brain id"
+        );
+    }
+
+    /// `Debug` is what lands in error messages and logs, so it must carry the
+    /// id rather than eliding it.
+    #[test]
+    fn brain_id_debug_contains_the_full_hex_id() {
+        let id = BrainIdentity::generate();
+        let shown = format!("{:?}", id.brain_id());
+        assert!(
+            shown.contains(&id.brain_id().to_string()),
+            "Debug elided the id: {shown}"
+        );
+    }
+
+    // ── federation attestation payloads ────────────────────────────
+    //
+    // Found by `cargo mutants`: replacing `length_prefixed`,
+    // `federation_object_signing_payload` or `federation_tombstone_signing_payload`
+    // with a constant left the **entire 1194-test workspace green**. With an
+    // empty payload every object and every retraction signs identical bytes, so
+    // under `ImportPolicy::RequireSigned` one valid signature from any accepted
+    // key authenticates any object and any retraction in any wing.
+    //
+    // Two reasons nothing caught it. The length-prefix rule is implemented
+    // twice — inline in `memory_signing_payload_v2`, and here as
+    // `length_prefixed` — and only the inline copy was tested. And every
+    // existing federation test signs and verifies through the *same* function,
+    // so a compatibly-wrong pair round-trips happily.
+    //
+    // These tests are therefore all attack-shaped or structural. None of them
+    // is a round trip.
+
+    fn sig_bytes(s: &Signature) -> Vec<u8> {
+        s.to_bytes().to_vec()
+    }
+
+    /// A signature over one object must not authenticate a different object.
+    /// This is the mutant's actual consequence, stated as the attack.
+    #[test]
+    fn an_object_signature_does_not_authenticate_a_different_object() {
+        let id = BrainIdentity::generate();
+        let sig_a = id.sign_federation_object("hash-aaaa");
+
+        assert!(
+            verify(
+                id.brain_id(),
+                id.verifying_key(),
+                &federation_object_signing_payload("hash-aaaa"),
+                &sig_a
+            ),
+            "precondition: the signature should verify its own object"
+        );
+        assert!(
+            !verify(
+                id.brain_id(),
+                id.verifying_key(),
+                &federation_object_signing_payload("hash-bbbb"),
+                &sig_a
+            ),
+            "a signature over one object authenticated a DIFFERENT object —              the payload does not bind the object hash"
+        );
+    }
+
+    /// Domain separation: an object attestation must not be replayable as a
+    /// retraction. Without distinct domain tags, publishing a signed object
+    /// would hand every peer a valid retraction for it.
+    #[test]
+    fn an_object_signature_cannot_be_replayed_as_a_retraction() {
+        let id = BrainIdentity::generate();
+        let target = "hash-aaaa";
+        let obj_sig = id.sign_federation_object(target);
+
+        assert_ne!(
+            federation_object_signing_payload(target),
+            federation_tombstone_signing_payload("wing", target, "2026-01-01T00:00:00Z"),
+            "object and tombstone payloads must be domain-separated"
+        );
+        assert!(
+            !verify(
+                id.brain_id(),
+                id.verifying_key(),
+                &federation_tombstone_signing_payload("wing", target, "2026-01-01T00:00:00Z"),
+                &obj_sig
+            ),
+            "an object attestation was accepted as a retraction"
+        );
+    }
+
+    /// A retraction is wing-scoped: one authorised for `wing-a` must not
+    /// suppress the same object in `wing-b`.
+    #[test]
+    fn a_retraction_does_not_replay_into_another_wing() {
+        let id = BrainIdentity::generate();
+        let ts = "2026-01-01T00:00:00Z";
+        let sig = id.sign_federation_tombstone("wing-a", "hash-aaaa", ts);
+
+        assert!(verify(
+            id.brain_id(),
+            id.verifying_key(),
+            &federation_tombstone_signing_payload("wing-a", "hash-aaaa", ts),
+            &sig
+        ));
+        assert!(
+            !verify(
+                id.brain_id(),
+                id.verifying_key(),
+                &federation_tombstone_signing_payload("wing-b", "hash-aaaa", ts),
+                &sig
+            ),
+            "a retraction authorised for wing-a was valid in wing-b"
+        );
+    }
+
+    /// Each of the retraction's three fields must be bound independently.
+    #[test]
+    fn changing_any_retraction_field_invalidates_the_signature() {
+        let id = BrainIdentity::generate();
+        let (w, t, ts) = ("wing-a", "hash-aaaa", "2026-01-01T00:00:00Z");
+        let sig = id.sign_federation_tombstone(w, t, ts);
+
+        for (label, payload) in [
+            ("wing", federation_tombstone_signing_payload("other", t, ts)),
+            (
+                "target",
+                federation_tombstone_signing_payload(w, "hash-bbbb", ts),
+            ),
+            (
+                "timestamp",
+                federation_tombstone_signing_payload(w, t, "2027-06-06T00:00:00Z"),
+            ),
+        ] {
+            assert!(
+                !verify(id.brain_id(), id.verifying_key(), &payload, &sig),
+                "changing the {label} did not invalidate the retraction signature"
+            );
+        }
+    }
+
+    /// Field-boundary unambiguity for the three-field retraction payload — the
+    /// same property `payload_is_unambiguous_across_field_boundaries` pins for
+    /// memories, applied to the second, previously untested implementation.
+    #[test]
+    fn retraction_field_boundaries_are_unambiguous() {
+        let shifted = [
+            (("ab", "c", "t"), ("a", "bc", "t")),
+            (("w", "ab", "c"), ("w", "a", "bc")),
+        ];
+        for ((w1, t1, s1), (w2, t2, s2)) in shifted {
+            assert_ne!(
+                federation_tombstone_signing_payload(w1, t1, s1),
+                federation_tombstone_signing_payload(w2, t2, s2),
+                "({w1:?},{t1:?},{s1:?}) and ({w2:?},{t2:?},{s2:?}) share a payload"
+            );
+        }
+    }
+
+    /// Structural: the payload must actually carry its domain tag and its
+    /// field bytes. Kills any constant-returning implementation directly,
+    /// rather than only through its consequences.
+    #[test]
+    fn federation_payloads_carry_their_domain_tag_and_fields() {
+        let obj = federation_object_signing_payload("hash-aaaa");
+        assert!(
+            obj.starts_with(FEDERATION_OBJ_SIG_DOMAIN),
+            "object payload lost its domain tag"
+        );
+        assert!(
+            obj.windows(9).any(|w| w == b"hash-aaaa"),
+            "object payload does not contain the object hash"
+        );
+        // domain + 4-byte length prefix + the field itself.
+        assert_eq!(obj.len(), FEDERATION_OBJ_SIG_DOMAIN.len() + 4 + 9);
+
+        let tomb = federation_tombstone_signing_payload("wing-a", "hash-aaaa", "ts");
+        assert!(
+            tomb.starts_with(FEDERATION_TOMBSTONE_SIG_DOMAIN),
+            "tombstone payload lost its domain tag"
+        );
+        assert_eq!(
+            tomb.len(),
+            FEDERATION_TOMBSTONE_SIG_DOMAIN.len() + (4 + 6) + (4 + 9) + (4 + 2)
+        );
+    }
+
+    /// Distinct inputs must give distinct payloads — a blanket guard against
+    /// any constant-returning implementation.
+    #[test]
+    fn distinct_inputs_never_share_a_federation_payload() {
+        let payloads = [
+            federation_object_signing_payload("a"),
+            federation_object_signing_payload("b"),
+            federation_tombstone_signing_payload("w", "a", "t"),
+            federation_tombstone_signing_payload("w", "b", "t"),
+        ];
+        for (i, a) in payloads.iter().enumerate() {
+            assert!(!a.is_empty(), "payload {i} is empty");
+            for (j, b) in payloads.iter().enumerate().skip(i + 1) {
+                assert_ne!(a, b, "payloads {i} and {j} collide");
+            }
+        }
+    }
+
+    /// Two brains signing the same object produce different signatures, and
+    /// neither verifies under the other's identity.
+    #[test]
+    fn a_foreign_key_cannot_attest_a_federation_object() {
+        let mine = BrainIdentity::generate();
+        let theirs = BrainIdentity::generate();
+        let payload = federation_object_signing_payload("hash-aaaa");
+
+        let their_sig = theirs.sign_federation_object("hash-aaaa");
+        assert_ne!(
+            sig_bytes(&their_sig),
+            sig_bytes(&mine.sign_federation_object("hash-aaaa"))
+        );
+        assert!(
+            !verify(mine.brain_id(), mine.verifying_key(), &payload, &their_sig),
+            "another brain's attestation verified as mine"
+        );
+    }
+
+    /// The private key file must not be group- or world-readable. Found by
+    /// mutation: `set_key_permissions` could be replaced with `Ok(())` and
+    /// nothing failed, so the 0600 mode was never actually checked.
+    #[cfg(unix)]
+    #[test]
+    fn a_persisted_signing_key_is_not_readable_by_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let _id = BrainIdentity::load_or_create(dir.path()).unwrap();
+        let path = dir.path().join("brain.key");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "signing key at {} has mode {mode:o}, expected 600 — the private              key is readable beyond its owner",
+            path.display()
+        );
+    }
 }

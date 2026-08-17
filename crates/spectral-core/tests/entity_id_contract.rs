@@ -202,3 +202,17 @@ fn debug_contains_the_full_hex_id() {
     assert!(debug.contains(&id.to_string()), "got {debug}");
     assert!(debug.starts_with("EntityId("));
 }
+
+/// `as_bytes` must return the id's real bytes, not a constant. Found by
+/// mutation: replacing it with a fixed array passed the whole suite, because
+/// every other test compares `EntityId` values or their hex rendering and
+/// never reads the bytes directly.
+#[test]
+fn as_bytes_returns_the_real_bytes_and_agrees_with_the_hex() {
+    let a = entity_id("person", "ada");
+    let b = entity_id("person", "grace");
+    assert_ne!(a.as_bytes(), b.as_bytes(), "distinct ids share as_bytes");
+
+    let hex: String = a.as_bytes().iter().map(|x| format!("{x:02x}")).collect();
+    assert_eq!(hex, a.to_string(), "as_bytes disagrees with Display");
+}
