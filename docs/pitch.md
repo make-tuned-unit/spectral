@@ -36,8 +36,8 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 > Agent memory without a vector database.
 >
 > Spectral is an embedded Rust library that recalls, *recognizes* ("have I seen
-> this?"), and adapts to use — deterministically, embedding-free, on one SQLite
-> file. $0 per query, local-first, federation-ready. 98.6% session-recall and
+> this?"), and adapts to use — deterministically, embedding-free, in one local
+> SQLite-backed folder. $0 per query, local-first, federation-ready. 98.6% session-recall and
 > 81.5% end-to-end accuracy on LongMemEval-S.
 
 ## Show HN
@@ -53,8 +53,11 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 > - Recognition — "have I seen this before, and is it new?" — via landmark
 >   fingerprinting (Shazam-style) + winnowed k-grams (MOSS) + cognitive-psych
 >   scoring, returning a familiarity/novelty verdict with the exact features
->   behind it. (That's where the name comes from: landmarks are spectral peaks
->   above the noise floor.)
+>   behind it. (That's where the name comes from: a landmark is the text
+>   *analog* of a spectral peak above the noise floor — the analogy is
+>   structural, borrowed from audio fingerprinting. There is no FFT and no
+>   actual spectrum; landmarks are rare stems, numbers and identifiers scored
+>   by IDF against the brain's own corpus.)
 > - A typed knowledge graph (2-hop, ontology-validated)
 > - Episodic / temporal recall
 > - An adaptive feedback loop — used memories strengthen; unused-ness is
@@ -83,8 +86,8 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 >
 > Spectral takes the other path. It's an embedded Rust library that gives an
 > agent six kinds of memory — recall, recognition, relational (graph), episodic,
-> adaptive, and federated — all deterministic, all embedding-free, all on one
-> SQLite file. Recall and recognition make zero model calls, so the memory layer
+> adaptive, and federated — all deterministic, all embedding-free, all in one
+> local SQLite-backed folder. Recall and recognition make zero model calls, so the memory layer
 > is free to query and byte-reproducible. It recognizes as well as recalls
 > ("have I seen this before?"), it learns from use, and it federates across
 > brains with built-in poisoning resistance.
@@ -96,6 +99,13 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 > v0.0.1, experimental, Apache-2.0. github.com/make-tuned-unit/spectral
 
 ## Honesty guardrails (don't cut these)
+
+**This list is copied downstream.** As of 2026-08-17 the permagent.ai site repo
+keeps a derived copy in `docs/design/POSITIONING-AND-DEMO-PLAN.md`. This file
+is the source of truth — it is tied to measurements, and CI cross-checks the
+recognition numbers against `recognition-benchmark-results.json`. When you edit
+a guardrail here, propagate it: the copies diverging is silent, and the failure
+shows up as a false claim on a public page rather than as a red test.
 
 - Never quote session-recall alone: pair 98.6% (retrieval stage) with 81.5%
   end-to-end accuracy (401/492) in the same sentence. No "~99%" rounding.
@@ -134,3 +144,46 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
   (fingerprint -> wing -> FTS) plus deterministic reranking. All still $0.
 - "Unused memories decay" is not ambient behaviour: use strengthens, and decay
   runs only via the opt-in Archivist.
+- **Querying the graph is $0 and deterministic; POPULATING it is not.** Triples
+  reach the graph exactly two ways: the caller asserts them
+  (`assert`/`assert_typed`), or they are extracted from free text by an
+  **LLM** (`spectral-graph/src/extract.rs` is titled "LLM-based triple
+  extraction"; there is no deterministic text-to-triple extractor). So the
+  taxonomy table's "Relational — $0, deterministic" is about *reads*. Never
+  caption a knowledge-graph screenshot with "deterministic, no LLM" or imply
+  the graph builds itself for free from conversation; say who asserted the
+  edges, or that extraction used a model.
+- **Never claim a frequency-domain mechanism** — no "frequency-domain recall",
+  no "FFT", no "we transform text into a spectrum". There is no frequency
+  transform anywhere in Spectral (no `rustfft`, no spectrum, nothing). Reached a
+  live permagent.ai page as "frequency-domain recall" (alongside a false
+  "sub-millisecond") before correction on 2026-08-17, which is why it is here.
+  The three things sharing the spectral/fingerprint vocabulary:
+  - **TACT fingerprint** (the live *recall* path) — a deterministic hash of four
+    categorical fields,
+    `make_fingerprint_hash(hall, target_hall, wing, time_bucket)`, used as a
+    routing key. Not a vector, not a spectrum.
+  - **Recognition** — three local channels: (1) IDF-scored **landmarks** plus
+    **Shazam-style pair fingerprints** (combinatorial hashes of co-occurring
+    landmarks with coarse gap buckets, after Panako), (2) **winnowed k-grams**
+    with the Schleimer/MOSS guarantee, (3) a **MinHash** sketch (on by default,
+    weight 3.0). Scored by log-inverse corpus frequency with a MINERVA-2
+    cubed-echo aggregation. This is the "peak-pair engine" in the benchmark
+    table — and note that row compares *Spectral including its MinHash channel*
+    against standalone MinHash-128.
+  - **`SpectralFingerprint`** — seven hand-engineered cognitive dimensions,
+    **retired as a recall path** (write-time spectrograms changed 0/500
+    retrieval contexts), now behind `spectrogram-legacy`.
+
+  The Shazam/Panako lineage is **real and worth telling** — it is the genuinely
+  interesting part of the design. State it as what it is: combinatorial hashing
+  of salient features, borrowed from audio fingerprinting and applied to text.
+  The crate's own words are "landmarks ... **the text analog of** spectral peaks
+  above the noise floor" — an analogy, explicitly flagged as one. Keeping the
+  analogy is fine; asserting the mechanism is not. Don't over-correct into
+  dropping the lineage.
+- Recognition's own benchmark table must keep its **adversarial-paraphrase row**
+  (PAWS: 0.4875 peak-pair, 0.4917 MinHash-128, 0.4853 BGE-small — every system
+  at chance) and the row where **plain MinHash-128 beats us** on lexical
+  re-encounter (0.9988 vs 0.9946). Cutting either turns a published trade-off
+  surface into a cherry-pick.
