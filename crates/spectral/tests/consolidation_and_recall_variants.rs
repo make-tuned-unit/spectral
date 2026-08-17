@@ -332,6 +332,17 @@ fn verify_hit_rejects_an_unsigned_hit() {
         .unwrap();
     let hit = hits.first().expect("one hit");
 
+    // POSITIVE FLOOR, in this test rather than a neighbour's. Without it,
+    // `verify_hit` hardcoded to `false` satisfies the rejection below and this
+    // test stays green — confirmed by mutation. The honest-keeping assertions
+    // previously lived in two OTHER crates, so deleting either would have
+    // silently disarmed this one.
+    assert!(
+        Brain::verify_hit(hit, b.verifying_key()),
+        "precondition: this brain's own signed hit must verify against its own \
+         key, or the rejection below proves nothing"
+    );
+
     let stranger = spectral_core::identity::BrainIdentity::generate();
     assert!(
         !Brain::verify_hit(hit, stranger.verifying_key()),

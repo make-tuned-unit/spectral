@@ -169,7 +169,26 @@ fn general_is_not_a_suggestion_target() {
         Some("general"),
         None,
     );
+    // Control: a memory that MUST be suggested, so a machinery suggesting
+    // nothing at all cannot satisfy the negative assertion below. Verified by
+    // mutation — without this, gutting suggest_reclassifications left this
+    // test green.
+    anchor(&conn, "a1", "permagent");
+    mem(
+        &conn,
+        "ctl",
+        "ctl",
+        "a note about permagent",
+        Some("general"),
+        None,
+    );
+
     let out = suggest_reclassifications(&conn, &[]).unwrap();
+    assert!(
+        out.iter().any(|s| s.key == "ctl"),
+        "precondition: the control should be suggested, or the assertion below \
+         holds only because nothing is ever suggested"
+    );
     assert!(out
         .iter()
         .all(|s| s.suggested_wing.as_deref() != Some("general")));
@@ -385,8 +404,22 @@ fn a_memory_matching_nothing_produces_no_suggestion() {
         Some("general"),
         None,
     );
+    // Control that MUST be suggested, so "nothing suggested" cannot pass by
+    // the machinery being dead.
+    mem(
+        &conn,
+        "ctl",
+        "ctl",
+        "a note about permagent",
+        Some("general"),
+        None,
+    );
 
     let out = suggest_reclassifications(&conn, &[]).unwrap();
+    assert!(
+        out.iter().any(|s| s.key == "ctl"),
+        "precondition: the control should be suggested"
+    );
     assert!(
         out.iter().all(|s| s.key != "k1"),
         "a memory matching no wing and no hall rule should produce nothing"
@@ -480,8 +513,16 @@ fn the_undecided_specificity_band_leaves_the_hall_unchanged() {
     let conn = test_db();
     mem(&conn, "m1", "k1", "c", Some("general"), Some("fact"));
     spectro(&conn, "m1", Some(0.1), Some(0.9), Some(0.4));
+    // Control in the DECIDED band, so a machinery suggesting no halls at all
+    // cannot satisfy the negative assertion.
+    mem(&conn, "m2", "ctl", "c", Some("general"), Some("fact"));
+    spectro(&conn, "m2", Some(0.9), None, None);
 
     let out = suggest_reclassifications(&conn, &[]).unwrap();
+    assert!(
+        out.iter().any(|s| s.key == "ctl"),
+        "precondition: a strong polarity should yield a hall suggestion"
+    );
     assert!(
         out.iter().all(|s| s.key != "k1"),
         "a memory in the undecided band was given a hall suggestion anyway"
