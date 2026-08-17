@@ -36,8 +36,8 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 > Agent memory without a vector database.
 >
 > Spectral is an embedded Rust library that recalls, *recognizes* ("have I seen
-> this?"), and adapts to use — deterministically, embedding-free, on one SQLite
-> file. $0 per query, local-first, federation-ready. 98.6% session-recall and
+> this?"), and adapts to use — deterministically, embedding-free, in one local
+> SQLite-backed folder. $0 per query, local-first, federation-ready. 98.6% session-recall and
 > 81.5% end-to-end accuracy on LongMemEval-S.
 
 ## Show HN
@@ -53,8 +53,11 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 > - Recognition — "have I seen this before, and is it new?" — via landmark
 >   fingerprinting (Shazam-style) + winnowed k-grams (MOSS) + cognitive-psych
 >   scoring, returning a familiarity/novelty verdict with the exact features
->   behind it. (That's where the name comes from: landmarks are spectral peaks
->   above the noise floor.)
+>   behind it. (That's where the name comes from: a landmark is the text
+>   *analog* of a spectral peak above the noise floor — the analogy is
+>   structural, borrowed from audio fingerprinting. There is no FFT and no
+>   actual spectrum; landmarks are rare stems, numbers and identifiers scored
+>   by IDF against the brain's own corpus.)
 > - A typed knowledge graph (2-hop, ontology-validated)
 > - Episodic / temporal recall
 > - An adaptive feedback loop — used memories strengthen; unused-ness is
@@ -83,8 +86,8 @@ benchmark; keep it that way when editing. See `README.md` for the full story and
 >
 > Spectral takes the other path. It's an embedded Rust library that gives an
 > agent six kinds of memory — recall, recognition, relational (graph), episodic,
-> adaptive, and federated — all deterministic, all embedding-free, all on one
-> SQLite file. Recall and recognition make zero model calls, so the memory layer
+> adaptive, and federated — all deterministic, all embedding-free, all in one
+> local SQLite-backed folder. Recall and recognition make zero model calls, so the memory layer
 > is free to query and byte-reproducible. It recognizes as well as recalls
 > ("have I seen this before?"), it learns from use, and it federates across
 > brains with built-in poisoning resistance.
@@ -141,18 +144,35 @@ shows up as a false claim on a public page rather than as a red test.
   (fingerprint -> wing -> FTS) plus deterministic reranking. All still $0.
 - "Unused memories decay" is not ambient behaviour: use strengthens, and decay
   runs only via the opt-in Archivist.
-- **Never say "frequency-domain", "spectrum", or "FFT".** There is no frequency
-  transform anywhere in Spectral. Three separate things share the
-  spectral/fingerprint vocabulary and none is one: the **TACT fingerprint** is a
-  deterministic hash of four categorical fields
-  (`make_fingerprint_hash(hall, target_hall, wing, time_bucket)`) used as a
-  routing key; **recognition** is MinHash plus winnowed k-grams
-  (Schleimer/MOSS); and `SpectralFingerprint` is seven hand-engineered cognitive
-  dimensions, **retired as a recall path** (enabling write-time spectrograms
-  changed 0/500 retrieval contexts) and now behind the `spectrogram-legacy`
-  feature. The name is branding. This reached a live permagent.ai page as
-  "frequency-domain recall" before being corrected on 2026-08-17, which is why
-  it is written down here.
+- **Never claim a frequency-domain mechanism** — no "frequency-domain recall",
+  no "FFT", no "we transform text into a spectrum". There is no frequency
+  transform anywhere in Spectral (no `rustfft`, no spectrum, nothing). Reached a
+  live permagent.ai page as "frequency-domain recall" (alongside a false
+  "sub-millisecond") before correction on 2026-08-17, which is why it is here.
+  The three things sharing the spectral/fingerprint vocabulary:
+  - **TACT fingerprint** (the live *recall* path) — a deterministic hash of four
+    categorical fields,
+    `make_fingerprint_hash(hall, target_hall, wing, time_bucket)`, used as a
+    routing key. Not a vector, not a spectrum.
+  - **Recognition** — three local channels: (1) IDF-scored **landmarks** plus
+    **Shazam-style pair fingerprints** (combinatorial hashes of co-occurring
+    landmarks with coarse gap buckets, after Panako), (2) **winnowed k-grams**
+    with the Schleimer/MOSS guarantee, (3) a **MinHash** sketch (on by default,
+    weight 3.0). Scored by log-inverse corpus frequency with a MINERVA-2
+    cubed-echo aggregation. This is the "peak-pair engine" in the benchmark
+    table — and note that row compares *Spectral including its MinHash channel*
+    against standalone MinHash-128.
+  - **`SpectralFingerprint`** — seven hand-engineered cognitive dimensions,
+    **retired as a recall path** (write-time spectrograms changed 0/500
+    retrieval contexts), now behind `spectrogram-legacy`.
+
+  The Shazam/Panako lineage is **real and worth telling** — it is the genuinely
+  interesting part of the design. State it as what it is: combinatorial hashing
+  of salient features, borrowed from audio fingerprinting and applied to text.
+  The crate's own words are "landmarks ... **the text analog of** spectral peaks
+  above the noise floor" — an analogy, explicitly flagged as one. Keeping the
+  analogy is fine; asserting the mechanism is not. Don't over-correct into
+  dropping the lineage.
 - Recognition's own benchmark table must keep its **adversarial-paraphrase row**
   (PAWS: 0.4875 peak-pair, 0.4917 MinHash-128, 0.4853 BGE-small — every system
   at chance) and the row where **plain MinHash-128 beats us** on lexical
