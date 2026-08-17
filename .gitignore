@@ -42,3 +42,7 @@ paraphrase-misses.txt
 
 # claude-mem plugin writes this at session start; not project source
 AGENTS.md
+
+# cargo-mutants working output
+mutants.out/
+mutants.out.old/

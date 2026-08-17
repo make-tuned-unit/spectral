@@ -1,0 +1,56 @@
+# cargo-mutants configuration.
+#
+# Mutation testing answers the one question coverage cannot: *can this test
+# fail?* It is the tool for the failure mode this codebase keeps hitting —
+# tests that pass over zero hits, oracles that call the function under test,
+# and catch-all arms that look covered because a known input shares them.
+#
+# Run the whole thing:            cargo mutants
+# One crate:                      cargo mutants -p spectral-core
+# Only what a diff touched:       cargo mutants --in-diff git.diff
+# Re-check specific functions:    cargo mutants --re "length_prefixed"
+#
+# CI runs `--in-diff` on every pull request (.github/workflows/mutants.yml), so
+# changed lines are checked automatically. Whole-workspace runs are manual:
+# there are ~8,800 mutants and a full pass is hours, not minutes.
+
+# Benchmark and measurement harnesses are excluded. They are more than half of
+# all mutants (spectral-bench-real alone is ~3,400 of ~8,800) and they are not
+# shipped library behaviour; their correctness is established by preregistered
+# experiments and the measured record, not by unit tests. Including them would
+# bury real library findings under harness noise.
+exclude_globs = [
+    "crates/spectral-bench-real/**",
+    "crates/spectral-bench-accuracy/**",
+    # Spectrogram-as-recall is retired (0/500 retrieval contexts changed,
+    # ORACLE_TIER0) and lives behind the off-by-default `spectrogram-legacy`
+    # feature. Not worth pinning behaviour we have decided not to ship.
+    "crates/spectral-spectrogram/**",
+]
+
+# Provably equivalent mutants: no test can ever kill these, so leaving them in
+# the report trains us to ignore MISSED lines, which is exactly the habit that
+# lets a real one through.
+#
+# `hex_val` returns a nibble (0..=15), so in `(hi << 4) | lo` the operands
+# occupy disjoint bit ranges and `|` and `^` are identical for every input.
+# Verified by exhaustive enumeration of all 256 nibble pairs.
+#
+# `cut` is a `usize` and `str::is_char_boundary(0)` is always true, so
+# `while cut > 0 && !is_char_boundary(cut)` and `while cut >= 0 && ...` exit
+# identically at zero and are the same loop for every input.
+exclude_re = [
+    "replace \\| with \\^ in <impl FromStr for EntityId>::from_str",
+    "replace \\| with \\^ in <impl FromStr for DeviceId>::from_str",
+    "replace > with >= in build_context_bundle",
+]
+
+# Several suites open SQLite files and build brains, so they are meaningfully
+# slower than pure-logic tests. The auto-set timeout is derived from an
+# unmutated baseline; a floor stops a slow-but-correct suite being reported as
+# a TIMEOUT, which reads like a finding and is not one.
+minimum_test_timeout = 120
+
+# A mutant that makes code loop forever should be caught by the timeout rather
+# than allowed to run for a multiple of an already-slow baseline.
+timeout_multiplier = 3.0

@@ -1,0 +1,80 @@
+# Mutation testing.
+#
+# Coverage says a line ran. Mutation testing says whether a test would have
+# *noticed* if that line were wrong — which is the question this codebase keeps
+# getting wrong. Every defect found in the recent verification sweep was found
+# by mutation, not by reading: a sovereignty property test that used the
+# predicate it was testing as its own oracle, a catch-all arm that looked
+# covered because a known input shared it, and a federation signing payload
+# that could be replaced by a constant with all 1,194 tests still green.
+#
+# Two jobs:
+#
+#   incremental — runs on every pull request, over the diff only. Fast enough
+#                 to gate on, and it asks the right question of new code: does
+#                 the test you just wrote actually pin the behaviour?
+#
+#   crown-jewels — runs the crates where a silent failure is a security
+#                 failure, in full. spectral-core holds brain identity, Ed25519
+#                 signing payloads and the visibility predicate; it is small
+#                 (~90 mutants, ~90s) and is expected to stay at zero missed.
+#
+# A whole-workspace run is ~8,800 mutants and takes hours, so it is deliberately
+# manual: `cargo mutants -p <crate>`. See .cargo/mutants.toml.
+
+name: Mutants
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  incremental:
+    name: mutants (diff)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # --in-diff needs the merge base, so the shallow default will not do.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: Diff against the base branch
+        run: git diff origin/${{ github.base_ref }}.. | tee git.diff
+      - name: Test mutants in the diff
+        run: cargo mutants --no-shuffle -vV --in-diff git.diff
+      - name: Archive results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants-incremental.out
+          path: mutants.out
+
+  crown-jewels:
+    name: mutants (spectral-core, full)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: Full mutation run over identity, signing and visibility
+        run: cargo mutants --no-shuffle -vV -p spectral-core
+      - name: Archive results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants-spectral-core.out
+          path: mutants.out
