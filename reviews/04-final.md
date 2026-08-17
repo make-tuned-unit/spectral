@@ -219,3 +219,70 @@ Every review finding is now either fixed, or on the three-item list above with
 a stated reason and a recommendation. `cargo audit` exits 0, coverage is
 measured at 67.34% lines, the ignored-test count is back to its pre-existing
 3, and the suite is at 930 passing.
+
+---
+
+## Addendum: `Visibility::allows` had no direct test, and its own property test was tautological
+
+Found after the review closed, prompted by an external note that a pure
+verdict function needs at least one test aimed at the function itself.
+
+`Visibility::allows` is the predicate every sovereignty guarantee reduces to.
+It had **23 production call sites and zero direct tests**. Worse, the headline
+sovereignty property test
+(`spectral-graph/tests/property_invariants.rs::no_scoped_recall_ever_returns_an_inadmissible_hit`)
+used `allows` as its *oracle*: production filtered with
+`str_to_vis(..).allows(visibility)` and the assertion compared against
+`parse_vis(&h.visibility).allows(*scope)`. Both sides shared the predicate, so
+the test could only ever confirm that production agreed with itself.
+
+### Measured, not argued
+
+Four mutation runs, each with the source restored afterwards:
+
+| mutant | old oracle | new oracle |
+|---|---|---|
+| `allows` inverted (`<=`) only | property test **passed** | property test **passed** |
+| `allows` **and** the SQL rank predicate inverted | property test **passed** | property test **FAILED** |
+
+The second row is the point. With the tautological oracle, inverting the
+*entire admissibility rule in both implementations at once* — a total
+sovereignty breach, private content served to public scopes — left the
+property test green. It now fails.
+
+### Why inverting `allows` alone does not leak
+
+This was a genuine surprise and is worth recording. Inverting `allows` by
+itself does not produce a leak through FTS recall, because the R-20 visibility
+pushdown wrote the rule a **second, independent time** as the SQL rank
+expression `VIS_RANK_SQL >= {vis_rank}`, which does not call `allows`. SQL
+removes the inadmissible rows before the Rust `retain` ever runs. The
+predicate being wrong in Rust is masked by the predicate being right in SQL.
+
+That is real defence in depth rather than luck, but it is *undocumented*
+defence in depth, and it cuts both ways: it also means a bug in `allows`
+cannot be detected by any test that only exercises FTS recall. The 24 tests
+that do catch the single inversion all reach `allows` through paths with no SQL
+predicate — federation fan-out, spreading activation, cascade retrieval.
+
+### Fixed
+
+1. `spectral-core/src/visibility.rs` — a new `allows_truth_table` module
+   enumerating all 16 (content, context) pairs with literal expected values,
+   plus tests for asymmetry, reflexivity, and that the table contains both
+   outcomes (so a collapsed all-true table cannot pass a matching bug). The
+   doc comment forbids re-deriving the table from `>=`, `Ord`, or `allows`.
+   Verified against three mutants — `<=`, `>`, and `true` — all killed.
+2. The property test now asserts through `admissible_independently`, a
+   hand-written rank comparison local to the test file, so production and test
+   no longer share an implementation.
+
+Suite: 1174 passing, `clippy --all-targets --all-features -D warnings` clean,
+`fmt --check` clean.
+
+### Generalisable lesson
+
+A test whose oracle calls the function under test proves only self-consistency.
+Two of this project's guarantees were being checked that way. The check that
+catches it is cheap: invert the function and confirm *that specific test* goes
+red, not merely that some test somewhere does.

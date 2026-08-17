@@ -88,3 +88,95 @@ impl Visibility {
         *self >= target
     }
 }
+
+/// The admissibility rule, enumerated by hand.
+///
+/// `allows` is the single predicate every sovereignty guarantee rests on, and
+/// it had **no direct test** despite 23 production call sites. What tests it
+/// did have exercised it only indirectly, and the headline sovereignty property
+/// test in `spectral-graph` used `allows` as its own *oracle* — so inverting
+/// the predicate inverted both sides of the assertion and the property stayed
+/// green.
+///
+/// Every case below is therefore written out with a literal expected value.
+/// Do not replace this table with a loop over `>=`, `Ord`, or `allows` itself:
+/// a table derived from the implementation restates it rather than checking it.
+#[cfg(test)]
+mod allows_truth_table {
+    use super::Visibility::{Org, Private, Public, Team};
+
+    /// All 4x4 (content, context) pairs with the admissible answer spelled out.
+    ///
+    /// Read as: content at row level, offered into a context requiring column
+    /// level. Content is admissible when it is at least as permissive as the
+    /// context requires, so the true region is the lower-left triangle
+    /// including the diagonal.
+    const TABLE: [(super::Visibility, super::Visibility, bool); 16] = [
+        // Private content is admissible only in a Private context.
+        (Private, Private, true),
+        (Private, Team, false),
+        (Private, Org, false),
+        (Private, Public, false),
+        // Team content is admissible in Private and Team contexts.
+        (Team, Private, true),
+        (Team, Team, true),
+        (Team, Org, false),
+        (Team, Public, false),
+        // Org content is admissible everywhere except a Public context.
+        (Org, Private, true),
+        (Org, Team, true),
+        (Org, Org, true),
+        (Org, Public, false),
+        // Public content is admissible in every context.
+        (Public, Private, true),
+        (Public, Team, true),
+        (Public, Org, true),
+        (Public, Public, true),
+    ];
+
+    #[test]
+    fn the_full_admissibility_table_is_enumerated_by_hand() {
+        for (content, context, expected) in TABLE {
+            assert_eq!(
+                content.allows(context),
+                expected,
+                "{content:?} content offered into a {context:?} context: \
+                 expected allows() == {expected}"
+            );
+        }
+    }
+
+    /// Guards the table itself. If a future edit collapsed it to all-true or
+    /// all-false, the loop above would still pass against a matching bug; this
+    /// pins that the rule actually discriminates.
+    #[test]
+    fn the_table_contains_both_outcomes() {
+        assert_eq!(
+            TABLE.iter().filter(|(_, _, e)| *e).count(),
+            10,
+            "the admissible region should be the 10-cell lower triangle"
+        );
+        assert_eq!(TABLE.iter().filter(|(_, _, e)| !*e).count(), 6);
+    }
+
+    /// The asymmetry is the whole point: admissibility is directional, so a
+    /// predicate that accidentally became symmetric (`==`, or an unordered
+    /// comparison) must fail.
+    #[test]
+    fn admissibility_is_directional_not_symmetric() {
+        assert!(Public.allows(Private), "public content suits any context");
+        assert!(
+            !Private.allows(Public),
+            "private content must never be admissible in a public context"
+        );
+    }
+
+    /// Every level admits itself. Stated separately so a predicate that became
+    /// strictly greater-than fails here rather than only inside the loop.
+    #[test]
+    fn every_level_admits_its_own_context() {
+        for v in [Private, Team, Org, Public] {
+            assert!(v.allows(v), "{v:?} content should suit a {v:?} context");
+        }
+    }
+}

@@ -83,6 +83,33 @@ fn parse_vis(s: &str) -> Visibility {
     }
 }
 
+/// Admissibility, decided **independently** of `Visibility::allows`.
+///
+/// The sovereignty property below previously asserted with `allows` — the same
+/// predicate production filters with. Inverting `allows` therefore inverted
+/// both sides and the property stayed green; confirmed by mutation, where 24
+/// other tests caught it and this one did not. An oracle that shares its
+/// implementation with the subject tests only that production is
+/// self-consistent, never that the rule is right.
+///
+/// This rank is written out by hand for that reason. Do not refactor it to
+/// call `allows`, `Ord`, or anything derived from them.
+fn admissible_independently(content: &str, context: Visibility) -> bool {
+    let rank = |v: &str| match v {
+        "team" => 1,
+        "org" => 2,
+        "public" => 3,
+        _ => 0, // private and anything unrecognised
+    };
+    let ctx = match context {
+        Visibility::Private => 0,
+        Visibility::Team => 1,
+        Visibility::Org => 2,
+        Visibility::Public => 3,
+    };
+    rank(content) >= ctx
+}
+
 /// One generated memory.
 struct Gen {
     key: String,
@@ -177,7 +204,7 @@ fn no_scoped_recall_ever_returns_an_inadmissible_hit() {
                     examined += 1;
                     let label = parse_vis(&h.visibility);
                     assert!(
-                        label.allows(*scope),
+                        admissible_independently(&h.visibility, *scope),
                         "seed {seed}: a {:?} memory ({}) was returned to a {scope:?} \
                          scoped recall for query {q:?}",
                         label,
