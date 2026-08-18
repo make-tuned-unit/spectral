@@ -1312,6 +1312,60 @@ fn forget_report_never_treats_probe_failure_as_verified() {
 }
 
 #[test]
+fn a_truncated_scan_never_prunes_enrolments() {
+    // The guard on the prune step, and the dangerous one to get wrong.
+    //
+    // Pruning asks "is this enrolled id absent from the memories I scanned?".
+    // If the scan was TRUNCATED at `limit`, the memories it never reached look
+    // absent too, and pruning would delete the enrolments of perfectly live
+    // memories. `scanned < limit` is the signal that the scan was exhaustive.
+    //
+    // Mutation found this untested: flipping it to `<=` survived the suite,
+    // and `<=` is exactly the broken case — it permits pruning precisely when
+    // the scan filled its limit, which is when truncation is most likely.
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    for i in 0..4 {
+        brain
+            .remember(
+                &format!("m{i}"),
+                &format!("the deploy failed with exit 137 on attempt {i}"),
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+
+    let enrolled_before = {
+        let store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        store.enrolled_count().unwrap()
+    };
+    assert_eq!(enrolled_before, 4, "precondition: all four enrolled");
+
+    // Scan only two of four: `scanned == limit`, so the scan is truncated and
+    // the other two memories are simply unseen — not deleted.
+    let rep = brain.repair_derivations(2).unwrap();
+    assert_eq!(rep.scanned, 2, "precondition: the scan should be truncated");
+    assert_eq!(
+        rep.orphaned_enrollments_pruned, 0,
+        "a truncated scan pruned enrolments — the unscanned memories were \
+         mistaken for deleted ones"
+    );
+
+    let store =
+        spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+            .unwrap();
+    assert_eq!(
+        store.enrolled_count().unwrap(),
+        4,
+        "live memories lost their enrolment to a truncated scan"
+    );
+}
+
+#[test]
 fn orphaned_recognition_entries_are_detected_and_pruned() {
     // The reverse of the missing-enrolment check, and the direction nothing
     // could see: `is_enrolled` only answers about an id you already hold, so

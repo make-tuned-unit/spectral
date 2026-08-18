@@ -457,6 +457,62 @@ mod tests {
     use crate::{fingerprint_stimulus, RecognitionConfig};
 
     #[test]
+    fn enrolled_ids_lists_exactly_what_was_enrolled() {
+        // `enrolled_ids` is the only way to check the index in the
+        // index -> memory direction, which is what makes orphan detection
+        // possible at all. Returning an empty vec would make every orphan
+        // invisible and report a clean brain — the silent pass this method
+        // exists to prevent. Mutation found both impls unprotected: the tests
+        // that exercise it live in `spectral-graph`, so this crate's own suite
+        // never touched it.
+        for (label, mut store) in [
+            (
+                "in-memory",
+                Box::new(InMemoryRecognitionStore::default()) as Box<dyn RecognitionStore>,
+            ),
+            ("sqlite", {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("r.db");
+                // Leak the tempdir for the lifetime of the test so the file
+                // outlives this tuple.
+                std::mem::forget(dir);
+                Box::new(SqliteRecognitionStore::open(&path).unwrap()) as Box<dyn RecognitionStore>
+            }),
+        ] {
+            assert!(
+                store.enrolled_ids().unwrap().is_empty(),
+                "{label}: a fresh store should list nothing"
+            );
+
+            let prints = crate::extract::fingerprint_stimulus(
+                "the deploy failed with exit 137 during the rollout",
+                &RecognitionConfig::default(),
+            );
+            store.index_memory("m-alpha", &prints).unwrap();
+            store.index_memory("m-beta", &prints).unwrap();
+
+            let ids = store.enrolled_ids().unwrap();
+            assert_eq!(ids.len(), 2, "{label}: expected two ids, got {ids:?}");
+            assert!(ids.contains(&"m-alpha".to_string()), "{label}: {ids:?}");
+            assert!(ids.contains(&"m-beta".to_string()), "{label}: {ids:?}");
+            assert_eq!(
+                ids.len(),
+                store.enrolled_count().unwrap(),
+                "{label}: enrolled_ids disagrees with enrolled_count"
+            );
+
+            // Sorted, so two runs can be diffed.
+            let mut sorted = ids.clone();
+            sorted.sort();
+            assert_eq!(ids, sorted, "{label}: ids are not sorted");
+
+            store.forget_memory("m-alpha").unwrap();
+            let after = store.enrolled_ids().unwrap();
+            assert_eq!(after, vec!["m-beta".to_string()], "{label}: {after:?}");
+        }
+    }
+
+    #[test]
     fn sqlite_store_roundtrip_matches_inmemory() {
         let cfg = RecognitionConfig::default();
         let dir = tempfile::tempdir().unwrap();
