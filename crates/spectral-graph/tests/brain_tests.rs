@@ -1312,6 +1312,71 @@ fn forget_report_never_treats_probe_failure_as_verified() {
 }
 
 #[test]
+fn derivation_health_reports_unenrolled_memories() {
+    // Enrolment during `remember` is deliberately non-fatal — a warning, not an
+    // error — so failures accumulate silently. Before this field existed,
+    // `derivation_health` said nothing about it and `is_healthy()` could return
+    // true for a brain most of which recognition could not see.
+    //
+    // Measured on a real 2,807-memory production brain: 1,214 enrolled (43.2%),
+    // while content_hash and signature coverage looked merely mediocre and the
+    // gap that actually mattered was invisible.
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    let victim_id = {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        let mut first = None;
+        for i in 0..3 {
+            let r = brain
+                .remember(
+                    &format!("m{i}"),
+                    &format!("the deploy failed with exit 137 on attempt number {i}"),
+                    Visibility::Private,
+                )
+                .unwrap();
+            first.get_or_insert(r.memory_id.clone());
+        }
+
+        let healthy = brain.derivation_health(100).unwrap();
+        assert_eq!(
+            healthy.missing_recognition_enrollment, 0,
+            "freshly written memories should all be enrolled"
+        );
+        assert!(
+            healthy.is_healthy(),
+            "a fully derived brain should be healthy"
+        );
+        first.unwrap()
+    };
+
+    // Unenrol one memory while leaving its row in place — exactly the state a
+    // non-fatal enrolment failure leaves behind. Done through the recognition
+    // store directly, after the brain has released it.
+    {
+        let mut store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        assert!(
+            store.forget_memory(&victim_id).unwrap(),
+            "precondition: the victim should have been enrolled"
+        );
+    }
+
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    let degraded = brain.derivation_health(100).unwrap();
+    assert_eq!(
+        degraded.missing_recognition_enrollment, 1,
+        "an unenrolled memory was not reported"
+    );
+    assert!(
+        !degraded.is_healthy(),
+        "a brain with an unenrolled memory must not report healthy — that is \
+         the silent pass this field exists to prevent"
+    );
+}
+
+#[test]
 fn derivation_health_detects_and_repairs_legacy_gaps() {
     let tmp = TempDir::new().unwrap();
     let memory_db = tmp.path().join("memory.db");

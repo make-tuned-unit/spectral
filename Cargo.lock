@@ -2645,6 +2645,7 @@ dependencies = [
  "fastembed",
  "regex",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "spectral-cascade",
