@@ -2812,6 +2812,7 @@ version = "0.0.1"
 dependencies = [
  "chrono",
  "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "spectral-core",
