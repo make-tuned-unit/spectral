@@ -25,6 +25,19 @@ pub struct FeatureMatch {
 pub trait RecognitionStore {
     fn is_enrolled(&self, memory_id: &str) -> Result<bool>;
     fn enrolled_count(&self) -> Result<usize>;
+    /// Every enrolled memory id.
+    ///
+    /// Needed to find **orphans**: enrolled ids whose memory row no longer
+    /// exists. Without enumeration an orphan is undetectable — `is_enrolled`
+    /// can only answer about an id you already have, so a store can only be
+    /// checked in the direction memory→index, never index→memory.
+    ///
+    /// Orphans matter twice over. `recognize()` can return
+    /// `Recognized { memory_id }` for a memory that is gone, which the caller
+    /// cannot resolve; and features derived from deleted content stay
+    /// matchable, which is a right-to-be-forgotten residue rather than a
+    /// cosmetic inconsistency.
+    fn enrolled_ids(&self) -> Result<Vec<String>>;
     /// Index all fingerprints of a memory and mark it enrolled.
     fn index_memory(&mut self, memory_id: &str, prints: &StimulusPrints) -> Result<()>;
     /// All stored pair-feature matches for the given stimulus hashes.
@@ -90,6 +103,12 @@ impl RecognitionStore for InMemoryRecognitionStore {
 
     fn enrolled_count(&self) -> Result<usize> {
         Ok(self.enrolled.len())
+    }
+
+    fn enrolled_ids(&self) -> Result<Vec<String>> {
+        let mut ids: Vec<String> = self.enrolled.iter().cloned().collect();
+        ids.sort(); // deterministic, so callers can diff two runs
+        Ok(ids)
     }
 
     fn index_memory(&mut self, memory_id: &str, prints: &StimulusPrints) -> Result<()> {
@@ -309,6 +328,18 @@ impl RecognitionStore for SqliteRecognitionStore {
                 r.get(0)
             })?;
         Ok(n as usize)
+    }
+
+    fn enrolled_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT memory_id FROM recognition_enrolled ORDER BY memory_id")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
     }
 
     fn index_memory(&mut self, memory_id: &str, prints: &StimulusPrints) -> Result<()> {
