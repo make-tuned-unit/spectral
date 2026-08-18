@@ -1312,6 +1312,135 @@ fn forget_report_never_treats_probe_failure_as_verified() {
 }
 
 #[test]
+fn a_truncated_scan_never_prunes_enrolments() {
+    // The guard on the prune step, and the dangerous one to get wrong.
+    //
+    // Pruning asks "is this enrolled id absent from the memories I scanned?".
+    // If the scan was TRUNCATED at `limit`, the memories it never reached look
+    // absent too, and pruning would delete the enrolments of perfectly live
+    // memories. `scanned < limit` is the signal that the scan was exhaustive.
+    //
+    // Mutation found this untested: flipping it to `<=` survived the suite,
+    // and `<=` is exactly the broken case — it permits pruning precisely when
+    // the scan filled its limit, which is when truncation is most likely.
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    for i in 0..4 {
+        brain
+            .remember(
+                &format!("m{i}"),
+                &format!("the deploy failed with exit 137 on attempt {i}"),
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+
+    let enrolled_before = {
+        let store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        store.enrolled_count().unwrap()
+    };
+    assert_eq!(enrolled_before, 4, "precondition: all four enrolled");
+
+    // Scan only two of four: `scanned == limit`, so the scan is truncated and
+    // the other two memories are simply unseen — not deleted.
+    let rep = brain.repair_derivations(2).unwrap();
+    assert_eq!(rep.scanned, 2, "precondition: the scan should be truncated");
+    assert_eq!(
+        rep.orphaned_enrollments_pruned, 0,
+        "a truncated scan pruned enrolments — the unscanned memories were \
+         mistaken for deleted ones"
+    );
+
+    let store =
+        spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+            .unwrap();
+    assert_eq!(
+        store.enrolled_count().unwrap(),
+        4,
+        "live memories lost their enrolment to a truncated scan"
+    );
+}
+
+#[test]
+fn orphaned_recognition_entries_are_detected_and_pruned() {
+    // The reverse of the missing-enrolment check, and the direction nothing
+    // could see: `is_enrolled` only answers about an id you already hold, so
+    // the index could only ever be checked memory -> index.
+    //
+    // Found on a real brain immediately after a SUCCESSFUL repair: 2,925
+    // enrolled against 2,807 memories. The gap only surfaced because an
+    // enrolment percentage went above 100.
+    //
+    // Orphans are not cosmetic: `recognize()` can return a `memory_id` that no
+    // longer resolves, and features derived from deleted content stay
+    // matchable, which is deletion residue rather than an inconsistency.
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        brain
+            .remember(
+                "keep",
+                "the deploy runbook covers rollback",
+                Visibility::Private,
+            )
+            .unwrap();
+        assert!(brain.derivation_health(1000).unwrap().is_healthy());
+    }
+
+    // Enrol an id that has no memory row — exactly what a delete that bypassed
+    // `forget` leaves behind.
+    {
+        let store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        let mut engine = spectral_recognition::RecognitionEngine::new(store, Default::default());
+        engine
+            .enroll(
+                "ghost-of-a-deleted-memory",
+                "content that was deleted long ago",
+            )
+            .unwrap();
+    }
+
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    let before = brain.derivation_health(1000).unwrap();
+    assert_eq!(
+        before.orphaned_recognition_entries, 1,
+        "an enrolled id with no memory row was not reported"
+    );
+    assert!(
+        !before.is_healthy(),
+        "a brain carrying deletion residue must not report healthy"
+    );
+
+    let rep = brain.repair_derivations(1000).unwrap();
+    assert_eq!(
+        rep.orphaned_enrollments_pruned, 1,
+        "repair did not prune the orphan"
+    );
+
+    let after = brain.derivation_health(1000).unwrap();
+    assert_eq!(after.orphaned_recognition_entries, 0);
+    assert!(after.is_healthy(), "brain should be healthy after pruning");
+
+    // And the surviving memory is untouched — pruning must not be a blunt wipe.
+    let store =
+        spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+            .unwrap();
+    assert_eq!(
+        store.enrolled_count().unwrap(),
+        1,
+        "pruning removed a live memory's enrolment"
+    );
+}
+
+#[test]
 fn derivation_health_reports_unenrolled_memories() {
     // Enrolment during `remember` is deliberately non-fatal — a warning, not an
     // error — so failures accumulate silently. Before this field existed,

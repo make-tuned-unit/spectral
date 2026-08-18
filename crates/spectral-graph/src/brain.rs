@@ -279,6 +279,19 @@ pub struct DerivationHealthReport {
     pub missing_content_hash: usize,
     pub missing_declarative_density: usize,
     pub missing_signature: usize,
+    /// Recognition entries whose memory row no longer exists.
+    ///
+    /// The reverse direction of [`Self::missing_recognition_enrollment`], and
+    /// the one nothing could see before: `is_enrolled` only answers about an id
+    /// you already hold, so the index could only be checked memory→index.
+    /// Measured on a real brain immediately after a successful repair: 2,925
+    /// enrolled against 2,807 memories — 118 orphans, invisible until the
+    /// enrolment percentage went above 100.
+    ///
+    /// These are not cosmetic. `recognize()` can return
+    /// `Recognized { memory_id }` for a memory that is gone, and features
+    /// derived from deleted content remain matchable.
+    pub orphaned_recognition_entries: usize,
     /// Scanned memories absent from the recognition index.
     ///
     /// A memory that was never enrolled is **invisible to recognition** — it
@@ -299,7 +312,8 @@ impl DerivationHealthReport {
         let healthy = self.missing_content_hash == 0
             && self.missing_declarative_density == 0
             && self.missing_signature == 0
-            && self.missing_recognition_enrollment == 0;
+            && self.missing_recognition_enrollment == 0
+            && self.orphaned_recognition_entries == 0;
         #[cfg(feature = "spectrogram-legacy")]
         let healthy = healthy && self.missing_spectrogram == 0;
         healthy
@@ -314,6 +328,12 @@ pub struct DerivationRepairReport {
     pub densities_repaired: usize,
     pub signatures_repaired: usize,
     pub recognition_enrollments_refreshed: usize,
+    /// Recognition entries removed because their memory row no longer exists.
+    ///
+    /// Repair previously only added what was missing; nothing pruned what was
+    /// stale, so residue from deleted memories accumulated indefinitely and
+    /// stayed matchable.
+    pub orphaned_enrollments_pruned: usize,
     /// Only present with the `spectrogram-legacy` feature: spectrogram-as-recall
     /// is retired (0/500 contexts changed, ORACLE_TIER0).
     #[cfg(feature = "spectrogram-legacy")]
@@ -3353,6 +3373,19 @@ impl Brain {
                 .iter()
                 .filter(|memory| memory.signature.is_none())
                 .count(),
+            orphaned_recognition_entries: match self.recognition.lock() {
+                Ok(engine) => {
+                    use spectral_recognition::RecognitionStore as _;
+                    let live: std::collections::HashSet<&str> =
+                        memories.iter().map(|m| m.id.as_str()).collect();
+                    engine
+                        .store()
+                        .enrolled_ids()
+                        .map(|ids| ids.iter().filter(|id| !live.contains(id.as_str())).count())
+                        .unwrap_or(0)
+                }
+                Err(_) => 0,
+            },
             missing_recognition_enrollment: match self.recognition.lock() {
                 // A per-memory store error counts as "not enrolled" rather than
                 // being swallowed as "fine". An index we cannot read is a health
@@ -3409,6 +3442,11 @@ impl Brain {
             ..DerivationRepairReport::default()
         };
 
+        // Captured before the loop consumes `memories`, so the prune step
+        // below can tell a live memory from a deleted one.
+        let live_ids: std::collections::HashSet<String> =
+            memories.iter().map(|m| m.id.clone()).collect();
+
         for memory in memories {
             if memory.declarative_density.is_none() {
                 let density = crate::ranking::declarative_density(&memory.content);
@@ -3449,6 +3487,32 @@ impl Brain {
                 .enroll(&memory.id, &memory.content)
                 .map_err(|e| Error::Schema(format!("recognition repair failed: {e}")))?;
             report.recognition_enrollments_refreshed += 1;
+        }
+
+        // Prune the other direction. Re-enrolling repairs memories missing from
+        // the index; it does nothing about index entries whose memory is gone.
+        // Deleting through `forget` clears both, but a memory removed by any
+        // other path leaves its features behind, still matchable.
+        //
+        // Only safe when the scan covered the whole corpus: with a partial scan
+        // the unscanned memories look absent and their entries would be
+        // destroyed. `scanned < limit` is the signal that the scan was
+        // exhaustive rather than truncated.
+        if report.scanned < limit {
+            let live = &live_ids;
+            let mut engine = self
+                .recognition
+                .lock()
+                .map_err(|e| Error::Schema(format!("recognition lock poisoned: {e}")))?;
+            let enrolled = {
+                use spectral_recognition::RecognitionStore as _;
+                engine.store().enrolled_ids().unwrap_or_default()
+            };
+            for id in enrolled {
+                if !live.contains(&id) && engine.forget(&id).unwrap_or(false) {
+                    report.orphaned_enrollments_pruned += 1;
+                }
+            }
         }
 
         #[cfg(feature = "spectrogram-legacy")]
