@@ -1,12 +1,13 @@
-# R37 result — the Librarian prompt rewrite, and why the question was wrong
+# R37 result — the Librarian prompt rewrite: recognition says no, the spectrogram gate says go on
 
 Measured 2026-08-18 against `r37-librarian-prompt-prereg-2026-08-18.md`.
 Real brain `~/.permagent/brain` (2,807 memories, 2,712 enriched), n = 300
 paired (seed 37), `qwen2.5:7b` local, $0, read-only on the brain.
 
 **Preregistered verdict: FAIL** (2 of 4 gates). Then a direct end-to-end
-measurement showed the gates were measuring a wire that does not exist, and
-that building it would make recognition worse under either prompt.
+measurement showed the recognition gate was measuring a wire that does not
+exist, and that building it would make recognition worse under either prompt.
+The spectrogram gate, as R35 defined it, was passed — see Decisions.
 
 ## 1. The preregistered gates
 
@@ -89,19 +90,30 @@ recognition today, and R1's paraphrase set exists if it ever becomes so.
 
 ## Decisions
 
-1. **Recognition stays content-only. Do not build the wire.** This is the
-   optimum on this brain, and it is what ships today.
-2. **The R36 brief is withdrawn as a recognition/spectrogram matter.** Neither
-   engine reads the description, and feeding it to recognition hurts under
-   every style measured. The brief's style advice may still be right for the
-   surfaces the description *does* feed — FTS (`porter unicode61`, content +
-   description) and the `term:`/`cat:` entity annotations — but that needs
-   its own measurement with its own ground truth, and this run does not
-   supply one. **The prompt PR is not shipped.** The rewritten prompt is
-   preserved below for whoever measures FTS.
-3. **`recognition_e2e` is the gate for recognition** from here on, not the
+1. **Recognition stays content-only. Do not build the recognition wire.**
+   Measured end to end: this is the optimum on this brain, and it is what
+   ships today.
+2. **For recognition, the R36 brief is withdrawn.** Feeding the description to
+   recognition hurts under every style measured.
+3. **For the spectrogram, the R36 brief is NOT withdrawn — it passed R35's
+   stated gate.** R35 wrote: *"separation going positive is the gate to a
+   preregistered retrieval arm."* Under the old prompt separation is
+   negative (−0.7%); under the R36-brief prompt it is positive (+1.2%, and
+   `decision_polarity` variance ×1.59, `entity_density` spread restored).
+   The magnitude is small against R35's +25% *prediction*, but the gate as
+   written is the sign, and the sign flipped. The next step is therefore
+   R38: a preregistered retrieval arm in which the spectrogram is actually
+   the mechanism (resonance expansion) and the fingerprint is computed from
+   content+description. An earlier draft of this document closed the
+   spectrogram question on the recognition evidence; that was wrong and is
+   corrected here.
+4. **The Permagent prompt PR is held, not abandoned.** It ships if R38 shows
+   the description helps retrieval through the spectrogram, or if an FTS /
+   annotation measurement with its own ground truth justifies it. The
+   rewritten prompt is preserved below.
+5. **`recognition_e2e` is the gate for recognition** from here on, not the
    density proxy — it measures verdicts, not stems, and it is $0 and seconds.
-4. **Answer to "is recognition working": yes, at the raw-content optimum.**
+6. **Answer to "is recognition working": yes, at the raw-content optimum.**
    On the real brain: exact re-encounter 83.7% Recognized / 95.3% top‑1;
    50% fragment 54.0% / 67.7%; 30% dropout 59.3% / 85.0%; 0/300 false
    Recognized on foreign text. Enrolment coverage is 100% after #293/#294.
