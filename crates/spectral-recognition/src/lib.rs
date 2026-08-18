@@ -215,6 +215,60 @@ impl<S: RecognitionStore> RecognitionEngine<S> {
         Ok(())
     }
 
+    /// Enroll a memory from several separately-fingerprinted parts under ONE
+    /// id — the union of each part's pair/gram fingerprints and shingles.
+    ///
+    /// Why this exists (R37/R39): enrolling `content + "\n" + description` as
+    /// one text lets description tokens displace content peaks under
+    /// `max_peaks`, which measurably hurts re-encounters of the content;
+    /// enrolling the description as a second trace makes it its own memory's
+    /// runner-up and trips the lead-margin rule. Fingerprinting each part on
+    /// its own and indexing the union keeps the content trace intact and adds
+    /// the description's features to the same identity. Idempotent per
+    /// memory_id; an empty part list enrols nothing.
+    pub fn enroll_parts(&mut self, memory_id: &str, parts: &[&str]) -> Result<()> {
+        if self.store.is_enrolled(memory_id)? {
+            return Ok(());
+        }
+        let mut merged = extract::StimulusPrints {
+            peaks: Vec::new(),
+            pair_hashes: Vec::new(),
+            gram_hashes: Vec::new(),
+            token_count: 0,
+        };
+        let mut shingles: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut any = false;
+        for part in parts {
+            if part.trim().is_empty() {
+                continue;
+            }
+            any = true;
+            let p = fingerprint_stimulus_with(part, &self.config, self.term_idf());
+            merged.peaks.extend(p.peaks);
+            merged.pair_hashes.extend(p.pair_hashes);
+            merged.gram_hashes.extend(p.gram_hashes);
+            merged.token_count += p.token_count;
+            if self.config.minhash.weight > 0.0 {
+                shingles.extend(minhash::shingle_set(part, self.config.minhash.shingle));
+            }
+        }
+        if !any {
+            return Ok(());
+        }
+        // Dedup shared hashes across parts so a feature present in both is not
+        // counted twice for the same memory.
+        merged.pair_hashes.sort_by_key(|(h, _)| *h);
+        merged.pair_hashes.dedup_by_key(|(h, _)| *h);
+        merged.gram_hashes.sort_by_key(|(h, _)| *h);
+        merged.gram_hashes.dedup_by_key(|(h, _)| *h);
+        self.store.index_memory(memory_id, &merged)?;
+        if self.config.minhash.weight > 0.0 {
+            let set: Vec<u64> = shingles.into_iter().collect();
+            let _ = self.store.index_minhash(memory_id, &set, &set);
+        }
+        Ok(())
+    }
+
     /// Forget a memory: remove all of its pair/gram fingerprints and its
     /// enrolled marker. After this, `recognize()` no longer surfaces the
     /// memory. Returns `true` if it was enrolled. This is the recognition
@@ -301,6 +355,78 @@ mod tests {
             e.enroll(id, content).unwrap();
         }
         e
+    }
+
+    /// `enroll_parts` indexes the UNION of separately-fingerprinted parts under
+    /// one id: a probe shaped like either part resolves to that id, the store
+    /// holds one enrolled memory (not two), and re-enrolling is a no-op.
+    #[test]
+    fn enroll_parts_indexes_union_under_one_id() {
+        let mut e = engine();
+        for (id, content) in CORPUS {
+            e.enroll(id, content).unwrap();
+        }
+        let content = "The deploy of service atlas failed with exit code 137 after the memory limit was hit at 03:14 UTC";
+        let desc = "atlas deploy failure: exit 137, memory limit, 03:14 UTC. Related terms: atlas, exit 137, OOM. Categories: deploys.";
+        e.enroll_parts("m_parts", &[content, desc]).unwrap();
+        assert_eq!(
+            e.store().enrolled_count().unwrap(),
+            CORPUS.len() + 1,
+            "one memory, however many parts"
+        );
+        // content-shaped probe
+        let r = e.recognize(content).unwrap();
+        assert_eq!(
+            r.traces.first().map(|t| t.memory_id.as_str()),
+            Some("m_parts")
+        );
+        // description-shaped probe (a paraphrase re-encounter)
+        let r = e
+            .recognize("atlas deploy failure exit 137 memory limit")
+            .unwrap();
+        assert_eq!(
+            r.traces.first().map(|t| t.memory_id.as_str()),
+            Some("m_parts")
+        );
+        // idempotent
+        e.enroll_parts("m_parts", &["something else entirely"])
+            .unwrap();
+        assert_eq!(e.store().enrolled_count().unwrap(), CORPUS.len() + 1);
+        // empty parts enrol nothing
+        e.enroll_parts("m_empty", &["", "   "]).unwrap();
+        assert!(!e.store().is_enrolled("m_empty").unwrap());
+    }
+
+    /// The description part must add features WITHOUT displacing the content's:
+    /// a content-shaped probe scores the memory at least as well under
+    /// `enroll_parts(content, desc)` as under `enroll(content)`.
+    #[test]
+    fn enroll_parts_does_not_lose_content_evidence() {
+        let content = "The deploy of service atlas failed with exit code 137 after the memory limit was hit at 03:14 UTC";
+        let desc = "atlas deploy failure: exit 137, memory limit, 03:14 UTC. Related terms: atlas, exit 137, OOM. Categories: deploys.";
+        let probe = "deploy of service atlas failed with exit code 137 after the memory limit";
+        let mut a = engine();
+        a.enroll("m", content).unwrap();
+        let mut b = engine();
+        b.enroll_parts("m", &[content, desc]).unwrap();
+        let sa = a
+            .recognize(probe)
+            .unwrap()
+            .traces
+            .first()
+            .map(|t| t.pair_hits)
+            .unwrap_or(0);
+        let sb = b
+            .recognize(probe)
+            .unwrap()
+            .traces
+            .first()
+            .map(|t| t.pair_hits)
+            .unwrap_or(0);
+        assert!(
+            sb >= sa,
+            "pair hits fell from {sa} to {sb} when a description part was added"
+        );
     }
 
     #[test]
