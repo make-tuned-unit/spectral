@@ -1312,6 +1312,261 @@ fn forget_report_never_treats_probe_failure_as_verified() {
 }
 
 #[test]
+fn a_failed_enrolment_heals_itself_on_a_later_write() {
+    // THE DURABLE FIX, stated as behaviour.
+    //
+    // Enrolment during `remember` is non-fatal by design — recognition should
+    // degrade, not block writes. But a failure used to leave only a log line
+    // and an in-memory warning, so once the process exited nothing knew the
+    // memory was missing and nothing ever retried. That is how a real brain
+    // reached 57% unenrolled: not one large failure, thousands of small ones
+    // whose only record evaporated.
+    //
+    // Now the failure is recorded durably and drained on later writes, so the
+    // index converges with nobody remembering to run a repair.
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    let victim = {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        let r = brain
+            .remember(
+                "first",
+                "the deploy runbook covers rollback procedures",
+                Visibility::Private,
+            )
+            .unwrap();
+        r.memory_id
+    };
+
+    // Reproduce the aftermath of a non-fatal failure: the memory row exists,
+    // its enrolment does not, and the id sits on the retry queue.
+    {
+        let mut store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        store.forget_memory(&victim).unwrap();
+        store.mark_pending(&victim).unwrap();
+        assert!(!store.is_enrolled(&victim).unwrap());
+        assert_eq!(store.pending_count().unwrap(), 1);
+    }
+
+    // No repair call anywhere. Just another ordinary write.
+    {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        brain
+            .remember(
+                "second",
+                "an unrelated note about the schema migration",
+                Visibility::Private,
+            )
+            .unwrap();
+    }
+
+    let store =
+        spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+            .unwrap();
+    assert!(
+        store.is_enrolled(&victim).unwrap(),
+        "the failed enrolment did not heal on a subsequent write"
+    );
+    assert_eq!(
+        store.pending_count().unwrap(),
+        0,
+        "the retry queue was not cleared after a successful re-enrolment"
+    );
+}
+
+/// The write path stays alive when recognition cannot be written, and says so.
+///
+/// Enrolment is non-fatal on purpose: a recognition problem must degrade
+/// recognition, never block the memory write. This pins both halves — the write
+/// succeeds, AND the failure is reported rather than swallowed, including the
+/// case where the retry could not even be queued (the queue lives in the same
+/// database, so an unwritable index takes the queue with it).
+///
+/// Found by mutation: replacing the `mark_pending` call with a no-op passed
+/// every other test here, because they simulate the aftermath of a failure by
+/// queueing the id themselves and so never exercise the recording step.
+#[cfg(unix)]
+#[test]
+fn an_unwritable_recognition_index_degrades_without_blocking_the_write() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        brain
+            .remember("a", "first note about deploys", Visibility::Private)
+            .unwrap();
+    }
+
+    let db = tmp.path().join("recognition.db");
+    let mut perms = std::fs::metadata(&db).unwrap().permissions();
+    perms.set_mode(0o444);
+    std::fs::set_permissions(&db, perms).unwrap();
+
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    let result = brain
+        .remember("b", "second note about migrations", Visibility::Private)
+        .expect("a recognition failure must not fail the write");
+
+    let warnings = result.derivation_warnings.join(" | ");
+    assert!(
+        warnings.contains("recognition enrollment:"),
+        "the enrolment failure was swallowed: {warnings:?}"
+    );
+    assert!(
+        warnings.contains("enrolment retry not queued"),
+        "the failure to queue a retry was not reported — a caller would believe \
+         the memory will be re-enrolled later when nothing will: {warnings:?}"
+    );
+
+    // Restore permissions so the TempDir can clean up.
+    let mut perms = std::fs::metadata(&db).unwrap().permissions();
+    perms.set_mode(0o644);
+    std::fs::set_permissions(&db, perms).unwrap();
+}
+
+/// A read-only brain must never write, including opportunistic self-repair.
+///
+/// The drain is guarded by `self.read_only || batch == 0`. Mutation found that
+/// guard untested: flipping `||` to `&&` survived the suite, and `&&` means a
+/// read-only brain with a non-zero batch proceeds to enrol — a write from a
+/// handle whose entire contract is that it does not write.
+#[test]
+fn a_read_only_brain_does_not_drain_the_retry_queue() {
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    let victim = {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        brain
+            .remember(
+                "first",
+                "a note about deploy rollbacks",
+                Visibility::Private,
+            )
+            .unwrap()
+            .memory_id
+    };
+    {
+        let mut store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        store.forget_memory(&victim).unwrap();
+        store.mark_pending(&victim).unwrap();
+    }
+
+    let ro = Brain::open(BrainConfig {
+        read_only: true,
+        ..brain_config(&tmp)
+    })
+    .unwrap();
+    assert_eq!(
+        ro.drain_enrolment_retries(8),
+        0,
+        "a read-only brain drained the retry queue — that is a write"
+    );
+
+    let store =
+        spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+            .unwrap();
+    assert_eq!(
+        store.pending_count().unwrap(),
+        1,
+        "the queue was modified through a read-only handle"
+    );
+    assert!(
+        !store.is_enrolled(&victim).unwrap(),
+        "a read-only handle enrolled a memory"
+    );
+}
+
+/// The drain reports how many it actually healed. Pinned directly because the
+/// count is otherwise only observable through a log line, and mutation showed
+/// `healed += 1` could become `healed *= 1` — permanently zero — unnoticed.
+#[test]
+fn the_drain_reports_how_many_it_healed() {
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    let ids: Vec<String> = {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        (0..3)
+            .map(|i| {
+                brain
+                    .remember(
+                        &format!("m{i}"),
+                        &format!("a note about deploy rollback number {i}"),
+                        Visibility::Private,
+                    )
+                    .unwrap()
+                    .memory_id
+            })
+            .collect()
+    };
+    {
+        let mut store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        for id in &ids {
+            store.forget_memory(id).unwrap();
+            store.mark_pending(id).unwrap();
+        }
+    }
+
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    assert_eq!(
+        brain.drain_enrolment_retries(2),
+        2,
+        "the drain should heal exactly the batch it was given"
+    );
+    assert_eq!(
+        brain.drain_enrolment_retries(8),
+        1,
+        "the remaining memory should heal on the next pass"
+    );
+    assert_eq!(brain.drain_enrolment_retries(8), 0, "nothing left to heal");
+}
+
+#[test]
+fn a_deleted_memory_leaves_the_retry_queue_rather_than_retrying_forever() {
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        brain
+            .remember("anchor", "a note that stays put", Visibility::Private)
+            .unwrap();
+    }
+    {
+        let mut store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        store
+            .mark_pending("id-of-a-memory-that-was-deleted")
+            .unwrap();
+    }
+    {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        brain
+            .remember("another", "a second unrelated note", Visibility::Private)
+            .unwrap();
+    }
+
+    let store =
+        spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+            .unwrap();
+    assert_eq!(
+        store.pending_count().unwrap(),
+        0,
+        "a deleted memory stayed queued and would be retried forever"
+    );
+}
+
+#[test]
 fn a_truncated_scan_never_prunes_enrolments() {
     // The guard on the prune step, and the dangerous one to get wrong.
     //

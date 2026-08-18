@@ -182,6 +182,12 @@ impl<S: RecognitionStore> RecognitionEngine<S> {
         self.term_idf.as_deref().map(|i| i as &dyn TermIdf)
     }
 
+    /// Mutable access to the backing store, for maintenance that is not
+    /// enrolment itself — recording and clearing enrolment retries.
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
     pub fn store(&self) -> &S {
         &self.store
     }
