@@ -131,6 +131,12 @@ impl BrainIdentity {
         let key_path = dir.join("brain.key");
 
         if key_path.exists() {
+            // Repair the mode on LOAD, not only on create. A key written by an
+            // earlier build, by a different tool, or restored by a copy that
+            // did not preserve permissions stays wrong forever otherwise —
+            // which is exactly what happened in production, where a brain.key
+            // sat at 0644 for months while the create path was correct.
+            Self::set_key_permissions(&key_path)?;
             let key_bytes = std::fs::read(&key_path)?;
             let key_array: [u8; 32] = key_bytes.try_into().map_err(|v: Vec<u8>| {
                 Error::InvalidBrainId(format!("brain.key must be 32 bytes, got {}", v.len()))
@@ -779,6 +785,38 @@ mod memory_sig_tests {
             !verify(mine.brain_id(), mine.verifying_key(), &payload, &their_sig),
             "another brain's attestation verified as mine"
         );
+    }
+
+    /// Loading an existing key must REPAIR its mode, not just trust it.
+    ///
+    /// The create path was always correct; the load path was not, so a key
+    /// written by an earlier build or restored by a `cp` that dropped
+    /// permissions stayed world-readable indefinitely. Found in production: a
+    /// real `brain.key` sat at 0644 for four months.
+    #[cfg(unix)]
+    #[test]
+    fn loading_an_existing_key_repairs_world_readable_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let created = BrainIdentity::load_or_create(dir.path()).unwrap();
+        let path = dir.path().join("brain.key");
+
+        // Simulate the damage: a restore or an older build leaves it readable.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "precondition: the key should be world-readable before the reload"
+        );
+
+        let reloaded = BrainIdentity::load_or_create(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "loading an existing key did not repair its permissions"
+        );
+        // And it is still the same identity, not a silently regenerated one.
+        assert_eq!(reloaded.brain_id(), created.brain_id());
     }
 
     /// The private key file must not be group- or world-readable. Found by
