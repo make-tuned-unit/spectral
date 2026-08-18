@@ -121,12 +121,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             d.len(),
             format_args!("{:.1}%", 100.0 * top)
         );
+        // `hall` deserves a sharper reading than "one value dominates". No
+        // default rule produces "event" — it is purely `classify_hall`'s
+        // fallback — so an "event" share IS the share of the corpus that
+        // matched no rule at all. Reporting that as a dominant category would
+        // hide a coverage failure behind what looks like a classification.
+        let fallthrough = if field == "hall" {
+            d.get("event").copied().unwrap_or(0)
+        } else {
+            d.get("general").copied().unwrap_or(0)
+        };
+        let total_rows: i64 = d.values().sum();
+        if total_rows > 0 {
+            let fb = if field == "hall" { "event" } else { "general" };
+            println!(
+                "         {} is the CATCH-ALL: {} of memories matched no {field} rule",
+                fb,
+                pct(fallthrough, total_rows)
+            );
+        }
         println!(
             "         {}",
             verdict(
                 norm >= 0.5 && top < 0.6,
                 "well spread — the fingerprint discriminates",
-                "one value dominates — this key contributes little routing signal"
+                "the catch-all dominates — this key contributes little routing \
+                 signal, and the taxonomy does not cover this corpus"
             )
         );
     }

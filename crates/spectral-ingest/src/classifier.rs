@@ -26,6 +26,23 @@ pub fn classify_wing(
 /// Classify text into a hall (memory type).
 ///
 /// First regex match wins. Returns `"event"` if no rule matches.
+///
+/// **`"event"` is a fallback, not a classification.** No default rule produces
+/// it, so an `"event"` hall means only "nothing matched" — it is
+/// indistinguishable from a memory that genuinely is an event, and the two
+/// should not be read as the same claim.
+///
+/// This matters because `hall` is one of the four components of the TACT
+/// fingerprint, `hash(hall, target_hall, wing, time_bucket)`. A corpus that
+/// falls through en masse gives that component almost no entropy and recall
+/// leans correspondingly harder on FTS.
+///
+/// The default rules target conversational, personal statements — "decided",
+/// "prefers", "learned", "recommend", "I'm allergic". On a real
+/// agent-session brain of 2,807 memories, **77.7% matched no rule at all**
+/// (`docs/internal/brain-substrate-audit-2026-08-17.md`). Consumers whose
+/// content is not conversational should supply their own `hall_rules` rather
+/// than assume the defaults cover them.
 pub fn classify_hall(content: &str, rules: &[(Regex, String)]) -> String {
     let text = content.to_lowercase();
     for (pattern, hall) in rules {
