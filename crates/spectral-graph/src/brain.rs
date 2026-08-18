@@ -5186,6 +5186,121 @@ fn infer_single_type(
     }
 }
 
+// ── R38: spectrogram over ENRICHED text, and resonance as an expansion source ──
+#[cfg(feature = "spectrogram-legacy")]
+impl Brain {
+    /// Recompute the spectrogram fingerprint of every memory that carries a
+    /// description, analysing `content + "\n" + description` instead of
+    /// content alone.
+    ///
+    /// R35 found that `SpectrogramAnalyzer::analyze` never reads
+    /// `Memory::description`, so every spectrogram ever measured was
+    /// content-only even on an enriched brain. This is the wire, kept
+    /// explicit and behind the legacy feature: it is called by an experiment
+    /// (R38) after descriptions are applied, not by `set_description`, so a
+    /// production brain's fingerprints do not silently change shape.
+    ///
+    /// Returns the number of fingerprints rewritten. Memories without a
+    /// description are left as they are.
+    pub fn refingerprint_from_descriptions(&self, limit: usize) -> Result<usize, Error> {
+        self.ensure_writable("refingerprint_from_descriptions")?;
+        let memories = self
+            .rt
+            .block_on(self.memory_store.list_memories_by_signal(0.0, limit))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        let mut rewritten = 0usize;
+        for memory in memories {
+            let Some(desc) = memory.description.as_deref() else {
+                continue;
+            };
+            if desc.trim().is_empty() {
+                continue;
+            }
+            let mut enriched = memory.clone();
+            enriched.content = format!("{}\n{}", memory.content, desc);
+            let context = self.spectrogram_context(enriched.wing.as_deref(), &enriched.id);
+            let fp = self.spectrogram_analyzer.analyze(&enriched, &context);
+            let peak_json = serde_json::to_string(&fp.peak_dimensions).unwrap_or_default();
+            self.rt
+                .block_on(self.memory_store.write_spectrogram(
+                    &enriched.id,
+                    fp.entity_density,
+                    fp.action_type.as_str(),
+                    fp.decision_polarity,
+                    fp.causal_depth,
+                    fp.emotional_valence,
+                    fp.temporal_specificity,
+                    fp.novelty,
+                    &peak_json,
+                ))
+                .map_err(|e| Error::Schema(e.to_string()))?;
+            rewritten += 1;
+        }
+        Ok(rewritten)
+    }
+
+    /// Memories whose stored fingerprints resonate with those of `seed_ids`,
+    /// across ALL wings, best resonance first, seeds excluded. Each candidate
+    /// is scored by its best resonance against any seed.
+    ///
+    /// Candidates without a stored fingerprint are invisible here — callers
+    /// that want enrichment in the picture run
+    /// [`refingerprint_from_descriptions`](Self::refingerprint_from_descriptions)
+    /// first. Read-only.
+    pub fn resonant_memory_ids(
+        &self,
+        seed_ids: &[String],
+        max_results: usize,
+        tolerances: &spectral_spectrogram::matching::MatchTolerances,
+    ) -> Result<Vec<(String, f64)>, Error> {
+        if seed_ids.is_empty() || max_results == 0 {
+            return Ok(Vec::new());
+        }
+        let candidates: Vec<spectral_spectrogram::SpectralFingerprint> = self
+            .rt
+            .block_on(self.memory_store.load_spectrograms(None, 1_000_000))
+            .map_err(|e| Error::Schema(e.to_string()))?
+            .iter()
+            .map(row_to_fingerprint)
+            .collect();
+        let mut best: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        for seed in seed_ids {
+            let Some(row) = self
+                .rt
+                .block_on(self.memory_store.load_spectrogram(seed))
+                .map_err(|e| Error::Schema(e.to_string()))?
+            else {
+                continue;
+            };
+            let seed_fp = row_to_fingerprint(&row);
+            for m in spectral_spectrogram::matching::find_resonant(
+                &seed_fp,
+                &candidates,
+                candidates.len(),
+                tolerances,
+            ) {
+                if seed_ids.iter().any(|s| s == &m.memory_id) {
+                    continue;
+                }
+                let e = best.entry(m.memory_id).or_insert(0.0);
+                if m.resonance_score > *e {
+                    *e = m.resonance_score;
+                }
+            }
+        }
+        let mut out: Vec<(String, f64)> = best.into_iter().collect();
+        // Deterministic order: score desc, then id — ties must not depend on
+        // HashMap iteration order or the arm is not reproducible.
+        out.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        out.truncate(max_results);
+        Ok(out)
+    }
+}
+
 /// Convert a SpectrogramRow to a SpectralFingerprint.
 #[cfg(feature = "spectrogram-legacy")]
 fn row_to_fingerprint(

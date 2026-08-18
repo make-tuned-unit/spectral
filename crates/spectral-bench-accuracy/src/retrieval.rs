@@ -354,6 +354,61 @@ const BFS_FRONTIER_CAP: usize = 50;
 /// SPECTRAL_ASSOC_RERANK size-preserving pattern).
 const BFS_APPEND_CAP: usize = 10;
 
+/// R38: spectrogram resonance as an EXPANSION source. `SPECTRAL_RESONANCE_EXPAND=E`
+/// appends up to E memories whose stored fingerprints resonate with the top
+/// `SPECTRAL_RESONANCE_SEEDS` (default 3) ranked hits, across all wings, that
+/// ranking did not already choose. Unset/0 = off. Requires brains ingested with
+/// `SPECTRAL_BENCH_SPECTROGRAM` set (fingerprints stored at ingest) and, for the
+/// enriched arm, `Brain::refingerprint_from_descriptions` run after descriptions
+/// were applied. `SPECTRAL_RESONANCE_MIN_DIMS` overrides the matcher's
+/// `min_matching_dimensions` (default 3).
+///
+/// Budget-neutral by construction: the control arm is the same pipeline with
+/// `--max-results` raised by E, so both arms hand the same number of memories to
+/// the oracle metric.
+fn resonance_expand() -> Option<usize> {
+    std::env::var("SPECTRAL_RESONANCE_EXPAND")
+        .ok()?
+        .parse::<usize>()
+        .ok()
+        .filter(|e| *e >= 1)
+}
+
+fn apply_resonance_expansion(brain: &Brain, hits: &mut Vec<MemoryHit>, extra: usize) {
+    let seeds_n = std::env::var("SPECTRAL_RESONANCE_SEEDS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(3);
+    let mut tol = spectral_spectrogram::matching::MatchTolerances::default();
+    if let Some(d) = std::env::var("SPECTRAL_RESONANCE_MIN_DIMS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        tol.min_matching_dimensions = d;
+    }
+    let seeds: Vec<String> = hits.iter().take(seeds_n).map(|h| h.id.clone()).collect();
+    let present: std::collections::HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
+    // Ask for more than `extra` because seeds' own neighbours may already be in
+    // the ranked set; we fill `extra` slots with NEW memories only.
+    let Ok(resonant) = brain.resonant_memory_ids(&seeds, extra + hits.len(), &tol) else {
+        return;
+    };
+    let mut added = 0usize;
+    for (id, _score) in resonant {
+        if added >= extra {
+            break;
+        }
+        if present.contains(&id) {
+            continue;
+        }
+        if let Ok(Some(m)) = brain.get_memory(&id) {
+            hits.push(bench_memory_to_hit(&m));
+            added += 1;
+        }
+    }
+}
+
 /// Read `SPECTRAL_BFS_HOPS` (>=1). Unset/invalid = lever off.
 fn bfs_hops() -> Option<usize> {
     std::env::var("SPECTRAL_BFS_HOPS")
@@ -818,6 +873,13 @@ pub fn retrieve_topk_fts(
     if answ_cfg.enabled || sup_cfg.enabled {
         hits.truncate(output_size);
     }
+    // R38: resonance expansion — appends, never ranks. Runs after every
+    // ranking/truncation step and before adjacency, so what it adds is
+    // exactly `extra` memories ranking did not choose.
+    if let Some(extra) = resonance_expand() {
+        apply_resonance_expansion(brain, &mut hits, extra);
+    }
+
     // R25: structural adjacency emission. Runs LAST, after every ranking and
     // truncation step, because it deliberately does not rank — it emits the
     // dialogue neighbours of what ranking already chose. See
