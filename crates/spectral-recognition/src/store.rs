@@ -539,6 +539,55 @@ mod tests {
     use crate::{fingerprint_stimulus, RecognitionConfig};
 
     #[test]
+    fn the_pending_retry_queue_records_lists_and_clears() {
+        // The queue is what makes a failed enrolment survive the process that
+        // saw it. If any of these degenerated to a no-op the retry mechanism
+        // would be inert while every higher-level test stayed green — mutation
+        // found exactly that, because the tests exercising the queue live in
+        // `spectral-graph` and only ever touch the SQLite store.
+        for (label, mut store) in [
+            (
+                "in-memory",
+                Box::new(InMemoryRecognitionStore::default()) as Box<dyn RecognitionStore>,
+            ),
+            ("sqlite", {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("r.db");
+                std::mem::forget(dir);
+                Box::new(SqliteRecognitionStore::open(&path).unwrap()) as Box<dyn RecognitionStore>
+            }),
+        ] {
+            assert_eq!(store.pending_count().unwrap(), 0, "{label}: fresh queue");
+            assert!(store.pending_ids(10).unwrap().is_empty(), "{label}");
+
+            store.mark_pending("m-alpha").unwrap();
+            store.mark_pending("m-beta").unwrap();
+            assert_eq!(store.pending_count().unwrap(), 2, "{label}: after marking");
+
+            let ids = store.pending_ids(10).unwrap();
+            assert_eq!(ids.len(), 2, "{label}: {ids:?}");
+            assert!(ids.contains(&"m-alpha".to_string()), "{label}: {ids:?}");
+
+            // Marking twice must not duplicate — a memory failing repeatedly
+            // should occupy one slot, not grow the queue without bound.
+            store.mark_pending("m-alpha").unwrap();
+            assert_eq!(store.pending_count().unwrap(), 2, "{label}: re-marked");
+
+            // The limit is honoured, or a huge backlog would be drained in one
+            // burst and stall a write.
+            assert_eq!(store.pending_ids(1).unwrap().len(), 1, "{label}: limit");
+
+            store.clear_pending("m-alpha").unwrap();
+            assert_eq!(store.pending_count().unwrap(), 1, "{label}: after clear");
+            assert_eq!(
+                store.pending_ids(10).unwrap(),
+                vec!["m-beta".to_string()],
+                "{label}: wrong id cleared"
+            );
+        }
+    }
+
+    #[test]
     fn enrolled_ids_lists_exactly_what_was_enrolled() {
         // `enrolled_ids` is the only way to check the index in the
         // index -> memory direction, which is what makes orphan detection

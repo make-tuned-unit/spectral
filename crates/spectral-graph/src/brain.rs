@@ -1990,10 +1990,7 @@ impl Brain {
         // Drain a bounded slice of the retry backlog. Bounded so a large
         // backlog can never turn one write into a long stall: the queue simply
         // takes more writes to clear.
-        let healed = self.drain_enrolment_retries(ENROLMENT_RETRY_BATCH);
-        if healed > 0 {
-            tracing::debug!("re-enrolled {healed} previously failed memories");
-        }
+        self.drain_enrolment_retries(ENROLMENT_RETRY_BATCH);
 
         // Compute and store spectrogram if enabled (legacy path: spectrogram-as-
         // recall is retired; only reachable behind the `spectrogram-legacy` feature)
@@ -3552,7 +3549,15 @@ impl Brain {
         Ok(report)
     }
 
-    /// Retry a bounded number of memories whose enrolment previously failed.
+    /// Retry a bounded number of memories whose enrolment previously failed,
+    /// returning how many were successfully enrolled.
+    ///
+    /// Called automatically on every write, so a consumer normally never needs
+    /// this. It is public for the case where you want to drain the backlog
+    /// deliberately — after a known outage, or before a recognition-heavy
+    /// read — without the full cost of [`repair_derivations`].
+    ///
+    /// Original contract:
     ///
     /// Returns how many were successfully enrolled. Never propagates an error:
     /// this is opportunistic repair on the write path, and a write must not
@@ -3560,8 +3565,17 @@ impl Brain {
     ///
     /// A memory that has since been deleted is dropped from the queue rather
     /// than retried forever.
-    fn drain_enrolment_retries(&self, batch: usize) -> usize {
+    pub fn drain_enrolment_retries(&self, batch: usize) -> usize {
         use spectral_recognition::RecognitionStore as _;
+        // The `read_only` half is an early exit, NOT the safety guarantee. A
+        // read-only brain opens the recognition sidecar with
+        // `open_read_only`, and that store refuses `index_memory` outright —
+        // covered by `a_read_only_store_serves_recognition_but_refuses_enrolment`.
+        // So flipping this `||` to `&&` cannot actually produce a write; the
+        // store stops it one layer down. Recorded in `.cargo/mutants.toml`
+        // rather than chased, because an unkillable MISSED line trains you to
+        // skim past MISSED. Do not delete this check on that basis: it avoids
+        // taking the lock and querying the queue on every read-only write path.
         if self.read_only || batch == 0 {
             return 0;
         }

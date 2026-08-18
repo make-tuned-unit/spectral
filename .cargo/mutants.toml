@@ -43,6 +43,11 @@ exclude_re = [
     "replace \\| with \\^ in <impl FromStr for EntityId>::from_str",
     "replace \\| with \\^ in <impl FromStr for DeviceId>::from_str",
     "replace > with >= in build_context_bundle",
+    # `drain_enrolment_retries`'s `self.read_only ||` is an early exit, not the
+    # safety guarantee: a read-only brain opens the recognition sidecar with
+    # `open_read_only`, whose refusal to index is directly tested. Flipping the
+    # `||` cannot produce a write — the store stops it a layer down.
+    "replace \\|\\| with && in Brain::drain_enrolment_retries",
 ]
 
 # Several suites open SQLite files and build brains, so they are meaningfully

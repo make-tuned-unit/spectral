@@ -1428,6 +1428,108 @@ fn an_unwritable_recognition_index_degrades_without_blocking_the_write() {
     std::fs::set_permissions(&db, perms).unwrap();
 }
 
+/// A read-only brain must never write, including opportunistic self-repair.
+///
+/// The drain is guarded by `self.read_only || batch == 0`. Mutation found that
+/// guard untested: flipping `||` to `&&` survived the suite, and `&&` means a
+/// read-only brain with a non-zero batch proceeds to enrol — a write from a
+/// handle whose entire contract is that it does not write.
+#[test]
+fn a_read_only_brain_does_not_drain_the_retry_queue() {
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    let victim = {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        brain
+            .remember(
+                "first",
+                "a note about deploy rollbacks",
+                Visibility::Private,
+            )
+            .unwrap()
+            .memory_id
+    };
+    {
+        let mut store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        store.forget_memory(&victim).unwrap();
+        store.mark_pending(&victim).unwrap();
+    }
+
+    let ro = Brain::open(BrainConfig {
+        read_only: true,
+        ..brain_config(&tmp)
+    })
+    .unwrap();
+    assert_eq!(
+        ro.drain_enrolment_retries(8),
+        0,
+        "a read-only brain drained the retry queue — that is a write"
+    );
+
+    let store =
+        spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+            .unwrap();
+    assert_eq!(
+        store.pending_count().unwrap(),
+        1,
+        "the queue was modified through a read-only handle"
+    );
+    assert!(
+        !store.is_enrolled(&victim).unwrap(),
+        "a read-only handle enrolled a memory"
+    );
+}
+
+/// The drain reports how many it actually healed. Pinned directly because the
+/// count is otherwise only observable through a log line, and mutation showed
+/// `healed += 1` could become `healed *= 1` — permanently zero — unnoticed.
+#[test]
+fn the_drain_reports_how_many_it_healed() {
+    use spectral_recognition::RecognitionStore as _;
+
+    let tmp = TempDir::new().unwrap();
+    let ids: Vec<String> = {
+        let brain = Brain::open(brain_config(&tmp)).unwrap();
+        (0..3)
+            .map(|i| {
+                brain
+                    .remember(
+                        &format!("m{i}"),
+                        &format!("a note about deploy rollback number {i}"),
+                        Visibility::Private,
+                    )
+                    .unwrap()
+                    .memory_id
+            })
+            .collect()
+    };
+    {
+        let mut store =
+            spectral_recognition::SqliteRecognitionStore::open(&tmp.path().join("recognition.db"))
+                .unwrap();
+        for id in &ids {
+            store.forget_memory(id).unwrap();
+            store.mark_pending(id).unwrap();
+        }
+    }
+
+    let brain = Brain::open(brain_config(&tmp)).unwrap();
+    assert_eq!(
+        brain.drain_enrolment_retries(2),
+        2,
+        "the drain should heal exactly the batch it was given"
+    );
+    assert_eq!(
+        brain.drain_enrolment_retries(8),
+        1,
+        "the remaining memory should heal on the next pass"
+    );
+    assert_eq!(brain.drain_enrolment_retries(8), 0, "nothing left to heal");
+}
+
 #[test]
 fn a_deleted_memory_leaves_the_retry_queue_rather_than_retrying_forever() {
     use spectral_recognition::RecognitionStore as _;
