@@ -25,6 +25,15 @@ pub struct FeatureMatch {
 pub trait RecognitionStore {
     fn is_enrolled(&self, memory_id: &str) -> Result<bool>;
     fn enrolled_count(&self) -> Result<usize>;
+    /// Record that a memory failed to enrol, so the failure outlives the
+    /// process that observed it and can be retried later.
+    fn mark_pending(&mut self, memory_id: &str) -> Result<()>;
+    /// Up to `limit` memory ids awaiting a retry, oldest failure first.
+    fn pending_ids(&self, limit: usize) -> Result<Vec<String>>;
+    /// Drop a memory from the retry queue once it is enrolled.
+    fn clear_pending(&mut self, memory_id: &str) -> Result<()>;
+    /// How many memories are waiting to be retried.
+    fn pending_count(&self) -> Result<usize>;
     /// Every enrolled memory id.
     ///
     /// Needed to find **orphans**: enrolled ids whose memory row no longer
@@ -64,6 +73,8 @@ pub trait RecognitionStore {
 #[derive(Default)]
 pub struct InMemoryRecognitionStore {
     enrolled: std::collections::HashSet<String>,
+    /// Memories whose enrolment failed and should be retried.
+    pending: std::collections::HashSet<String>,
     /// hash → [(memory_id, label)]
     pairs: HashMap<u64, Vec<(String, String)>>,
     grams: HashMap<u64, Vec<(String, String)>>,
@@ -103,6 +114,27 @@ impl RecognitionStore for InMemoryRecognitionStore {
 
     fn enrolled_count(&self) -> Result<usize> {
         Ok(self.enrolled.len())
+    }
+
+    fn mark_pending(&mut self, memory_id: &str) -> Result<()> {
+        self.pending.insert(memory_id.to_string());
+        Ok(())
+    }
+
+    fn pending_ids(&self, limit: usize) -> Result<Vec<String>> {
+        let mut ids: Vec<String> = self.pending.iter().cloned().collect();
+        ids.sort();
+        ids.truncate(limit);
+        Ok(ids)
+    }
+
+    fn clear_pending(&mut self, memory_id: &str) -> Result<()> {
+        self.pending.remove(memory_id);
+        Ok(())
+    }
+
+    fn pending_count(&self) -> Result<usize> {
+        Ok(self.pending.len())
     }
 
     fn enrolled_ids(&self) -> Result<Vec<String>> {
@@ -211,6 +243,19 @@ impl SqliteRecognitionStore {
              CREATE TABLE IF NOT EXISTS recognition_enrolled (
                 memory_id TEXT PRIMARY KEY,
                 enrolled_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             -- Memories whose enrolment failed, kept so the failure survives
+             -- the process that saw it. Enrolment during `remember` is
+             -- deliberately non-fatal, and before this table the only record of
+             -- a failure was a log line and an in-memory warning: once the
+             -- process exited, nothing knew the memory was missing and nothing
+             -- ever retried. That is how a real brain reached 57% unenrolled.
+             --
+             -- Only the id is stored, never content: retry re-reads the memory
+             -- from the memory store, so no new raw text lands at rest here.
+             CREATE TABLE IF NOT EXISTS recognition_pending (
+                 memory_id TEXT PRIMARY KEY,
+                 failed_at TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS recognition_pairs (
                 hash INTEGER NOT NULL,
@@ -327,6 +372,43 @@ impl RecognitionStore for SqliteRecognitionStore {
             .query_row("SELECT COUNT(*) FROM recognition_enrolled", [], |r| {
                 r.get(0)
             })?;
+        Ok(n as usize)
+    }
+
+    fn mark_pending(&mut self, memory_id: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO recognition_pending (memory_id, failed_at)
+             VALUES (?1, datetime('now'))",
+            [memory_id],
+        )?;
+        Ok(())
+    }
+
+    fn pending_ids(&self, limit: usize) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT memory_id FROM recognition_pending
+             ORDER BY failed_at, memory_id LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| r.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
+    }
+
+    fn clear_pending(&mut self, memory_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM recognition_pending WHERE memory_id = ?1",
+            [memory_id],
+        )?;
+        Ok(())
+    }
+
+    fn pending_count(&self) -> Result<usize> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM recognition_pending", [], |r| r.get(0))?;
         Ok(n as usize)
     }
 

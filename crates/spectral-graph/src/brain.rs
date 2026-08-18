@@ -993,6 +993,13 @@ pub struct Brain {
 /// high-confidence re-encounters — restatements that reuse the salient
 /// specifics (the recognition strong regime), not loose paraphrases (its weak
 /// regime, which needs embeddings) — to avoid false reinforcement.
+/// How many previously-failed enrolments to retry per write.
+///
+/// Small on purpose. The backlog is drained across many writes rather than in
+/// one burst, so a brain with thousands of missing enrolments never turns a
+/// single `remember` into a long stall.
+const ENROLMENT_RETRY_BATCH: usize = 4;
+
 const RECURRENCE_MIN_FAMILIARITY: f64 = 0.60;
 /// Reinforcement strength applied to a recurring prior memory. Bounded and
 /// small: recurrence nudges importance, it does not saturate it.
@@ -1957,13 +1964,35 @@ impl Brain {
 
         // Enroll in the recognition index (idempotent per memory id;
         // failures are non-fatal — recognition degrades, writes don't).
+        //
+        // A failure here used to leave nothing behind but a log line and an
+        // in-memory warning, so once the process exited nothing knew the memory
+        // was missing and nothing retried. A real brain reached 57% unenrolled
+        // that way. Failures are now recorded durably and drained on later
+        // writes, so the index converges without anyone remembering to repair.
         if let Ok(mut engine) = self.recognition.lock() {
+            use spectral_recognition::RecognitionStore as _;
             if let Err(e) = engine.enroll(&result.memory.id, content) {
                 tracing::warn!("recognition enroll failed (non-fatal): {e}");
                 derivation_warnings.push(format!("recognition enrollment: {e}"));
+                if let Err(e2) = engine.store_mut().mark_pending(&result.memory.id) {
+                    // The queue lives in the same database as the index, so if
+                    // that database is unwritable this fails too. Say so rather
+                    // than implying the retry is guaranteed.
+                    tracing::warn!("could not queue enrolment retry: {e2}");
+                    derivation_warnings.push(format!("enrolment retry not queued: {e2}"));
+                }
             }
         } else {
             derivation_warnings.push("recognition enrollment: lock poisoned".into());
+        }
+
+        // Drain a bounded slice of the retry backlog. Bounded so a large
+        // backlog can never turn one write into a long stall: the queue simply
+        // takes more writes to clear.
+        let healed = self.drain_enrolment_retries(ENROLMENT_RETRY_BATCH);
+        if healed > 0 {
+            tracing::debug!("re-enrolled {healed} previously failed memories");
         }
 
         // Compute and store spectrogram if enabled (legacy path: spectrogram-as-
@@ -3521,6 +3550,52 @@ impl Brain {
             report.spectrograms_repaired = self.backfill_spectrograms()?;
         }
         Ok(report)
+    }
+
+    /// Retry a bounded number of memories whose enrolment previously failed.
+    ///
+    /// Returns how many were successfully enrolled. Never propagates an error:
+    /// this is opportunistic repair on the write path, and a write must not
+    /// fail because a *previous* memory could not be re-enrolled.
+    ///
+    /// A memory that has since been deleted is dropped from the queue rather
+    /// than retried forever.
+    fn drain_enrolment_retries(&self, batch: usize) -> usize {
+        use spectral_recognition::RecognitionStore as _;
+        if self.read_only || batch == 0 {
+            return 0;
+        }
+        let pending = match self.recognition.lock() {
+            Ok(engine) => engine.store().pending_ids(batch).unwrap_or_default(),
+            Err(_) => return 0,
+        };
+        if pending.is_empty() {
+            return 0;
+        }
+
+        let mut healed = 0usize;
+        for id in pending {
+            // Content is re-read from the memory store rather than cached in
+            // the queue, so no raw text is duplicated at rest.
+            let content = match self.get_memory(&id) {
+                Ok(Some(memory)) => memory.content,
+                // Gone: stop retrying it.
+                Ok(None) => {
+                    if let Ok(mut engine) = self.recognition.lock() {
+                        let _ = engine.store_mut().clear_pending(&id);
+                    }
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            if let Ok(mut engine) = self.recognition.lock() {
+                if engine.enroll(&id, &content).is_ok() {
+                    let _ = engine.store_mut().clear_pending(&id);
+                    healed += 1;
+                }
+            }
+        }
+        healed
     }
 
     /// List retrieval events for a given session, ordered by timestamp ASC.
