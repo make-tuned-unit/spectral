@@ -279,6 +279,15 @@ pub struct DerivationHealthReport {
     pub missing_content_hash: usize,
     pub missing_declarative_density: usize,
     pub missing_signature: usize,
+    /// Scanned memories absent from the recognition index.
+    ///
+    /// A memory that was never enrolled is **invisible to recognition** — it
+    /// cannot be recognised, and `recognize()` will report Novel for content
+    /// the brain has in fact seen. Enrolment during `remember` is deliberately
+    /// non-fatal (a warning, not an error), so failures accumulate silently.
+    /// Measured on a real 2,807-memory brain: 57% unenrolled, while every
+    /// other derivation field looked acceptable.
+    pub missing_recognition_enrollment: usize,
     /// Only present with the `spectrogram-legacy` feature: spectrogram-as-recall
     /// is retired (0/500 contexts changed, ORACLE_TIER0).
     #[cfg(feature = "spectrogram-legacy")]
@@ -289,7 +298,8 @@ impl DerivationHealthReport {
     pub fn is_healthy(&self) -> bool {
         let healthy = self.missing_content_hash == 0
             && self.missing_declarative_density == 0
-            && self.missing_signature == 0;
+            && self.missing_signature == 0
+            && self.missing_recognition_enrollment == 0;
         #[cfg(feature = "spectrogram-legacy")]
         let healthy = healthy && self.missing_spectrogram == 0;
         healthy
@@ -3343,6 +3353,22 @@ impl Brain {
                 .iter()
                 .filter(|memory| memory.signature.is_none())
                 .count(),
+            missing_recognition_enrollment: match self.recognition.lock() {
+                // A per-memory store error counts as "not enrolled" rather than
+                // being swallowed as "fine". An index we cannot read is a health
+                // problem, and the alternative silently reports a healthy brain.
+                Ok(engine) => {
+                    use spectral_recognition::RecognitionStore as _;
+                    memories
+                        .iter()
+                        .filter(|memory| !engine.store().is_enrolled(&memory.id).unwrap_or(false))
+                        .count()
+                }
+                // A poisoned lock means the index is unusable, so nothing can be
+                // recognised. Reporting zero here would be the exact silent-pass
+                // this field exists to prevent.
+                Err(_) => memories.len(),
+            },
             #[cfg(feature = "spectrogram-legacy")]
             missing_spectrogram,
         })
