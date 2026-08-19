@@ -69,9 +69,26 @@ whenever a probe finds residue (`ResidualFound`) **or cannot answer**
 **How it is enforced.** After a clean forget, the test re-inserts residue
 rows by raw SQL — once into the primary store, once into the recognition
 sidecar — simulating a substrate whose delete silently failed, and asserts
-the same probes `forget` runs (`recall_topk_fts`, `recognize`) detect the
-residue and cite it in evidence; a forget over the sabotaged state never
-reports `fully_forgotten`.
+the probes `forget` runs detect the residue; a forget over the sabotaged
+state never reports `fully_forgotten`.
+
+The recognition probe reports `ResidualFound` if **either** an unguarded
+`recognize` returns a verdict naming the deleted id **or**
+[`Brain::recognition_residue`](../crates/spectral-graph/src/brain.rs) finds it
+still enrolled. Both halves are load-bearing and neither subsumes the other:
+a verdict cannot see residue too weak to still win `Recognized`, and the
+substrate check cannot see residue whose `enrolled` row was removed while
+fingerprints survived.
+
+*Why "unguarded" is named here.* The public `recognize` deliberately withholds
+identity for a memory whose row is gone — a verdict a consumer cannot resolve
+is worse than a weaker one (2026-08-19). Routing this probe through that guard
+would have made it report `VerifiedClear` for exactly the state it exists to
+catch: a right-to-be-forgotten guarantee passing by construction. The D2 test
+caught that when the guard was first written, which is the reason the two paths
+are now distinct — **serveability** (what a consumer may be told) and
+**detectability** (what an auditor can find) are different questions, and only
+the second is a deletion guarantee.
 
 **Boundary, stated exactly.** `ResidualFound` inside a *single* `forget()`
 call requires a substrate delete to fail mid-call; there is no fault-injection

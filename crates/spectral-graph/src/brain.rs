@@ -1305,6 +1305,24 @@ impl Brain {
         &self,
         stimulus: &str,
     ) -> Result<spectral_recognition::RecognitionResult, Error> {
+        let mut result = self.recognize_unguarded(stimulus)?;
+        self.drop_dangling_traces(&mut result);
+        Ok(result)
+    }
+
+    /// [`recognize`](Self::recognize) **without** the dangling-trace guard —
+    /// the raw index answer, including traces whose memory row is gone.
+    ///
+    /// Exists for one caller: the post-delete verification probe in
+    /// [`forget`](Self::forget), whose entire job is to *find* residue that
+    /// outlived a delete. Routing that probe through the public, guarded
+    /// entry point would make it report `VerifiedClear` for exactly the state
+    /// it exists to catch — a right-to-be-forgotten guarantee that passes by
+    /// construction. Not public: a consumer wants the guarded answer.
+    fn recognize_unguarded(
+        &self,
+        stimulus: &str,
+    ) -> Result<spectral_recognition::RecognitionResult, Error> {
         let engine = self
             .recognition
             .lock()
@@ -1312,6 +1330,76 @@ impl Brain {
         engine
             .recognize(stimulus)
             .map_err(|e| Error::Schema(format!("recognize: {e}")))
+    }
+
+    /// Is anything still enrolled in the recognition index under this memory
+    /// id? Substrate truth, independent of whether the residue is strong
+    /// enough to produce a verdict.
+    ///
+    /// The verdict-based probe can only see residue that still wins a
+    /// `Recognized`; this sees residue that is merely *present*, which is the
+    /// question a deletion guarantee actually asks.
+    pub fn recognition_residue(&self, memory_id: &str) -> Result<bool, Error> {
+        let engine = self
+            .recognition
+            .lock()
+            .map_err(|e| Error::Schema(format!("recognition lock poisoned: {e}")))?;
+        // `is_enrolled` comes from the RecognitionStore trait, which must be
+        // in scope for the concrete sqlite store to answer.
+        use spectral_recognition::RecognitionStore as _;
+        engine
+            .store()
+            .is_enrolled(memory_id)
+            .map_err(|e| Error::Schema(format!("recognition_residue: {e}")))
+    }
+
+    /// Remove candidates whose memory row no longer exists, and never let a
+    /// verdict name one.
+    ///
+    /// The recognition index lives in its own database file, so no foreign key
+    /// can cascade a `memories` delete into it. Any consumer that deletes a
+    /// memory by a path other than [`forget`](Self::forget) — a raw
+    /// `DELETE FROM memories`, a retention sweep, a crash between the two
+    /// writes — leaves the trace enrolled. Measured on a real 2,823-memory
+    /// brain: two pruned memories left 49 recognition rows behind, and
+    /// `recognize()` went on naming a memory that `get_memory()` returns
+    /// `None` for. A verdict a consumer cannot act on is worse than a weaker
+    /// verdict, so identity is withdrawn rather than served dangling:
+    /// `Recognized` degrades to `Familiar`, which is exactly what the evidence
+    /// still supports.
+    ///
+    /// Bounded cost: at most `max_traces` (default 5) primary-key lookups,
+    /// against a measured 12.9 ms median for the recognition query itself.
+    /// The orphan is reported once per occurrence so the leak is detectable
+    /// rather than silent — `repair_derivations` prunes it permanently.
+    fn drop_dangling_traces(&self, result: &mut spectral_recognition::RecognitionResult) {
+        if result.traces.is_empty() {
+            return;
+        }
+        let mut dangling: Vec<String> = Vec::new();
+        result.traces.retain(|t| {
+            let live = matches!(self.get_memory(&t.memory_id), Ok(Some(_)));
+            if !live {
+                dangling.push(t.memory_id.clone());
+            }
+            live
+        });
+        if dangling.is_empty() {
+            return;
+        }
+        tracing::warn!(
+            orphans = ?dangling,
+            "recognition index holds enrolments for deleted memories;              run repair_derivations to prune them"
+        );
+        result
+            .evidence
+            .retain(|e| !dangling.iter().any(|d| d == &e.memory_id));
+        if let spectral_recognition::Verdict::Recognized { memory_id } = &result.verdict {
+            if dangling.iter().any(|d| d == memory_id) {
+                // The evidence was real; only the identity is unavailable.
+                result.verdict = spectral_recognition::Verdict::Familiar;
+            }
+        }
     }
 
     /// Returns this brain's stable identifier.
@@ -3020,7 +3108,14 @@ impl Brain {
                 Ok(_) => VerificationStatus::VerifiedClear,
                 Err(error) => VerificationStatus::VerificationFailed(error.to_string()),
             };
-            let recognition_verification = match self.recognize(&content) {
+            // Two independent checks, because either alone under-reports:
+            // the verdict probe misses residue too weak to win `Recognized`,
+            // and the substrate check misses residue whose `enrolled` row was
+            // removed while fingerprints survived. Residue found by EITHER is
+            // residue. The verdict probe deliberately uses the UNGUARDED
+            // entry point — the public one drops traces whose memory row is
+            // gone, which is precisely this state.
+            let recognition_verification = match self.recognize_unguarded(&content) {
                 Ok(r)
                     if matches!(
                         r.verdict,
@@ -3029,7 +3124,11 @@ impl Brain {
                 {
                     VerificationStatus::ResidualFound
                 }
-                Ok(_) => VerificationStatus::VerifiedClear,
+                Ok(_) => match self.recognition_residue(&memory_id) {
+                    Ok(true) => VerificationStatus::ResidualFound,
+                    Ok(false) => VerificationStatus::VerifiedClear,
+                    Err(error) => VerificationStatus::VerificationFailed(error.to_string()),
+                },
                 Err(error) => VerificationStatus::VerificationFailed(error.to_string()),
             };
             (recall_verification, recognition_verification)
