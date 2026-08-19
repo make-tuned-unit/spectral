@@ -452,6 +452,17 @@ pub trait MemoryStore: Send + Sync {
         Box::pin(async { Ok(false) })
     }
 
+    /// Set a memory's hall by id and re-hash the constellation fingerprints it
+    /// participates in (R40). Returns `Ok(false)` when the id is unknown.
+    /// Default implementation is a no-op returning `false`.
+    fn set_hall<'a>(
+        &'a self,
+        _id: &'a str,
+        _hall: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
     /// Search by fingerprint hashes within a wing.
     fn fingerprint_search(
         &self,
@@ -1175,6 +1186,18 @@ impl TimeBucket {
             Self::SameMonth
         } else {
             Self::Older
+        }
+    }
+
+    /// Inverse of [`as_str`](Self::as_str); `None` for an unknown label.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "same_day" => Some(Self::SameDay),
+            "same_week" => Some(Self::SameWeek),
+            "same_month" => Some(Self::SameMonth),
+            "older" => Some(Self::Older),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
         }
     }
 

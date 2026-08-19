@@ -682,6 +682,15 @@ impl Brain {
         self.inner.set_description(id, description)
     }
 
+    /// Set the hall on an existing memory and re-hash the constellation
+    /// fingerprints it participates in, so TACT tier‑1 routes on the new hall
+    /// (R40). Returns `false` for an unknown id. Default vocabulary
+    /// `fact | preference | discovery | advice | rule | event`; pass the hall
+    /// at write time via `RememberOpts::hall` when it is already known.
+    pub fn set_hall(&self, id: &str, hall: &str) -> Result<bool, Error> {
+        self.inner.set_hall(id, hall)
+    }
+
     /// Set the description on a graph entity. Idempotent: setting the same value
     /// twice is a no-op. Descriptions improve over time as understanding deepens.
     pub fn set_entity_description(

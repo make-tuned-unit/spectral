@@ -1788,6 +1788,65 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    fn set_hall<'a>(
+        &'a self,
+        id: &'a str,
+        hall: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let tx = conn.transaction()?;
+            let n = tx.execute(
+                "UPDATE memories SET hall = ?1 WHERE id = ?2",
+                rusqlite::params![hall, id],
+            )?;
+            if n == 0 {
+                return Ok(false);
+            }
+            // Re-hash every fingerprint this memory participates in. The hash
+            // is `sha256(anchor_hall|target_hall|wing|bucket)`; only the halls
+            // change, wing and bucket are read back from the row.
+            let rows: Vec<(String, String, String, String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, anchor_memory_id, anchor_hall, target_hall, wing || '|' || time_delta_bucket
+                     FROM constellation_fingerprints
+                     WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
+                )?;
+                let out = stmt
+                    .query_map(rusqlite::params![id], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                out
+            };
+            for (fp_id, anchor_id, anchor_hall, target_hall, wing_bucket) in rows {
+                let (wing, bucket_s) = wing_bucket
+                    .rsplit_once('|')
+                    .unwrap_or((wing_bucket.as_str(), "unknown"));
+                let bucket =
+                    crate::TimeBucket::parse(bucket_s).unwrap_or(crate::TimeBucket::Unknown);
+                let (new_anchor, new_target) = if anchor_id == id {
+                    (hall.to_string(), target_hall)
+                } else {
+                    (anchor_hall, hall.to_string())
+                };
+                let new_hash = crate::fingerprint::make_fingerprint_hash(
+                    &new_anchor,
+                    &new_target,
+                    wing,
+                    bucket,
+                );
+                tx.execute(
+                    "UPDATE constellation_fingerprints
+                     SET anchor_hall = ?1, target_hall = ?2, fingerprint_hash = ?3 WHERE id = ?4",
+                    rusqlite::params![new_anchor, new_target, new_hash, fp_id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
     /// Uses `idx_memories_wing_recency` where the planner picks it up; a plain
     /// `MAX` over a few hundred thousand rows is sub-millisecond regardless.
     fn latest_created_at(

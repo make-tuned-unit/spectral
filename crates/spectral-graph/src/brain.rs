@@ -451,6 +451,13 @@ pub struct RememberOpts {
     /// `"permagent"` not `"project:permagent"`). When `None`, wing is derived
     /// by the classifier from key+content+category.
     pub wing: Option<String>,
+    /// Hall override (R40). When `Some(value)`, `classify_hall` is bypassed
+    /// and the value is stored as-is; it feeds TACT tier‑1 routing and the
+    /// constellation fingerprint hash. Default vocabulary
+    /// `fact | preference | discovery | advice | rule | event`. When `None`,
+    /// the hall is derived from content by `hall_rules`. To set the hall on
+    /// an existing memory use [`Brain::set_hall`].
+    pub hall: Option<String>,
 }
 
 /// Result of remembering a memory.
@@ -1840,6 +1847,7 @@ impl Brain {
             episode_id: opts.episode_id,
             compaction_tier: opts.compaction_tier,
             wing: opts.wing,
+            hall: opts.hall,
         };
         let result = crate::ingest_profile::time("ingest_call", || {
             self.rt.block_on(spectral_ingest::ingest::ingest_with(
@@ -2780,6 +2788,26 @@ impl Brain {
         self.ensure_writable("set_description")?;
         self.rt
             .block_on(self.memory_store.set_description(id, description))
+            .map_err(|e| Error::Schema(e.to_string()))
+    }
+
+    /// Set the hall on an existing memory (R40) and re-hash every constellation
+    /// fingerprint the memory participates in, as anchor or target, so TACT
+    /// tier‑1 routes on the new hall. Returns `false` if the id is unknown.
+    ///
+    /// Exists because the hall is usually not known at write time in a
+    /// consumer whose enrichment pass runs later (Permagent's Librarian), and
+    /// the seven default regexes fall to `event` on most agent-session
+    /// content. Rewrites a column that retrieval routes on — callers should
+    /// pass values from a closed vocabulary they control.
+    pub fn set_hall(&self, id: &str, hall: &str) -> Result<bool, Error> {
+        self.ensure_writable("set_hall")?;
+        let hall = hall.trim();
+        if hall.is_empty() {
+            return Err(Error::Schema("set_hall: hall must be non-empty".into()));
+        }
+        self.rt
+            .block_on(self.memory_store.set_hall(id, hall))
             .map_err(|e| Error::Schema(e.to_string()))
     }
 

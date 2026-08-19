@@ -110,6 +110,15 @@ pub struct IngestOpts {
     /// Callers are responsible for passing the canonical slug form.
     /// When `None`, wing is derived by the classifier from key+content+category.
     pub wing: Option<String>,
+    /// Hall override (R40). When `Some(value)`, `classify_hall` is bypassed
+    /// and the value is stored as-is. Halls route TACT tier‑1 and are baked
+    /// into constellation fingerprint hashes, so a caller that knows the hall
+    /// (an explicit label from an enrichment pass, a decision-inbox write) is
+    /// worth more than the seven default regexes, which fall to `event` on
+    /// 77.7% of a real agent brain. The default vocabulary is
+    /// `fact | preference | discovery | advice | rule | event`; consumers with
+    /// their own `hall_rules` may pass their own values.
+    pub hall: Option<String>,
 }
 
 /// Result of the ingestion pipeline.
@@ -209,7 +218,10 @@ async fn prepare_ingest(
     let wing = opts
         .wing
         .unwrap_or_else(|| classifier::classify_wing(key, content, category, &config.wing_rules));
-    let hall = classifier::classify_hall(content, &config.hall_rules);
+    let hall = opts
+        .hall
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| classifier::classify_hall(content, &config.hall_rules));
     let signal_score = signal::score_memory(content, &hall);
 
     let now = Utc::now();
