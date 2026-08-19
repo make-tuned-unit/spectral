@@ -54,14 +54,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<_, _>>()?;
 
-    let cfg = RecognitionConfig::default();
+    let mut cfg = RecognitionConfig::default();
+    // R42: `R42_DISCRIMINATIVE=1` decides a failed lead margin again on the
+    // evidence exclusive to each of the top two candidates.
+    cfg.score.discriminative_margin = std::env::var("R42_DISCRIMINATIVE").is_ok();
     let shingle = cfg.minhash.shingle;
     let sc = cfg.score.clone();
     let mut engine = RecognitionEngine::new(InMemoryRecognitionStore::default(), cfg);
-    let by_id: HashMap<&str, &str> = rows
-        .iter()
-        .map(|(i, c)| (i.as_str(), c.as_str()))
-        .collect();
+    let by_id: HashMap<&str, &str> = rows.iter().map(|(i, c)| (i.as_str(), c.as_str())).collect();
     for (id, content) in &rows {
         engine.enroll(id, content)?;
     }
@@ -70,10 +70,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stride = (rows.len() / sample_n.max(1)).max(1);
     let sample: Vec<&(String, String)> = rows.iter().step_by(stride).take(sample_n).collect();
 
-    println!("R42 gate diagnostic — {} enrolled, {} probed (own content)", rows.len(), sample.len());
+    println!(
+        "R42 gate diagnostic — {} enrolled, {} probed (own content)",
+        rows.len(),
+        sample.len()
+    );
     println!(
         "  gate: coverage>={:.2} AND score>={:.1} AND familiarity>={:.2} AND lead>={:.1}x",
-        sc.recognize_coverage, sc.recognize_min_score, sc.recognize_min_familiarity, sc.recognize_margin
+        sc.recognize_coverage,
+        sc.recognize_min_score,
+        sc.recognize_min_familiarity,
+        sc.recognize_margin
     );
 
     let (mut recognized, mut familiar, mut novel) = (0usize, 0usize, 0usize);
@@ -99,7 +106,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Verdict::Familiar => familiar += 1,
             Verdict::Novel => novel += 1,
         }
-        let Some(best) = r.traces.first() else { continue };
+        let Some(best) = r.traces.first() else {
+            continue;
+        };
         if &best.memory_id != id {
             top1_wrong += 1;
         }
@@ -171,11 +180,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     println!("\n  Of the {missed} probes that did NOT reach Recognized:");
-    println!("    top-1 identity WRONG        : {:3} ({:5.1}%)", top1_wrong, pct(top1_wrong, missed));
-    println!("    failed coverage gate        : {:3} ({:5.1}%)", fail_cov, pct(fail_cov, missed));
-    println!("    failed score gate           : {:3} ({:5.1}%)", fail_score, pct(fail_score, missed));
-    println!("    failed familiarity gate     : {:3} ({:5.1}%)", fail_fam, pct(fail_fam, missed));
-    println!("    failed LEAD-MARGIN gate     : {:3} ({:5.1}%)", fail_lead, pct(fail_lead, missed));
+    println!(
+        "    top-1 identity WRONG        : {:3} ({:5.1}%)",
+        top1_wrong,
+        pct(top1_wrong, missed)
+    );
+    println!(
+        "    failed coverage gate        : {:3} ({:5.1}%)",
+        fail_cov,
+        pct(fail_cov, missed)
+    );
+    println!(
+        "    failed score gate           : {:3} ({:5.1}%)",
+        fail_score,
+        pct(fail_score, missed)
+    );
+    println!(
+        "    failed familiarity gate     : {:3} ({:5.1}%)",
+        fail_fam,
+        pct(fail_fam, missed)
+    );
+    println!(
+        "    failed LEAD-MARGIN gate     : {:3} ({:5.1}%)",
+        fail_lead,
+        pct(fail_lead, missed)
+    );
     println!("    failed LEAD MARGIN *ONLY*   : {:3} ({:5.1}%)  <- recoverable without touching any threshold", fail_lead_only, pct(fail_lead_only, missed));
     println!(
         "    runner-up is a near-duplicate (containment >= 0.50): {:3} ({:5.1}%)",

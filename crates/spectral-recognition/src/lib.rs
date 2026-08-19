@@ -364,6 +364,35 @@ mod tests {
         e
     }
 
+    // The POSITIVE case for `discriminative_margin` is tested at the
+    // `score_candidates` level (see `score::tests`), not here: in a small
+    // corpus rarity weighting alone already separates two template-sharing
+    // memories, so an end-to-end test cannot honestly establish the
+    // precondition it needs (a sub-margin tie). Constructing the tie requires
+    // controlling document frequencies, which the scoring entry point exposes
+    // and the engine does not. The SAFETY property below is testable
+    // end-to-end and is the one that must hold whatever the corpus.
+
+    /// R42 safety property: two memories with IDENTICAL content have no
+    /// exclusive evidence, so the rule must never invent an identity for them
+    /// — `Familiar` is the only honest verdict. This is what keeps the
+    /// promotion from being a licence to guess.
+    #[test]
+    fn discriminative_margin_never_promotes_byte_identical_memories() {
+        let content = "Started working in project Grocery Savers 019ea358b6d67671";
+        let mut cfg = RecognitionConfig::default();
+        cfg.score.discriminative_margin = true;
+        let mut e = RecognitionEngine::new(InMemoryRecognitionStore::default(), cfg);
+        e.enroll("twin_1", content).unwrap();
+        e.enroll("twin_2", content).unwrap();
+        let r = e.recognize(content).unwrap();
+        assert!(
+            matches!(r.verdict, Verdict::Familiar),
+            "identical twins must stay Familiar, got {:?}",
+            r.verdict
+        );
+    }
+
     /// `enroll_parts` indexes the UNION of separately-fingerprinted parts under
     /// one id: a probe shaped like either part resolves to that id, the store
     /// holds one enrolled memory (not two), and re-enrolling is a no-op.

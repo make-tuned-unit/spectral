@@ -65,6 +65,10 @@ struct Tally {
     n: usize,
     recognized_correct: usize,
     recognized_wrong: usize,
+    /// Of the wrong ones, how many named a memory whose content is
+    /// byte-identical to the target — i.e. an equally correct answer that an
+    /// id-based metric cannot credit.
+    recognized_wrong_identical: usize,
     familiar: usize,
     novel: usize,
     top1_correct: usize,
@@ -76,12 +80,31 @@ impl Tally {
             n: 0,
             recognized_correct: 0,
             recognized_wrong: 0,
+            recognized_wrong_identical: 0,
             familiar: 0,
             novel: 0,
             top1_correct: 0,
             margins: Vec::new(),
         }
     }
+    fn add_with(
+        &mut self,
+        r: &spectral_recognition::RecognitionResult,
+        truth: &str,
+        contents: Option<&std::collections::HashMap<String, String>>,
+    ) {
+        if let (Verdict::Recognized { memory_id }, Some(map)) = (&r.verdict, contents) {
+            if base_id(memory_id) != truth {
+                if let (Some(a), Some(b)) = (map.get(truth), map.get(base_id(memory_id))) {
+                    if a == b {
+                        self.recognized_wrong_identical += 1;
+                    }
+                }
+            }
+        }
+        self.add(r, truth);
+    }
+
     fn add(&mut self, r: &spectral_recognition::RecognitionResult, truth: &str) {
         self.n += 1;
         match &r.verdict {
@@ -121,10 +144,22 @@ impl Tally {
         } else {
             m.iter().sum::<f64>() / m.len() as f64
         };
+        let twin = if self.recognized_wrong_identical > 0 {
+            format!(
+                "  [of the WRONG, {} named a byte-identical twin = {:.1}% of n]",
+                self.recognized_wrong_identical,
+                pct(self.recognized_wrong_identical)
+            )
+        } else {
+            String::new()
+        };
         println!(
             "  {name:<8} n={:<4} Recognized(correct) {:5.1}%  Recognized(WRONG) {:4.1}%  Familiar {:5.1}%  Novel {:5.1}%  top1 {:5.1}%  margin mean/med {:.3}/{:.3}",
             self.n, pct(self.recognized_correct), pct(self.recognized_wrong), pct(self.familiar), pct(self.novel), pct(self.top1_correct), mean, med
         );
+        if !twin.is_empty() {
+            println!("{twin}");
+        }
     }
 }
 
@@ -149,9 +184,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?;
 
-    let cfg = RecognitionConfig::default();
+    let mut cfg = RecognitionConfig::default();
+    // R42: `R42_DISCRIMINATIVE=1` decides a failed lead margin again on the
+    // evidence exclusive to each of the top two candidates.
+    cfg.score.discriminative_margin = std::env::var("R42_DISCRIMINATIVE").is_ok();
     let mut engine = RecognitionEngine::new(InMemoryRecognitionStore::default(), cfg);
 
+    // id -> content, so a "wrong" identity that names a byte-identical twin can
+    // be told apart from one that names a genuinely different memory.
+    let contents_by_id: std::collections::HashMap<String, String> = rows
+        .iter()
+        .map(|(id, content, _)| (id.clone(), content.clone()))
+        .collect();
     let mut sample: Vec<(String, String)> = Vec::new();
     for (id, content, desc) in &rows {
         let has_desc = desc
@@ -197,11 +241,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut head = Tally::new();
     let mut drop = Tally::new();
     for (id, content) in &sample {
-        exact.add(&engine.recognize(content)?, id);
-        head.add(&engine.recognize(&degrade_head(content))?, id);
-        drop.add(
+        exact.add_with(&engine.recognize(content)?, id, Some(&contents_by_id));
+        head.add_with(
+            &engine.recognize(&degrade_head(content))?,
+            id,
+            Some(&contents_by_id),
+        );
+        drop.add_with(
             &engine.recognize(&degrade_dropout(content, seed_of(id)))?,
             id,
+            Some(&contents_by_id),
         );
     }
     exact.print("exact");
