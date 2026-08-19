@@ -127,10 +127,45 @@ fn default_visibility_str() -> String {
 // ── WriteOutcome ────────────────────────────────────────────────────
 
 /// Outcome of a memory write operation.
+///
+/// # A repeated write does not reinforce
+///
+/// The variant a caller most often misreads is [`NoOp`](Self::NoOp). Writing
+/// the same key with the same content **preserves every field and strengthens
+/// nothing** — `signal_score` and `last_reinforced_at` are untouched. That is
+/// deliberate, not an oversight: a write carries whatever `signal_score` its
+/// caller happened to construct, so a replay, a retry after a crash, or a
+/// federation re-sync would otherwise overwrite an accumulated score with a
+/// stale one, or inflate it simply for arriving twice. The store's job is
+/// idempotence; only the caller knows whether a repeat is *the same event
+/// arriving again* or *the event happening again*.
+///
+/// So a consumer that keys on a stable identifier — the right pattern, since
+/// it stops N occurrences becoming N memories — must say so explicitly:
+///
+/// ```ignore
+/// let result = brain.remember_with(&key, &content, opts)?;
+/// if result.write_outcome != WriteOutcome::Inserted {
+///     // This really is a re-occurrence, not a replay: say so.
+///     brain.reinforce(ReinforceOpts { memory_keys: vec![key], strength })?;
+/// }
+/// ```
+///
+/// Without that call the memory exists but never strengthens, and the
+/// recency/strength signal that made the repeats worth collapsing is lost in
+/// the same change that collapses them. (Recorded because two independent
+/// readers assumed the opposite, 2026-08-19.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOutcome {
+    /// No row existed for this key; a new memory was created.
     Inserted,
+    /// A row existed with byte-identical content. Everything is preserved —
+    /// including `signal_score` and `last_reinforced_at`. **Nothing is
+    /// reinforced**; see the type-level note.
     NoOp,
+    /// A row existed with different content. `content`, `content_hash` and
+    /// `updated_at` are replaced and fingerprints rewritten; `signal_score`,
+    /// `last_reinforced_at` and every other field are preserved.
     ContentUpdated,
 }
 

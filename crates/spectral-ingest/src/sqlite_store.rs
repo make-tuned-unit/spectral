@@ -7228,6 +7228,75 @@ mod tests {
         );
     }
 
+    /// A repeated identical write does not touch `last_reinforced_at` — the
+    /// half of the no-op contract the signal_score test does not cover, and
+    /// the half a consumer keying on stable ids depends on knowing.
+    ///
+    /// Pins the seam rather than the wish: collapsing N occurrences into one
+    /// memory is correct, but the collapse alone makes the memory *quieter*,
+    /// not stronger. Reinforcement is a separate, explicit act, because only
+    /// the caller can distinguish a re-occurrence from a replay.
+    #[tokio::test]
+    async fn write_noop_does_not_reinforce_so_the_caller_must_ask() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = Memory {
+            id: "id-rep".into(),
+            key: "k-rep".into(),
+            content: "Started working in project Grocery Savers".into(),
+            wing: Some("ops".into()),
+            hall: Some("event".into()),
+            signal_score: 0.6,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: Some("2026-08-19 03:00:00".into()),
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        assert_eq!(
+            store.write(&mem, &[]).await.unwrap(),
+            WriteOutcome::Inserted
+        );
+
+        let reinforced_at = |store: &SqliteStore| -> Option<String> {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT last_reinforced_at FROM memories WHERE key = 'k-rep'",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            reinforced_at(&store).is_none(),
+            "precondition: never reinforced"
+        );
+
+        // The 2nd, 3rd, 25th occurrence of the same event.
+        for _ in 0..3 {
+            assert_eq!(store.write(&mem, &[]).await.unwrap(), WriteOutcome::NoOp);
+        }
+        assert!(
+            reinforced_at(&store).is_none(),
+            "a repeated write must NOT reinforce — the caller has to ask"
+        );
+
+        // Asking is what moves it.
+        store.reinforce_memory("k-rep", 0.2).await.unwrap();
+        assert!(
+            reinforced_at(&store).is_some(),
+            "explicit reinforce_memory sets last_reinforced_at"
+        );
+    }
+
     #[tokio::test]
     async fn write_noop_does_not_touch_updated_at() {
         let store = SqliteStore::open_in_memory().unwrap();
