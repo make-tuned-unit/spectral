@@ -561,3 +561,91 @@ fn set_hall_delegates_and_round_trips() {
     );
     assert!(!brain.set_hall("no-such-id", "fact").unwrap());
 }
+
+/// R43: a relation asserted FROM a memory carries that memory's document id
+/// in its provenance and is recoverable by memory; a plain `assert_typed`
+/// carries none; an unknown memory id is an error, not a silent None.
+#[test]
+fn assert_typed_from_records_source_memory_and_is_recoverable() {
+    let tmp = TempDir::new().unwrap();
+    let brain = Brain::builder()
+        .data_dir(tmp.path())
+        .ontology_path(ontology_with_predicate(tmp.path()))
+        .entity_policy(EntityPolicy::AutoCreate)
+        .build()
+        .unwrap();
+    let m = brain
+        .remember_with(
+            "k1",
+            "Ada is working on spectral this quarter",
+            spectral::RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let other = brain
+        .remember_with(
+            "k2",
+            "Unrelated: the office plant was watered",
+            spectral::RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    // Sourced assertion
+    let r = brain
+        .assert_typed_from(
+            &m.memory_id,
+            ("person", "Ada"),
+            "works_on",
+            ("project", "spectral"),
+            0.6,
+            Visibility::Private,
+        )
+        .unwrap();
+    assert!(r.triple_written);
+    let from_m = brain.triples_from_memory(&m.memory_id).unwrap();
+    assert_eq!(from_m.len(), 1, "exactly the one triple sourced from k1");
+    let expect_doc = *blake3::hash("Ada is working on spectral this quarter".as_bytes()).as_bytes();
+    assert_eq!(from_m[0].source_doc_id, Some(expect_doc));
+    assert_eq!(from_m[0].predicate, "works_on");
+    assert!(brain
+        .triples_from_memory(&other.memory_id)
+        .unwrap()
+        .is_empty());
+
+    // Unsourced assertion stays unsourced (a different predicate instance is
+    // needed because works_on accumulates; use the same one — it is
+    // append-only, so a second row is fine — and check the doc column).
+    brain
+        .assert_typed(
+            ("person", "Ada"),
+            "works_on",
+            ("project", "spectral"),
+            0.9,
+            Visibility::Private,
+        )
+        .unwrap();
+    let all = brain.triples_from_memory(&m.memory_id).unwrap();
+    assert_eq!(
+        all.len(),
+        1,
+        "the unsourced assert must not be attributed to k1"
+    );
+
+    // Unknown memory id
+    assert!(brain
+        .assert_typed_from(
+            "no-such-id",
+            ("person", "Ada"),
+            "works_on",
+            ("project", "spectral"),
+            0.6,
+            Visibility::Private
+        )
+        .is_err());
+    assert!(brain.triples_from_memory("no-such-id").is_err());
+}

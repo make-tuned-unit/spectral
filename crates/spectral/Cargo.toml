@@ -37,6 +37,7 @@ neural-bench = ["dep:fastembed"]
 spectrogram-legacy = ["dep:spectral-spectrogram", "spectral-graph/spectrogram-legacy"]
 
 [dev-dependencies]
+blake3 = { workspace = true }
 chrono = { workspace = true }
 rusqlite = { workspace = true }
 tempfile = "3"
