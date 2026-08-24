@@ -236,6 +236,13 @@ impl<S: RecognitionStore> RecognitionEngine<S> {
             gram_hashes: Vec::new(),
             token_count: 0,
         };
+        // One decision, read twice. Written as two separate comparisons this
+        // was untestable: at zero weight each site alone is unobservable — the
+        // first computes shingles nothing indexes, the second indexes an empty
+        // set — while together they are observable. A single binding makes the
+        // gate one thing that can be got wrong, and therefore one thing a test
+        // can pin.
+        let minhash_on = self.config.minhash.weight > 0.0;
         let mut shingles: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let mut any = false;
         for part in parts {
@@ -248,7 +255,7 @@ impl<S: RecognitionStore> RecognitionEngine<S> {
             merged.pair_hashes.extend(p.pair_hashes);
             merged.gram_hashes.extend(p.gram_hashes);
             merged.token_count += p.token_count;
-            if self.config.minhash.weight > 0.0 {
+            if minhash_on {
                 shingles.extend(minhash::shingle_set(part, self.config.minhash.shingle));
             }
         }
@@ -262,7 +269,7 @@ impl<S: RecognitionStore> RecognitionEngine<S> {
         merged.gram_hashes.sort_by_key(|(h, _)| *h);
         merged.gram_hashes.dedup_by_key(|(h, _)| *h);
         self.store.index_memory(memory_id, &merged)?;
-        if self.config.minhash.weight > 0.0 {
+        if minhash_on {
             let set: Vec<u64> = shingles.into_iter().collect();
             let _ = self.store.index_minhash(memory_id, &set, &set);
         }
