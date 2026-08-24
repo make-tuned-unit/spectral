@@ -60,6 +60,12 @@ pub struct OracleConfig {
     /// Optional JSON map {question_id: expanded_query} to replay frozen
     /// query-expansion output without an LLM call.
     pub expansion_cache: Option<PathBuf>,
+    /// R38: optional description map {memory_key: description} applied to
+    /// each freshly ingested brain. When `SPECTRAL_BENCH_SPECTROGRAM` is set,
+    /// fingerprints are then recomputed over content+description
+    /// (`Brain::refingerprint_from_descriptions`). Reused brains are assumed
+    /// to carry both already — pass `--fresh-brains` after changing the map.
+    pub descriptions: Option<PathBuf>,
 }
 
 /// Per-question oracle result. One JSONL row per question.
@@ -330,6 +336,10 @@ pub fn run_oracle(config: &OracleConfig) -> Result<Vec<OracleRow>> {
             .progress_chars("#>-"),
     );
 
+    let description_map: Option<crate::describe::DescriptionMap> = match &config.descriptions {
+        Some(path) => Some(crate::describe::load_descriptions(path)?),
+        None => None,
+    };
     let mut rows = Vec::with_capacity(questions.len());
     let mut labelled_questions = 0usize;
     let mut shape_refusals = 0usize;
@@ -343,7 +353,14 @@ pub fn run_oracle(config: &OracleConfig) -> Result<Vec<OracleRow>> {
             open_existing_brain(&brain_dir)?
         } else {
             let _ = std::fs::remove_dir_all(&brain_dir);
-            ingest::ingest_question(question, &brain_dir, config.ingest_strategy)?
+            let brain = ingest::ingest_question(question, &brain_dir, config.ingest_strategy)?;
+            if let Some(desc_map) = description_map.as_ref() {
+                crate::describe::apply_descriptions(&brain, desc_map)?;
+                if std::env::var("SPECTRAL_BENCH_SPECTROGRAM").is_ok() {
+                    brain.refingerprint_from_descriptions(1_000_000)?;
+                }
+            }
+            brain
         };
 
         let retrieval_query = expansion_cache
@@ -1007,6 +1024,7 @@ mod tests {
             keep_brains: true,
             label: "test".into(),
             expansion_cache: None,
+            descriptions: None,
         };
 
         let rows = run_oracle(&config).unwrap();
@@ -1067,6 +1085,7 @@ mod tests {
             keep_brains: true,
             label: "first".into(),
             expansion_cache: None,
+            descriptions: None,
         };
         let first = run_oracle(&config).unwrap();
 

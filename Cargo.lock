@@ -2761,6 +2761,7 @@ dependencies = [
  "serde_json",
  "spectral-cascade",
  "spectral-core",
+ "spectral-graph",
  "spectral-ingest",
  "spectral-recognition",
  "spectral-spectrogram",

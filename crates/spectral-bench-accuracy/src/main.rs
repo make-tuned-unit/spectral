@@ -302,6 +302,11 @@ enum Command {
         /// JSON map {question_id: expanded_query} to replay frozen expansion
         #[arg(long)]
         expansion_cache: Option<PathBuf>,
+        /// R38: JSON map {memory_key: description} applied after ingest
+        /// (with SPECTRAL_BENCH_SPECTROGRAM set, fingerprints are recomputed
+        /// over content+description). Requires --fresh-brains.
+        #[arg(long)]
+        descriptions: Option<PathBuf>,
     },
 
     /// Backfill R15 evidence-turn recall onto ARCHIVED oracle rows, offline.
@@ -790,6 +795,7 @@ fn main() -> Result<()> {
             fresh_brains,
             no_keep_brains,
             expansion_cache,
+            descriptions,
         } => {
             let cats = categories
                 .map(|s| {
@@ -831,6 +837,7 @@ fn main() -> Result<()> {
                 keep_brains: !no_keep_brains,
                 label,
                 expansion_cache,
+                descriptions,
             };
 
             eprintln!("Oracle run (zero LLM calls)...");

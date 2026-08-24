@@ -5,7 +5,13 @@
 //! enrol every memory in a brain, then probe with degraded re-encounters of a
 //! sample and with foreign text, and report the verdicts.
 //!
-//! Two enrolment modes over the SAME database:
+//! Enrolment modes over the SAME database (plus `parts`: content and
+//! description fingerprinted separately and indexed as the UNION under one id
+//! via `enroll_parts`; `dual`: content under the id
+//! AND the description as a second trace `{id}#d` mapped back at verdict time,
+//! so the description cannot displace content peaks; and env
+//! R37_PARA_DB=<other variant db> adds a paraphrase probe — that db's
+//! description of the same memory as the stimulus):
 //!   content   — enrol `content` only (what production does today)
 //!   enriched  — enrol `content\n{description}` where a description exists
 //!
@@ -45,6 +51,10 @@ fn degrade_dropout(s: &str, seed: u64) -> String {
     out.join(" ")
 }
 
+fn base_id(id: &str) -> &str {
+    id.split('#').next().unwrap_or(id)
+}
+
 fn seed_of(id: &str) -> u64 {
     id.bytes().fold(1469598103934665603u64, |h, b| {
         (h ^ b as u64).wrapping_mul(1099511628211)
@@ -76,7 +86,7 @@ impl Tally {
         self.n += 1;
         match &r.verdict {
             Verdict::Recognized { memory_id } => {
-                if memory_id == truth {
+                if base_id(memory_id) == truth {
                     self.recognized_correct += 1
                 } else {
                     self.recognized_wrong += 1
@@ -86,9 +96,15 @@ impl Tally {
             Verdict::Novel => self.novel += 1,
         }
         if let Some(t) = r.traces.first() {
-            if t.memory_id == truth {
+            if base_id(&t.memory_id) == truth {
                 self.top1_correct += 1;
-                let second = r.traces.get(1).map(|s| s.score).unwrap_or(0.0);
+                // runner-up = first trace that is NOT the same base memory
+                let second = r
+                    .traces
+                    .iter()
+                    .find(|s| base_id(&s.memory_id) != truth)
+                    .map(|s| s.score)
+                    .unwrap_or(0.0);
                 if t.score > 0.0 {
                     self.margins.push((t.score - second) / t.score);
                 }
@@ -146,7 +162,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ("enriched", true) => format!("{content}\n{}", desc.as_deref().unwrap()),
             _ => content.clone(),
         };
-        engine.enroll(id, &text)?;
+        if mode == "parts" && has_desc {
+            engine.enroll_parts(id, &[content.as_str(), desc.as_deref().unwrap()])?;
+        } else if mode == "parts_clean" && has_desc {
+            // Strip the Librarian's wire-format wrapper: identical boilerplate
+            // on every memory is a feature every memory shares.
+            let cleaned = desc
+                .as_deref()
+                .unwrap()
+                .replace("Related terms:", " ")
+                .replace("Categories:", " ")
+                .replace("FACTS:", " ")
+                .replace("TERMS:", " ")
+                .replace("CATEGORIES:", " ");
+            engine.enroll_parts(id, &[content.as_str(), cleaned.as_str()])?;
+        } else {
+            engine.enroll(id, &text)?;
+        }
+        if mode == "dual" && has_desc {
+            engine.enroll(&format!("{id}#d"), desc.as_deref().unwrap())?;
+        }
         if has_desc {
             sample.push((id.clone(), content.clone()));
         }
@@ -172,6 +207,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     exact.print("exact");
     head.print("head50");
     drop.print("drop30");
+
+    if let Ok(para_db) = std::env::var("R37_PARA_DB") {
+        let pconn = rusqlite::Connection::open_with_flags(
+            &para_db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        let mut pstmt = pconn.prepare(
+            "SELECT id, description FROM memories WHERE description IS NOT NULL AND TRIM(description) <> ''",
+        )?;
+        let paras: std::collections::HashMap<String, String> = pstmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut para = Tally::new();
+        for (id, _content) in &sample {
+            if let Some(p) = paras.get(id) {
+                para.add(&engine.recognize(p)?, id);
+            }
+        }
+        para.print("para");
+    }
 
     if let Some(path) = locomo {
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
