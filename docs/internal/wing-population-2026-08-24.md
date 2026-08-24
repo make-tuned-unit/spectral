@@ -87,6 +87,93 @@ recording: episodes are created *per wing*
 wing-assigned memory, and **0** of those episodes offer an unambiguous
 candidate. The signal is circular by construction.
 
+## Root cause: one writer, and the signal it already has in hand
+
+Grouping the catch-all by key prefix names the culprit exactly:
+
+| writer | in `general` | total | unwinged |
+|---|---:|---:|---:|
+| **`chat-<session>`** | **1,002** | 1,049 | **96%** |
+| `activity:…` | 249 | 871 | 29% |
+| `task_<uuid>` | 81 | 259 | 31% |
+| `http_http_henry-<id>` | 52 | 68 | 76% |
+| `note:…` | 21 | 21 | 100% |
+| `reader:…` | 9 | 9 | 100% |
+
+One writer is 65% of the whole problem, and it is not a hard case: it is the
+chat turn path, which passes `wing: None` unconditionally
+(`goose-server/src/brain_ops.rs::chat_turn_opts`).
+
+**The signal it needs is already maintained in the same process.**
+`ActivityIngester` holds `active_project`, which carries a `.wing`, and
+`activity/ingestion.rs` reads it as `wing_override` — which is precisely why
+activity memories are only 29% unwinged while chat is 96%. The chat path
+simply never asks.
+
+### The obvious fix is a trap, and the size of the trap is measurable
+
+Setting `wing: active_project.wing` would wing **96%** of chat turns. It would
+also be wrong at scale. Distribution of *how stale* the active project was when
+each turn was written:
+
+| age of the active project | turns | |
+|---|---:|---:|
+| ≤ 30 min | 248 | 24% |
+| ≤ 2 h | 104 | 10% |
+| ≤ 8 h | 172 | 16% |
+| ≤ 24 h | 173 | 16% |
+| ≤ 7 d | 115 | 11% |
+| **> 7 d stale** | **199** | **19%** |
+| no prior selection | 39 | 4% |
+
+**19% of turns would be filed under a project last touched more than a week
+earlier.** That is scope leakage — the failure mode the literature names — and
+it is strictly worse than the honest `general` we have now, because a wrong
+wing is invisible while an empty one is not.
+
+### Pin per session, not per turn
+
+Session scoping cannot be recovered after the fact: **0** of the
+`project_selected` events carry a session id, so no chat turn can be joined to
+one. But the shape is right, and it matches R45's session-is-the-episode rule.
+Measured per session (157 sessions, 1,002 turns), using the active project at
+*session start*:
+
+| project age at session start | sessions | turns |
+|---|---:|---:|
+| ≤ 30 min | 22 | 277 (28%) |
+| ≤ 2 h | 8 | 57 (6%) |
+| ≤ 8 h | 17 | 202 (20%) |
+| ≤ 24 h | 34 | 127 (13%) |
+| **> 24 h stale** | 61 | 303 (30%) |
+| none | 15 | 36 (4%) |
+
+So a per-session pin with a 2-hour bound wings **33%** of chat turns
+confidently and leaves the stale 30% honestly `general` — which is the right
+answer for them.
+
+## The durable fix: capture the project, do not infer it
+
+Every option above is a heuristic reconstructing something the application
+knew and discarded. The UI knows which project is open when a chat session
+begins. **Persist it on the session and let every turn inherit it**, and the
+staleness question disappears: no time constant, no model, no leakage, and it
+holds for turns written hours into a long conversation.
+
+Concretely, in order:
+
+1. **Capture at session creation** — record the active project on the chat
+   session, pass it as `RememberOpts.wing` for every turn of that session.
+   This is the "always classified" fix; everything else is cleanup.
+2. **Tag `project_selected` events with their session** so the association is
+   reconstructable at all — today it is not, which is why the analysis above
+   had to fall back on wall-clock proximity.
+3. Until (1) ships, a per-session pin bounded at 2 hours: 33% coverage,
+   conservative by design.
+4. Note the smaller writers are 100% unwinged and are *not* hard: `note:` and
+   `reader:` memories belong to a project the app already knows at write time.
+   They are 30 memories, but they are pure plumbing gaps.
+
 ## Proposal — a ladder, and the rungs are ordered by cost
 
 **Rung 1 — plumbing, not classification (largest single win, zero risk).**
