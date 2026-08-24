@@ -148,3 +148,67 @@ fn resonant_memory_ids_returns_neighbours_excludes_the_seed_and_honours_the_cap(
         .unwrap()
         .is_empty());
 }
+
+/// When a candidate resonates with more than one seed it must be scored by its
+/// BEST match, not its worst.
+///
+/// Asserted against the per-seed answers rather than against a hardcoded
+/// number, so the test states the property (`max`) instead of re-deriving the
+/// implementation: a comparison flipped to `<` yields the minimum and fails
+/// here, while remaining invisible to any single-seed test.
+#[test]
+fn a_candidate_matched_by_two_seeds_is_scored_by_its_best_match() {
+    let tmp = TempDir::new().unwrap();
+    let b = brain(&tmp);
+    // Same action type across all four: resonance requires a matching
+    // action_type before any dimension is compared, so seeds of different
+    // types share no candidates and the max could never be observed.
+    let seed_a = remember(
+        &b,
+        "k1",
+        "Decided to move the deploy window to Tuesday evening",
+    );
+    let seed_b = remember(
+        &b,
+        "k2",
+        "Decided to move the backup schedule to Thursday morning",
+    );
+    remember(
+        &b,
+        "k3",
+        "Decided to move the review window to Monday evening",
+    );
+    remember(
+        &b,
+        "k4",
+        "Decided to move the release checklist to Friday afternoon",
+    );
+
+    let tol = spectral_spectrogram::matching::MatchTolerances::default();
+    let score_map = |ids: &[String]| -> std::collections::HashMap<String, f64> {
+        b.resonant_memory_ids(ids, 50, &tol)
+            .unwrap()
+            .into_iter()
+            .collect()
+    };
+    let from_a = score_map(std::slice::from_ref(&seed_a));
+    let from_b = score_map(std::slice::from_ref(&seed_b));
+    let from_both = score_map(&[seed_a.clone(), seed_b.clone()]);
+
+    let shared: Vec<&String> = from_both
+        .keys()
+        .filter(|id| from_a.contains_key(*id) && from_b.contains_key(*id))
+        .collect();
+    assert!(
+        !shared.is_empty(),
+        "precondition: at least one candidate must resonate with BOTH seeds,          otherwise this test cannot observe the max"
+    );
+    for id in shared {
+        let expected = from_a[id].max(from_b[id]);
+        assert!(
+            (from_both[id] - expected).abs() < 1e-9,
+            "candidate {id} scored {} but its best single-seed score is {expected}",
+            from_both[id]
+        );
+    }
+}

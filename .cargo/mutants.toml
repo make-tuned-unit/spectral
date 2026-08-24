@@ -48,6 +48,19 @@ exclude_re = [
     # `open_read_only`, whose refusal to index is directly tested. Flipping the
     # `||` cannot produce a write — the store stops it a layer down.
     "replace \\|\\| with && in Brain::drain_enrolment_retries",
+    # `resonant_memory_ids`'s `seed_ids.is_empty() || max_results == 0` is a
+    # short-circuit, not a behavioural guard. With `&&` neither degenerate case
+    # returns early, and both still produce an empty vector by construction: no
+    # seeds means the accumulation loop never runs, and `max_results == 0` means
+    # the final `truncate(0)` empties whatever was accumulated. The output is
+    # identical for every input; only wasted work differs.
+    "replace \\|\\| with && in Brain::resonant_memory_ids",
+    # `enroll_parts`'s `merged.token_count +=` accumulates a field no consumer
+    # reads: scoring derives `stimulus_features` from `pair_hashes.len() +
+    # gram_hashes.len()`, and `index_memory` stores only the hash sets. The
+    # count is descriptive stats on a struct built for indexing, so no verdict,
+    # score or stored row can observe the arithmetic.
+    "replace \\+= with (\\*|-)= in RecognitionEngine::enroll_parts",
 ]
 
 # Several suites open SQLite files and build brains, so they are meaningfully
