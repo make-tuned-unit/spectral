@@ -197,10 +197,12 @@ pub fn signature_from_bytes(bytes: &[u8]) -> Vec<u64> {
     if !bytes.len().is_multiple_of(8) {
         return Vec::new();
     }
-    bytes
-        .chunks_exact(8)
-        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
-        .collect()
+    // `as_chunks::<8>()` gives fixed-size arrays directly, so there is no
+    // fallible `try_into` to unwrap. The length is already a multiple of 8
+    // above, so the remainder is empty by construction.
+    let (chunks, rest) = bytes.as_chunks::<8>();
+    debug_assert!(rest.is_empty(), "length checked to be a multiple of 8");
+    chunks.iter().copied().map(u64::from_le_bytes).collect()
 }
 
 #[cfg(test)]
