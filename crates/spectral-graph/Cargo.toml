@@ -36,5 +36,11 @@ anyhow = { workspace = true }
 spectrogram-legacy = ["dep:spectral-spectrogram"]
 
 [dev-dependencies]
+# Self-dependency with the legacy feature so this package's OWN tests are built
+# with it. Without this, `cargo test -p spectral-graph` resolves default
+# features, `r38_spectrogram_wire_tests` compiles to zero tests, and the
+# mutation gate reports its mutants as MISSED — tests that cannot run cannot
+# fail. Production default is unchanged: the feature stays off for consumers.
+spectral-graph = { path = ".", features = ["spectrogram-legacy"] }
 anyhow.workspace = true
 tempfile = "3"
