@@ -552,6 +552,23 @@ impl Brain {
         self.inner.recognize(stimulus)
     }
 
+    /// Is anything still enrolled in the recognition index under this memory
+    /// id? Substrate truth, independent of whether that residue is strong
+    /// enough to produce a verdict.
+    ///
+    /// [`recognize`](Self::recognize) deliberately withholds identity for a
+    /// memory whose row is gone — a verdict a consumer cannot resolve is worse
+    /// than a weaker one. That is the right answer for a consumer and the
+    /// wrong one for an auditor, so detectability gets its own entry point:
+    /// this reports residue the guarded path hides. Use it after deleting a
+    /// memory by any path other than [`forget`](Self::forget) — a raw
+    /// `DELETE`, a retention sweep — to prove the recognition sidecar was
+    /// cleaned, since it lives in a separate database file that no foreign key
+    /// cascade can reach.
+    pub fn recognition_residue(&self, memory_id: &str) -> Result<bool, Error> {
+        self.inner.recognition_residue(memory_id)
+    }
+
     /// Reinforce memories that the caller found useful from a recall result.
     pub fn reinforce(&self, opts: ReinforceOpts) -> Result<ReinforceResult, Error> {
         self.inner.reinforce(opts)

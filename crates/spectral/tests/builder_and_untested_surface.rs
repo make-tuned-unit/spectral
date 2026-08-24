@@ -649,3 +649,37 @@ fn assert_typed_from_records_source_memory_and_is_recoverable() {
         .is_err());
     assert!(brain.triples_from_memory("no-such-id").is_err());
 }
+
+/// `recognition_residue` delegates, and answers the auditor's question rather
+/// than the consumer's: it reports an enrolled trace even in the state where
+/// `recognize` deliberately withholds identity.
+#[test]
+fn recognition_residue_delegates_and_is_independent_of_the_verdict() {
+    let tmp = TempDir::new().unwrap();
+    let onto = tmp.path().join("ontology.toml");
+    std::fs::write(&onto, "version = 1\n").unwrap();
+    let brain = Brain::builder()
+        .data_dir(tmp.path())
+        .ontology_path(&onto)
+        .build()
+        .unwrap();
+    let content = "The nightly export of ledger 88213 finished in 4471ms writing 219 rows";
+    let m = brain
+        .remember_with(
+            "k",
+            content,
+            spectral::RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(brain.recognition_residue(&m.memory_id).unwrap());
+    assert!(!brain.recognition_residue("never-enrolled").unwrap());
+
+    brain.forget("k").unwrap();
+    assert!(
+        !brain.recognition_residue(&m.memory_id).unwrap(),
+        "forget() clears the sidecar, so the auditor sees nothing left"
+    );
+}

@@ -499,14 +499,28 @@ fn d2_sabotaged_deletion_is_detected_by_probes() {
                 .unwrap();
         }
     }
+    // Sidecar residue must be DETECTABLE — through substrate truth, which is
+    // what a deletion guarantee actually asks about. This is stronger than the
+    // old verdict-based check: it catches residue even when the residue is too
+    // weak to still win a `Recognized`.
+    assert!(
+        brain.recognition_residue(&id).unwrap(),
+        "the recognition audit probe must DETECT sidecar residue"
+    );
+    // And it must NOT be served to a consumer: the memories row is gone, so a
+    // verdict naming this id would be an identity nothing can resolve. The
+    // evidence is real, so the honest verdict is Familiar — never Recognized,
+    // never Novel. Detectability and serveability are different questions and
+    // this pins both.
     let rec = brain.recognize(content).unwrap();
     assert!(
-        matches!(rec.verdict, spectral_recognition::Verdict::Recognized { ref memory_id } if *memory_id == id),
-        "the recognition verification probe must DETECT sidecar residue"
+        !matches!(rec.verdict, spectral_recognition::Verdict::Recognized { ref memory_id } if *memory_id == id),
+        "the public API must not name a memory whose row is deleted: {:?}",
+        rec.verdict
     );
     assert!(
-        rec.evidence.iter().any(|e| e.memory_id == id),
-        "residue evidence must cite the victim"
+        !rec.evidence.iter().any(|e| e.memory_id == id),
+        "and must not cite its evidence"
     );
     // A forget over this sabotaged state must not claim success: the store
     // row is gone (existed = false), so `fully_forgotten()` is false — and
@@ -521,10 +535,14 @@ fn d2_sabotaged_deletion_is_detected_by_probes() {
         !report3.fully_forgotten(),
         "a forget that found no store row never reports success"
     );
+    assert!(
+        !brain.recognition_residue(&id).unwrap(),
+        "sidecar residue actually gone after re-forget"
+    );
     let rec = brain.recognize(content).unwrap();
     assert!(
         !matches!(rec.verdict, spectral_recognition::Verdict::Recognized { ref memory_id } if *memory_id == id),
-        "sidecar residue actually gone after re-forget"
+        "and no verdict names it"
     );
 }
 
