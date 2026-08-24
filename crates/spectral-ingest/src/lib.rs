@@ -452,6 +452,17 @@ pub trait MemoryStore: Send + Sync {
         Box::pin(async { Ok(false) })
     }
 
+    /// Set a memory's hall by id and re-hash the constellation fingerprints it
+    /// participates in (R40). Returns `Ok(false)` when the id is unknown.
+    /// Default implementation is a no-op returning `false`.
+    fn set_hall<'a>(
+        &'a self,
+        _id: &'a str,
+        _hall: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
     /// Search by fingerprint hashes within a wing.
     fn fingerprint_search(
         &self,
@@ -1178,6 +1189,18 @@ impl TimeBucket {
         }
     }
 
+    /// Inverse of [`as_str`](Self::as_str); `None` for an unknown label.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "same_day" => Some(Self::SameDay),
+            "same_week" => Some(Self::SameWeek),
+            "same_month" => Some(Self::SameMonth),
+            "older" => Some(Self::Older),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::SameDay => "same_day",
@@ -1192,5 +1215,47 @@ impl TimeBucket {
 impl std::fmt::Display for TimeBucket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod time_bucket_tests {
+    use super::*;
+
+    /// `parse` must be the exact inverse of `as_str` for every variant, and
+    /// reject anything else. Written per-arm because a single happy-path
+    /// assertion leaves the other arms deletable without failing anything —
+    /// and `set_hall` re-derives a fingerprint hash through this, so a wrong
+    /// arm silently changes a stored hash rather than erroring.
+    #[test]
+    fn parse_round_trips_every_variant_and_rejects_the_rest() {
+        for v in [
+            TimeBucket::SameDay,
+            TimeBucket::SameWeek,
+            TimeBucket::SameMonth,
+            TimeBucket::Older,
+            TimeBucket::Unknown,
+        ] {
+            assert_eq!(
+                TimeBucket::parse(v.as_str()),
+                Some(v),
+                "as_str/parse must round-trip {v:?} (label {:?})",
+                v.as_str()
+            );
+        }
+        // Each label maps to its OWN variant, not merely to something.
+        assert_eq!(TimeBucket::parse("same_day"), Some(TimeBucket::SameDay));
+        assert_eq!(TimeBucket::parse("same_week"), Some(TimeBucket::SameWeek));
+        assert_eq!(TimeBucket::parse("same_month"), Some(TimeBucket::SameMonth));
+        assert_eq!(TimeBucket::parse("older"), Some(TimeBucket::Older));
+        assert_eq!(TimeBucket::parse("unknown"), Some(TimeBucket::Unknown));
+
+        for bad in ["", "SameDay", "same day", "yesterday", "same_daily"] {
+            assert_eq!(
+                TimeBucket::parse(bad),
+                None,
+                "{bad:?} is not a bucket label"
+            );
+        }
     }
 }

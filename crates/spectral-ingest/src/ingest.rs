@@ -110,6 +110,15 @@ pub struct IngestOpts {
     /// Callers are responsible for passing the canonical slug form.
     /// When `None`, wing is derived by the classifier from key+content+category.
     pub wing: Option<String>,
+    /// Hall override (R40). When `Some(value)`, `classify_hall` is bypassed
+    /// and the value is stored as-is. Halls route TACT tier‑1 and are baked
+    /// into constellation fingerprint hashes, so a caller that knows the hall
+    /// (an explicit label from an enrichment pass, a decision-inbox write) is
+    /// worth more than the seven default regexes, which fall to `event` on
+    /// 77.7% of a real agent brain. The default vocabulary is
+    /// `fact | preference | discovery | advice | rule | event`; consumers with
+    /// their own `hall_rules` may pass their own values.
+    pub hall: Option<String>,
 }
 
 /// Result of the ingestion pipeline.
@@ -209,7 +218,10 @@ async fn prepare_ingest(
     let wing = opts
         .wing
         .unwrap_or_else(|| classifier::classify_wing(key, content, category, &config.wing_rules));
-    let hall = classifier::classify_hall(content, &config.hall_rules);
+    let hall = opts
+        .hall
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| classifier::classify_hall(content, &config.hall_rules));
     let signal_score = signal::score_memory(content, &hall);
 
     let now = Utc::now();
@@ -474,6 +486,58 @@ fn parse_timestamp_secs(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hall override must be honoured, and a blank one must NOT be — a
+    /// caller that passes `Some("")` or `Some("   ")` gets the classifier, not
+    /// an empty hall stored in a column that TACT routes on.
+    ///
+    /// Lives in this crate because that filter is here: a test in
+    /// `spectral-graph` cannot kill a mutant in `spectral-ingest`, since the
+    /// gate runs each mutant against its own package's tests.
+    #[tokio::test]
+    async fn hall_override_is_used_but_a_blank_one_falls_back_to_the_classifier() {
+        // Content matching no default hall rule, so the classifier says "event".
+        const NEUTRAL: &str = "Automation nightly-report-sequencer completed in 33315ms";
+        let store = crate::sqlite_store::SqliteStore::open_in_memory().unwrap();
+        let config = IngestConfig::default();
+
+        let prepared = |hall: Option<String>, key: &'static str| {
+            let opts = IngestOpts {
+                wing: Some("ops".into()),
+                hall,
+                ..Default::default()
+            };
+            (key, opts)
+        };
+
+        let (k, opts) = prepared(None, "k_auto");
+        let (m, _) = prepare_ingest("i1", k, NEUTRAL, "", "private", &config, &store, opts)
+            .await
+            .unwrap();
+        assert_eq!(
+            m.hall.as_deref(),
+            Some("event"),
+            "precondition: no default rule matches this content"
+        );
+
+        let (k, opts) = prepared(Some("fact".into()), "k_explicit");
+        let (m, _) = prepare_ingest("i2", k, NEUTRAL, "", "private", &config, &store, opts)
+            .await
+            .unwrap();
+        assert_eq!(m.hall.as_deref(), Some("fact"), "an explicit hall wins");
+
+        for blank in ["", "   ", "\t"] {
+            let (k, opts) = prepared(Some(blank.into()), "k_blank");
+            let (m, _) = prepare_ingest("i3", k, NEUTRAL, "", "private", &config, &store, opts)
+                .await
+                .unwrap();
+            assert_eq!(
+                m.hall.as_deref(),
+                Some("event"),
+                "a blank hall ({blank:?}) must fall back, never be stored"
+            );
+        }
+    }
 
     #[test]
     fn parse_timestamp_secs_sqlite_format() {

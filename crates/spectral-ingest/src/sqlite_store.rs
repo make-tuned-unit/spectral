@@ -1788,6 +1788,65 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    fn set_hall<'a>(
+        &'a self,
+        id: &'a str,
+        hall: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let tx = conn.transaction()?;
+            let n = tx.execute(
+                "UPDATE memories SET hall = ?1 WHERE id = ?2",
+                rusqlite::params![hall, id],
+            )?;
+            if n == 0 {
+                return Ok(false);
+            }
+            // Re-hash every fingerprint this memory participates in. The hash
+            // is `sha256(anchor_hall|target_hall|wing|bucket)`; only the halls
+            // change, wing and bucket are read back from the row.
+            let rows: Vec<(String, String, String, String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, anchor_memory_id, anchor_hall, target_hall, wing || '|' || time_delta_bucket
+                     FROM constellation_fingerprints
+                     WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
+                )?;
+                let out = stmt
+                    .query_map(rusqlite::params![id], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                out
+            };
+            for (fp_id, anchor_id, anchor_hall, target_hall, wing_bucket) in rows {
+                let (wing, bucket_s) = wing_bucket
+                    .rsplit_once('|')
+                    .unwrap_or((wing_bucket.as_str(), "unknown"));
+                let bucket =
+                    crate::TimeBucket::parse(bucket_s).unwrap_or(crate::TimeBucket::Unknown);
+                let (new_anchor, new_target) = if anchor_id == id {
+                    (hall.to_string(), target_hall)
+                } else {
+                    (anchor_hall, hall.to_string())
+                };
+                let new_hash = crate::fingerprint::make_fingerprint_hash(
+                    &new_anchor,
+                    &new_target,
+                    wing,
+                    bucket,
+                );
+                tx.execute(
+                    "UPDATE constellation_fingerprints
+                     SET anchor_hall = ?1, target_hall = ?2, fingerprint_hash = ?3 WHERE id = ?4",
+                    rusqlite::params![new_anchor, new_target, new_hash, fp_id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
     /// Uses `idx_memories_wing_recency` where the planner picks it up; a plain
     /// `MAX` over a few hundred thousand rows is sub-millisecond regardless.
     fn latest_created_at(
@@ -7069,6 +7128,103 @@ mod tests {
         assert!(
             (final_score - 0.8).abs() < 0.01,
             "signal_score should be preserved at 0.8, got {final_score}"
+        );
+    }
+
+    /// `set_hall` must report whether it actually changed anything, and must
+    /// re-hash the fingerprints of the memory it changed and only those.
+    ///
+    /// Two comparisons carry the behaviour and neither is incidental: the
+    /// `n == 0` early return is what makes an unknown id a `false` rather than
+    /// a silent success, and the `anchor_id == id` test decides which SIDE of
+    /// each fingerprint pair gets the new hall. Flip either and the stored
+    /// fingerprint hash stops matching what `fingerprint_search` will look up,
+    /// which is a routing failure no other test in this crate would notice.
+    #[tokio::test]
+    async fn set_hall_reports_whether_it_changed_a_row_and_rehashes_only_that_memory() {
+        use crate::fingerprint::make_fingerprint_hash;
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = |id: &str, key: &str, content: &str| Memory {
+            id: id.into(),
+            key: key.into(),
+            content: content.into(),
+            wing: Some("ops".into()),
+            hall: Some("event".into()),
+            signal_score: 0.9,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: Some("2026-08-19 03:00:00".into()),
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        let a = mem("id-a", "k-a", "The ledger export finished in 4471ms");
+        let b = mem("id-b", "k-b", "The vault archive was verified overnight");
+        store.write(&a, &[]).await.unwrap();
+        let fp = Fingerprint {
+            id: "fp-1".into(),
+            hash: make_fingerprint_hash("event", "event", "ops", crate::TimeBucket::SameDay),
+            anchor_memory_id: "id-a".into(),
+            target_memory_id: "id-b".into(),
+            wing: "ops".into(),
+            anchor_hall: "event".into(),
+            target_hall: "event".into(),
+            time_delta_bucket: crate::TimeBucket::SameDay.as_str().into(),
+        };
+        // Fingerprints are written alongside the memory that completes the pair.
+        store.write(&b, &[fp]).await.unwrap();
+
+        // Unknown id changes nothing and says so.
+        assert!(
+            !store.set_hall("no-such-id", "fact").await.unwrap(),
+            "an unknown id must report false, not silent success"
+        );
+
+        // Changing the ANCHOR side updates anchor_hall and leaves target_hall.
+        assert!(store.set_hall("id-a", "fact").await.unwrap());
+        let (ah, th, hash): (String, String, String) = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT anchor_hall, target_hall, fingerprint_hash FROM constellation_fingerprints WHERE id = 'fp-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            (ah.as_str(), th.as_str()),
+            ("fact", "event"),
+            "only the anchor side moves"
+        );
+        assert_eq!(
+            hash,
+            make_fingerprint_hash("fact", "event", "ops", crate::TimeBucket::SameDay),
+            "the stored hash must equal the canonical hash of the stored fields"
+        );
+
+        // Changing the TARGET side moves the other half.
+        assert!(store.set_hall("id-b", "advice").await.unwrap());
+        let (ah, th, hash): (String, String, String) = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT anchor_hall, target_hall, fingerprint_hash FROM constellation_fingerprints WHERE id = 'fp-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!((ah.as_str(), th.as_str()), ("fact", "advice"));
+        assert_eq!(
+            hash,
+            make_fingerprint_hash("fact", "advice", "ops", crate::TimeBucket::SameDay)
         );
     }
 

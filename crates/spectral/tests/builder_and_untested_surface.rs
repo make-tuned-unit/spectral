@@ -521,3 +521,43 @@ fn recall_with_provenance_exposes_the_sources_behind_a_summary() {
         summary.sources
     );
 }
+
+/// `set_hall` (R40) delegates: an explicit hall replaces the classifier's
+/// fallback and is readable back; an unknown id is `false`, not an error.
+#[test]
+fn set_hall_delegates_and_round_trips() {
+    let tmp = TempDir::new().unwrap();
+    let onto = tmp.path().join("ontology.toml");
+    std::fs::write(&onto, "version = 1\n").unwrap();
+    let brain = Brain::builder()
+        .data_dir(tmp.path())
+        .ontology_path(&onto)
+        .build()
+        .unwrap();
+    let r = brain
+        .remember_with(
+            "k",
+            "Automation job nightly-report-sequencer completed in 33315ms with 0 messages",
+            spectral::RememberOpts {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        r.hall.as_deref(),
+        Some("event"),
+        "precondition: classifier fallback"
+    );
+    assert!(brain.set_hall(&r.memory_id, "fact").unwrap());
+    assert_eq!(
+        brain
+            .get_memory(&r.memory_id)
+            .unwrap()
+            .unwrap()
+            .hall
+            .as_deref(),
+        Some("fact")
+    );
+    assert!(!brain.set_hall("no-such-id", "fact").unwrap());
+}
