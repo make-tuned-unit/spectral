@@ -62,7 +62,7 @@ chrono = { version = "0.4", features = ["serde"] }
 lru = "0.18"
 
 # Storage
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 # HTTP
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
