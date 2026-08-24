@@ -14,7 +14,7 @@ anyhow = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = "0.10"
 reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
-fastembed = { version = "5", optional = true, default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
+fastembed = { version = "6", optional = true, default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
 
 [features]
 # C3 (zero inference): the DEFAULT build carries no network stack and no ML
