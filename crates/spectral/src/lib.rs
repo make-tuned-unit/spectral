@@ -317,6 +317,31 @@ impl Brain {
             .assert_typed(subject, predicate, object, confidence, visibility)
     }
 
+    /// [`assert_typed`](Self::assert_typed) for a relation extracted from a
+    /// stored memory: provenance records `blake3(memory.content)` so the
+    /// source is recoverable via [`triples_from_memory`](Self::triples_from_memory).
+    pub fn assert_typed_from(
+        &self,
+        memory_id: &str,
+        subject: (&str, &str),
+        predicate: &str,
+        object: (&str, &str),
+        confidence: f64,
+        visibility: Visibility,
+    ) -> Result<spectral_graph::brain::AssertResult, Error> {
+        self.inner.assert_typed_from(
+            memory_id, subject, predicate, object, confidence, visibility,
+        )
+    }
+
+    /// Live triples whose provenance names this memory as their source.
+    pub fn triples_from_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Vec<spectral_graph::graph_store::Triple>, Error> {
+        self.inner.triples_from_memory(memory_id)
+    }
+
     /// Returns the device ID associated with this brain instance.
     pub fn device_id(&self) -> &DeviceId {
         self.inner.device_id()

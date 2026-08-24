@@ -554,6 +554,23 @@ impl GraphStore {
         Ok(out)
     }
 
+    /// Live triples whose provenance `source_doc_id` equals `doc` (R43: the
+    /// triples extracted from one memory).
+    pub fn find_triples_by_doc(&self, doc: &[u8; 32]) -> Result<Vec<Triple>, Error> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT from_id, to_id, predicate, confidence, source_doc_id,
+                    source_brain_id, asserted_at, visibility, weight
+             FROM triple WHERE source_doc_id = ?1 AND valid_to IS NULL",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![doc.to_vec()], |r| Ok(triple_from_row(r)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+
     /// Every assertion matching the pattern, live or retired, paired with its
     /// `valid_to` (`None` = still live). The raw ledger behind
     /// [`find_triples`](Self::find_triples) and

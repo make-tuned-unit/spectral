@@ -1448,6 +1448,62 @@ impl Brain {
         confidence: f64,
         visibility: Visibility,
     ) -> Result<AssertResult, Error> {
+        self.assert_typed_with_doc(subject, predicate, object, confidence, visibility, None)
+    }
+
+    /// [`assert_typed`](Self::assert_typed) for a relation extracted FROM a
+    /// stored memory (R43): the edge's provenance records
+    /// `blake3(memory.content)` as its source document, so
+    /// [`triples_from_memory`](Self::triples_from_memory) can recover which
+    /// memory a triple came from and a bad extraction can be audited or
+    /// retracted by source. Errors if the memory id is unknown.
+    pub fn assert_typed_from(
+        &self,
+        memory_id: &str,
+        subject: (&str, &str),
+        predicate: &str,
+        object: (&str, &str),
+        confidence: f64,
+        visibility: Visibility,
+    ) -> Result<AssertResult, Error> {
+        let doc = self.memory_doc_id(memory_id)?;
+        self.assert_typed_with_doc(
+            subject,
+            predicate,
+            object,
+            confidence,
+            visibility,
+            Some(doc),
+        )
+    }
+
+    /// Live triples whose provenance names this memory as their source
+    /// document — the inverse of [`assert_typed_from`](Self::assert_typed_from).
+    /// Empty (not an error) for a memory that sourced nothing.
+    pub fn triples_from_memory(&self, memory_id: &str) -> Result<Vec<Triple>, Error> {
+        let doc = self.memory_doc_id(memory_id)?;
+        self.store.find_triples_by_doc(&doc)
+    }
+
+    /// The document id a memory contributes to graph provenance:
+    /// `blake3(content)`, identical to what `link_new_memory` records for
+    /// entity mentions and to the memory's `content_hash`.
+    fn memory_doc_id(&self, memory_id: &str) -> Result<[u8; 32], Error> {
+        let memory = self
+            .get_memory(memory_id)?
+            .ok_or_else(|| Error::Schema(format!("unknown memory id: {memory_id}")))?;
+        Ok(*blake3::hash(memory.content.as_bytes()).as_bytes())
+    }
+
+    fn assert_typed_with_doc(
+        &self,
+        subject: (&str, &str),
+        predicate: &str,
+        object: (&str, &str),
+        confidence: f64,
+        visibility: Visibility,
+        source_doc_id: Option<[u8; 32]>,
+    ) -> Result<AssertResult, Error> {
         self.ensure_writable("assert_typed")?;
         let (subject_type, subject_mention) = subject;
         let (object_type, object_mention) = object;
@@ -1479,12 +1535,13 @@ impl Brain {
             }
         }
 
-        self.write_triple(
+        self.write_triple_with_doc(
             &subject_match,
             predicate,
             &object_match,
             confidence,
             visibility,
+            source_doc_id,
         )
     }
 
@@ -1749,6 +1806,29 @@ impl Brain {
         confidence: f64,
         visibility: Visibility,
     ) -> Result<AssertResult, Error> {
+        self.write_triple_with_doc(
+            subject_match,
+            predicate,
+            object_match,
+            confidence,
+            visibility,
+            None,
+        )
+    }
+
+    /// [`write_triple`](Self::write_triple) with an optional source document
+    /// id recorded on the edge's provenance (R43: a triple extracted from a
+    /// memory carries `blake3(memory.content)`, the same document id
+    /// `link_new_memory` uses for mentions, so the evidence is recoverable).
+    fn write_triple_with_doc(
+        &self,
+        subject_match: &MatchedMention,
+        predicate: &str,
+        object_match: &MatchedMention,
+        confidence: f64,
+        visibility: Visibility,
+        source_doc_id: Option<[u8; 32]>,
+    ) -> Result<AssertResult, Error> {
         let now = Utc::now();
 
         self.store.upsert_entity(&Entity {
@@ -1778,7 +1858,7 @@ impl Brain {
             to: object_match.entity_id,
             predicate: predicate.to_string(),
             confidence,
-            source_doc_id: None,
+            source_doc_id,
             source_brain_id: *self.identity.brain_id(),
             asserted_at: now,
             visibility,
