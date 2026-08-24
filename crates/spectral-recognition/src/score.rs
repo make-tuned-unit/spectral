@@ -70,6 +70,25 @@ pub struct ScoreConfig {
     pub max_evidence: usize,
     /// Maximum candidate traces returned.
     pub max_traces: usize,
+    /// R42: when the plain lead margin fails, decide it again on **exclusive**
+    /// evidence — the features matched by one of the top two candidates and
+    /// not the other.
+    ///
+    /// Two memories that share a template (`Started working in project X`,
+    /// `Navigated to <url>`) accumulate nearly all of their score from
+    /// features they both match, so their totals tie and the margin rule
+    /// cannot see the URL or id that actually distinguishes them. Measured on
+    /// the real brain: 100% of exact-re-encounter misses were lead-margin
+    /// failures against a near-duplicate, and 44% of those had distinguishing
+    /// evidence available.
+    ///
+    /// The promotion reuses the existing bars — exclusive evidence must clear
+    /// `recognize_margin` relative to the rival's exclusive evidence AND
+    /// `recognize_min_score` absolutely — so it introduces no new constant.
+    /// Byte-identical candidates have zero exclusive evidence and are never
+    /// promoted, which is the correct outcome: nothing in the content can
+    /// choose between them.
+    pub discriminative_margin: bool,
 }
 
 impl Default for ScoreConfig {
@@ -86,6 +105,7 @@ impl Default for ScoreConfig {
             gram_weight: 2.0,
             max_evidence: 12,
             max_traces: 5,
+            discriminative_margin: false,
         }
     }
 }
@@ -101,6 +121,52 @@ struct Accum {
 /// +1 smooths the tiny-corpus case; df >= 1 whenever a match exists.
 fn rarity(enrolled: usize, df: usize) -> f64 {
     (((enrolled + 1) as f64) / (df.max(1) as f64)).ln().max(0.1)
+}
+
+/// Rarity-weighted evidence each of two candidates matched that the other did
+/// NOT (R42). Keyed by `(hash, is_gram)` so the same hash appearing as both a
+/// pair and a gram feature stays distinct; a feature matched more than once by
+/// the same memory counts once, at its weight.
+///
+/// The MinHash channel is deliberately excluded: containment is a
+/// whole-document similarity, not a feature, so "exclusive" is undefined for
+/// it — and it is precisely the channel that near-duplicates share.
+fn exclusive_evidence(
+    pair_matches: &[FeatureMatch],
+    gram_matches: &[FeatureMatch],
+    enrolled: usize,
+    config: &ScoreConfig,
+    best_id: &str,
+    runner_id: &str,
+) -> (f64, f64) {
+    let mut best_f: HashMap<(u64, bool), f64> = HashMap::new();
+    let mut runner_f: HashMap<(u64, bool), f64> = HashMap::new();
+    for (matches, is_gram) in [(pair_matches, false), (gram_matches, true)] {
+        for m in matches {
+            let target = if m.memory_id == best_id {
+                &mut best_f
+            } else if m.memory_id == runner_id {
+                &mut runner_f
+            } else {
+                continue;
+            };
+            let base = rarity(enrolled, m.doc_frequency);
+            let w = if is_gram {
+                base * config.gram_weight
+            } else {
+                base
+            };
+            let e = target.entry((m.hash, is_gram)).or_insert(0.0);
+            *e = e.max(w);
+        }
+    }
+    let excl = |a: &HashMap<(u64, bool), f64>, b: &HashMap<(u64, bool), f64>| -> f64 {
+        a.iter()
+            .filter(|(k, _)| !b.contains_key(*k))
+            .map(|(_, w)| *w)
+            .sum()
+    };
+    (excl(&best_f, &runner_f), excl(&runner_f, &best_f))
 }
 
 /// Score candidates and form a verdict.
@@ -247,7 +313,24 @@ pub fn score_candidates(
         None => (Verdict::Novel, 0.0),
         Some(best) => {
             let runner_up = traces.get(1).map(|t| t.score).unwrap_or(0.0);
-            let clear_lead = best.score >= runner_up * config.recognize_margin;
+            let clear_lead = best.score >= runner_up * config.recognize_margin
+                || (config.discriminative_margin
+                    && match traces.get(1) {
+                        // No rival: the plain rule already decided.
+                        None => false,
+                        Some(rival) => {
+                            let (excl_best, excl_rival) = exclusive_evidence(
+                                pair_matches,
+                                gram_matches,
+                                enrolled,
+                                config,
+                                &best.memory_id,
+                                &rival.memory_id,
+                            );
+                            excl_best >= config.recognize_min_score
+                                && excl_best >= excl_rival * config.recognize_margin
+                        }
+                    });
             if best.coverage >= config.recognize_coverage
                 && best.score >= config.recognize_min_score
                 && familiarity >= config.recognize_min_familiarity
@@ -364,6 +447,176 @@ mod tests {
             0.0,
         );
         assert_eq!(r.traces[0].memory_id, "a", "rarity must beat raw count");
+    }
+
+    /// R42: two candidates sharing most of their evidence tie on TOTALS, so
+    /// the plain margin refuses identity — but one of them has strictly more
+    /// evidence the other lacks. With `discriminative_margin` on, that
+    /// exclusive evidence decides, and it must clear the SAME two bars
+    /// (`recognize_margin` relative, `recognize_min_score` absolute).
+    #[test]
+    fn discriminative_margin_decides_on_exclusive_evidence() {
+        let prints = prints_with(24);
+        let mut matches = Vec::new();
+        // 20 shared features: both candidates match them, so they cancel.
+        for h in 0..20u64 {
+            matches.push(fm(h, "a", "pair: shared", 3));
+            matches.push(fm(h, "b", "pair: shared", 3));
+        }
+        // Exclusive: two rare features for `a`, one for `b`.
+        matches.push(fm(100, "a", "pair: only-a-1", 1));
+        matches.push(fm(101, "a", "pair: only-a-2", 1));
+        matches.push(fm(102, "b", "pair: only-b-1", 1));
+
+        let baseline = score_candidates(
+            &prints,
+            &matches,
+            &[],
+            &[],
+            1000,
+            &ScoreConfig::default(),
+            0.0,
+            0.0,
+        );
+        assert_eq!(baseline.traces[0].memory_id, "a");
+        assert!(
+            matches!(baseline.verdict, Verdict::Familiar),
+            "precondition: shared evidence must sink the totals below the {}x margin, got {:?}",
+            ScoreConfig::default().recognize_margin,
+            baseline.verdict
+        );
+
+        let cfg = ScoreConfig {
+            discriminative_margin: true,
+            ..ScoreConfig::default()
+        };
+        let promoted = score_candidates(&prints, &matches, &[], &[], 1000, &cfg, 0.0, 0.0);
+        assert_eq!(
+            promoted.verdict,
+            Verdict::Recognized {
+                memory_id: "a".to_string()
+            },
+            "exclusive evidence 2 rare vs 1 rare should clear both bars"
+        );
+    }
+
+    /// A gram carries `gram_weight` times a pair of equal rarity, and that
+    /// multiplication decides promotions near the bar.
+    ///
+    /// Chosen so the three arithmetic readings disagree: best's only exclusive
+    /// feature is a GRAM at df 50 (rarity 2.997), rival's is a PAIR at df 30
+    /// (rarity 3.508, so the bar is 5.261). Multiplying gives 5.993 and
+    /// promotes; adding gives 4.997 and does not; dividing gives 1.498 and does
+    /// not. A test built on round numbers would have let two of the three pass.
+    #[test]
+    fn a_gram_is_weighted_not_merely_counted_in_exclusive_evidence() {
+        let prints = prints_with(24);
+        let mut pairs = Vec::new();
+        let mut grams = Vec::new();
+        for h in 0..20u64 {
+            pairs.push(fm(h, "a", "pair: shared", 3));
+            pairs.push(fm(h, "b", "pair: shared", 3));
+        }
+        grams.push(fm(100, "a", "run: only-a", 50));
+        pairs.push(fm(101, "b", "pair: only-b", 30));
+
+        let cfg = ScoreConfig {
+            discriminative_margin: true,
+            ..ScoreConfig::default()
+        };
+        let r = score_candidates(&prints, &pairs, &grams, &[], 1000, &cfg, 0.0, 0.0);
+        assert_eq!(
+            r.verdict,
+            Verdict::Recognized {
+                memory_id: "a".to_string()
+            },
+            "the exclusive gram must be weighted by gram_weight, not counted flat"
+        );
+    }
+
+    /// The exclusive lead is a MULTIPLE of the rival's, not a margin added to
+    /// it — and a candidate that leads by less than the factor stays Familiar.
+    ///
+    /// Rival's exclusive pair is df 18 (rarity 4.018), best's is df 3 (5.810).
+    /// The bar is 4.018 x 1.5 = 6.028, so best falls short and must NOT be
+    /// promoted. Reading the operator as `+` gives a bar of 5.518 and reading
+    /// it as `/` gives 2.679 — both would promote. This is the case that says
+    /// the rule is a ratio.
+    #[test]
+    fn an_exclusive_lead_below_the_margin_factor_does_not_promote() {
+        let prints = prints_with(24);
+        let mut matches = Vec::new();
+        for h in 0..20u64 {
+            matches.push(fm(h, "a", "pair: shared", 3));
+            matches.push(fm(h, "b", "pair: shared", 3));
+        }
+        matches.push(fm(100, "a", "pair: only-a", 3));
+        matches.push(fm(101, "b", "pair: only-b", 18));
+
+        let cfg = ScoreConfig {
+            discriminative_margin: true,
+            ..ScoreConfig::default()
+        };
+        let r = score_candidates(&prints, &matches, &[], &[], 1000, &cfg, 0.0, 0.0);
+        assert_eq!(
+            r.traces[0].memory_id, "a",
+            "precondition: a still leads on totals"
+        );
+        assert!(
+            matches!(r.verdict, Verdict::Familiar),
+            "a lead of 1.45x must not clear a 1.5x bar, got {:?}",
+            r.verdict
+        );
+    }
+
+    /// R42 safety property: candidates whose evidence is IDENTICAL have zero
+    /// exclusive evidence, so the rule must not fire — it can only break a tie
+    /// the content actually distinguishes, never invent one.
+    #[test]
+    fn discriminative_margin_cannot_promote_identical_evidence() {
+        let prints = prints_with(24);
+        let mut matches = Vec::new();
+        for h in 0..20u64 {
+            matches.push(fm(h, "a", "pair: shared", 3));
+            matches.push(fm(h, "b", "pair: shared", 3));
+        }
+        let cfg = ScoreConfig {
+            discriminative_margin: true,
+            ..ScoreConfig::default()
+        };
+        let r = score_candidates(&prints, &matches, &[], &[], 1000, &cfg, 0.0, 0.0);
+        assert!(
+            matches!(r.verdict, Verdict::Familiar),
+            "identical evidence must stay Familiar, got {:?}",
+            r.verdict
+        );
+    }
+
+    /// A single exclusive feature must not be enough: the absolute bar
+    /// (`recognize_min_score`) still applies to exclusive evidence, so a lone
+    /// chance match cannot name an identity.
+    #[test]
+    fn discriminative_margin_respects_the_absolute_bar() {
+        let prints = prints_with(24);
+        let mut matches = Vec::new();
+        for h in 0..20u64 {
+            matches.push(fm(h, "a", "pair: shared", 3));
+            matches.push(fm(h, "b", "pair: shared", 3));
+        }
+        // `a`'s only exclusive feature is COMMON (df 900): weight ~0.1, far
+        // below recognize_min_score. `b` has none at all, so the relative bar
+        // is trivially met — only the absolute bar can refuse this.
+        matches.push(fm(100, "a", "pair: only-a-but-common", 900));
+        let cfg = ScoreConfig {
+            discriminative_margin: true,
+            ..ScoreConfig::default()
+        };
+        let r = score_candidates(&prints, &matches, &[], &[], 1000, &cfg, 0.0, 0.0);
+        assert!(
+            matches!(r.verdict, Verdict::Familiar),
+            "one common exclusive feature must not name an identity, got {:?}",
+            r.verdict
+        );
     }
 
     #[test]
