@@ -399,6 +399,44 @@ mod tests {
 
     /// The description part must add features WITHOUT displacing the content's:
     /// a content-shaped probe scores the memory at least as well under
+    /// `enroll_parts` must honour the MinHash weight gate: the shingle channel
+    /// is indexed when the channel is ON and left alone when it is OFF.
+    ///
+    /// Both directions are asserted because each catches a different way of
+    /// breaking the comparison — a gate that fires at zero weight indexes a
+    /// channel the caller disabled, and a gate that never fires silently drops
+    /// the containment signal that carries degraded re-encounters. Neither is
+    /// visible through a verdict, because pair and gram fingerprints alone are
+    /// usually enough to name the memory.
+    #[test]
+    fn enroll_parts_indexes_the_shingle_channel_only_when_it_is_enabled() {
+        let content = "The deploy of service atlas failed with exit code 137 at 03:14 UTC";
+        let desc = "atlas deploy failure: exit 137, memory limit. Categories: deploys.";
+        let probe = minhash::shingle_set(content, RecognitionConfig::default().minhash.shingle);
+
+        // ON (the default weight): the shingle set is stored.
+        let mut on = engine();
+        on.enroll_parts("m", &[content, desc]).unwrap();
+        assert!(
+            on.store()
+                .lookup_minhash(&probe)
+                .unwrap()
+                .iter()
+                .any(|(id, _)| id == "m"),
+            "with the channel enabled, enroll_parts must index the shingles"
+        );
+
+        // OFF (weight 0.0): nothing is stored for it.
+        let mut cfg = RecognitionConfig::default();
+        cfg.minhash.weight = 0.0;
+        let mut off = RecognitionEngine::new(InMemoryRecognitionStore::default(), cfg);
+        off.enroll_parts("m", &[content, desc]).unwrap();
+        assert!(
+            off.store().lookup_minhash(&probe).unwrap().is_empty(),
+            "with the channel disabled, enroll_parts must not index shingles"
+        );
+    }
+
     /// `enroll_parts(content, desc)` as under `enroll(content)`.
     #[test]
     fn enroll_parts_does_not_lose_content_evidence() {

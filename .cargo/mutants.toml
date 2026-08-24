@@ -60,7 +60,15 @@ exclude_re = [
     # gram_hashes.len()`, and `index_memory` stores only the hash sets. The
     # count is descriptive stats on a struct built for indexing, so no verdict,
     # score or stored row can observe the arithmetic.
-    "replace \\+= with (\\*|-)= in RecognitionEngine::enroll_parts",
+    # cargo-mutants renders the impl's generic parameter, so the name is
+    # `RecognitionEngine<S>::enroll_parts`; an exclusion written without `<S>`
+    # silently matches nothing.
+    "replace \\+= with (\\*|-)= in RecognitionEngine<S>::enroll_parts",
+    # `resonant_memory_ids` keeps the best score per candidate with
+    # `if score > *entry { *entry = score }`. With `>=`, an equal score is
+    # written over an identical value — the same f64 into the same slot. No
+    # input can distinguish them; only a redundant store differs.
+    "replace > with >= in Brain::resonant_memory_ids",
 ]
 
 # Several suites open SQLite files and build brains, so they are meaningfully
