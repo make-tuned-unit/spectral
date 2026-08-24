@@ -207,3 +207,124 @@ the lexical/temporal attribution above is wrong and should be re-measured
 before anyone builds rung 3. Re-run: the shape table, the 601 union, and
 `brain_audit`'s wing entropy — which should rise from 0.53 as mass leaves the
 catch-all.
+
+---
+
+# Addendum — classification research, and why it stops before the algorithm
+
+Asked to look for a novel classification approach. The literature offers two
+that fit the shape of this problem well, a prototype was built and measured,
+and the measurement found something that makes the algorithm question
+premature.
+
+## What the literature offers that actually fits
+
+- **Programmatic weak supervision** (Snorkel lineage; CPWS and hyper label
+  models more recently). Write several *abstaining* labelling functions —
+  lexical, path, session hint — and let a label model estimate their accuracies
+  from agreement patterns *without ground truth*. Squarely our situation: many
+  weak signals, unknown reliabilities.
+- **Conformal / selective prediction with calibrated abstention.** Gives a
+  distribution-free way to abstain until a confidence threshold is met. Exactly
+  right when a wrong answer is expensive and silence is free — which is the
+  wing situation, since an empty wing is visible and a wrong one is not.
+
+Both are sound. Neither can be applied yet, for a reason that only showed up in
+the data.
+
+## The reframe nobody's literature suggests: we already have labels
+
+1,615 memories carry a real wing — 14 wings with ≥20 examples. That makes this
+supervised classification, not taxonomy induction. A multinomial Naive Bayes
+over stemmed tokens (pure statistics; no model, no inference runtime, C3-safe)
+with an abstention margin was built and measured.
+
+**In-domain it works well:**
+
+| coverage | precision |
+|---:|---:|
+| 100% | 78% |
+| 50% | 92% |
+| 30% | **98%** |
+
+Abstention behaves exactly as the selective-prediction literature predicts:
+precision climbs steeply as coverage is traded away.
+
+**Across the domain shift to chat turns it collapses:**
+
+| coverage | precision |
+|---:|---:|
+| 100% | **32%** |
+| 50% | 47% |
+| 20% | 67% |
+
+Only 47 of the 1,615 labelled memories are chat turns, and chat is 96% of the
+gap. So the labels we have are the wrong domain.
+
+**The obvious repair — bootstrapping in-domain pseudo-labels from the
+high-precision lexical rule — made it worse, not better:** 32% → **12%** at
+full coverage; pseudo-labels alone, 12%. Falsified cleanly.
+
+## Why everything failed: there is no ground truth for chat wings
+
+Inspecting the 47 "labelled" chat turns explains every result above:
+
+```
+[permagent]  User: Hi Earl!  Assistant: I'm actually **Permagent**, not Earl…
+[permagent]  User: hello     Assistant: Hello! I'm Permagent, your persistent AI assistant…
+[permagent]  User: What model are you using?
+[permagent]  User: Henry, do you know who I am?
+```
+
+These are winged `permagent` because **the assistant says its own name**. Ten
+of the 47 are this. They are not about a project at all.
+
+So every candidate label source in the system is the same artefact —
+*mention*, not *aboutness*:
+
+| source | what it actually measures |
+|---|---|
+| existing wings on chat turns | the assistant naming itself, or UI context |
+| lexical project mentions | the project being *referred to* |
+| session/temporal hint | which project was open, measured at 21% precision |
+
+**They disagree with each other because they are all noisy, and there is no
+anchor to say which is right.** The 79% disagreement measured earlier is not
+evidence that the temporal signal is bad and the lexical one is good; it is
+evidence that at least one is bad and nothing on hand can tell us which.
+
+**This is the finding: the blocker is not the algorithm, it is the absence of
+ground truth.** Weak supervision and conformal abstention both need a labelled
+calibration set — the label model to anchor its accuracy estimates, conformal
+prediction to set its threshold. Without one we cannot distinguish a 90%
+classifier from a 30% one, and the measurements above show that difference is
+live rather than hypothetical.
+
+## The cheap way through: ask, do not infer harder
+
+There are **157 chat sessions** in the catch-all, not 1,002 problems — the unit
+of labelling is the session, not the turn. Labelling every session by hand is
+an afternoon; labelling the *informative* ones is minutes:
+
+1. **Seed** — label ~40 sessions. In the app this is one question at the end of
+   a session ("was this about X?" with the hint pre-filled), answered while the
+   user still remembers, which is a fundamentally better instrument than
+   reconstruction after the fact.
+2. **Calibrate** — with a labelled set, the abstention threshold becomes a
+   measured quantity rather than a guess, and the in-domain 98%-at-30% result
+   suggests a usable operating point exists.
+3. **Active learning** — the classifier's own margin says which unlabelled
+   sessions are most informative. Ask about those, not random ones.
+4. **Then** apply weak supervision to combine the lexical, path and hint
+   functions, with the labelled set anchoring the label model.
+
+The order matters and it is the opposite of the intuitive one: the classifier
+is the *last* step, and it is cheap once the labels exist. Every attempt to
+skip step 1 in this document produced a number that could not be trusted.
+
+## Instruments
+
+`/tmp/wingnb.py` and `/tmp/wingboot.py` (prototypes, stdlib only, read-only on
+the brain) — Naive Bayes with abstention, in-domain and cross-domain
+evaluation, and the bootstrap experiment that falsified itself. Worth keeping
+if step 1 ever happens; worth nothing until it does.
