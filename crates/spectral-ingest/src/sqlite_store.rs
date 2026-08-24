@@ -7131,6 +7131,103 @@ mod tests {
         );
     }
 
+    /// `set_hall` must report whether it actually changed anything, and must
+    /// re-hash the fingerprints of the memory it changed and only those.
+    ///
+    /// Two comparisons carry the behaviour and neither is incidental: the
+    /// `n == 0` early return is what makes an unknown id a `false` rather than
+    /// a silent success, and the `anchor_id == id` test decides which SIDE of
+    /// each fingerprint pair gets the new hall. Flip either and the stored
+    /// fingerprint hash stops matching what `fingerprint_search` will look up,
+    /// which is a routing failure no other test in this crate would notice.
+    #[tokio::test]
+    async fn set_hall_reports_whether_it_changed_a_row_and_rehashes_only_that_memory() {
+        use crate::fingerprint::make_fingerprint_hash;
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = |id: &str, key: &str, content: &str| Memory {
+            id: id.into(),
+            key: key.into(),
+            content: content.into(),
+            wing: Some("ops".into()),
+            hall: Some("event".into()),
+            signal_score: 0.9,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: Some("2026-08-19 03:00:00".into()),
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        let a = mem("id-a", "k-a", "The ledger export finished in 4471ms");
+        let b = mem("id-b", "k-b", "The vault archive was verified overnight");
+        store.write(&a, &[]).await.unwrap();
+        let fp = Fingerprint {
+            id: "fp-1".into(),
+            hash: make_fingerprint_hash("event", "event", "ops", crate::TimeBucket::SameDay),
+            anchor_memory_id: "id-a".into(),
+            target_memory_id: "id-b".into(),
+            wing: "ops".into(),
+            anchor_hall: "event".into(),
+            target_hall: "event".into(),
+            time_delta_bucket: crate::TimeBucket::SameDay.as_str().into(),
+        };
+        // Fingerprints are written alongside the memory that completes the pair.
+        store.write(&b, &[fp]).await.unwrap();
+
+        // Unknown id changes nothing and says so.
+        assert!(
+            !store.set_hall("no-such-id", "fact").await.unwrap(),
+            "an unknown id must report false, not silent success"
+        );
+
+        // Changing the ANCHOR side updates anchor_hall and leaves target_hall.
+        assert!(store.set_hall("id-a", "fact").await.unwrap());
+        let (ah, th, hash): (String, String, String) = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT anchor_hall, target_hall, fingerprint_hash FROM constellation_fingerprints WHERE id = 'fp-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            (ah.as_str(), th.as_str()),
+            ("fact", "event"),
+            "only the anchor side moves"
+        );
+        assert_eq!(
+            hash,
+            make_fingerprint_hash("fact", "event", "ops", crate::TimeBucket::SameDay),
+            "the stored hash must equal the canonical hash of the stored fields"
+        );
+
+        // Changing the TARGET side moves the other half.
+        assert!(store.set_hall("id-b", "advice").await.unwrap());
+        let (ah, th, hash): (String, String, String) = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT anchor_hall, target_hall, fingerprint_hash FROM constellation_fingerprints WHERE id = 'fp-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!((ah.as_str(), th.as_str()), ("fact", "advice"));
+        assert_eq!(
+            hash,
+            make_fingerprint_hash("fact", "advice", "ops", crate::TimeBucket::SameDay)
+        );
+    }
+
     #[tokio::test]
     async fn write_noop_does_not_touch_updated_at() {
         let store = SqliteStore::open_in_memory().unwrap();

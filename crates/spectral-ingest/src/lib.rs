@@ -1217,3 +1217,45 @@ impl std::fmt::Display for TimeBucket {
         f.write_str(self.as_str())
     }
 }
+
+#[cfg(test)]
+mod time_bucket_tests {
+    use super::*;
+
+    /// `parse` must be the exact inverse of `as_str` for every variant, and
+    /// reject anything else. Written per-arm because a single happy-path
+    /// assertion leaves the other arms deletable without failing anything —
+    /// and `set_hall` re-derives a fingerprint hash through this, so a wrong
+    /// arm silently changes a stored hash rather than erroring.
+    #[test]
+    fn parse_round_trips_every_variant_and_rejects_the_rest() {
+        for v in [
+            TimeBucket::SameDay,
+            TimeBucket::SameWeek,
+            TimeBucket::SameMonth,
+            TimeBucket::Older,
+            TimeBucket::Unknown,
+        ] {
+            assert_eq!(
+                TimeBucket::parse(v.as_str()),
+                Some(v),
+                "as_str/parse must round-trip {v:?} (label {:?})",
+                v.as_str()
+            );
+        }
+        // Each label maps to its OWN variant, not merely to something.
+        assert_eq!(TimeBucket::parse("same_day"), Some(TimeBucket::SameDay));
+        assert_eq!(TimeBucket::parse("same_week"), Some(TimeBucket::SameWeek));
+        assert_eq!(TimeBucket::parse("same_month"), Some(TimeBucket::SameMonth));
+        assert_eq!(TimeBucket::parse("older"), Some(TimeBucket::Older));
+        assert_eq!(TimeBucket::parse("unknown"), Some(TimeBucket::Unknown));
+
+        for bad in ["", "SameDay", "same day", "yesterday", "same_daily"] {
+            assert_eq!(
+                TimeBucket::parse(bad),
+                None,
+                "{bad:?} is not a bucket label"
+            );
+        }
+    }
+}
