@@ -500,6 +500,75 @@ mod tests {
         );
     }
 
+    /// A gram carries `gram_weight` times a pair of equal rarity, and that
+    /// multiplication decides promotions near the bar.
+    ///
+    /// Chosen so the three arithmetic readings disagree: best's only exclusive
+    /// feature is a GRAM at df 50 (rarity 2.997), rival's is a PAIR at df 30
+    /// (rarity 3.508, so the bar is 5.261). Multiplying gives 5.993 and
+    /// promotes; adding gives 4.997 and does not; dividing gives 1.498 and does
+    /// not. A test built on round numbers would have let two of the three pass.
+    #[test]
+    fn a_gram_is_weighted_not_merely_counted_in_exclusive_evidence() {
+        let prints = prints_with(24);
+        let mut pairs = Vec::new();
+        let mut grams = Vec::new();
+        for h in 0..20u64 {
+            pairs.push(fm(h, "a", "pair: shared", 3));
+            pairs.push(fm(h, "b", "pair: shared", 3));
+        }
+        grams.push(fm(100, "a", "run: only-a", 50));
+        pairs.push(fm(101, "b", "pair: only-b", 30));
+
+        let cfg = ScoreConfig {
+            discriminative_margin: true,
+            ..ScoreConfig::default()
+        };
+        let r = score_candidates(&prints, &pairs, &grams, &[], 1000, &cfg, 0.0, 0.0);
+        assert_eq!(
+            r.verdict,
+            Verdict::Recognized {
+                memory_id: "a".to_string()
+            },
+            "the exclusive gram must be weighted by gram_weight, not counted flat"
+        );
+    }
+
+    /// The exclusive lead is a MULTIPLE of the rival's, not a margin added to
+    /// it — and a candidate that leads by less than the factor stays Familiar.
+    ///
+    /// Rival's exclusive pair is df 18 (rarity 4.018), best's is df 3 (5.810).
+    /// The bar is 4.018 x 1.5 = 6.028, so best falls short and must NOT be
+    /// promoted. Reading the operator as `+` gives a bar of 5.518 and reading
+    /// it as `/` gives 2.679 — both would promote. This is the case that says
+    /// the rule is a ratio.
+    #[test]
+    fn an_exclusive_lead_below_the_margin_factor_does_not_promote() {
+        let prints = prints_with(24);
+        let mut matches = Vec::new();
+        for h in 0..20u64 {
+            matches.push(fm(h, "a", "pair: shared", 3));
+            matches.push(fm(h, "b", "pair: shared", 3));
+        }
+        matches.push(fm(100, "a", "pair: only-a", 3));
+        matches.push(fm(101, "b", "pair: only-b", 18));
+
+        let cfg = ScoreConfig {
+            discriminative_margin: true,
+            ..ScoreConfig::default()
+        };
+        let r = score_candidates(&prints, &matches, &[], &[], 1000, &cfg, 0.0, 0.0);
+        assert_eq!(
+            r.traces[0].memory_id, "a",
+            "precondition: a still leads on totals"
+        );
+        assert!(
+            matches!(r.verdict, Verdict::Familiar),
+            "a lead of 1.45x must not clear a 1.5x bar, got {:?}",
+            r.verdict
+        );
+    }
+
     /// R42 safety property: candidates whose evidence is IDENTICAL have zero
     /// exclusive evidence, so the rule must not fire — it can only break a tie
     /// the content actually distinguishes, never invent one.
