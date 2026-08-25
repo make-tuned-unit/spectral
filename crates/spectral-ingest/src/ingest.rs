@@ -555,6 +555,78 @@ mod tests {
         }
     }
 
+    /// `fingerprints_for` must actually pair a memory with its wing's peers,
+    /// and pair it with THOSE peers only.
+    ///
+    /// It is the public seam a wing move relies on: if it returned nothing, a
+    /// moved memory would be silently left with no associations at all, which
+    /// looks exactly like a successful move from the outside.
+    #[tokio::test]
+    async fn fingerprints_for_pairs_a_memory_with_its_own_wings_peers() {
+        let store = crate::sqlite_store::SqliteStore::open_in_memory().unwrap();
+        let config = IngestConfig::default();
+        let mk = |id: &str, key: &str, wing: &str| Memory {
+            id: id.into(),
+            key: key.into(),
+            content: format!("distinct content for {key}"),
+            wing: Some(wing.into()),
+            hall: Some("event".into()),
+            signal_score: 0.9,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: Some("2026-08-24 03:00:00".into()),
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        for (id, key, wing) in [
+            ("id-b1", "k-b1", "beta"),
+            ("id-b2", "k-b2", "beta"),
+            ("id-z1", "k-z1", "zeta"),
+        ] {
+            store.write(&mk(id, key, wing), &[]).await.unwrap();
+        }
+        let mover = mk("id-a", "k-a", "beta");
+        store.write(&mover, &[]).await.unwrap();
+
+        let fps = fingerprints_for(&mover, &config, &store).await.unwrap();
+        assert!(
+            !fps.is_empty(),
+            "a memory must be paired with its wing's peers, not left orphaned"
+        );
+        assert!(
+            fps.iter().all(|f| f.wing == "beta"),
+            "every pair must be in the memory's own wing: {:?}",
+            fps.iter().map(|f| &f.wing).collect::<Vec<_>>()
+        );
+        let partners: Vec<&str> = fps
+            .iter()
+            .map(|f| {
+                if f.anchor_memory_id == "id-a" {
+                    f.target_memory_id.as_str()
+                } else {
+                    f.anchor_memory_id.as_str()
+                }
+            })
+            .collect();
+        assert!(
+            !partners.contains(&"id-z1"),
+            "a memory in another wing must never be a partner: {partners:?}"
+        );
+        assert!(
+            !partners.contains(&"id-a"),
+            "a memory is never its own partner"
+        );
+    }
+
     #[test]
     fn parse_timestamp_secs_sqlite_format() {
         let ts = parse_timestamp_secs("2024-06-15 12:00:00");

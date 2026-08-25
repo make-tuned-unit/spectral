@@ -7356,6 +7356,115 @@ mod tests {
         );
     }
 
+    /// `set_wing_by_id` reports whether it moved a row, and clears the pairs
+    /// that belonged to the old wing. `write_fingerprints_for` reports how many
+    /// it wrote.
+    ///
+    /// The `n == 0` test is what makes an unknown id a `false` rather than a
+    /// silent success, and the returned count is what a caller uses to know the
+    /// re-pairing actually happened — a wing move that drops pairs and writes
+    /// none back would otherwise look identical to a successful one.
+    #[tokio::test]
+    async fn set_wing_by_id_reports_the_move_clears_pairs_and_counts_what_it_writes() {
+        use crate::fingerprint::make_fingerprint_hash;
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mem = |id: &str, key: &str| Memory {
+            id: id.into(),
+            key: key.into(),
+            content: format!("content for {key}"),
+            wing: Some("alpha".into()),
+            hall: Some("event".into()),
+            signal_score: 0.9,
+            visibility: "private".into(),
+            source: None,
+            device_id: None,
+            confidence: 1.0,
+            created_at: Some("2026-08-24 03:00:00".into()),
+            last_reinforced_at: None,
+            episode_id: None,
+            compaction_tier: None,
+            declarative_density: None,
+            description: None,
+            description_generated_at: None,
+            content_hash: None,
+            source_brain_id: None,
+            signature: None,
+        };
+        store.write(&mem("id-a", "k-a"), &[]).await.unwrap();
+        let fp = |i: &str| Fingerprint {
+            id: format!("fp-{i}"),
+            hash: make_fingerprint_hash("event", "event", "alpha", crate::TimeBucket::SameDay),
+            anchor_memory_id: "id-a".into(),
+            target_memory_id: format!("id-{i}"),
+            wing: "alpha".into(),
+            anchor_hall: "event".into(),
+            target_hall: "event".into(),
+            time_delta_bucket: crate::TimeBucket::SameDay.as_str().into(),
+        };
+        store.write(&mem("id-b", "k-b"), &[fp("b")]).await.unwrap();
+        store.write(&mem("id-c", "k-c"), &[fp("c")]).await.unwrap();
+        let count = |store: &SqliteStore| -> i64 {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT COUNT(*) FROM constellation_fingerprints WHERE anchor_memory_id='id-a' OR target_memory_id='id-a'",
+                [], |r| r.get(0),
+            ).unwrap()
+        };
+        assert_eq!(
+            count(&store),
+            2,
+            "precondition: id-a is paired inside alpha"
+        );
+
+        // An unknown id must report false and touch nothing.
+        assert!(
+            !store.set_wing_by_id("no-such-id", "beta").await.unwrap(),
+            "unknown id must be false, not silent success"
+        );
+        assert_eq!(count(&store), 2, "a failed move must not clear pairs");
+
+        // A real move reports true and clears the old-wing pairs.
+        assert!(store.set_wing_by_id("id-a", "beta").await.unwrap());
+        assert_eq!(
+            count(&store),
+            0,
+            "pairs formed in the old wing must be dropped"
+        );
+        let w: String = {
+            let conn = store.conn();
+            conn.query_row("SELECT wing FROM memories WHERE id='id-a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(w, "beta");
+
+        // Writing replacements reports how many landed.
+        let repl = vec![
+            Fingerprint {
+                wing: "beta".into(),
+                id: "fp-n1".into(),
+                ..fp("b")
+            },
+            Fingerprint {
+                wing: "beta".into(),
+                id: "fp-n2".into(),
+                ..fp("c")
+            },
+        ];
+        assert_eq!(
+            store.write_fingerprints_for(&repl).await.unwrap(),
+            2,
+            "the returned count must be the number of rows written"
+        );
+        assert_eq!(count(&store), 2);
+        assert_eq!(
+            store.write_fingerprints_for(&[]).await.unwrap(),
+            0,
+            "writing nothing writes nothing"
+        );
+    }
+
     #[tokio::test]
     async fn write_noop_does_not_touch_updated_at() {
         let store = SqliteStore::open_in_memory().unwrap();
