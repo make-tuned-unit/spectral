@@ -328,3 +328,83 @@ skip step 1 in this document produced a number that could not be trusted.
 the brain) — Naive Bayes with abstention, in-domain and cross-domain
 evaluation, and the bootstrap experiment that falsified itself. Worth keeping
 if step 1 ever happens; worth nothing until it does.
+
+---
+
+# Addendum 2 — ground truth obtained, and what it immediately overturned
+
+The blocker named above was the absence of ground truth. It has been obtained
+the cheap way: **the data owner labelled sessions directly**, one question each
+with the evidence shown, in two short rounds. **12 sessions = 441 of the 1,002
+unwinged chat turns (44%)**, recorded in
+[`wing-labels-2026-08-24.json`](wing-labels-2026-08-24.json).
+
+This is the only trustworthy wing ground truth in existence, and it cost
+minutes rather than the afternoon the sheet would have.
+
+## Four things the labels overturned immediately
+
+**1. The session is not always the right unit.** Two of the twelve were
+answered **"split it"** — a session that opens on the DAG harness and ends on a
+mortgage renewal has no honest single wing. Session-level pinning, which this
+document proposed and permagent-runtime built, is right for most sessions and
+wrong for a material minority.
+
+**2. Time gaps mark the splits — sometimes exactly, sometimes not at all.**
+In `chat-20260820_13` every subject change lands on a gap:
+
+```
+turns 0-8   DAG / models / harness      (gaps < 3 min)
+turn  9     +152.8 min  -> "For GetLadle, draft a social post"
+turn 10     + 67.5 min  -> "TD called me about my mortgage renewal"
+turn 20     +1068.7 min -> person enrichment
+```
+
+In `chat-20260821_3` the subject changes just as sharply — Atlas Atlantic →
+tide data → Greece travel → harness — with **sub-minute gaps throughout**. So a
+gap is *high precision, low recall* for a boundary: it catches the long pauses
+and is blind to rapid switching inside one sitting.
+
+Across all 157 sessions: **28% contain a ≥10-minute gap**, and splitting there
+yields 266 segments from 157 sessions (1.7×).
+
+**3. A "session" is not a conversation.** Median span is 2 minutes, but p90 is
+6.5 hours and the longest is **616 hours — 26 days**. Five sessions span more
+than a day. This bears directly on R45's decision that *the chat session IS the
+episode*: a 26-day episode is not an episode, and the same gap signal would
+bound it.
+
+**4. `general` is a correct answer.** The weather/ambient session was labelled
+`general` deliberately. Any target of "0% catch-all" is wrong; the honest
+target is unknown until more sessions are labelled, and this is why the
+falsification condition above says "modestly".
+
+## What the labels teach that no signal could
+
+- Session `chat-20260807_1` was labelled **kinrows**; the session hint said
+  **getladle**. The hint was wrong, exactly as the 21% precision measurement
+  predicted.
+- Session `chat-20260729_11` is **lauft**, but its content says *"Loft"* —
+  voice transcription mangling a project name. Lexical corroboration cannot
+  catch this class at all, which is part of why its recall is lower than the
+  30% string-match suggested.
+- `chat-20260609_2` (driving the app's UI) is **henry-infra**, not
+  `permagent`. Operating the assistant is infrastructure work. No lexical rule
+  would have guessed that; it is a judgement about what the wing *means*.
+- **`permagent` is the marketing website; `permagent-runtime` is the
+  codebase.** Near-homonyms, two of the largest wings, and every string-based
+  classifier will conflate them. Disambiguation must be whole-token and
+  longest-match.
+
+## Revised next steps
+
+1. **Keep labelling** — 44% of turns covered; another two rounds reaches ~60%.
+   The unit is the session, and the marginal cost is one question.
+2. **Segment on gaps before assigning** — cheap, deterministic, and validated
+   on the one session where boundaries were checkable. It converts "split it"
+   from an unanswerable label into two answerable ones.
+3. **Treat rapid in-sitting switching as out of scope for now.** It is real
+   (`chat-20260821_3`) and no cheap signal detects it; it is the case that
+   would justify an LLM pass, and only once the labelled set can score one.
+4. **Re-examine session-as-episode** with the same gap signal. A 616-hour
+   episode is a bug in the episodic substrate, not just the wing one.

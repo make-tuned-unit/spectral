@@ -1,0 +1,24 @@
+{
+  "_source": "Labelled directly by the data owner (Jesse), 2026-08-24, interactively, one question per session with evidence shown. This is the ONLY trustworthy wing ground truth that exists: every in-system signal (existing wings, lexical mentions, session hints) measures mention rather than aboutness.",
+  "_unit": "chat session (key prefix chat-<date>_<n>)",
+  "_coverage": "12 sessions = 441 of 1002 unwinged chat turns (44%)",
+  "labels": [
+    {"session": "chat-20260804_7",  "turns": 106, "wing": "grocery-savings-planner", "note": "opens with chit-chat; labelled by the substantive work mid-session"},
+    {"session": "chat-20260703_2",  "turns": 62,  "wing": "wealthie"},
+    {"session": "chat-20260807_1",  "turns": 50,  "wing": "kinrows", "note": "session hint said getladle (5h stale) — hint was WRONG"},
+    {"session": "chat-20260729_11", "turns": 35,  "wing": "lauft", "note": "content says 'Loft' — voice transcription of LAUFT; lexical matching cannot catch this class"},
+    {"session": "chat-20260801_1",  "turns": 29,  "wing": "general", "note": "weather/ambient assistant use — general is a CORRECT answer, the target is not zero"},
+    {"session": "chat-20260625_14", "turns": 26,  "wing": "permagent"},
+    {"session": "chat-20260821_14", "turns": 25,  "wing": "personal", "note": "creative writing"},
+    {"session": "chat-20260609_2",  "turns": 25,  "wing": "henry-infra", "note": "operating the assistant's UI counts as infrastructure, NOT permagent"},
+    {"session": "chat-20260811_9",  "turns": 23,  "wing": "personal"},
+    {"session": "chat-20260820_13", "turns": 21,  "wing": "__SPLIT__", "note": "permagent-runtime -> getladle -> personal(mortgage) -> enrichment; boundaries fall exactly on 152m/67m/1068m gaps"},
+    {"session": "chat-20260821_3",  "turns": 20,  "wing": "__SPLIT__", "note": "atlas-atlantic -> tide data -> Greece travel -> harness; subject changes here have NO time gap"},
+    {"session": "chat-20260820_3",  "turns": 19,  "wing": "permagent-runtime"}
+  ],
+  "_disambiguation": {
+    "permagent": "the marketing WEBSITE project",
+    "permagent-runtime": "the CODEBASE",
+    "_warning": "near-homonyms; any lexical or naive-bayes classifier conflates them. They are two of the largest wings (103 and 379 memories)."
+  }
+}
