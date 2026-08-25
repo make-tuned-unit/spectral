@@ -1788,6 +1788,65 @@ impl MemoryStore for SqliteStore {
         })
     }
 
+    fn set_wing_by_id<'a>(
+        &'a self,
+        id: &'a str,
+        wing: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let tx = conn.transaction()?;
+            let n = tx.execute(
+                "UPDATE memories SET wing = ?1 WHERE id = ?2",
+                rusqlite::params![wing, id],
+            )?;
+            if n == 0 {
+                return Ok(false);
+            }
+            // Every pair this memory is in was formed among its OLD wing's
+            // peers, so it is not merely mis-hashed, it is mis-paired. Drop
+            // them; the caller writes fresh ones for the new wing.
+            tx.execute(
+                "DELETE FROM constellation_fingerprints
+                 WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
+                rusqlite::params![id],
+            )?;
+            tx.commit()?;
+            // The wing cache keys off wing values; a reassignment invalidates it.
+            self.wing_cache.lock().map(|mut c| c.clear()).ok();
+            Ok(true)
+        })
+    }
+
+    fn write_fingerprints_for<'a>(
+        &'a self,
+        fingerprints: &'a [Fingerprint],
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + 'a>> {
+        Box::pin(async move {
+            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut written = 0usize;
+            for fp in fingerprints {
+                written += conn.execute(
+                    "INSERT OR IGNORE INTO constellation_fingerprints
+                         (id, fingerprint_hash, anchor_memory_id, target_memory_id,
+                          wing, anchor_hall, target_hall, time_delta_bucket, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+                    rusqlite::params![
+                        fp.id,
+                        fp.hash,
+                        fp.anchor_memory_id,
+                        fp.target_memory_id,
+                        fp.wing,
+                        fp.anchor_hall,
+                        fp.target_hall,
+                        fp.time_delta_bucket,
+                    ],
+                )?;
+            }
+            Ok(written)
+        })
+    }
+
     fn set_hall<'a>(
         &'a self,
         id: &'a str,

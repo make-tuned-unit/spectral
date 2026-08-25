@@ -382,6 +382,22 @@ pub async fn ingest_batch_with(
         .collect())
 }
 
+/// Constellation fingerprints pairing `memory` with its **current wing's**
+/// peers.
+///
+/// Public because a wing is not only a label: fingerprints are formed *among
+/// wing peers*, so moving a memory to another wing invalidates every pair it
+/// had — those pair it with memories in a wing it has left. A caller that
+/// rewrites a wing must therefore rebuild, not re-hash, and needs the same
+/// generation logic ingest uses so the two cannot drift.
+pub async fn fingerprints_for(
+    memory: &Memory,
+    config: &IngestConfig,
+    store: &dyn MemoryStore,
+) -> anyhow::Result<Vec<Fingerprint>> {
+    generate_fingerprints(memory, config, store).await
+}
+
 async fn generate_fingerprints(
     new_memory: &Memory,
     config: &IngestConfig,

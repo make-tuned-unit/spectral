@@ -180,3 +180,91 @@ fn set_hall_rewrites_the_memory_and_rehashes_every_fingerprint_it_touches() {
     assert!(!brain.set_hall("no-such-id", "fact").unwrap());
     assert!(brain.set_hall(&a.memory_id, "  ").is_err());
 }
+
+/// `set_wing` must move the memory AND re-pair it: fingerprints formed among
+/// the old wing's peers are dropped, and new ones are generated against the
+/// destination wing.
+///
+/// This is the property that distinguishes it from `set_hall`. A hall change
+/// alters what a pair says; a wing change alters who the pair is with, so
+/// re-hashing in place would leave the memory pointing at a wing it has left —
+/// invisible to any test that only checks the `wing` column.
+#[test]
+fn set_wing_moves_the_memory_and_repairs_its_fingerprints() {
+    let (brain, dir) = test_brain();
+    let opts = |w: &str| RememberOpts {
+        visibility: Visibility::Private,
+        wing: Some(w.to_string()),
+        ..Default::default()
+    };
+    // Two peers in `alpha`, two in `beta`, then move one alpha memory to beta.
+    let a1 = brain.remember_with("k_a1", NEUTRAL, opts("alpha")).unwrap();
+    brain
+        .remember_with(
+            "k_a2",
+            "Deploy of atlas finished with exit code 0",
+            opts("alpha"),
+        )
+        .unwrap();
+    brain
+        .remember_with("k_b1", "Backup of the vault archive verified", opts("beta"))
+        .unwrap();
+    brain
+        .remember_with(
+            "k_b2",
+            "Ledger export wrote 219 rows to archive-west",
+            opts("beta"),
+        )
+        .unwrap();
+
+    let pairs_of = |id: &str| -> Vec<(String, String)> {
+        let conn = rusqlite::Connection::open(dir.path().join("memory.db")).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT wing, CASE WHEN anchor_memory_id = ?1 THEN target_memory_id
+                                   ELSE anchor_memory_id END
+                 FROM constellation_fingerprints
+                 WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
+            )
+            .unwrap();
+        let out = stmt
+            .query_map([id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        out
+    };
+
+    let before = pairs_of(&a1.memory_id);
+    assert!(
+        !before.is_empty() && before.iter().all(|(w, _)| w == "alpha"),
+        "precondition: a1 is paired inside alpha, got {before:?}"
+    );
+
+    assert!(brain.set_wing(&a1.memory_id, "beta").unwrap());
+    assert_eq!(
+        brain
+            .get_memory(&a1.memory_id)
+            .unwrap()
+            .unwrap()
+            .wing
+            .as_deref(),
+        Some("beta")
+    );
+
+    let after = pairs_of(&a1.memory_id);
+    assert!(
+        after.iter().all(|(w, _)| w == "beta"),
+        "every surviving pair must belong to the destination wing, got {after:?}"
+    );
+    assert!(
+        !after.is_empty(),
+        "the memory must be re-paired with its new wing's peers, not left orphaned"
+    );
+
+    // Unknown id is false, blank wing is an error — same contract as set_hall.
+    assert!(!brain.set_wing("no-such-id", "beta").unwrap());
+    assert!(brain.set_wing(&a1.memory_id, "  ").is_err());
+}

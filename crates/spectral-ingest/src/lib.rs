@@ -487,6 +487,31 @@ pub trait MemoryStore: Send + Sync {
         Box::pin(async { Ok(false) })
     }
 
+    /// Set a memory's wing **by id** and delete the constellation fingerprints
+    /// it participates in, so a caller can write fresh ones for its new wing.
+    ///
+    /// Deliberately not a re-hash like [`set_hall`](Self::set_hall): a hall
+    /// change alters what a pair *says*, a wing change alters *who the pair is
+    /// with*, because fingerprints are formed among wing peers. Leaving them
+    /// in place would pair the memory with a wing it no longer belongs to.
+    /// Returns `Ok(false)` when the id is unknown. Default is a no-op.
+    fn set_wing_by_id<'a>(
+        &'a self,
+        _id: &'a str,
+        _wing: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    /// Write constellation fingerprints for a memory that already exists.
+    /// Default is a no-op.
+    fn write_fingerprints_for<'a>(
+        &'a self,
+        _fingerprints: &'a [Fingerprint],
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<usize>> + Send + 'a>> {
+        Box::pin(async { Ok(0) })
+    }
+
     /// Set a memory's hall by id and re-hash the constellation fingerprints it
     /// participates in (R40). Returns `Ok(false)` when the id is unknown.
     /// Default implementation is a no-op returning `false`.

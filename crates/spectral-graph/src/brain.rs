@@ -2959,6 +2959,61 @@ impl Brain {
             .map_err(|e| Error::Schema(e.to_string()))
     }
 
+    /// Move an existing memory to another wing, rebuilding the constellation
+    /// fingerprints it participates in. Returns `false` if the id is unknown.
+    ///
+    /// A wing is the scope half of the TACT fingerprint and what recall filters
+    /// on, so a per-memory correction needs a real API: `reclassify_wings_in`
+    /// re-runs the *classifier* over a whole wing rather than writing one row's
+    /// decision, a raw `UPDATE` leaves the fingerprints stale, and
+    /// forget-then-remember destroys the memory's associations.
+    ///
+    /// Unlike [`set_hall`](Self::set_hall) this **rebuilds rather than
+    /// re-hashes**. Fingerprints are formed among wing peers, so a memory that
+    /// changes wing is not merely mis-labelled — every pair it holds is with a
+    /// wing it has left. The old pairs are dropped and new ones generated
+    /// against the destination wing's peers, using the same code ingest uses so
+    /// the two cannot drift.
+    ///
+    /// Rewrites a column retrieval routes on: pass values from a vocabulary you
+    /// control, and prefer [`reclassify_wings_in`](Self::reclassify_wings_in)
+    /// for bulk taxonomy repair.
+    pub fn set_wing(&self, memory_id: &str, wing: &str) -> Result<bool, Error> {
+        self.ensure_writable("set_wing")?;
+        let wing = wing.trim();
+        if wing.is_empty() {
+            return Err(Error::Schema("set_wing: wing must be non-empty".into()));
+        }
+        let moved = self
+            .rt
+            .block_on(self.memory_store.set_wing_by_id(memory_id, wing))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        if !moved {
+            return Ok(false);
+        }
+        // Re-pair against the destination wing. Read the memory back so the
+        // regenerated fingerprints see the wing that was actually stored.
+        let Some(memory) = self
+            .rt
+            .block_on(self.memory_store.get_memory(memory_id))
+            .map_err(|e| Error::Schema(e.to_string()))?
+        else {
+            return Ok(true);
+        };
+        let fps = self
+            .rt
+            .block_on(spectral_ingest::ingest::fingerprints_for(
+                &memory,
+                &self.ingest_config,
+                self.memory_store.as_ref(),
+            ))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        self.rt
+            .block_on(self.memory_store.write_fingerprints_for(&fps))
+            .map_err(|e| Error::Schema(e.to_string()))?;
+        Ok(true)
+    }
+
     /// Set the hall on an existing memory (R40) and re-hash every constellation
     /// fingerprint the memory participates in, as anchor or target, so TACT
     /// tier‑1 routes on the new hall. Returns `false` if the id is unknown.

@@ -683,3 +683,54 @@ fn recognition_residue_delegates_and_is_independent_of_the_verdict() {
         "forget() clears the sidecar, so the auditor sees nothing left"
     );
 }
+
+/// `set_wing` delegates and enforces the same contract as `set_hall`:
+/// unknown id is `false`, blank wing is an error.
+#[test]
+fn set_wing_delegates_and_round_trips() {
+    let tmp = TempDir::new().unwrap();
+    let onto = tmp.path().join("ontology.toml");
+    std::fs::write(&onto, "version = 1\n").unwrap();
+    let brain = Brain::builder()
+        .data_dir(tmp.path())
+        .ontology_path(&onto)
+        .build()
+        .unwrap();
+    let m = brain
+        .remember_with(
+            "k",
+            "Dispatch a goal for grocery saver to fix the top deals of the week",
+            spectral::RememberOpts {
+                visibility: Visibility::Private,
+                wing: Some("general".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        brain
+            .get_memory(&m.memory_id)
+            .unwrap()
+            .unwrap()
+            .wing
+            .as_deref(),
+        Some("general"),
+        "precondition: it starts in the catch-all"
+    );
+    assert!(brain
+        .set_wing(&m.memory_id, "grocery-savings-planner")
+        .unwrap());
+    assert_eq!(
+        brain
+            .get_memory(&m.memory_id)
+            .unwrap()
+            .unwrap()
+            .wing
+            .as_deref(),
+        Some("grocery-savings-planner")
+    );
+    assert!(!brain
+        .set_wing("no-such-id", "grocery-savings-planner")
+        .unwrap());
+    assert!(brain.set_wing(&m.memory_id, "   ").is_err());
+}

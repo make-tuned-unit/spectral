@@ -724,6 +724,19 @@ impl Brain {
         self.inner.set_description(id, description)
     }
 
+    /// Move an existing memory to another wing, rebuilding the constellation
+    /// fingerprints it participates in. `false` for an unknown id.
+    ///
+    /// The per-memory counterpart to
+    /// [`reclassify_wings_in`](Self::reclassify_wings_in), which re-runs the
+    /// classifier over a whole wing rather than writing one row's decision.
+    /// Rebuilds rather than re-hashes: fingerprints are formed among wing
+    /// peers, so a memory that changes wing carries pairs with a wing it has
+    /// left.
+    pub fn set_wing(&self, memory_id: &str, wing: &str) -> Result<bool, Error> {
+        self.inner.set_wing(memory_id, wing)
+    }
+
     /// Set the hall on an existing memory and re-hash the constellation
     /// fingerprints it participates in, so TACT tier‑1 routes on the new hall
     /// (R40). Returns `false` for an unknown id. Default vocabulary
