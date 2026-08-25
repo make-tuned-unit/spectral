@@ -1,0 +1,111 @@
+{
+  "_source": "Labelled directly by the data owner (Jesse), 2026-08-24, interactively, one question per session with evidence shown. This is the ONLY trustworthy wing ground truth that exists: every in-system signal (existing wings, lexical mentions, session hints) measures mention rather than aboutness.",
+  "_unit": "chat session (key prefix chat-<date>_<n>)",
+  "_coverage": "16 sessions = 504 of 1002 unwinged chat turns (50%)",
+  "labels": [
+    {
+      "session": "chat-20260804_7",
+      "turns": 106,
+      "wing": "grocery-savings-planner",
+      "note": "opens with chit-chat; labelled by the substantive work mid-session"
+    },
+    {
+      "session": "chat-20260703_2",
+      "turns": 62,
+      "wing": "wealthie"
+    },
+    {
+      "session": "chat-20260807_1",
+      "turns": 50,
+      "wing": "kinrows",
+      "note": "session hint said getladle (5h stale) \u2014 hint was WRONG"
+    },
+    {
+      "session": "chat-20260729_11",
+      "turns": 35,
+      "wing": "lauft",
+      "note": "content says 'Loft' \u2014 voice transcription of LAUFT; lexical matching cannot catch this class"
+    },
+    {
+      "session": "chat-20260801_1",
+      "turns": 29,
+      "wing": "general",
+      "note": "weather/ambient assistant use \u2014 general is a CORRECT answer, the target is not zero"
+    },
+    {
+      "session": "chat-20260625_14",
+      "turns": 26,
+      "wing": "permagent"
+    },
+    {
+      "session": "chat-20260821_14",
+      "turns": 25,
+      "wing": "personal",
+      "note": "creative writing"
+    },
+    {
+      "session": "chat-20260609_2",
+      "turns": 25,
+      "wing": "henry-infra",
+      "note": "operating the assistant's UI counts as infrastructure, NOT permagent"
+    },
+    {
+      "session": "chat-20260811_9",
+      "turns": 23,
+      "wing": "personal"
+    },
+    {
+      "session": "chat-20260820_13",
+      "turns": 21,
+      "wing": "__SPLIT__",
+      "note": "permagent-runtime -> getladle -> personal(mortgage) -> enrichment; boundaries fall exactly on 152m/67m/1068m gaps"
+    },
+    {
+      "session": "chat-20260821_3",
+      "turns": 20,
+      "wing": "__SPLIT__",
+      "note": "atlas-atlantic -> tide data -> Greece travel -> harness; subject changes here have NO time gap"
+    },
+    {
+      "session": "chat-20260820_3",
+      "turns": 19,
+      "wing": "permagent-runtime"
+    },
+    {
+      "session": "chat-20260623_12",
+      "turns": 19,
+      "wing": "__SPLIT__",
+      "note": "Grocery Saver goal, then a Family Office/TVO document \u2014 third split of sixteen"
+    },
+    {
+      "session": "chat-20260506_1",
+      "turns": 16,
+      "wing": "permagent",
+      "note": "defining what the assistant should be = the product wing, not the codebase"
+    },
+    {
+      "session": "chat-20260609_1",
+      "turns": 15,
+      "wing": "general",
+      "note": "CRITICAL: opening request names Kinrows explicitly ('pull up The Mesh on Kinrows') yet the honest label is general. A bare mention \u2014 even in the first substantive request \u2014 does NOT determine the wing."
+    },
+    {
+      "session": "chat-20260506_2",
+      "turns": 13,
+      "wing": "__NO_WING_EXISTS__",
+      "note": "about a project called Canon, which the owner confirms is real but has never been added to Permagent. Unclassifiable today: the wing vocabulary is incomplete, which is a different failure from misclassification."
+    }
+  ],
+  "_disambiguation": {
+    "permagent": "the marketing WEBSITE project",
+    "permagent-runtime": "the CODEBASE",
+    "_warning": "near-homonyms; any lexical or naive-bayes classifier conflates them. They are two of the largest wings (103 and 379 memories)."
+  },
+  "_ceiling": {
+    "single_existing_wing": 10,
+    "__SPLIT__ (needs segmentation)": 3,
+    "general (correct as-is)": 2,
+    "__NO_WING_EXISTS__ (vocabulary gap)": 1,
+    "_reading": "Only 10 of 16 sessions (63%) can be handled by 'assign one existing wing per session'. 19% need splitting, 6% need a wing that does not exist yet, 13% are correctly general."
+  }
+}
