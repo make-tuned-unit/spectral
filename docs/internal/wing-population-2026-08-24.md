@@ -408,3 +408,57 @@ falsification condition above says "modestly".
    would justify an LLM pass, and only once the labelled set can score one.
 4. **Re-examine session-as-episode** with the same gap signal. A 616-hour
    episode is a bug in the episodic substrate, not just the wing one.
+
+---
+
+# Addendum 3 — the ceiling, measured
+
+Two more labelling rounds, chosen by **disagreement** rather than size (the
+active-learning step proposed above: ask about sessions where the signals point
+different ways, since those discriminate between rules). **16 sessions, 504 of
+1,002 turns — 50%.**
+
+## Only 63% of sessions are assignable by a one-wing-per-session rule
+
+| outcome | sessions | share |
+|---|---:|---:|
+| a single existing wing | 10 | 63% |
+| **`__SPLIT__`** — genuinely two or more subjects | **3** | **19%** |
+| `general` — correct as it stands | 2 | 13% |
+| **`__NO_WING_EXISTS__`** — the project has no wing | **1** | **6%** |
+
+More than a third of sessions cannot be handled correctly by the design
+everyone — including this document — started from. That is the ceiling, and it
+is a property of the data rather than of any classifier.
+
+## Two findings no signal could have produced
+
+**A bare mention does not determine the wing — not even in the opening
+request.** `chat-20260609_1` opens *"Can you pull up The Mesh on Kinrows for
+me?"* and the owner labelled it **`general`**. That falsifies "label by the
+first substantive request", which the first round appeared to support, and
+weakens lexical matching further: the strongest lexical evidence available — a
+project named in the opening turn — was still the wrong answer. Any rule that
+treats a name as an assignment is wrong here, and this session belongs in a
+table test.
+
+**The wing vocabulary is incomplete.** `chat-20260506_2` is about a project
+called **Canon**, which the owner confirms is real and *"has never been added
+to Permagent"*. Those memories are unclassifiable today — not misclassified,
+but with no correct answer available. This is a distinct failure mode with a
+different fix: the wing vocabulary is only as complete as the project registry,
+so some share of `general` is a **registry gap**, not a classification gap.
+Worth sizing before any accuracy target is set, because those memories will
+fail every rule forever, and correctly.
+
+## What this changes
+
+- The honest target for `general` is meaningfully above the ~30% the
+  lexical/temporal union suggested: splits, registry gaps and genuine `general`
+  are all correct outcomes that leave memories where they are.
+- **Segmentation is a requirement, not an optimisation**, for 19% of sessions.
+  The gap signal handles the ones with pauses; the rest need something that
+  detects a subject change inside a continuous sitting.
+- A precision measurement over the real brain must **exclude**
+  `__NO_WING_EXISTS__` cases, or it penalises a rule for declining to invent a
+  wing — which is the behaviour we want.
